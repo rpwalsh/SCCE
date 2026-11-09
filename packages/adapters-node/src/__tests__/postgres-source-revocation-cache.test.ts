@@ -19,10 +19,11 @@ it("drops a warm acquired model after its source owner restricts access, matchin
   const memory = createLanguageMemoryRuntime({ hasher: owner.hasher,
     idFactory: createIdFactory({ hasher: owner.hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true }) });
   const model = { ...memory.train({ streamId: "fixture://source-cache", sourceSystem: "wikipedia", profile,
-    text: page.text, sourceVersionId: profile.sourceVersionId, evidence: page.evidence, createdAt: 1, retainNgramObservations: false }).models[0]!, informationLabel: label };
+    text: page.text, sourceVersionId: profile.sourceVersionId, evidence: page.evidence, createdAt: 1, retainObservations: false }).models[0]!, informationLabel: label };
   const source: SourceVersion = { sourceId: span.sourceId, sourceVersionId: span.sourceVersionId, namespace: "fixture",
     canonicalUri: "fixture://source-cache", contentHash: span.contentHash, byteLength: Buffer.byteLength(page.text), mediaType: "text/plain",
-    observedAt: 1, sourceTrust: span.trustVector, informationLabel: label, metadata: {} };
+    observedAt: 1, sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1,
+      independenceGroup: String(span.sourceId), accessScope: "fixture", licenseStatus: "fixture" }, informationLabel: label, metadata: {} };
   let committed = { sourceLabel: label, revision: 0n };
   const statements: string[] = [];
   function adapter(admin: boolean) {
@@ -95,7 +96,7 @@ it("drops a warm acquired model after its source owner restricts access, matchin
 it("coalesces actual evidence changes, preserves promoted replay and matched promotion counts, and rolls back restrictions", async () => {
   const owner = pooledProfileOwnerFixture(["oma vela. oma neri."]);
   const label: InformationLabel = { tenantId: "fixture", principals: ["operator"], compartments: [], exportClass: "restricted", mergePolicy: "same_owner" };
-  const span = { ...owner.evidence[0]!, informationLabel: label, status: "pending" as const };
+  const span = { ...owner.evidence[0]!, informationLabel: label, status: "quarantined" as const };
   type EvidenceRow = { id: string; status: string; information_label: InformationLabel; alpha: number; trust_vector: object; provenance_json: object; features: string[] };
   type State = { revision: bigint; rows: Map<string, EvidenceRow> };
   let committed: State = { revision: 0n, rows: new Map() }, pending: State | undefined;
