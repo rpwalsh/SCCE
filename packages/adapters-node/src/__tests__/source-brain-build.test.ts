@@ -130,6 +130,21 @@ describe("initial source brain completion", () => {
     expect(f.activationCalls).toBe(1);
   });
 
+  it("revalidates a normally produced READY lifecycle before activation and preserves a valid retry", async () => {
+    const f = await canonicalFixture(1), original = buildInput(f.storage);
+    const input = { ...original, selectedItems: f.selected, reports: f.reports,
+      completion: { ...original.completion, selectedItemIds: [f.selected[0]!.sourceVersionId], completedItemIds: [f.selected[0]!.sourceVersionId] } };
+    const ready = await completeInitialSourceBrainBuild({ ...input, activate: false });
+    expect(ready.lifecycle.state).toBe("READY"); expect(ready.report.disposition).toBe("PASSED"); expect(f.activationCalls).toBe(0);
+    f.spans[0]!.status = "quarantined";
+    await expect(completeInitialSourceBrainBuild(input)).rejects.toThrow("ready source brain no longer satisfies canonical source/artifact validation");
+    expect((await f.storage.brainImports.active()).activeImportRunIds).toEqual([]);
+    expect((await f.storage.brainImports.getLifecycle(ready.lifecycle.importRunId))?.state).toBe("READY"); expect(f.activationCalls).toBe(0);
+    f.spans[0]!.status = "promoted";
+    const active = await completeInitialSourceBrainBuild(input);
+    expect(active.lifecycle.importRunId).toBe(ready.lifecycle.importRunId); expect(active.lifecycle.state).toBe("ACTIVE"); expect(f.activationCalls).toBe(1);
+  });
+
   it.each(["missing-parent", "bad-parent-bytes", "wrong-evidence-owner", "wrong-profile-owner", "wrong-model-owner"])("refuses %s during canonical completion", async failure => {
     const f = await canonicalFixture(2), input = buildInput(f.storage), child = f.versions[0]!, parent = f.versions[1]!;
     child.role = "evidence-derivative"; child.derivation = { kind: "extracted-text", transformId: "owned", derivedFromSourceVersionId: parent.sourceVersionId,

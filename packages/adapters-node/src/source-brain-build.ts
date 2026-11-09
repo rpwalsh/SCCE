@@ -724,6 +724,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     lifecycle = await input.storage.brainImports.transitionLifecycle({ importRunId, expectedState: "VALIDATING", toState: validation.disposition === "PASSED" ? "READY" : "FAILED", updatedAt: now, reason: validation.disposition === "PASSED" ? "source brain checks passed" : "source brain checks failed", validation });
   }
   if (lifecycle.state === "ACTIVE") return { lifecycle, report: lifecycle.validation ?? validation, replayManifestHash: replayManifest.byteHash, active: true, idempotent: true };
+  if (lifecycle.state === "READY" && validation.disposition !== "PASSED") throw new Error("ready source brain no longer satisfies canonical source/artifact validation");
   if (lifecycle.state !== "READY") return { lifecycle, report: lifecycle.validation ?? validation, replayManifestHash: replayManifest.byteHash, active: false, idempotent: false };
   if (input.activate === false) return { lifecycle, report: validation, replayManifestHash: replayManifest.byteHash, active: false, idempotent: false };
 
