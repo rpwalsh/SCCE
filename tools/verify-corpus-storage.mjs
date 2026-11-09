@@ -11,6 +11,7 @@ import { writeCorpusMembershipPages, prepareCorpusMembershipCounts, readCorpusMe
 import { writeCorpusStatisticsPages, readCorpusStatisticsPages } from '../packages/adapters-node/dist/corpus-segmentation-statistics-pages.js';
 import { withPackedBoundaryMerges } from '../packages/adapters-node/dist/corpus-segmentation-merge-scratch.js';
 import { canonicalNormalizationContract, canonicalStringify, collectBoundaryTrainingObservations, compileBoundaryStatistics, createHasher, measureSurfaceBoundaries, mergePagedBoundaryStatistics } from '../packages/kernel/dist/index.js';
+import { fitPagedBoundaryEstimator } from '../packages/kernel/dist/paged-boundary-estimator.js';
 
 const args=process.argv.slice(2),value=flag=>args[args.indexOf(flag)+1];
 if(!args.includes('--config')||!value('--config'))throw Error('Usage: node tools/verify-corpus-storage.mjs --config <local-config.json> [--output <receipt.json>]');
@@ -75,6 +76,13 @@ try{
   const beforeRows=await localized.scratch.count('native-unpacked.rows'),afterRows=await localized.scratch.count('native-packed.rows');
   report.mergeScratch={logicalRows:actualMerge.rows.length,unpackedPhysicalRows:beforeRows,packedPhysicalRows:afterRows};
   check('native-packed-merge-reduces-temporary-tuples',()=>{assert.ok(beforeRows>afterRows);assert.equal(beforeRows,actualMerge.rows.length);});
+  let canonicalReads=0,numericReads=0;
+  const baselineFit=await fitPagedBoundaryEstimator({statistics:{...baseline,rows(){canonicalReads++;return baseline.rows();}},hasher});
+  const numericFit=await fitPagedBoundaryEstimator({statistics:{...packedMerge,rows(){numericReads++;return packedMerge.rows();}},hasher,
+   numericReplay:withPackedBoundaryMerges(localized.scratch).boundaryFitNumericReplay});
+  check('native-numeric-replay-retains-complete-estimator',()=>assert.equal(canonicalStringify(numericFit),canonicalStringify(baselineFit)));
+  check('native-numeric-fit-reads-canonical-rows-twice',()=>{assert.equal(canonicalReads,97);assert.equal(numericReads,2);});
+  report.numericReplay={iterations:numericFit.iterations,canonicalReads,numericReads};
   await packedMerge.dispose();await baseline.dispose();
   const [scratchRemaining]=await storage.query(`SELECT count(*)::int AS count FROM ${storage.table('segmentation_consolidation_rows')} WHERE run_id=$1 AND (starts_with(collection,'scratch/native-packed.') OR starts_with(collection,'scratch/native-unpacked.'))`,[localized.run.runId]);
   check('native-merge-disposal-cleans-temporary-pages',()=>assert.equal(scratchRemaining.count,0));
