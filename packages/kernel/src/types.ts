@@ -905,6 +905,7 @@ export interface ForecastEnvelope {
 }
 
 export interface LanguageProfile {
+  pooledSourceBinding?: import("./pooled-language-profile-binding.js").PooledLanguageProfileOwnership;
   id: string;
   sourceVersionId: SourceVersionId;
   discoveredNames?: Array<{

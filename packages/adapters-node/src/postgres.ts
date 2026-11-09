@@ -8,6 +8,7 @@ import { languageUnitMetadataMergeSql, SOURCE_METADATA_BINDING_SCHEMA } from "./
 import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js";
 import { decodeDurableJoinPrograms, encodeDurableJoinPrograms } from "./durable-join-program-storage.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "./dialogue-conversational-checkpoint.js";
+import { pooledProfileOwnershipSql, profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
 import {
   POSTGRES_REQUIRED_TABLES,
   STORAGE_STATUS_POPULATION_LIMITS,
@@ -20,6 +21,9 @@ import {
   canonicalStringify,
   codeLanguageForModelRecord,
   createHasher,
+  validatePooledLanguageProfileOwnership,
+  isPreparedPooledLanguageProfileOwnership,
+  languageProfileSignature,
   validateSourceLanguageCompilationHeader,
   validateSourceCompilationModelInventory,
   featureSet,
@@ -2120,7 +2124,7 @@ async function queryIndexedEvidence<T>(storage: PostgresStorageAdapter, sql: str
 }
 
 /** Unit separators the writing system supplies; a script that marks none yields a single unit. */
-const IDENTITY_UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'’-]+/gu;
+const IDENTITY_UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'â€™-]+/gu;
 /** Cost bound on the reversed identity scan; titles come back longest first, so the specific ones survive it. */
 const IDENTITY_MATCH_LIMIT = 24;
 /**
@@ -2535,7 +2539,7 @@ function rowToPolicyGenome(row: PolicyGenomeRow): DurablePolicyGenome {
 
 /**
  * Durable, versioned policy-evaluation history. `putEvaluation` never
- * invents a genome by itself — it only ever records a real evaluation the
+ * invents a genome by itself â€” it only ever records a real evaluation the
  * caller already computed and folds it into the running per-fingerprint
  * aggregate inside one transaction (read current aggregate, compute the
  * next one via the pure `aggregateGenome`, upsert), so concurrent
@@ -3092,15 +3096,26 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
       const params: unknown[] = profileIds ? [profileIds] : [];
       const profileAccess = storage.informationAccessPredicate("lp", params.length + 1); params.push(...profileAccess.params);
       // Source access belongs to the labeled version; sources stores only identity metadata.
-      const versionAccess = storage.informationAccessPredicate("sv", params.length + 1); params.push(...versionAccess.params);
+      const ownerSql = profileSourceOwnershipSql(storage, params, "lp");
       const rows = await storage.query<{ id: string; language_id: string }>(
         `SELECT lp.id, lp.language_id FROM ${storage.table("language_profiles")} lp
-         JOIN ${storage.table("source_versions")} sv ON sv.id=lp.source_version_id
-         JOIN ${storage.table("sources")} s ON s.id=sv.source_id
          WHERE ${profileIds ? "lp.id=ANY($1::text[]) AND" : ""} lp.language_id IS NOT NULL
-           AND ${profileAccess.sql} AND ${versionAccess.sql}
+           AND ${profileAccess.sql} AND ${ownerSql}
          ORDER BY lp.id`, params);
       return rows.map(row => ({ profileId: row.id, languageId: row.language_id }));
+    },
+    async listPooledProfileSignatures() {
+      const params: unknown[] = [];
+      const profileAccess = storage.informationAccessPredicate("lp", 1); params.push(...profileAccess.params);
+      const ownerSql = pooledProfileOwnershipSql(storage, params, "lp.id", "lp.source_version_id", "(lp.profile_json->'pooledSourceBinding')");
+      const rows = await storage.query<{ profile_json: LanguageProfile }>(`SELECT lp.profile_json FROM ${storage.table("language_profiles")} lp
+        WHERE ${profileAccess.sql} AND ${ownerSql} ORDER BY lp.id`, params);
+      return rows.flatMap(row => {
+        validatePooledLanguageProfileOwnership(row.profile_json, createHasher());
+        const signature = languageProfileSignature(row.profile_json, "");
+        return signature ? [{ id: signature.id, sourceVersionId: row.profile_json.sourceVersionId, sourceSystem: "", sourceUri: "",
+          scripts: [...signature.scripts], direction: signature.direction, topContinuation: signature.topContinuation.map(([word, count]) => [word, count] as [string, number]) }] : [];
+      });
     },
     async profileAssignments() {
       const params: unknown[] = [];
@@ -3108,10 +3123,11 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
       const versionAccess = storage.informationAccessPredicate("sv", params.length + 1); params.push(...versionAccess.params);
       const newerAccess = storage.informationAccessPredicate("newer_version", params.length + 1); params.push(...newerAccess.params);
       const evidenceAccess = storage.informationAccessPredicate("newer_evidence", params.length + 1); params.push(...evidenceAccess.params);
+      const pooledOwnerSql = pooledProfileOwnershipSql(storage, params, "lp.id", "lp.source_version_id", "(lp.profile_json->'pooledSourceBinding')");
       const rows = await storage.query<{ id: string; source_version_id: string; language_id: string | null }>(
         `SELECT lp.id,lp.source_version_id,lp.language_id FROM ${storage.table("language_profiles")} lp
-         JOIN ${storage.table("source_versions")} sv ON sv.id=lp.source_version_id
-         WHERE ${profileAccess.sql} AND ${versionAccess.sql}
+         LEFT JOIN ${storage.table("source_versions")} sv ON sv.id=lp.source_version_id
+         WHERE ${profileAccess.sql} AND (sv.id IS NOT NULL AND ${versionAccess.sql} OR ${pooledOwnerSql})
            AND NOT EXISTS (SELECT 1 FROM ${storage.table("source_versions")} newer_version
              WHERE newer_version.source_id=sv.source_id AND (newer_version.observed_at,newer_version.id)>(sv.observed_at,sv.id)
                AND ${newerAccess.sql} AND EXISTS (SELECT 1 FROM ${storage.table("evidence_spans")} newer_evidence
@@ -3160,7 +3176,7 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
            SELECT lp.id, lp.source_version_id, lp.information_label,
                   lp.profile_json->'scripts' AS scripts, lp.profile_json->>'direction' AS direction,
                   lp.profile_json->'kneserNey'->'topContinuation' AS top
-           FROM ${storage.table("language_profiles")} lp
+           FROM ${storage.table("language_profiles")} lp WHERE lp.profile_json->'pooledSourceBinding' IS NULL
            UNION ALL
            SELECT ps.id, ps.source_version_id, ps.information_label, ps.scripts, ps.direction, ps.top_continuation
            FROM ${storage.table("language_profile_signatures")} ps
@@ -3514,6 +3530,23 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
       ...profile,
       informationLabel: labels.get(profile.id)!
     }));
+    for (const profile of labeledProfiles) {
+      const ownership = validatePooledLanguageProfileOwnership(profile, createHasher());
+      if (!ownership) continue;
+      if (!isPreparedPooledLanguageProfileOwnership(ownership)) {
+        const existing = await storage.query<{ ownership: JsonValue }>(`SELECT profile_json->'pooledSourceBinding' AS ownership FROM ${storage.table("language_profiles")} WHERE id=$1`, [profile.id]);
+        if (canonicalStringify(existing[0]?.ownership ?? null) !== canonicalStringify(ownership)) throw new Error("pooled profile ownership requires a verified source preparation");
+      }
+      await storage.query(`SELECT pooled_source.id FROM ${storage.table("sources")} pooled_source
+        JOIN ${storage.table("source_versions")} pooled_version ON pooled_version.source_id=pooled_source.id
+        JOIN ${storage.table("evidence_spans")} pooled_span ON pooled_span.source_version_id=pooled_version.id AND pooled_span.source_id=pooled_source.id
+        WHERE pooled_span.id=ANY($1::text[]) ORDER BY pooled_source.id,pooled_version.id,pooled_span.id FOR UPDATE OF pooled_source,pooled_version,pooled_span`,
+      [ownership.evidence.map(row => String(row.id)).sort()]);
+      const params: unknown[] = [JSON.stringify(ownership), profile.id, profile.sourceVersionId];
+      const ownerSql = pooledProfileOwnershipSql(storage, params, "$2::text", "$3::text", "$1::jsonb");
+      const rows = await storage.query<{ accepted: boolean }>(`SELECT ${ownerSql} AS accepted`, params);
+      if (rows[0]?.accepted !== true) throw new Error("pooled profile parents are not current accessible promoted evidence");
+    }
     const payload = labeledProfiles.map(profile => ({
       id: profile.id,
       source_version_id: profile.sourceVersionId,
@@ -4209,12 +4242,14 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const params: unknown[] = [query.languageId];
       const profileWhere = ["lp.language_id=$1"];
       appendInformationAccess(storage, "lp", params, profileWhere);
+      const modelAccess: string[] = [];
+      appendInformationAccess(storage, "model", params, modelAccess);
+      profileWhere.push(profileSourceOwnershipSql(storage, params, "lp"));
       const modelWhere = [
         `model.model_json->>'profileId'=ANY(ARRAY(
            SELECT lp.id FROM ${storage.table("language_profiles")} lp WHERE ${profileWhere.join(" AND ")}
-         ))`
+         ))`, ...modelAccess
       ];
-      appendInformationAccess(storage, "model", params, modelWhere);
       const rows = await storage.query<{ symbol: string | null; contexts: string | null; model_count: number }>(
         `WITH population AS MATERIALIZED (
            SELECT model.id, model.model_json->'model'->'continuationCounts' AS counts
@@ -4289,6 +4324,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         } else where.push(declared);
       }
       appendInformationAccess(storage, "model", params, where, "bounded_by_order_and_limit");
+      const ownerAccess = storage.informationAccessPredicate("model_profile", params.length + 1); params.push(...ownerAccess.params);
+      where.push(`(NOT EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} known_profile WHERE known_profile.id=model.profile_id)
+        OR EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} model_profile WHERE model_profile.id=model.profile_id
+          AND ${ownerAccess.sql} AND ${profileSourceOwnershipSql(storage, params, "model_profile")}))`);
       params.push(query.limit ?? 100);
       const limitParam = params.length;
       const trainedMass = ngramModelTrainedMassExpression("model");

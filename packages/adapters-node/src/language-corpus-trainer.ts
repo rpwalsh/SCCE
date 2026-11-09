@@ -10,6 +10,7 @@ import { prepareSourceTranscriptArchive, type SourceTranscriptArchiveDescriptor 
 import { SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID } from "./source-code-function-learning.js";
 import {
   createClock,
+  attachPooledLanguageProfileOwnership,
   canonicalStringify,
   createEventFactory,
   createEvidenceExtractor,
@@ -1281,7 +1282,8 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     }
   }
 
-  if (input.persistProfile !== false) await input.storage.model.putLanguageProfile(prepared.profile);
+  if (input.persistProfile !== false) await input.storage.model.putLanguageProfile(input.profileBinding
+    ? attachPooledLanguageProfileOwnership(prepared.profile, input.profileBinding, createHasher()) : prepared.profile);
   if (prepared.relationObservations?.length && input.storage.relationObservations) await input.storage.relationObservations.put(prepared.relationObservations);
   if (prepared.projectedGraph) {
     const graph = prepared.projectedGraph;

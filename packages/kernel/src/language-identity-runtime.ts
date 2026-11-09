@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
   discoverLanguageIdentities,
+  classifyPooledLanguageSignature,
   selectLanguageIdentityForSurface,
   LANGUAGE_IDENTITY_SCHEMA,
   LANGUAGE_IDENTITY_DISCOVERY_RECIPE,
@@ -174,6 +175,16 @@ export function createLanguageIdentityRuntime(options: {
   }
   const inputDigest = (signatures: readonly LanguageProfileSignature[]) => options.hasher.digestHex(canonicalStringify([...signatures]
     .sort((a, b) => a.id.localeCompare(b.id) || canonicalStringify(a).localeCompare(canonicalStringify(b)))));
+  async function assignPooled(identities: readonly LanguageIdentityRecord[]): Promise<number> {
+    const store = options.store!;
+    const pooled = store.listPooledProfileSignatures ? await store.listPooledProfileSignatures() : [];
+    const assignments = pooled.flatMap(row => {
+      const languageId = classifyPooledLanguageSignature(identities, signatureFromRow(row, corpusRegistry));
+      return languageId ? [{ profileId: row.id, languageId }] : [];
+    });
+    if (assignments.length) await store.assignProfileLanguages(assignments);
+    return assignments.length;
+  }
   async function discover(signatures: LanguageProfileSignature[]): Promise<{ identities: LanguageIdentityRecord[]; assigned: number }> {
     const store = options.store!;
     const discovery = discoverLanguageIdentities({ signatures, hasher: options.hasher, now: options.now(), informationLabel: options.informationLabel });
@@ -183,7 +194,7 @@ export function createLanguageIdentityRuntime(options: {
     else await store.putIdentities(discovery.identities);
     const assignments = [...discovery.assignments].map(([profileId, languageId]) => ({ profileId, languageId }));
     await store.assignProfileLanguages(assignments);
-    return { identities: discovery.identities, assigned: assignments.length };
+    return { identities: discovery.identities, assigned: assignments.length + await assignPooled(discovery.identities) };
   }
 
   return {
@@ -224,6 +235,7 @@ export function createLanguageIdentityRuntime(options: {
               throw new Error("language identity finalization lacks current source profile assignments");
           }
         }
+        if (!discovered && (input.finalize || required.length)) assignedCount = await assignPooled(identities);
         loaded = readiness === "ready" ? identities : [];
         index();
         return { identities: loaded, assigned: assignedCount, discovered, readiness, elapsedMs: Date.now() - started };

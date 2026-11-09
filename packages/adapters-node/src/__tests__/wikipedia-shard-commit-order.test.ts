@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { canonicalTemporalCoordinates, createHasher } from "@scce/kernel";
+import { canonicalTemporalCoordinates, createHasher, validatePooledLanguageProfileOwnership, type LanguageProfile } from "@scce/kernel";
 import { createWikipediaInputManifest } from "../wikipedia-input-manifest.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 
@@ -25,11 +25,12 @@ describe("Wikipedia shard graph dependency validation", () => {
       const transactionDepthAt: number[] = [];
       const graphRows = { nodes: new Map<string, any>(), edges: new Map<string, any>(), hyperedges: new Map<string, any>() };
       const hasher = createHasher();
+      let persistedProfile: LanguageProfile | undefined;
       const storage = {
         transaction: async (fn: () => Promise<unknown>) => { transactionDepth++; try { return await fn(); } finally { transactionDepth--; } },
         events: { append: async (event: any) => { if (event.typeId === "SymbolPatternLearned") { order.push("training.commit"); transactionDepthAt.push(transactionDepth); } }, readRange: async () => [] },
         evidence: { listEvidenceBackedSourceVersions: async () => [], getEvidenceBatch: async () => [] },
-        model: { listLanguageProfiles: async () => [], putLanguageProfile: async () => {} },
+        model: { listLanguageProfiles: async () => [], putLanguageProfile: async (profile: LanguageProfile) => { persistedProfile = profile; } },
         relationObservations: { sourceFamilyCountsForSeeds: async () => new Map(), list: async () => [], put: async () => {} },
         graph: {
           getSlice: async (query: any) => ({ bounded: true, query, nodes: [...graphRows.nodes.values()], edges: [...graphRows.edges.values()],
@@ -93,6 +94,8 @@ describe("Wikipedia shard graph dependency validation", () => {
       expect(result.graphHyperedges).toBeGreaterThan(0);
       expect(result.ngramModels).toBeGreaterThan(0);
       expect(result.languagePatterns).toBeGreaterThan(0);
+      expect(persistedProfile).toBeDefined();
+      expect(validatePooledLanguageProfileOwnership(persistedProfile!, hasher)?.parents).toEqual(samples.map(sample => String(sample.sourceVersionId)).sort());
       expect(order).toContain("graph.hyperedges");
       expect(order.indexOf("training.commit")).toBeGreaterThan(-1);
       expect(order.indexOf("training.commit")).toBeLessThan(order.findIndex(item => item.startsWith("graph.")));

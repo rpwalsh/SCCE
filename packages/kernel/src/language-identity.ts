@@ -149,6 +149,17 @@ export function closedClassPresence(document: { topContinuation: ReadonlyArray<r
   return carried / closedClass.size;
 }
 
+/** Assign an aggregate without adding its repeated documents to discovery statistics. */
+export function classifyPooledLanguageSignature(identities: readonly LanguageIdentityRecord[], signature: LanguageProfileSignature): string | undefined {
+  const script = dominantScript(signature);
+  const measured = identities.filter(identity => identity.script === script && identity.closedClass.length)
+    .map(identity => ({ identity, presence: closedClassPresence(signature, new Set(identity.closedClass.map(row => row.word))) }))
+    .filter(row => row.presence > 0 && row.presence >= row.identity.membershipCut)
+    .sort((left, right) => right.presence - left.presence || left.identity.id.localeCompare(right.identity.id));
+  if (!measured[0] || measured[1]?.presence === measured[0].presence) return undefined;
+  return measured[0].identity.id;
+}
+
 function median(values: readonly number[]): number {
   const xs = [...values].sort((a, b) => a - b);
   return xs.length ? xs[Math.floor(xs.length / 2)]! : 0;

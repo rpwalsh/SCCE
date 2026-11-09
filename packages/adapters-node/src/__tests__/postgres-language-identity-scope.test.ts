@@ -35,7 +35,8 @@ it("selects exact assignment owners before source access checks without normaliz
     for (const field of ["tenantId", "principals", "compartments", "exportClass"]) expect(query.sql).toContain(`${alias}.information_label->${field === "tenantId" || field === "exportClass" ? ">" : ""}'${field}'`);
   }
   expect(query.sql).not.toContain("LIMIT");
-  expect(query.sql).not.toContain("profile_json");
+  expect(query.sql).not.toMatch(/SELECT\s+lp\.profile_json/iu);
+  expect(query.sql).toContain("lp.profile_json->'pooledSourceBinding'");
 });
 
 it("uses source-version access labels and only declared columns on source identity rows", async () => {
