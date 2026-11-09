@@ -86,6 +86,20 @@ try{
   await packedMerge.dispose();await baseline.dispose();
   const [scratchRemaining]=await storage.query(`SELECT count(*)::int AS count FROM ${storage.table('segmentation_consolidation_rows')} WHERE run_id=$1 AND (starts_with(collection,'scratch/native-packed.') OR starts_with(collection,'scratch/native-unpacked.'))`,[localized.run.runId]);
   check('native-merge-disposal-cleans-temporary-pages',()=>assert.equal(scratchRemaining.count,0));
+  const inventoryBefore=await run.digest('input/inventory');
+  await run.scratch.putMany('producer/document.rows',[{orderKey:'1',value:{temporary:true}}]);
+  await run.scratch.putMany('producer/windows',[{orderKey:'1',value:{preserve:true}}]);
+  await run.scratch.putMany('fit.abandoned.sort.7.0',[{orderKey:'1',value:{temporary:true}}]);
+  const preparationRemoved=await run.discardIncompleteMergeScratch('building');
+  check('native-building-resume-discards-only-owned-merge-scratch',()=>assert.equal(preparationRemoved,1));
+  assert.equal(await run.scratch.count('producer/windows'),1);assert.equal(await run.scratch.count('fit.abandoned.sort.7.0'),1);
+  await assert.rejects(run.discardIncompleteMergeScratch('fitting'),/current accessible incomplete run/);
+  await storage.query(`UPDATE ${storage.table('segmentation_consolidation_runs')} SET state='fitting' WHERE run_id=$1`,[runId]);
+  const fitRemoved=await run.discardIncompleteMergeScratch('fitting');
+  check('native-fitting-resume-discards-abandoned-binary-sort-levels',()=>assert.equal(fitRemoved,1));
+  const inventoryAfter=await run.digest('input/inventory');
+  check('native-resume-reset-preserves-immutable-inputs',()=>assert.deepEqual(inventoryAfter,inventoryBefore));
+  assert.equal(await run.scratch.count('producer/windows'),1);
   throw rollback;
  });}catch(error){if(error!==rollback)failure=error;report.fixtureRolledBack=true;}
  const [remaining]=await storage.query(`SELECT count(*)::int AS count FROM ${storage.table('segmentation_consolidation_runs')} WHERE run_id=ANY($1::text[])`,[[runId,runId+'.localized']]);check('fixture-records-rolled-back',()=>assert.equal(remaining.count,0));
