@@ -3,11 +3,12 @@
 import { EventEmitter } from "node:events";
 import { stat,unlink,rmdir } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
-import { expect,it } from "vitest";
+import { expect,it,vi } from "vitest";
 import type { Worker } from "node:worker_threads";
 import type { CorpusSegmentationWorkerExecution,PagedPopulationCandidate,PreparedPagedPopulationWorkspace } from "@scce/kernel";
 import type { PostgresStorageAdapter } from "../postgres.js";
 import { createPopulationCandidateExecution,validatePopulationWorkerExecution } from "../population-candidate-execution.js";
+import { createWorkerExecutionLifecycle,validateWorkerExecutionResources } from "../worker-execution-lifecycle.js";
 const declaration:CorpusSegmentationWorkerExecution={backend:"node_workers.v1",workers:2,workerHeapMb:32,maxNodeRssBytes:8*1024**3,totalPgConnections:4,abortGraceMs:5};
 const prepared:PreparedPagedPopulationWorkspace={rootPopulationId:"source",namespace:"fit",normalizationContractId:"normalization",sourceInventory:{id:"inventory",count:16},collections:[]};
 const jobs=[1,2,3].map(populationCount=>({populationCount,label:`candidate.${populationCount}`,fit:"fit.partition.fit",holdout:"fit.partition.modelSelection"}));
@@ -74,4 +75,72 @@ it("retains primary worker failure when owned-directory cleanup refuses an unkno
     expect(failure).toBeInstanceOf(AggregateError);expect((failure as AggregateError).errors.map(error=>String(error))).toEqual([expect.stringContaining("exited before completion"),expect.stringContaining("unowned file")]);
     expect(workers.every(worker=>worker.exited)).toBe(true);expect((await stat(`${directory}/unknown-owned-by-test.txt`)).isFile()).toBe(true);
   }finally{await unlink(`${directory}/unknown-owned-by-test.txt`);await rmdir(directory);}
+});
+
+it("shares live tracked exits and samples process RSS every 100ms with idempotent disposal",async()=>{
+  vi.useFakeTimers();
+  try{
+    const rss=vi.fn(()=>123456),failures:unknown[]=[];
+    const lifecycle=createWorkerExecutionLifecycle({declaration,coordinatorHeapLimitBytes:512*1024**2,rss,onFailure:error=>{failures.push(error);}});
+    const worker=new FakeWorker({},()=>{}),record=Object.assign(lifecycle.track(cast(worker)),{job:"same-live-record"});
+    expect(record.done).toBe(false);lifecycle.start();lifecycle.start();expect(rss).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(99);expect(rss).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);expect(rss).toHaveBeenCalledTimes(2);
+    worker.exit();await lifecycle.drain();expect(record.done).toBe(true);expect(record.exitCode).toBe(0);expect(lifecycle.peakRss).toBe(123456);
+    lifecycle.dispose();lifecycle.dispose();await vi.advanceTimersByTimeAsync(1000);
+    expect(rss).toHaveBeenCalledTimes(2);expect(vi.getTimerCount()).toBe(0);expect(failures).toEqual([]);
+  }finally{vi.useRealTimers();}
+});
+
+it("aborts and terminates a worker tracked after the original failure grace already expired",async()=>{
+  vi.useFakeTimers();
+  try{
+    const primary=Error("original source failed"),failures:unknown[]=[];
+    const lifecycle=createWorkerExecutionLifecycle({declaration,coordinatorHeapLimitBytes:512*1024**2,rss:()=>123456,onFailure:error=>{failures.push(error);}});
+    lifecycle.start();lifecycle.fail(primary);await vi.advanceTimersByTimeAsync(declaration.abortGraceMs);
+    const worker=new FakeWorker({},()=>{}),record=lifecycle.track(cast(worker));
+    await lifecycle.drain();expect(record.done).toBe(true);expect(worker.aborts).toBe(1);expect(worker.terminated).toBe(1);
+    lifecycle.fail(Error("secondary"));expect(lifecycle.error).toBe(primary);expect(failures).toEqual([primary]);
+    lifecycle.dispose();expect(vi.getTimerCount()).toBe(0);
+  }finally{vi.useRealTimers();}
+});
+
+it("handles an already-cancelled owner before workers are tracked without reading RSS",async()=>{
+  const controller=new AbortController(),reason=Error("owner cancelled before start"),rss=vi.fn(()=>123456);controller.abort(reason);
+  const lifecycle=createWorkerExecutionLifecycle({declaration,signal:controller.signal,coordinatorHeapLimitBytes:512*1024**2,rss});
+  try{
+    lifecycle.start();expect(lifecycle.failed).toBe(true);expect(lifecycle.error).toBe(reason);expect(rss).not.toHaveBeenCalled();
+    const worker=new FakeWorker({},(worker,message)=>{if(message.type==="abort")worker.exit();});
+    const record=lifecycle.track(cast(worker));await lifecycle.drain();expect(record.done).toBe(true);expect(worker.aborts).toBe(1);
+  }finally{lifecycle.dispose();}
+});
+
+it("cleans already-tracked population workers when a later worker constructor throws",async()=>{
+  const primary=Error("worker constructor failed"),workers:FakeWorker[]=[];let directory="";
+  const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},
+    {coordinatorHeapLimitBytes:()=>512*1024**2,bundleDigest:async()=>"bundle",rss:()=>123456,onDirectory:value=>{directory=value;},worker:initialization=>{
+      if(workers.length)throw primary;
+      const worker=new FakeWorker(initialization,(worker,message)=>{if(message.type==="abort")worker.exit();});workers.push(worker);return cast(worker);
+    }});
+  await expect(execution.provider.fitCandidates(prepared,jobs)).rejects.toBe(primary);
+  expect(workers).toHaveLength(1);expect(workers[0]!.exited).toBe(true);expect(workers[0]!.aborts).toBe(1);
+  await expect(stat(directory)).rejects.toMatchObject({code:"ENOENT"});
+});
+
+it("validates shared resource fields without adding a PG reservation to source-only workers",()=>{
+  const resources={workers:2,workerHeapMb:32,maxNodeRssBytes:1024**3,abortGraceMs:5};
+  expect(validateWorkerExecutionResources(resources,512*1024**2)).toEqual(resources);
+  for(const key of Object.keys(resources))for(const value of [0,NaN,Infinity,1.5])expect(()=>validateWorkerExecutionResources({...resources,[key]:value})).toThrow("declaration");
+  expect(()=>validateWorkerExecutionResources(resources,resources.maxNodeRssBytes)).toThrow("memory declaration");
+});
+
+it("aborts a population worker returned after its owner cancelled during construction",async()=>{
+  const controller=new AbortController(),primary=Error("owner cancelled during construction"),workers:FakeWorker[]=[];
+  const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration,signal:controller.signal},
+    {coordinatorHeapLimitBytes:()=>512*1024**2,bundleDigest:async()=>"bundle",rss:()=>123456,worker:initialization=>{
+      const worker=new FakeWorker(initialization,(worker,message)=>{if(message.type==="abort")worker.exit();});workers.push(worker);
+      controller.abort(primary);return cast(worker);
+    }});
+  await expect(execution.provider.fitCandidates(prepared,jobs)).rejects.toBe(primary);
+  expect(workers).toHaveLength(1);expect(workers[0]?.exited).toBe(true);expect(workers[0]?.aborts).toBe(1);expect(workers[0]?.terminated).toBe(0);
 });
