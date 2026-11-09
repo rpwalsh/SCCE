@@ -4862,7 +4862,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             AND (active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam}${conversationalGuard ? ` OR active_projection.value_json->>'componentRecipe' IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}')` : ""}${projectGuard ? ` OR starts_with(active_projection.value_json->>'componentRecipe','${SOURCE_OWNED_PROJECT_PROJECTION_PREFIX}')` : ""})
             ${conversationalGuard ? `AND (active_projection.value_json->>'componentRecipe' NOT IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}') OR (${conversationalGuard}))` : ""}
             ${computationGuard ? `AND active_projection.value_json->>'sourceSystem'='${SOURCE_COMPUTATION_SOURCE_SYSTEM}' AND (${computationGuard})` : ""}
-            ${projectGuard ? `AND (active_projection.value_json->>'componentRecipe'=${constructionRecipeParam} OR (${projectGuard}))` : ""}
+            ${projectGuard ? `AND (active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam} OR (${projectGuard}))` : ""}
             ${patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA || ownedAct ? `AND EXISTS (
               SELECT 1 FROM ${storage.table("language_profiles")} projection_profile
               JOIN ${storage.table("source_versions")} projection_version ON projection_version.id=projection_profile.source_version_id
@@ -4899,7 +4899,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         )`);
         const recipeKey = patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA
           ? `,CASE WHEN pattern.component_recipe IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}') THEN pattern.component_recipe ELSE $${constructionRecipeParam} END`
-          : computation ? ",pattern.component_recipe,pattern.owned_source_version_id" : projectGuard ? `,COALESCE(pattern.component_recipe,${constructionRecipeParam})` : "";
+          : computation ? ",pattern.component_recipe,pattern.owned_source_version_id" : projectGuard ? `,COALESCE(pattern.component_recipe,$${constructionRecipeParam})` : "";
         where.push(`(pattern.pattern_schema IS DISTINCT FROM $${constructionSchemaParam}
         OR (pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id${recipeKey}) IN (
           SELECT profile_id,source_system,pattern_schema,pattern_id${recipeKey ? ",projection_recipe" : ""}${computation ? ",source_version_id" : ""} FROM ${projectionSet}

@@ -67,4 +67,14 @@ it("uses distinct canonical keys for two test owners of the same target and filt
   expect(read).toContain(SOURCE_OWNED_PROJECT_PROJECTION_PREFIX); expect(read).toContain("project_root.status='complete'");
   expect(read.indexOf("project_evidence.status='promoted'")).toBeLessThan(read.indexOf("ranked_pool AS"));
   expect(read).toMatch(/componentRecipe'\s*=\$\d+/u);
+  const recipeReferences=[...read.matchAll(/active_projection\.value_json->>'componentRecipe'=(\$?\d+)/gu)].map(match=>match[1]!);
+  expect(recipeReferences.length).toBeGreaterThanOrEqual(2);
+  for(const reference of recipeReferences){
+    expect(reference).toMatch(/^\$[1-9]\d*$/u);
+    expect(first.calls.at(-1)!.params[Number(reference.slice(1))-1]).toBe("scce.source_owned_test_contract_projection.v1");
+  }
+  const coalesced=[...read.matchAll(/COALESCE\(pattern\.component_recipe,(\$?\d+)\)/gu)].map(match=>match[1]!);
+  expect(coalesced).toHaveLength(1);
+  expect(coalesced[0]).toMatch(/^\$[1-9]\d*$/u);
+  expect(first.calls.at(-1)!.params[Number(coalesced[0]!.slice(1))-1]).toBe("scce.source_owned_test_contract_projection.v1");
 });
