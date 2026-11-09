@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+// Run as a serialized local validation: no concurrent ingestion/build may mutate the database revision.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
@@ -25,6 +26,13 @@ const report = { schema: 'scce.native_admission_revision_verification.v1', at: n
   isolation: 'single_backend_outer_rollback_with_adapter_transaction_savepoints' };
 const check = (name, operation) => { operation(); report.checks.push({ name, passed: true }); };
 let physical;
+let queryTail = Promise.resolve();
+const physicalQuery = (sql, params) => {
+  const result = queryTail.then(() => physical.query(sql, params));
+  // A failed statement must not prevent the fixture's subsequent rollback from reaching PostgreSQL.
+  queryTail = result.then(() => undefined, () => undefined);
+  return result;
+};
 let outerOpen = false, sequence = 0;
 const originalReaderQuery = reader.pool.query, originalWriterConnect = writer.pool.connect, originalWriterQuery = writer.pool.query;
 const readRevision = () => reader.languageMemory.readRevision();
@@ -35,21 +43,21 @@ try {
   assert.equal(verified.ok, true, 'Canonical storage verification failed');
   initialRevision = await readRevision();
   physical = await writer.pool.connect();
-  await physical.query('BEGIN'); outerOpen = true;
+  await physicalQuery('BEGIN'); outerOpen = true;
   // Real adapter transaction commits flush the existing dirty revision and release a savepoint.
   // Their effects are visible to this backend only; the enclosing native transaction always rolls back.
   const connect = async () => {
     const name = `admission_${++sequence}`;
     return { async query(sql, params) {
-      if (sql === 'BEGIN') return physical.query(`SAVEPOINT ${name}`);
-      if (sql === 'COMMIT') return physical.query(`RELEASE SAVEPOINT ${name}`);
-      if (sql === 'ROLLBACK') { await physical.query(`ROLLBACK TO SAVEPOINT ${name}`); return physical.query(`RELEASE SAVEPOINT ${name}`); }
-      return physical.query(sql, params);
+      if (sql === 'BEGIN') return physicalQuery(`SAVEPOINT ${name}`);
+      if (sql === 'COMMIT') return physicalQuery(`RELEASE SAVEPOINT ${name}`);
+      if (sql === 'ROLLBACK') { await physicalQuery(`ROLLBACK TO SAVEPOINT ${name}`); return physicalQuery(`RELEASE SAVEPOINT ${name}`); }
+      return physicalQuery(sql, params);
     }, release() {} };
   };
   writer.pool.connect = connect;
-  writer.pool.query = (sql, params) => physical.query(sql, params);
-  reader.pool.query = (sql, params) => physical.query(sql, params);
+  writer.pool.query = physicalQuery;
+  reader.pool.query = physicalQuery;
   const clock = createClock({ fixedTime: 1 }), hasher = createHasher();
   const ids = createIdFactory({ hasher, clock, namespace: suffix, deterministicReplay: true });
   const label = { tenantId: access.tenantId, principals: [access.principalId], compartments: [],
@@ -129,13 +137,9 @@ try {
   process.exitCode = 1;
 } finally {
   if (outerOpen) {
-    try { await physical.query('ROLLBACK'); report.fixtureRolledBack = true; }
+    try { await physicalQuery('ROLLBACK'); report.fixtureRolledBack = true; }
     catch (error) { report.error ??= { name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null }; process.exitCode = 1; }
   }
-  writer.pool.connect = originalWriterConnect;
-  writer.pool.query = originalWriterQuery;
-  reader.pool.query = originalReaderQuery;
-  physical?.release();
   try {
     const revision = await reader.languageMemory.readRevision();
     check('outer-native-rollback-restores-revision', () => assert.equal(revision, initialRevision));
@@ -146,6 +150,10 @@ try {
       (SELECT count(*) FROM ${reader.table('ngram_models')} WHERE id=ANY($4::text[])) AS count`, [sourceIds, evidenceIds, profileIds, modelIds]);
     check('fixture-records-not-retained', () => assert.equal(Number(remaining.count), 0));
   } catch (error) { report.error ??= { name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null }; process.exitCode = 1; }
+  writer.pool.connect = originalWriterConnect;
+  writer.pool.query = originalWriterQuery;
+  reader.pool.query = originalReaderQuery;
+  physical?.release();
   await Promise.all([writer.close(), reader.close()]);
   report.passed = !report.error && report.fixtureRolledBack;
   if (value('--output')) await writeFile(value('--output'), JSON.stringify(report, null, 2));
