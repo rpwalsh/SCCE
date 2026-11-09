@@ -213,6 +213,10 @@ export interface WikipediaV3IngestStatus {
   schema: "scce.wikipediaV3FirehoseStatus.v1";
   pid: number;
   state: "starting" | "running" | "stopping" | "stopped" | "completed" | "failed";
+  stage?: "source" | "preparing-language" | "language-profile" | "language-induction" | "language-profile-binding" | "compiling-language" | "committing-language";
+  pendingLanguagePages?: number;
+  pendingLanguageChars?: number;
+  committedLanguageDocuments?: number;
   episodeId: string;
   rootUri: string;
   dumpPath: string;
@@ -277,6 +281,8 @@ export function wikipediaSourceVersionIdentities(file: IngestedSourceFile, ids: 
   })) : originalVersionId;
   return { sourceId, originalVersionId, evidenceVersionId };
 }
+
+class WikipediaOwnerStop extends Error {}
 
 export class WikipediaV3Ingestor {
   private readonly storage: ScceStorage;
@@ -409,6 +415,7 @@ export class WikipediaV3Ingestor {
     const fullTrainingRequested = !input.finishPending && corpus.maxBlocksPerRun === 0 && input.maxPages === undefined;
     let stopReason: string | undefined;
     let streamReachedEnd = false;
+    let trainingStage: WikipediaV3IngestStatus["stage"] = "source";
     let stoppedBeforeEnd = false;
     let lastStatusAt = 0;
     let activeLanguageShardUri = languageBatchJournal?.shardUri ?? rootUri;
@@ -495,7 +502,10 @@ export class WikipediaV3Ingestor {
       // The shard owns one transaction around learned writes and progress. Its preparation happens before
       // that transaction; an empty shard has only progress to commit.
       const imported = samples.length
-        ? await this.ingestLanguageShard(samples, shardUri, episodeId, inputManifest, commitProgress)
+        ? await this.ingestLanguageShard(samples, shardUri, episodeId, inputManifest, commitProgress, {
+          ownerStopReason: () => { const decision = stopDecision(input, result); return decision?.kind === "owner" ? decision.reason : undefined; },
+          onPhase: async stage => { trainingStage = stage; await emitStatus("running"); }
+        })
         : await this.storage.transaction(async () => { await commitProgress(); return undefined; });
       for (const checkpoint of pendingBlockCheckpoints) {
         result.lastCheckpointOffset = Math.max(result.lastCheckpointOffset, checkpoint.offsetBytes);
@@ -504,6 +514,7 @@ export class WikipediaV3Ingestor {
       languageShardChars = 0;
       pendingBlockCheckpoints.length = 0;
       if (imported) applyLanguageShardImport(imported);
+      trainingStage = "source";
     };
     const emitStatus = async (state: WikipediaV3IngestStatus["state"], finishedAt?: number): Promise<void> => {
       result.heapMiB = heapMiB();
@@ -512,6 +523,10 @@ export class WikipediaV3Ingestor {
         schema: "scce.wikipediaV3FirehoseStatus.v1",
         pid: typeof process !== "undefined" ? process.pid : 0,
         state,
+        stage: trainingStage,
+        pendingLanguagePages: languageShardSamples.length,
+        pendingLanguageChars: languageShardChars,
+        committedLanguageDocuments: languageTrainedDocuments - languageShardSamples.length,
         episodeId: String(episodeId),
         rootUri,
         dumpPath: corpus.dumpPath,
@@ -719,8 +734,16 @@ export class WikipediaV3Ingestor {
       await assertInputUnchanged();
     } catch (error) {
       stopReason = messageOf(error);
-      await emitStatus("failed", nowMs()).catch(() => undefined);
-      throw error;
+      if (error instanceof WikipediaOwnerStop) {
+        result.stoppedByOwner = true;
+        stoppedBeforeEnd = true;
+        streamReachedEnd = false;
+        await emitStatus("stopping");
+        await this.storage.transaction(async () => { await assertInputUnchanged(); await putLanguageBatchJournal("open"); });
+      } else {
+        await emitStatus("failed", nowMs()).catch(() => undefined);
+        throw error;
+      }
     }
     result.stopReason = stopReason;
     if (result.truncatedPages) result.warnings.push(`${result.truncatedPages} page(s) omit ${result.truncatedCharacters} normalized UTF-16 units beyond maxArticleChars; full raw source bytes remain stored`);
@@ -1318,8 +1341,14 @@ export class WikipediaV3Ingestor {
     });
   }
 
-  private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>, inputManifest: WikipediaInputManifest, commitProgress: (trained?: WikipediaLanguageShardImport) => Promise<void>): Promise<WikipediaLanguageShardImport> {
+  private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>, inputManifest: WikipediaInputManifest, commitProgress: (trained?: WikipediaLanguageShardImport) => Promise<void>, control: {
+    ownerStopReason?: () => string | undefined;
+    onPhase?: (stage: NonNullable<WikipediaV3IngestStatus["stage"]>) => Promise<void>;
+  } = {}): Promise<WikipediaLanguageShardImport> {
     if (!samples.length) return zeroLanguageShard({ warnings: [] });
+    const initialStop = control.ownerStopReason?.();
+    if (initialStop) throw new WikipediaOwnerStop(initialStop);
+    await control.onPhase?.("preparing-language");
     const createdAt = samples.reduce((max, sample) => Math.max(max, sample.createdAt), 0) || this.clock.now();
     // How much text one model is trained on is the strongest lever measured on this corpus, and it is a memory
     // bound rather than a modelling choice, so it is configurable with the measured-safe value as the default.
@@ -1331,20 +1360,29 @@ export class WikipediaV3Ingestor {
     const text = boundedShard.text;
     const shardWarnings: string[] = [];
     const sourceVersionId = this.ids.sourceVersionId(`${shardUri}\u001f${text}`);
+    const trace = ingestStageTracer();
+    await control.onPhase?.("language-profile");
+    const profileSpan = trace.span("language.profile");
     const profile = {
       ...this.language.acquire({ sourceVersionId, text, createdAt }),
       informationLabel: WIKIPEDIA_INFORMATION_LABEL
     };
+    profileSpan.end({ pages: samples.length, chars: text.length });
     const evidence = boundedShard.evidence;
+    await control.onPhase?.("language-induction");
+    const inductionSpan = trace.span("language.induction");
     const documents = sourceLanguageInductionDocuments(evidence);
     const preparedInduction = prepareConstructionInduction({ documents, hasher: this.hasher });
     const inducedProducts = preparedLanguageInductionProducts({ documents, hasher: this.hasher, prepared: preparedInduction });
+    inductionSpan.end({ documents: documents.length });
+    await control.onPhase?.("language-profile-binding");
+    const bindingSpan = trace.span("language.profile-binding");
     const profileBinding = preparePooledLanguageProfileBinding({ profile, sourceVersionId, text, evidence,
       parentSourceVersionIds: boundedShard.sourceFamilyRanges.map(range => String(range.sourceVersionId)), sourceFamilyRanges: boundedShard.sourceFamilyRanges, hasher: this.hasher });
+    bindingSpan.end({ evidence: evidence.length });
     const ngramMaxOrder = this.config.runtime.corpora?.wikipedia?.ngramMaxOrder ?? 4;
     const ngramMaxCounters = this.config.runtime.corpora?.wikipedia?.ngramMaxCountersPerOrder ?? 128;
     const vocabularyLimit = this.config.runtime.corpora?.wikipedia?.ngramVocabularyLimit ?? 8192;
-    const trace = ingestStageTracer();
     const trainSpan = trace.span("language.train");
     const trainingInput: LanguageCorpusTrainingInput = {
       storage: this.storage,
@@ -1443,9 +1481,15 @@ export class WikipediaV3Ingestor {
       hyperedges: promotedGraph.hyperedges.map(hyperedge => ({ ...hyperedge, informationLabel: WIKIPEDIA_INFORMATION_LABEL }))
     };
     trainingInput.graphSnapshotAdditions = projectedGraph;
+    await control.onPhase?.("compiling-language");
     const prepared = await prepareLanguageCorpusTraining(trainingInput);
     trainSpan.end({ evidence: evidence.length, pages: samples.length, textBytes: Buffer.byteLength(text, "utf8") });
+    const preparedStop = control.ownerStopReason?.();
+    if (preparedStop) throw new WikipediaOwnerStop(preparedStop);
+    await control.onPhase?.("committing-language");
     return this.storage.transaction(async () => {
+    const commitStop = control.ownerStopReason?.();
+    if (commitStop) throw new WikipediaOwnerStop(commitStop);
     if (!await wikipediaInputSourcesStillMatch(inputManifest)) throw new Error("Wikipedia input changed during language preparation");
     const observeSpan = trace.span("relation.observe");
     if (this.storage.relationObservations && semanticCandidates.length) {

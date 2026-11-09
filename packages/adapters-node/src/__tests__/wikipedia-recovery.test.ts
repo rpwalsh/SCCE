@@ -107,6 +107,61 @@ describe("Wikipedia recovery boundaries", () => {
       expect(pipeline.activate).toHaveBeenLastCalledWith(expect.objectContaining({ fullTrainingComplete: true }));
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
+  it.each(["preparation", "commit-phase"])("journals an owner stop arriving during %s before any learned writes and resumes the same batch", async stopAt => {
+    const f = await fixture();
+    try {
+      const p = mockPipeline(f.config); p.train.mockRestore();
+      const hasher = createHasher();
+      const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), namespace: "wiki-preparation-stop", deterministicReplay: true });
+      const language = createLanguageAcquisitionEngine({ idFactory: ids });
+      const extractor = createEvidenceExtractor({ hasher, idFactory: ids });
+      p.page.mockImplementation(async (...args: any[]) => {
+        const file = args[0]; const sourceId = ids.sourceId("wikipedia", file.uri);
+        const sourceVersionId = ids.sourceVersionId(canonicalStringify({ sourceId, contentHash: ids.contentHash(file.text) }));
+        const evidence = extractor.extract({ sourceId, sourceVersionId, namespace: "wikipedia", uri: file.uri, mediaType: "text/plain", text: file.text,
+          languageProfile: language.acquire({ sourceVersionId, text: file.text, createdAt: 1 }), observedAt: 1, exactSourceText: true, maxChunkBytes: 65536,
+          metadata: { sourceFamilyId: "wikimedia:wikipedia" }, sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1,
+            freshness: 1, independenceGroup: "wikimedia:wikipedia", accessScope: "public", licenseStatus: "fixture" } }).spans
+          .map(span => ({ ...span, status: "promoted" as const, provenance: { ...span.provenance as object, sourceFamilyId: "wikimedia:wikipedia" } }));
+        return { ...p.counts, languageSample: { uri: file.uri, title: "source", text: file.text, evidence, sourceVersionId, createdAt: 1,
+          languageAliases: [], semanticCandidates: [] } };
+      });
+      const stopFile = path.join(f.root, "owner.stop");
+      const prepare = vi.spyOn(corpusTrainer, "prepareLanguageCorpusTraining").mockImplementation(async () => {
+        if (stopAt === "preparation") await writeFile(stopFile, "owner requested stop during preparation"); return {} as any;
+      });
+      const commit = vi.spyOn(corpusTrainer, "commitLanguageCorpusTraining").mockResolvedValue(p.counts as any);
+      const stages: string[] = [], statuses: any[] = [], profileStages: Array<string | undefined> = [];
+      const acquire = (p.ingestor as any).language.acquire.bind((p.ingestor as any).language);
+      vi.spyOn((p.ingestor as any).language, "acquire").mockImplementation((input: any) => {
+        profileStages.push(stages.at(-1)); return acquire(input);
+      });
+      const stopped = await p.ingestor.ingest({ dumpPath: f.dumpPath, stopFile, onStatus: async status => {
+        stages.push(status.stage!); statuses.push(status);
+        if (stopAt === "commit-phase" && status.stage === "committing-language") await writeFile(stopFile, "owner requested stop before commit");
+      } });
+      expect(stopped.stoppedByOwner).toBe(true);
+      expect(commit).not.toHaveBeenCalled();
+      expect(profileStages).toEqual(["language-profile"]);
+      expect(p.rows().filter(row => row.phase === "stored" && row.itemUri.includes("/block/"))).toHaveLength(0);
+      expect(stages.slice(stages.indexOf("preparing-language"), stages.indexOf("compiling-language") + 1)).toEqual([
+        "preparing-language", "language-profile", "language-induction", "language-profile-binding", "compiling-language"]);
+      expect(statuses.find(status => status.stage === "language-profile")).toMatchObject({
+        state: "running", pendingLanguagePages: 2, pendingLanguageChars: expect.any(Number), committedLanguageDocuments: 0 });
+      expect(statuses.find(status => status.stage === "language-profile").pendingLanguageChars).toBeGreaterThan(0);
+      expect(statuses.at(-1)).toMatchObject({ state: "stopped", stoppedByOwner: true, fullTrainingComplete: false,
+        pendingLanguagePages: 2, committedLanguageDocuments: 0 });
+      await rm(stopFile); prepare.mockResolvedValue({} as any);
+      vi.mocked((p.ingestor as any).language.acquire).mockRestore();
+      const resumed = await p.ingestor.ingest({ dumpPath: f.dumpPath, stopFile });
+      expect(resumed.pages).toBe(0);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(p.page).toHaveBeenCalledTimes(2);
+      const journal = p.rows().find(row => row.itemUri.endsWith("/language-batch"))!;
+      expect((journal.metadata as any).languageBatch).toMatchObject({ state: "idle", pendingSamples: [], pendingChars: 0, blockComplete: true, blockOrdinal: 2 });
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
   it.each(["aggregate", "rows"])("propagates a failed relation-prior %s read instead of treating it as no evidence", async failedRead => {
     const unavailable = async () => { throw new Error("prior storage unavailable"); };
     const ingestor = createWikipediaV3Ingestor({ config: { runtime: {} } as any, storage: {

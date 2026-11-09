@@ -8,7 +8,7 @@ import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { parseUnitMetadataMaintenanceOptions } from "./db-maintenance-options.js";
 import { compactUnitSourceMetadata, UnitMetadataMaintenanceError } from "@scce/adapters-node";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
-import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths, withWikiIngestCancellation } from "./wiki-process.js";
+import { wikiChildArgs, wikiChildFailureStatus, wikiContinueAfterConfiguredPageCap, wikiRunPaths, withWikiIngestCancellation } from "./wiki-process.js";
 import { resolveWikipediaCorpusTarget } from "@scce/adapters-node";
 import type { StructuredPatchValidationPolicy } from "@scce/adapters-node";
 import { describeRelationPotentialCapability, validateRelationPotentialAgainstIdentity } from "@scce/kernel";
@@ -458,6 +458,8 @@ async function ingestWikiFirehose(configPath: string, config: Awaited<ReturnType
       const code = await runChild(nodeArgs);
       const status = await readJson<WikipediaV3IngestStatus>(paths.statusPath);
       if (code !== 0) {
+        const failedStatus = wikiChildFailureStatus(status, code, Date.now());
+        if (failedStatus) await writeJsonReplacing(paths.statusPath, failedStatus);
         process.stderr.write(`[scce wiki firehose] segment ${segment} exited ${code}; stopping supervisor.\n`);
         process.exitCode = code;
         return;
