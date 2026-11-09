@@ -4666,10 +4666,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             active_projection.value_json->>'patternSchema' AS pattern_schema,
             active_projection.value_json->>'componentRecipe' AS projection_recipe,
             active_projection.value_json->'patternIds' AS pattern_ids${computation || conversationalGuard ? `,active_projection.value_json->>'sourceVersionId' AS source_version_id,
-            ARRAY(SELECT DISTINCT requested.evidence_id FROM jsonb_array_elements(CASE
-              WHEN jsonb_typeof(active_projection.value_json->'sourceDependencies')='array' THEN active_projection.value_json->'sourceDependencies' ELSE '[]'::jsonb END) dependency(value)
-              CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(dependency.value->'evidenceIds')='array'
-                THEN dependency.value->'evidenceIds' ELSE '[]'::jsonb END) requested(evidence_id)) AS dependency_evidence_ids` : ""}
+            active_projection.value_json->'sourceDependencies' AS source_dependencies` : ""}
           FROM (SELECT value_json,value_json->'informationLabel' AS information_label FROM ${storage.table("storage_meta")}) active_projection
           WHERE ${projectionAccess.sql}
             AND active_projection.value_json->>'schema'='scce.language_pattern_active_projection.v1'
@@ -4693,9 +4690,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                       WHERE newer_act_evidence.source_version_id=newer_act_version.id AND newer_act_evidence.status='promoted' AND ${newerActEvidenceAccess!.sql}))` : ""}
             )` : ""}
             ${projectionScope.map(scope => `AND ${scope}`).join("\n            ")}
-        ), ${projectionSet} AS MATERIALIZED (
+        )${computation || conversationalGuard ? `, ${projectionSet}_dependencies AS MATERIALIZED (
+          SELECT scoped.*, ARRAY(SELECT DISTINCT requested.evidence_id FROM jsonb_array_elements(CASE
+            WHEN jsonb_typeof(scoped.source_dependencies)='array' THEN scoped.source_dependencies ELSE '[]'::jsonb END) dependency(value)
+            CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(dependency.value->'evidenceIds')='array'
+              THEN dependency.value->'evidenceIds' ELSE '[]'::jsonb END) requested(evidence_id)) AS dependency_evidence_ids
+          FROM ${projectionSet}_headers scoped
+        )` : ""}, ${projectionSet} AS MATERIALIZED (
           SELECT header.profile_id,header.source_system,header.pattern_schema,header.projection_recipe,member.pattern_id${computation ? ",header.source_version_id" : ""}
-          FROM ${projectionSet}_headers header
+          FROM ${projectionSet}_${computation || conversationalGuard ? "dependencies" : "headers"} header
           CROSS JOIN LATERAL jsonb_array_elements_text(CASE
             WHEN jsonb_typeof(header.pattern_ids)='array' THEN header.pattern_ids
             ELSE '[]'::jsonb END) member(pattern_id)
@@ -4717,7 +4720,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         )` : ""})`);
         if (conversationalGuard) where.push(`(pattern.component_recipe IS DISTINCT FROM '${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}' OR (
           pattern.pattern_kind='semantic_role' AND COALESCE(array_length(pattern.evidence_ids,1),0)>0
-          AND EXISTS (SELECT 1 FROM ${projectionSet}_headers qa_header
+          AND EXISTS (SELECT 1 FROM ${projectionSet}_dependencies qa_header
             WHERE qa_header.profile_id=pattern.profile_id AND qa_header.source_system=pattern.source_system
               AND qa_header.pattern_schema=pattern.pattern_schema AND qa_header.projection_recipe=pattern.component_recipe
               AND qa_header.source_version_id=pattern.owned_source_version_id
