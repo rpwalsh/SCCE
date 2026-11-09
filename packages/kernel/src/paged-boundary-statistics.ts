@@ -24,17 +24,43 @@ function decode(value: JsonValue): BoundaryStatisticsRow {
 }
 function add(left: number, right: number): number { const sum = left + right; if (!Number.isSafeInteger(sum)) throw new Error("boundary sufficient statistics exceed exact integer range"); return sum; }
 
+async function disposeAll(operations: readonly (() => Promise<void>)[]): Promise<void> {
+  const failures: unknown[] = [];
+  for (const operation of operations) try { await operation(); } catch (error) { failures.push(error); }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length) throw new AggregateError(failures, "boundary statistics scratch cleanup failed");
+}
+
 export function openPagedBoundaryStatistics(input: { header: BoundaryStatisticsCursorHeader; scratch: CorpusSegmentationScratch;
   storage: { rowsCollection: string; sourceDocumentsCollection: string } }): BoundaryStatisticsCursor {
   const { scratch, storage, header } = input;
   return { header, storage,
     async *rows() { for await (const page of scratch.pages({ collection: storage.rowsCollection, pageRows: scratch.pageRows, maxPageBytes: scratch.maxPageBytes })) yield page.map(item => decode(item.value)); },
     async *sourceDocuments() { for await (const page of scratch.pages({ collection: storage.sourceDocumentsCollection, pageRows: scratch.pageRows, maxPageBytes: scratch.maxPageBytes })) yield page.map(item => string(record(item.value).id)); },
-    async dispose() { await scratch.deleteCollection(storage.rowsCollection); await scratch.deleteCollection(storage.sourceDocumentsCollection); } };
+    async dispose() { await disposeAll([() => scratch.deleteCollection(storage.rowsCollection), () => scratch.deleteCollection(storage.sourceDocumentsCollection)]); } };
 }
 
-export async function mergePagedBoundaryStatistics(input: { sources: () => AsyncIterable<BoundaryStatisticsCursor>; scratch: CorpusSegmentationScratch;
-  populationId: string; collectionPrefix: string; hasher?: Hasher }): Promise<BoundaryStatisticsCursor> {
+type MergeInput = { sources: () => AsyncIterable<BoundaryStatisticsCursor>; scratch: CorpusSegmentationScratch;
+  populationId: string; collectionPrefix: string; hasher?: Hasher };
+
+export async function mergePagedBoundaryStatistics(input: MergeInput): Promise<BoundaryStatisticsCursor> {
+  const lease = input.scratch.boundaryMergeScratch?.();
+  if (!lease) return mergePagedBoundaryStatisticsInner(input);
+  try {
+    // The private algorithm never reacquires a factory, even if the leased scratch also exposes one.
+    const cursor = await mergePagedBoundaryStatisticsInner({ ...input, scratch: lease.scratch });
+    let disposal: Promise<void> | undefined;
+    return { ...cursor, dispose() {
+      return disposal ??= disposeAll([() => cursor.dispose?.() ?? Promise.resolve(), () => lease.dispose()]);
+    } };
+  } catch (error) {
+    try { await lease.dispose(); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], "boundary statistics merge and scratch cleanup failed"); }
+    throw error;
+  }
+}
+
+async function mergePagedBoundaryStatisticsInner(input: MergeInput): Promise<BoundaryStatisticsCursor> {
   const store = input.scratch; const prefix = input.collectionPrefix;
   const rawRows = `${prefix}.rawRows`; const rawDocuments = `${prefix}.rawDocuments`;
   await store.deleteCollection(rawRows); await store.deleteCollection(rawDocuments);

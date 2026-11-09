@@ -45,6 +45,8 @@ export interface CorpusSegmentationScratch {
   deleteCollection(collection: string): Promise<void>;
   count(collection: string): Promise<number>;
   digestChunks(chunks: AsyncIterable<Uint8Array>): Promise<string>;
+  /** A private lease for the append/rebuild collections owned by ONE boundary-statistics merge. */
+  boundaryMergeScratch?(): { scratch: CorpusSegmentationScratch; dispose(): Promise<void> };
 }
 
 export interface CorpusSegmentationDocumentCursor {
