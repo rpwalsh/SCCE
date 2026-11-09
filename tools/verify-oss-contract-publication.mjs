@@ -96,14 +96,36 @@ try {
     const selected = searchProgramTransformations(joined.behaviorRequirements).selected; assert.equal(selected.length, 1);
     assert.equal(evaluateProgramExpression(selected[0].producedIr, [-7]), 42);
   });
-  const heads = (await storage.query(`SELECT value_json FROM ${storage.table('storage_meta')} WHERE value_json->>'schema'='scce.language_pattern_active_projection.v1'`))
+  const storedHeads = (await storage.query(`SELECT key,value_json FROM ${storage.table('storage_meta')} WHERE value_json->>'schema'='scce.language_pattern_active_projection.v1'`))
     .map(row => row.value_json).filter(row => row.sourceContractRoot);
+  const currentHeads = new Map(); let refusedStoredHeads = 0, readableStoredAliases = 0;
+  for (const candidate of storedHeads) {
+    // Immutable publication receipts and active slots share a value schema. Only
+    // the canonical guarded reader can establish which root/context is current.
+    const current = await storage.languageMemory.getLanguagePatternProjection(candidate);
+    if (!current) { refusedStoredHeads++; continue; }
+    readableStoredAliases++;
+    assert.ok(current.patternIds.length > 0, 'An empty withdrawal receipt must not qualify as either published root');
+    assert.ok(current.patternIds.every(id => published.some(pattern => pattern.id === id)), 'Historical patterns must not become readable through receipt aliases');
+    const identity = JSON.stringify([current.sourceId, current.componentRecipe, current.sourceContractRoot.checkpointId]);
+    if (currentHeads.has(identity)) assert.deepEqual(current, currentHeads.get(identity), 'Receipt aliases must resolve the exact same current head');
+    else currentHeads.set(identity, current);
+  }
+  const heads = [...currentHeads.values()];
+  for (const pattern of published) {
+    const matching = heads.filter(head => head.patternIds.includes(pattern.id)); assert.equal(matching.length, 1, 'Each published pattern must have exactly one current root');
+    const head = matching[0], closure = pattern.patternJson.sourceContractClosure;
+    assert.equal(head.profileId, pattern.profileId); assert.equal(head.sourceVersionId, pattern.patternJson.sourceVersionId);
+    assert.equal(head.sourceContractRoot.checkpointId, closure.rootCheckpointId); assert.equal(head.sourceContractRoot.inputDigest, closure.digest);
+    assert.equal(head.sourceContractRoot.scopeIdentity, closure.scopeIdentity);
+  }
   check('independent-root-heads-retain-all-original-projected-dependencies', () => {
     assert.equal(heads.length, 2); assert.equal(new Set(heads.map(head => head.sourceContractRoot.sourceId)).size, 2);
     for (const head of heads) { assert.ok(head.sourceDependencies.length >= 6); assert.ok(head.sourceDependencies.every(dep => dep.originalSourceVersionId && dep.originalContentHash && dep.evidenceIds.length)); }
   });
   report.publication = { patternIds: published.map(row => row.id), rootCheckpointIds: heads.map(head => head.sourceContractRoot.checkpointId),
-    sourceDependencyCounts: heads.map(head => head.sourceDependencies.length), windows: Object.keys(files).length, behaviorRequirements: joined.behaviorRequirements.length };
+    sourceDependencyCounts: heads.map(head => head.sourceDependencies.length), storedHeadRows: storedHeads.length, readableStoredAliases, refusedStoredHeads,
+    windows: Object.keys(files).length, behaviorRequirements: joined.behaviorRequirements.length };
   for (const head of heads) assert.ok(await storage.languageMemory.getLanguagePatternProjection(head));
   const beforeReplay = await storage.languageMemory.readRevision();
   await trainOssCorpus({ ...options, startFileIndex: cursor, expectedSnapshotHash: snapshotHash });
