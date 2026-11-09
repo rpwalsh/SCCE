@@ -62,7 +62,8 @@ it.each([{ pageRows: 1, collisions: false }, { pageRows: 3, collisions: false },
 });
 
 it("refuses incomplete or repeated owned document inventories before fitting", async () => {
-  const documents = data().slice(0, 4); const incomplete = source(documents, 1); incomplete.documentCount++;
+  const documents = data().slice(0, 4); const original = source(documents, 1);
+  const incomplete = { ...original, documentCount: original.documentCount + 1 };
   await expect(learnPagedSegmentationPopulations({ rootPopulationId: "population.test", source: incomplete, namespace: "fit", featureContextId: "context.owned" }))
     .rejects.toThrow("inventory changed");
   const duplicate = source(documents, 2); const read = duplicate.documents;

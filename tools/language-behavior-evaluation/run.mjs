@@ -2,12 +2,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
 import {readFile,writeFile,appendFile,mkdir} from 'node:fs/promises';
 import {dirname,resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {performance} from 'node:perf_hooks';
 import {createNodeRuntime,readScceRuntimeConfig,assertHydratedRuntimeReady} from '../../packages/adapters-node/dist/index.js';
-const {values}=parseArgs({options:{config:{type:'string'},out:{type:'string'},cases:{type:'string',default:'tools/language-behavior-evaluation/cases.json'},limit:{type:'string'},offset:{type:'string',default:'0'},'preserve-functional-authorization':{type:'boolean',default:false},'budget-ms':{type:'string',default:'60000'}}});
+import {ingestionCodeIdentity} from '../../packages/adapters-node/dist/ingestion-code-identity.js';
+const {values}=parseArgs({options:{config:{type:'string'},out:{type:'string'},scope:{type:'string',default:'Configured local checkpoint'},cases:{type:'string',default:'tools/language-behavior-evaluation/cases.json'},limit:{type:'string'},offset:{type:'string',default:'0'},'preserve-functional-authorization':{type:'boolean',default:false},'budget-ms':{type:'string',default:'60000'}}});
 if(!values.config||!values.out)throw new Error('Usage: node tools/language-behavior-evaluation/run.mjs --config=<local-config> --out=<new-json> [--limit=N] [--budget-ms=60000]');
 const offset=Number(values.offset);if(!Number.isSafeInteger(offset)||offset<0)throw new Error('Invalid offset');
 const budgetMs=Number(values['budget-ms']),limit=values.limit===undefined?Infinity:Number(values.limit);
@@ -21,7 +23,7 @@ if(!values['preserve-functional-authorization'])config.runtime.functionalCogniti
 if(config.runtime.dreamCycle)config.runtime.dreamCycle.enabled=false;
 const out=resolve(values.out),journal=out+'.jsonl';await mkdir(dirname(out),{recursive:true});
 const report={schema:'scce.language_behavior_diagnostic.v1',startedAt:new Date().toISOString(),casesSha256,
- sourceCodeCommit:'1ac82eac41b5f33b7f58fb1dc485c7a9fa83e2e7',scope:'Available checkpoint; not Windows 29-article candidate',
+ sourceCodeCommit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),runtimeExecutableIdentity:await ingestionCodeIdentity(),scope:values.scope,
  externalWebEnabled:false,externalInferenceRequested:false,canonicalApplicationWrites:'each case is rolled back',
  syntheticRequestRequirementBootstrap:config.runtime.allowSyntheticRequestRequirementBootstrap===true,
  functionalCognitionAuthorization:config.runtime.functionalCognitionAuthorizeCapabilities===true,kernelBudgetMs:budgetMs,results:[],productionReadiness:null};
@@ -63,5 +65,7 @@ for(const item of selected){
  await writeFile(out,JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(result));
 }
 report.completed=true;report.finishedAt=new Date().toISOString();
+report.runtimeExecutableUnchanged=report.runtimeExecutableIdentity===await ingestionCodeIdentity();
+if(!report.runtimeExecutableUnchanged)throw new Error('Runtime executables changed during the diagnostic');
 report.qualification='Direct production kernel turns against the recorded checkpoint. No training on prompts, no web, no external inference. Exact tasks use predefined accepted strings; open-ended tasks require manual rubric review. Runtime errors do not establish linguistic inability. This small diagnostic cannot establish broad English fluency or attribute any success solely to corpus learning.';
 await writeFile(out,JSON.stringify(report,null,2)+'\n');
