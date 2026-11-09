@@ -235,7 +235,7 @@ it("upgrades an already-complete empty v1 QA checkpoint once without recompiling
   expect(f.evidence.map(span => [span.id, span.sourceId, span.sourceVersionId, span.contentHash, span.text])).toEqual(originalSources);
   expect(JSON.stringify((await f.storage.languageMemory.listLanguagePatterns()).filter(row => row.id !== qa.id))).toBe(nonQa);
   expect((await f.storage.languageMemory.getLanguagePatternProjection!({ ...projection! }))?.patternIds).toEqual([qa.id]);
-  publish.mockClear(); put.mockClear(); acquire.mockClear();
+  vi.clearAllMocks();
   const read = vi.spyOn(f.storage.evidence, "searchEvidence");
   expect((await f.train()).contextualQaConstructions).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT, unchanged: true });
   expect(trainBody).not.toHaveBeenCalled(); expect(acquire).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
