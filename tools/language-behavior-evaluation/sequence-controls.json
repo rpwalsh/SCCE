@@ -1,0 +1,14 @@
+{
+ "schema":"scce.sequence_order_controls.v1",
+ "interpretation":"Lower information for ordinary English than a matched word permutation demonstrates sequence preference only, not reading comprehension or fluent generation.",
+ "pairs":[
+  {"id":"bird-wall","english":"the small bird sat on the wall","permuted":"wall the on sat bird small the"},
+  {"id":"book-table","english":"she put the book on the table","permuted":"table the on book the put she"},
+  {"id":"children-garden","english":"the children are playing in the garden","permuted":"garden the in playing are children the"},
+  {"id":"open-window","english":"please open the window before you leave","permuted":"leave you before window the open please"},
+  {"id":"rain-home","english":"it was raining when we came home","permuted":"home came we when raining was it"},
+  {"id":"glass-water","english":"could you bring me a glass of water","permuted":"water of glass a me bring you could"},
+  {"id":"old-house","english":"there is an old house near the river","permuted":"river the near house old an is there"},
+  {"id":"friend-story","english":"my friend told me a story about the sea","permuted":"sea the about story a me told friend my"}
+ ]
+}
