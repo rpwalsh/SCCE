@@ -1032,8 +1032,7 @@ function createConversationStore(storage: PostgresStorageAdapter): ConversationS
 function createIngestionCheckpointStore(storage: PostgresStorageAdapter): IngestionCheckpointStore {
   return {
     async put(checkpoint) {
-      // Snapshot heads govern eligibility of every root, including roots outside the
-      // current bounded publication window. Their changes must invalidate warm readers.
+      // Snapshot changes invalidate warm readers, including roots outside this publication window.
       const projectSnapshot = /^oss\.contract\.snapshot\.[a-f0-9]{64}$/u.test(checkpoint.id);
       if (projectSnapshot && (checkpoint.metadata as { schema?: unknown }).schema !== "scce.oss_owned_contract_snapshot.v1") throw new Error("Malformed OSS contract snapshot checkpoint");
       const write = projectSnapshot ? storage.mutateLanguageMemory.bind(storage) : storage.query.bind(storage);
