@@ -139,3 +139,25 @@ it("sizes the immutable source header once while writing many bounded pages", as
     expect(f.writes.every(write => write.bytes <= f.run.bounds.maxPageBytes)).toBe(true);
   } finally { size.mockRestore(); }
 });
+
+it("materializes page fields before member joins and collates complete text expressions", async () => {
+  const f = fixture();
+  await f.memory.putMany("input/inventory", [{ orderKey: "owner", value: { evidenceId: "owner", sourceVersionId: "version" } }]);
+  const owner = { windowKey: "0", documentId: "owner", sourceVersionId: "version" };
+  await writeCorpusMembershipPages(f.run, { ...owner, kind: "class", entries: ["class.雪"] });
+  await writeCorpusMembershipPages(f.run, { ...owner, kind: "context", entries: [["context.🧭", "class.雪"] as const] });
+  await prepareCorpusMembershipCounts(f.storage, f.run, { id: "inventory", count: 1 });
+  const aggregates = f.calls.filter(call => call.sql.includes("exact_counts AS MATERIALIZED"));
+  const context = aggregates.find(call => call.params[4] === "context")!.sql;
+  expect(context).toContain('(member.value->>0) COLLATE "C" AS key');
+  expect(context).toContain('GROUP BY (member.value->>0) COLLATE "C"');
+  expect(aggregates.find(call => call.params[4] === "class")!.sql).toContain('COUNT(DISTINCT (page.document_id) COLLATE "C")');
+  for (const { sql } of aggregates) {
+    expect(sql).toContain('jsonb_to_record(page.row_json) AS payload(schema text,kind text,"documentId" text,"sourceVersionId" text,entries jsonb)');
+    expect(sql.split("exact_counts AS MATERIALIZED (")[1]!.split("), hash_groups")[0]).not.toContain("row_json");
+  }
+  expect(await readCorpusMembershipCounts(f.storage, f.run, "context", ["context.🧭"])).toEqual({ "context.🧭": 1 });
+  const lookup = f.calls.find(call => call.sql.includes("page_members AS MATERIALIZED"))!.sql;
+  expect(lookup).toContain('jsonb_to_record(v.row_json) AS payload(schema text,"endHash" text,entries jsonb)');
+  expect(lookup.split("page_members AS MATERIALIZED (")[1]).not.toContain("row_json");
+});

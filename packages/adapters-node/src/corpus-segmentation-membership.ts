@@ -46,28 +46,30 @@ async function aggregate(storage: CorpusMembershipStorage, run: CorpusMembership
   await run.assertState("building");
   const access = storage.informationAccessPredicate("r", 7);
   const key = kind === "class" ? "member.value #>> '{}'" : "member.value->>0";
-  const distinct = kind === "class" ? "page.row_json->>'documentId'" : "member.value->>1";
+  const distinct = kind === "class" ? "page.document_id" : "member.value->>1";
   const memberValid = kind === "class" ? "jsonb_typeof(member.value)='string'"
     : "jsonb_typeof(member.value)='array' AND jsonb_array_length(member.value)=2 AND jsonb_typeof(member.value->0)='string' AND jsonb_typeof(member.value->1)='string'";
   const rows = await storage.query<{ authorized: boolean; valid: boolean; expected: string; matched: string }>(`
     WITH admitted_run AS MATERIALIZED (
       SELECT r.run_id FROM ${storage.table("segmentation_consolidation_runs")} r WHERE r.run_id=$1 AND r.state='building' AND ${access.sql} FOR SHARE OF r
     ), owned_pages AS MATERIALIZED (
-      SELECT page.row_json,inventory.order_key AS owner_key FROM ${storage.table("segmentation_consolidation_rows")} page
+      SELECT payload.schema AS page_schema,payload.kind AS page_kind,payload."documentId" AS document_id,
+        payload.entries,inventory.order_key AS owner_key FROM ${storage.table("segmentation_consolidation_rows")} page
       JOIN admitted_run r ON r.run_id=page.run_id
+      CROSS JOIN LATERAL jsonb_to_record(page.row_json) AS payload(schema text,kind text,"documentId" text,"sourceVersionId" text,entries jsonb)
       LEFT JOIN ${storage.table("segmentation_consolidation_rows")} inventory ON inventory.run_id=page.run_id AND inventory.collection='input/inventory'
-        AND inventory.row_json->>'evidenceId'=page.row_json->>'documentId' AND inventory.row_json->>'sourceVersionId'=page.row_json->>'sourceVersionId'
+        AND inventory.row_json->>'evidenceId'=payload."documentId" AND inventory.row_json->>'sourceVersionId'=payload."sourceVersionId"
       WHERE page.collection=$2
     ), validity AS MATERIALIZED (
-      SELECT NOT EXISTS(SELECT 1 FROM owned_pages page WHERE owner_key IS NULL OR page.row_json->>'schema' IS DISTINCT FROM $4
-        OR page.row_json->>'kind' IS DISTINCT FROM $5 OR jsonb_typeof(page.row_json->'entries') IS DISTINCT FROM 'array'
-        OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(page.row_json->'entries')='array' THEN page.row_json->'entries' ELSE '[]'::jsonb END) member(value)
+      SELECT NOT EXISTS(SELECT 1 FROM owned_pages page WHERE owner_key IS NULL OR page.page_schema IS DISTINCT FROM $4
+        OR page.page_kind IS DISTINCT FROM $5 OR jsonb_typeof(page.entries) IS DISTINCT FROM 'array'
+        OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(page.entries)='array' THEN page.entries ELSE '[]'::jsonb END) member(value)
           WHERE NOT (${memberValid}))) AS valid
     ), exact_counts AS MATERIALIZED (
-      SELECT ${key} COLLATE "C" AS key,COUNT(DISTINCT (${distinct}) COLLATE "C") AS count
+      SELECT (${key}) COLLATE "C" AS key,COUNT(DISTINCT (${distinct}) COLLATE "C") AS count
       FROM owned_pages page CROSS JOIN validity
-      CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN validity.valid THEN page.row_json->'entries' ELSE '[]'::jsonb END) member(value)
-      WHERE validity.valid GROUP BY ${key} COLLATE "C"
+      CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN validity.valid THEN page.entries ELSE '[]'::jsonb END) member(value)
+      WHERE validity.valid GROUP BY (${key}) COLLATE "C"
     ), hash_groups AS MATERIALIZED (
       SELECT encode(sha256(convert_to(key,'UTF8')),'hex') AS hash,jsonb_agg(jsonb_build_array(key,count) ORDER BY key COLLATE "C") AS members
       FROM exact_counts GROUP BY encode(sha256(convert_to(key,'UTF8')),'hex')
@@ -162,15 +164,16 @@ export async function readCorpusMembershipCounts(storage: CorpusMembershipStorag
         WHERE v.run_id=$1 AND v.collection=$2 AND v.order_key COLLATE "C" <= q.hash COLLATE "C" AND ${access.sql}
         ORDER BY v.order_key COLLATE "C" DESC LIMIT 1) matched ON TRUE
     ), selected_pages AS MATERIALIZED (
-      SELECT v.order_key,v.row_json FROM ${storage.table("segmentation_consolidation_rows")} v
+      SELECT v.order_key,payload.schema AS page_schema,payload."endHash" AS end_hash,payload.entries FROM ${storage.table("segmentation_consolidation_rows")} v
       JOIN (SELECT DISTINCT order_key FROM located WHERE order_key IS NOT NULL) needed ON needed.order_key=v.order_key
+      CROSS JOIN LATERAL jsonb_to_record(v.row_json) AS payload(schema text,"endHash" text,entries jsonb)
       WHERE v.run_id=$1 AND v.collection=$2
     ), page_members AS MATERIALIZED (
       SELECT page.order_key,hash_group.value->>0 AS hash,member.value->>0 AS key,member.value->>1 AS count
-      FROM selected_pages page CROSS JOIN LATERAL jsonb_array_elements(page.row_json->'entries') hash_group(value)
+      FROM selected_pages page CROSS JOIN LATERAL jsonb_array_elements(page.entries) hash_group(value)
       CROSS JOIN LATERAL jsonb_array_elements(hash_group.value->1) member(value)
     ) SELECT q.key,COALESCE(member.count,'0') AS count,
-      q.order_key IS NULL OR (page.row_json->>'schema'=$${4 + access.params.length} AND page.row_json->>'endHash' >= q.order_key COLLATE "C") AS valid
+      q.order_key IS NULL OR (page.page_schema=$${4 + access.params.length} AND page.end_hash >= q.order_key COLLATE "C") AS valid
       FROM located q LEFT JOIN selected_pages page ON page.order_key=q.order_key
       LEFT JOIN page_members member ON member.order_key=q.order_key AND member.hash=q.hash AND member.key=q.key`,
     [run.run.runId, countCollection(kind), JSON.stringify(batch), ...access.params, CORPUS_COUNT_PAGE_SCHEMA]);
