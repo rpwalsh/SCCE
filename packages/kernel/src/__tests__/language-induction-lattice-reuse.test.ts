@@ -34,12 +34,12 @@ describe("induction bootstrap lexical reuse", () => {
     try {
       const engine = createLanguageInductionEngine({ hasher });
       const first = engine.induce({ documents });
-      expect(build).toHaveBeenCalledTimes(2 * documents.length);
+      expect(build).toHaveBeenCalledTimes(documents.length);
       // Fingerprint of the complete artifact produced before bootstrap lexical reuse.
       expect(hasher.digestHex(canonicalStringify(first))).toBe("fb5a5f0e12ea871a1e67b622eb2cafda632533f94538052327071b5c624440d0");
       const replay = engine.induce({ documents });
       expect(replay).toEqual(first);
-      expect(build).toHaveBeenCalledTimes(4 * documents.length);
+      expect(build).toHaveBeenCalledTimes(2 * documents.length);
     } finally {
       build.mockRestore();
     }

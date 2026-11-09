@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText } from "../language-corpus-trainer.js";
 import { trainStoredCorpusConstructions } from "../stored-corpus-construction-training.js";
 import { blobContentHash } from "../postgres.js";
+import { prepareLanguageTrainingSegmentationInput } from "../language-training-segmentation.js";
 import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory } from "@scce/kernel";
 import type {
   EvidenceSpan,
@@ -184,10 +185,12 @@ describe("corpus trainer admission and provenance", () => {
       ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
       corpusCheckpoint: { rootUri: "wikipedia://enwiki/pages", itemUri: "profile-excerpt" }
     };
+    const segmentation = await prepareLanguageTrainingSegmentationInput(fixture.storage);
     const checkpointId = createIdFactory({ clock: createClock(), hasher: createHasher(), namespace: "corpus-training-checkpoint", deterministicReplay: true })
       .semanticId("corpus_training_checkpoint", {
         compilerRecipe: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
         sourceSystem: canonicalCorpusSourceSystemId("wikipedia"),
+        segmentationIdentity: segmentation.identity,
         rootUri: input.corpusCheckpoint.rootUri,
         itemUri: input.corpusCheckpoint.itemUri
       });
