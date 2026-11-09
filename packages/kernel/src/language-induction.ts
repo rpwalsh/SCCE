@@ -14,6 +14,7 @@ import {
 import { compactKneserNeyForProfile, continueBoundedProse, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
 import {
   buildSurfaceLattice,
+  measureSurfaceBoundaries,
   canonicalSurfaceSequence,
   collectBoundaryTrainingObservations,
   compileBoundaryFeatureContext,
@@ -219,7 +220,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const corpusText = documents.map(doc => doc.text).join("\n");
       let initialLattices = documents.map(doc => ({
         doc,
-        lattice: buildSurfaceLattice({
+        lattice: measureSurfaceBoundaries({
           documentId: doc.id,
           text: doc.text,
           sourceVersionId: doc.sourceVersionId,
@@ -1361,7 +1362,7 @@ function sentenceSegments(text: string, hasher: Hasher): string[] {
   return chunks;
 }
 
-function lexicalUnits(lattice: SurfaceLattice) {
+function lexicalUnits(lattice: Pick<SurfaceLattice, "units">) {
   return lattice.units
     .filter(unit => unit.proposalSources.includes("lexical"))
     .sort((left, right) => left.utf16Start - right.utf16Start || left.utf16End - right.utf16End);

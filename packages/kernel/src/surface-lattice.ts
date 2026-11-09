@@ -9,9 +9,11 @@ import {
 } from "./boundary-estimator.js";
 import {
   buildSegmentationForest,
+  measureSegmentationBoundaries,
   resumeSegmentationForest,
   SEGMENTATION_FOREST_SCHEMA,
   type SegmentationForestLimits,
+  type SegmentationBoundaryMeasurement,
   type SurfaceSegmentationForest
 } from "./segmentation-forest.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
@@ -130,6 +132,11 @@ export interface SurfaceLattice {
 export interface SurfaceLatticeValidation {
   valid: boolean;
   issues: string[];
+}
+
+export interface SurfaceBoundaryMeasurement extends Pick<SurfaceLattice, "id" | "documentId" | "units"> {
+  schema: "scce.surface_boundary_measurement.v1";
+  boundaryMeasurement: SegmentationBoundaryMeasurement;
 }
 
 export interface SourceAlignmentSurfaceLattice {
@@ -292,13 +299,19 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   return buildSurfaceLatticeInternal(options, false);
 }
 
+export function measureSurfaceBoundaries(options: Omit<SurfaceLatticeBuildOptions,
+  "maxEdges" | "segmentationPathLimit" | "segmentationResumeToken" | "segmentationForestLimits">): SurfaceBoundaryMeasurement {
+  return buildSurfaceLatticeInternal(options, false, true);
+}
+
 export function buildSourceAlignmentSurfaceLattice(options: SurfaceLatticeBuildOptions): SourceAlignmentSurfaceLattice {
   return buildSurfaceLatticeInternal(options, true);
 }
 
 function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: false): SurfaceLattice;
 function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: true): SourceAlignmentSurfaceLattice;
-function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: boolean): SurfaceLattice | SourceAlignmentSurfaceLattice {
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: false, boundaryMeasurement: true): SurfaceBoundaryMeasurement;
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: boolean, boundaryMeasurement = false): SurfaceLattice | SourceAlignmentSurfaceLattice | SurfaceBoundaryMeasurement {
   const hasher = options.hasher ?? createHasher();
   const normalizationContract = options.normalizationContract ?? canonicalNormalizationContract(hasher);
   const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS));
@@ -531,8 +544,6 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
     sourceUnitCount: retainedCandidateCount
   };
 
-  const effectiveMaxEdges = maxEdges + Math.max(0, baseCandidates.length - 1);
-  const edges = latticeEdges(units, hasher, effectiveMaxEdges);
   const segmentationForestBuild = {
     latticeId,
     estimatorId,
@@ -542,6 +553,10 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
     normalizationContractId: normalizationContract.id,
     hasher
   };
+  if (boundaryMeasurement) return { schema: "scce.surface_boundary_measurement.v1", id: latticeId, documentId: options.documentId,
+    units, boundaryMeasurement: measureSegmentationBoundaries(segmentationForestBuild) };
+  const effectiveMaxEdges = maxEdges + Math.max(0, baseCandidates.length - 1);
+  const edges = latticeEdges(units, hasher, effectiveMaxEdges);
   const initialSegmentationForest = buildSegmentationForest(segmentationForestBuild);
   // A forest that stopped on its budget carries the state to continue; a caller that supplies the token gets the
   // continuation rather than a truncated forest silently standing in for a complete one.
@@ -659,7 +674,7 @@ function isCanonicalSurface(surface: string): boolean {
  * decision. All unanchored positions use exact packed-forest marginals.
  */
 export function collectBoundaryTrainingObservations(input: {
-  lattices: readonly SurfaceLattice[];
+  lattices: readonly (SurfaceLattice | SurfaceBoundaryMeasurement)[];
   anchors?: readonly BoundaryAnchor[];
 }): BoundaryObservation[] {
   const observations: BoundaryObservation[] = [];
@@ -784,7 +799,9 @@ export function collectBoundaryTrainingObservations(input: {
       });
     }
 
-    const marginals = new Map(lattice.segmentationForest.boundaryMarginals
+    const measurement = "boundaryMeasurement" in lattice ? lattice.boundaryMeasurement : lattice.segmentationForest;
+    const latentIdentity = "boundaryMeasurement" in lattice ? `measurement.${measurement.id}` : measurement.id;
+    const marginals = new Map(measurement.boundaryMarginals
       .map(row => [row.positionGrapheme, row.boundaryProbability]));
     for (let position = 1; position < graphemes.length; position += 1) {
       if (anchoredPositions.has(position)) continue;
@@ -796,7 +813,7 @@ export function collectBoundaryTrainingObservations(input: {
         negativeMass: 1 - probability,
         supervision: "latent_marginal",
         signalKind: "packed_forest_marginal",
-        signalId: `latent.${lattice.segmentationForest.id}.${position}`
+        signalId: `latent.${latentIdentity}.${position}`
       });
     }
   }
@@ -804,7 +821,7 @@ export function collectBoundaryTrainingObservations(input: {
 }
 
 export function compileBoundaryFeatureContext(input: {
-  lattices: readonly SurfaceLattice[];
+  lattices: readonly Pick<SurfaceLattice, "documentId" | "units">[];
   hasher?: Hasher;
 }): CompiledBoundaryFeatureContext {
   const hasher = input.hasher ?? createHasher();
