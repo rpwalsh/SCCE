@@ -7,23 +7,24 @@ import {dirname,resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {performance} from 'node:perf_hooks';
 import {createNodeRuntime,readScceRuntimeConfig,assertHydratedRuntimeReady} from '../../packages/adapters-node/dist/index.js';
-const {values}=parseArgs({options:{config:{type:'string'},out:{type:'string'},cases:{type:'string',default:'tools/language-behavior-evaluation/cases.json'},limit:{type:'string'},'budget-ms':{type:'string',default:'60000'}}});
+const {values}=parseArgs({options:{config:{type:'string'},out:{type:'string'},cases:{type:'string',default:'tools/language-behavior-evaluation/cases.json'},limit:{type:'string'},offset:{type:'string',default:'0'},'preserve-functional-authorization':{type:'boolean',default:false},'budget-ms':{type:'string',default:'60000'}}});
 if(!values.config||!values.out)throw new Error('Usage: node tools/language-behavior-evaluation/run.mjs --config=<local-config> --out=<new-json> [--limit=N] [--budget-ms=60000]');
+const offset=Number(values.offset);if(!Number.isSafeInteger(offset)||offset<0)throw new Error('Invalid offset');
 const budgetMs=Number(values['budget-ms']),limit=values.limit===undefined?Infinity:Number(values.limit);
 if(!Number.isSafeInteger(budgetMs)||budgetMs<1000||!(limit===Infinity||Number.isSafeInteger(limit)&&limit>0))throw new Error('Invalid diagnostic limits');
-const bytes=await readFile(values.cases),suite=JSON.parse(bytes),selected=suite.cases.slice(0,limit),casesSha256=createHash('sha256').update(bytes).digest('hex');
+const bytes=await readFile(values.cases),suite=JSON.parse(bytes),selected=suite.cases.slice(offset,offset+limit),casesSha256=createHash('sha256').update(bytes).digest('hex');
 const base=await readScceRuntimeConfig(values.config);
 const config=structuredClone(base);
 config.connectors.web.enabled=false;config.connectors.web.runtimeAcquisition='disabled';
 config.policy.maxNetworkRequests=0;config.policy.allowMutation=false;
-config.runtime.functionalCognitionAuthorizeCapabilities=false;
+if(!values['preserve-functional-authorization'])config.runtime.functionalCognitionAuthorizeCapabilities=false;
 if(config.runtime.dreamCycle)config.runtime.dreamCycle.enabled=false;
 const out=resolve(values.out),journal=out+'.jsonl';await mkdir(dirname(out),{recursive:true});
 const report={schema:'scce.language_behavior_diagnostic.v1',startedAt:new Date().toISOString(),casesSha256,
  sourceCodeCommit:'1ac82eac41b5f33b7f58fb1dc485c7a9fa83e2e7',scope:'Available checkpoint; not Windows 29-article candidate',
  externalWebEnabled:false,externalInferenceRequested:false,canonicalApplicationWrites:'each case is rolled back',
  syntheticRequestRequirementBootstrap:config.runtime.allowSyntheticRequestRequirementBootstrap===true,
- functionalCognitionAuthorization:false,kernelBudgetMs:budgetMs,results:[],productionReadiness:null};
+ functionalCognitionAuthorization:config.runtime.functionalCognitionAuthorizeCapabilities===true,kernelBudgetMs:budgetMs,results:[],productionReadiness:null};
 await writeFile(out,JSON.stringify(report,null,2)+'\n',{flag:'wx'});
 await writeFile(journal,JSON.stringify({type:'run.started',casesSha256,cases:selected.map(x=>x.id)})+'\n',{flag:'wx'});
 const normalize=s=>String(s).normalize('NFKC').toLowerCase().trim().replace(/^["'“”‘’]+|["'“”‘’.!?]+$/gu,'').replace(/\s+/gu,' ');
