@@ -73,6 +73,14 @@ it("crosses one-file ingestion windows with original bytes, extends, aliases, re
   expect(final.sourceContractClosure!.filesLoaded).toBeLessThanOrEqual(127); expect(final.sourceContractClosure!.bytesLoaded).toBeLessThanOrEqual(8 * 1024 * 1024);
 });
 
+it("publishes the native smoke's mixed Node and Vitest roots through the same canonical closure", async () => {
+  const f=await fixture({...entries,"spec/first.spec.ts":"import {test} from 'node:test';import {strictEqual} from 'node:assert';import {f0 as observed} from '@owned/index.js';test('first',()=>{strictEqual(observed(2),6);strictEqual(observed(4),20);});\n"});
+  const report=await trainOssCorpus({...f.options,maxFilesPerRun:100});
+  const patterns=await f.storage.languageMemory.listLanguagePatterns({patternKind:"source_code_assertion_contract"});
+  expect(patterns,JSON.stringify(report.sourceContractClosure)).toHaveLength(2);
+  expect(patterns.flatMap(row=>(row.patternJson as {cases:Array<{expectedResult:number}>}).cases.map(item=>item.expectedResult)).sort((a,b)=>a-b)).toEqual([2,6,20,30]);
+});
+
 it("enforces the shared decoded-byte ledger before loading dependencies and reports missing context", async () => {
   const known = Object.entries(entries).map(([name, text]) => ({ path: name, byteLength: Buffer.byteLength(text), contentHash: `sha256:${createHash("sha256").update(text).digest("hex")}` }));
   const root = await mkdtemp(path.join(tmpdir(), "scce-pure-closure-")); roots.push(root);
