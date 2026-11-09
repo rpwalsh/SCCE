@@ -132,6 +132,17 @@ describe("initial source brain completion", () => {
     expect(f.activationCalls).toBe(1);
   });
 
+  it("requires a real derivation whenever a report declares a different original owner", async () => {
+    const f = await canonicalFixture(2), original = buildInput(f.storage), parent = f.versions[1]!;
+    const projected = { ...f.reports[0]!, originalSourceVersionId: String(parent.sourceVersionId), sourceContentHash: String(parent.contentHash), sourceByteLength: parent.byteLength };
+    const input = { ...original, reports: [projected], selectedItems: [f.selected[1]!], completion: { ...original.completion,
+      selectedItemIds: [String(parent.sourceVersionId)], completedItemIds: [String(parent.sourceVersionId)] } };
+    const rejected = await completeInitialSourceBrainBuild(input);
+    expect(rejected.active).toBe(false); expect(rejected.report.checks.find(row => row.id === "source.evidence_persisted")?.passed).toBe(false);
+    expect(f.activationCalls).toBe(0);
+
+  });
+
   it("revalidates a normally produced READY lifecycle before activation and preserves a valid retry", async () => {
     const f = await canonicalFixture(1), original = buildInput(f.storage);
     const input = { ...original, selectedItems: f.selected, reports: f.reports,

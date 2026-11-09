@@ -400,7 +400,7 @@ export async function completeInitialSourceBrainFromStoredReports(input: {
     const originalId = report.originalSourceVersionId || report.sourceVersionId;
     const original = canonicalInputs.get(originalId) ?? await input.storage.evidence.sourceVersionById(originalId as SourceVersionId);
     const source = await input.storage.evidence.sourceVersionById(report.sourceVersionId as SourceVersionId);
-    if (!original || !source || (originalId !== report.sourceVersionId && source.derivation && String(source.derivation.derivedFromSourceVersionId) !== originalId))
+    if (!original || !source || !sourceProjectionParentMatches(source, originalId, report.sourceVersionId))
       throw new Error("completed training projection lacks its exact canonical source/parent");
     if (declaredAcquisitions.has(report.sourceVersionId)) {
       const acquisition = canonicalStringify(toJsonValue(declaredAcquisitions.get(report.sourceVersionId)));
@@ -489,6 +489,11 @@ async function sourceBrainNormalTrainingReport(value: unknown): Promise<Record<s
     || canonicalStringify(toJsonValue(snapshot.fileHashes)) !== canonicalStringify(toJsonValue(provenance.fileHashes))
     || files.reduce((sum, file) => sum + file.byteLength, 0) !== report.totalBytes) throw new Error("GitHub snapshot inventory differs from completed training provenance");
   return training;
+}
+
+function sourceProjectionParentMatches(source: SourceVersion, originalId: string, sourceVersionId: string): boolean {
+  return String(source.sourceVersionId) === sourceVersionId && (originalId === sourceVersionId
+    || (source.role === "evidence-derivative" && source.derivation !== undefined && String(source.derivation.derivedFromSourceVersionId) === originalId));
 }
 
 function objectRecord(value: unknown): Record<string, unknown> {
@@ -663,11 +668,10 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     && [...evidenceOwners.values()].every(id => expectedEvidenceVersions.has(id));
   const evidenceOwnedByReportSource = sourceLineageVerified && reports.every(report => {
     const version = versions.get(report.sourceVersionId);
-    const noNewTransform = report.originalSourceVersionId === report.sourceVersionId;
     return report.artifacts.evidenceIds.length > 0
       && report.artifacts.evidenceIds.every(id => evidenceOwners.get(id) === report.sourceVersionId && evidenceSourceIds.get(id) === String(version?.sourceId))
       && version !== undefined && String(version.sourceVersionId) === report.sourceVersionId
-      && (!version.derivation || noNewTransform || String(version.derivation.derivedFromSourceVersionId) === report.originalSourceVersionId);
+      && sourceProjectionParentMatches(version, report.originalSourceVersionId || report.sourceVersionId, report.sourceVersionId);
   });
   const profilesMatchSourceVersions = reports.every(report => {
     const profile = profileById.get(report.artifacts.languageProfileId);

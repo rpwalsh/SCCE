@@ -89,6 +89,19 @@ it("trains genuine code, adjacent prose, documentation and Gutenberg through one
   await expect(completeInitialSourceBrainFromStoredReports({ ...input, plan: wrong })).rejects.toThrow(/projection/);
   const wrongParent = structuredClone(f.plan); wrongParent.selectedItems[0]!.projections![0]!.originalSourceVersionId = books.reports[0]!.originalSourceVersionId;
   await expect(completeInitialSourceBrainFromStoredReports({ ...input, plan: wrongParent })).rejects.toThrow(/projection/);
+  const codeReport = oss.reports.find(row => row.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossCode)!;
+  const codeChild = f.versions.get(codeReport.sourceVersionId)!;
+  const actualDerivation = structuredClone(codeChild.derivation!);
+  const projectionOnlyPlan = structuredClone(f.plan); delete projectionOnlyPlan.selectedItems[0]!.projections![0]!.transformId;
+  try {
+    delete codeChild.derivation;
+    await expect(completeInitialSourceBrainFromStoredReports({ ...input, plan: projectionOnlyPlan })).rejects.toThrow("exact canonical source/parent");
+    const foreignSameUriParent = rawCodeParents.find(row => String(row.sourceVersionId) !== codeReport.originalSourceVersionId)!;
+    expect(foreignSameUriParent.canonicalUri).toBe(codeChild.canonicalUri);
+    expect(foreignSameUriParent.contentHash).toBe(f.versions.get(codeReport.originalSourceVersionId)!.contentHash);
+    codeChild.derivation = { ...actualDerivation, derivedFromSourceVersionId: foreignSameUriParent.sourceVersionId };
+    await expect(completeInitialSourceBrainFromStoredReports({ ...input, plan: projectionOnlyPlan })).rejects.toThrow("exact canonical source/parent");
+  } finally { codeChild.derivation = actualDerivation; }
   expect(f.lifecycles.size).toBe(0);
   const result = await completeInitialSourceBrainFromStoredReports(input);
   expect(result.active).toBe(true); expect(result.report.checks.every(row => row.passed)).toBe(true);
