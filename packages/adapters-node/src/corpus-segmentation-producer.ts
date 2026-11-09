@@ -227,6 +227,12 @@ async function consolidateCorpusSegmentationOwned(input:{storage:PostgresStorage
       rows:async function*(){for await(const page of original.rows()){check();yield page;}},
       sourceDocuments:async function*(){for await(const page of original.sourceDocuments()){check();yield page;}}};},
     scratch:{...source.scratch,
+      ...(source.scratch.boundaryFitNumericReplay?{boundaryFitNumericReplay:async()=>{
+        check();const replay=await source.scratch.boundaryFitNumericReplay!();return{...replay,
+          append:async(...args:Parameters<typeof replay.append>)=>{check();await replay.append(...args);},
+          seal:async(...args:Parameters<typeof replay.seal>)=>{check();await replay.seal(...args);},
+          pages:async function*(...args:Parameters<typeof replay.pages>){for await(const page of replay.pages(...args)){check();yield page;}}};
+      }}:{}),
       pages:async function*(query){for await(const page of source.scratch.pages(query)){check();yield page;}},
       putMany:async(collection,rows)=>{check();await source.scratch.putMany(collection,rows);}}
   }:source;

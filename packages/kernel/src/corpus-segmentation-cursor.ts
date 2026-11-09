@@ -36,6 +36,23 @@ export interface CorpusSegmentationScratchRow {
   value: JsonValue;
 }
 
+export type BoundaryFitNumericSection = "training" | "calibration";
+export interface BoundaryFitNumericBinding {
+  statisticsId: string;
+  headerDigest: string;
+  rowWidth: number;
+  rowCount: number;
+}
+/** Private fit-lifetime replay of already validated numeric columns; canonical statistics stay in their source store. */
+export interface BoundaryFitNumericReplay {
+  readonly pageRows: number;
+  readonly maxPageBytes: number;
+  append(section: BoundaryFitNumericSection, binding: BoundaryFitNumericBinding, values: Float64Array): Promise<void>;
+  seal(section: BoundaryFitNumericSection, binding: BoundaryFitNumericBinding): Promise<void>;
+  pages(section: BoundaryFitNumericSection, binding: BoundaryFitNumericBinding): AsyncIterable<Float64Array>;
+  dispose(): Promise<void>;
+}
+
 /** Collections belong to one immutable run; keys use ASCII byte ordering. */
 export interface CorpusSegmentationScratch {
   readonly pageRows: number;
@@ -47,6 +64,7 @@ export interface CorpusSegmentationScratch {
   digestChunks(chunks: AsyncIterable<Uint8Array>): Promise<string>;
   /** A private lease for the append/rebuild collections owned by ONE boundary-statistics merge. */
   boundaryMergeScratch?(): { scratch: CorpusSegmentationScratch; dispose(): Promise<void> };
+  boundaryFitNumericReplay?(): Promise<BoundaryFitNumericReplay>;
 }
 
 export interface CorpusSegmentationDocumentCursor {

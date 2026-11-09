@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CorpusSegmentationScratch, CorpusSegmentationScratchRow, JsonValue } from "@scce/kernel";
 import { durableJoinProgramJsonByteLengths } from "./durable-join-program-storage.js";
+import { createBoundaryFitNumericFile } from "./boundary-fit-numeric-file.js";
 
 export const BOUNDARY_MERGE_PAGE_SCHEMA = "scce.boundary_merge_scratch_page.v1";
 const invalid = (): never => { throw Error("Invalid packed boundary merge scratch"); };
@@ -14,7 +15,8 @@ function logical(value: JsonValue): CorpusSegmentationScratchRow {
 
 /** The existing merge algorithm alone acquires this ordered temporary storage lease. */
 export function withPackedBoundaryMerges(store: CorpusSegmentationScratch): CorpusSegmentationScratch {
-  return { ...store, boundaryMergeScratch: () => createPackedBoundaryMergeScratch(store) };
+  return { ...store, boundaryMergeScratch: () => createPackedBoundaryMergeScratch(store),
+    boundaryFitNumericReplay: store.boundaryFitNumericReplay ?? (() => createBoundaryFitNumericFile(store)) };
 }
 
 /** One pending physical page coalesces singleton writes without retaining one buffer per sort run. */

@@ -1,14 +1,18 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
-import { expect, it } from "vitest";
-import { canonicalNormalizationContract, canonicalStringify, createHasher, learnPagedSegmentationPopulations, prepareCorpusSegmentationMeasurement, type JsonValue } from "@scce/kernel";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { expect, it, vi } from "vitest";
+import { canonicalNormalizationContract, canonicalStringify, createHasher, learnPagedSegmentationPopulations, prepareCorpusSegmentationMeasurement, type JsonValue, type BoundaryFitNumericReplay } from "@scce/kernel";
 import { fixtureSegmentationScratch } from "../../../kernel/src/__tests__/fixtures/corpus-segmentation-scratch.js";
 import { activateCorpusSegmentationRun, readActiveCorpusSegmentationRun, createCorpusSegmentationRun, corpusSegmentationScopeId, segmentationOrdinalKey } from "../corpus-segmentation-store.js";
 import { consolidateCorpusSegmentation, loadCorpusSegmentationContextSlice, corpusSegmentationInputRecipe, prepareCorpusSegmentationInput } from "../corpus-segmentation-producer.js";
 import type { PostgresStorageAdapter } from "../postgres.js";
 import { corpusMembershipSqlFixture } from "./fixtures/corpus-membership-sql.js";
 import { BOUNDARY_MERGE_PAGE_SCHEMA } from "../corpus-segmentation-merge-scratch.js";
+import * as numericFiles from "../boundary-fit-numeric-file.js";
 
 async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFamily=true, initialize=true) {
   const memory=fixtureSegmentationScratch(pageRows,12000), calls:Array<{sql:string;params:unknown[]}>=[];
@@ -175,6 +179,21 @@ it("exposes one ordinary consolidation workflow with idempotent resume and decla
   expect(f.calls.filter(call=>call.sql.includes("SELECT substring"))).toHaveLength(reads);
   expect(f.calls.filter(call=>call.sql.includes("INSERT INTO"))).toHaveLength(writes);
   await expect(consolidateCorpusSegmentation({...options,resume:true,maxPopulations:2})).rejects.toThrow(/declaration differs/);
+});
+
+it("binds the actual numeric fit factory and removes its file when the owner aborts during replay",async()=>{
+  const f=await fixture(3,false,8,false,false),controller=new AbortController(),primary=Error("owner aborts numeric replay");
+  const directory=await mkdtemp(path.join(tmpdir(),"scce-corpus-replay-abort-")),create=numericFiles.createBoundaryFitNumericFile;let files=0,pages=0;
+  const spy=vi.spyOn(numericFiles,"createBoundaryFitNumericFile").mockImplementation(async(bounds):Promise<BoundaryFitNumericReplay>=>{
+    const replay=await create(bounds,{directory,onFile:()=>{files++;}});return{...replay,
+      pages:async function*(section,binding){for await(const page of replay.pages(section,binding)){pages++;controller.abort(primary);yield page;}}};
+  });
+  try{
+    await expect(consolidateCorpusSegmentation({storage:f.storage,scope:f.declaration.scope,runId:"owned-run",createdAt:1,
+      bounds:f.bounds,windowUtf16:28,maxPopulations:1,signal:controller.signal})).rejects.toBe(primary);
+    expect(files).toBe(1);expect(pages).toBe(1);expect(await readdir(directory)).toEqual([]);
+    expect(f.getState()).toBe("fitting");expect(f.getActive()).toBeNull();
+  }finally{spy.mockRestore();await rm(directory,{recursive:true,force:true});}
 });
 
 it("singleflights identical in-process jobs while refusing conflicting scope or fit declarations",async()=>{

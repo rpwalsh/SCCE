@@ -110,6 +110,9 @@ it("uses packed merges throughout full fitting while preserving arbitrary worksp
   const expected = await learnPagedSegmentationPopulations({ rootPopulationId: "population.test", source: input(baseline.store), namespace: "fit", featureContextId: "context", maxPopulations: 1, hasher });
   const actual = await learnPagedSegmentationPopulations({ rootPopulationId: "population.test", source: input(withPackedBoundaryMerges(packed.store)), namespace: "fit", featureContextId: "context", maxPopulations: 1, hasher });
   expect(actual.model).toEqual(expected.model);
+  expect(await read(packed.store,actual.artifacts.assignments)).toEqual(await read(baseline.store,expected.artifacts.assignments));
+  for(const partition of Object.keys(actual.artifacts.partitions) as Array<keyof typeof actual.artifacts.partitions>)
+    expect(await read(packed.store,actual.artifacts.partitions[partition])).toEqual(await read(baseline.store,expected.artifacts.partitions[partition]));
   expect(packed.writes.some(row => row.collection.includes("familyLookup") && typeof row.value === "string")).toBe(true);
   const merges = packed.writes.filter(row => row.collection.includes(".rawRows") || row.collection.endsWith(".rows") || row.collection.includes(".sortedRows"));
   expect(merges.length).toBeGreaterThan(1);

@@ -116,7 +116,7 @@ async function fitCalibratedGroup(work: PagedPopulationWorkspace, assignments: s
     training = await work.merged(split.fit, populationId, `${label}.training`);
     heldout = await work.scratch.count(split.holdout) ? await work.merged(split.holdout, populationId, `${label}.heldout`) : undefined;
     return fitPagedBoundaryEstimator({ statistics: training, calibrationStatistics: heldout,
-      calibrationShards: () => work.sources(split.holdout), hasher: work.hasher });
+      calibrationShards: () => work.sources(split.holdout), hasher: work.hasher, numericReplay: work.scratch.boundaryFitNumericReplay });
   }, [() => training?.dispose?.() ?? Promise.resolve(), () => heldout?.dispose?.() ?? Promise.resolve(),
     () => work.scratch.deleteCollection(split.fit), () => work.scratch.deleteCollection(split.holdout)]);
 }
@@ -496,7 +496,7 @@ export class PagedPopulationWorkspace {
       estimators = []; priors = counts.map(count => count / n);
       for (let group = 0; group < populationCount; group++) {
         const statistics = await this.merged(assignments, `${this.rootPopulationId}.candidate.${populationCount}.${group}`, `${label}.fit.${group}`, group);
-        await withCleanup(async () => { estimators.push(await fitPagedBoundaryEstimator({ statistics, hasher: this.hasher })); },
+        await withCleanup(async () => { estimators.push(await fitPagedBoundaryEstimator({ statistics, hasher: this.hasher, numericReplay: this.scratch.boundaryFitNumericReplay })); },
           [() => statistics.dispose?.() ?? Promise.resolve()]);
       }
       return true;

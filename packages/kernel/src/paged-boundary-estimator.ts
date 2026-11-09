@@ -3,7 +3,7 @@
 import { BOUNDARY_ESTIMATOR_INFERENCE_SCHEMA, BOUNDARY_FEATURE_ORDER, BOUNDARY_STATISTICS_SCHEMA,
   type BoundaryEstimatorInferenceModel, type BoundaryEstimatorScoringModel, type BoundaryStatisticsRow } from "./boundary-estimator.js";
 import { BoundaryGradientPass, BoundaryCalibrationPass, BoundaryMetricsPass, boundaryFitDot, boundaryFitQuantize } from "./boundary-fit-math.js";
-import type { BoundaryStatisticsCursor } from "./corpus-segmentation-cursor.js";
+import type { BoundaryStatisticsCursor, BoundaryFitNumericBinding, BoundaryFitNumericReplay, BoundaryFitNumericSection } from "./corpus-segmentation-cursor.js";
 import { createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher } from "./types.js";
 import { canonicalDigestHex } from "./canonical-json-digest.js";
@@ -33,20 +33,41 @@ async function disjoint(left: BoundaryStatisticsCursor, right?: BoundaryStatisti
   } finally { await a.return(undefined); await b.return(undefined); }
 }
 
-export async function forEachCanonicalBoundaryRow(source: BoundaryStatisticsCursor, visit: (row: BoundaryStatisticsRow) => void, validate = true): Promise<void> {
+export async function forEachCanonicalBoundaryRow(source: BoundaryStatisticsCursor, visit: (row: BoundaryStatisticsRow) => void, validate = true,
+  afterPage?: () => Promise<void>): Promise<void> {
   const header = source.header;
   if (header.schema !== BOUNDARY_STATISTICS_SCHEMA || header.scale !== 1_000_000
     || header.featureOrder.join("\u001f") !== BOUNDARY_FEATURE_ORDER.join("\u001f")) throw new Error("incompatible paged boundary statistics");
   let previous: string | undefined; let count = 0; let positive = 0; let negative = 0;
-  for await (const page of source.rows()) for (const row of page) {
+  for await (const page of source.rows()) { for (const row of page) {
     if (validate && (previous !== undefined && previous.localeCompare(row.key) >= 0
       || row.featuresFixed.length !== BOUNDARY_FEATURE_ORDER.length || row.key !== row.featuresFixed.join(":")
       || row.featuresFixed.some(value => !Number.isSafeInteger(value) || value < 0 || value > 1_000_000))) throw new Error("boundary rows are not canonical");
     if (!Number.isSafeInteger(row.positiveMass) || !Number.isSafeInteger(row.negativeMass) || row.positiveMass < 0 || row.negativeMass < 0) throw new Error("invalid boundary row mass");
     previous = row.key; count++; positive += row.positiveMass; negative += row.negativeMass; visit(row);
-  }
+  } if (afterPage) await afterPage(); }
   if (count !== header.rowCount || positive !== header.positiveMass || negative !== header.negativeMass
     || !Number.isSafeInteger(positive) || !Number.isSafeInteger(negative)) throw new Error("boundary cursor inventory changed");
+}
+
+function numericBinding(source: BoundaryStatisticsCursor, rowWidth: number, hasher: Hasher): BoundaryFitNumericBinding {
+  return { statisticsId: source.header.id, headerDigest: canonicalDigestHex(source.header, hasher), rowWidth, rowCount: source.header.rowCount };
+}
+async function prepareNumericRows(source: BoundaryStatisticsCursor, replay: BoundaryFitNumericReplay, section: BoundaryFitNumericSection,
+  binding: BoundaryFitNumericBinding, fill: (row: BoundaryStatisticsRow, values: Float64Array, offset: number) => void): Promise<void> {
+  const capacity = Math.min(replay.pageRows, Math.floor(replay.maxPageBytes / (binding.rowWidth * Float64Array.BYTES_PER_ELEMENT)));
+  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error("Numeric boundary replay cannot fit one row within its declared page bounds");
+  let buffer = new Float64Array(capacity * binding.rowWidth), used = 0;
+  const full: Float64Array[] = [];
+  await forEachCanonicalBoundaryRow(source, row => {
+    fill(row, buffer, used); used += binding.rowWidth;
+    if (used === buffer.length) { full.push(buffer); buffer = new Float64Array(capacity * binding.rowWidth); used = 0; }
+  }, true, async () => {
+    for (const page of full) await replay.append(section, binding, page);
+    full.length = 0;
+    if (used) { await replay.append(section, binding, buffer.subarray(0, used)); used = 0; }
+  });
+  await replay.seal(section, binding);
 }
 
 async function metrics(source: BoundaryStatisticsCursor, weights: readonly number[], intercept: number, slope = 1, calibrationIntercept = 0) {
@@ -68,7 +89,22 @@ export async function fitPagedBoundaryEstimator(input: {
   learningRate?: number;
   l2?: number;
   hasher?: Hasher;
+  numericReplay?: () => Promise<BoundaryFitNumericReplay>;
 }): Promise<BoundaryEstimatorInferenceModel> {
+  const replay = await input.numericReplay?.();
+  let result: BoundaryEstimatorInferenceModel;
+  try {
+    result = await fitPagedBoundaryEstimatorInner(input, replay);
+  } catch (error) {
+    try { await replay?.dispose(); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], "Boundary fit and numeric replay cleanup failed"); }
+    throw error;
+  }
+  await replay?.dispose();
+  return result;
+}
+
+async function fitPagedBoundaryEstimatorInner(input: Parameters<typeof fitPagedBoundaryEstimator>[0], replay?: BoundaryFitNumericReplay): Promise<BoundaryEstimatorInferenceModel> {
   const hasher = input.hasher ?? createHasher();
   await disjoint(input.statistics, input.calibrationStatistics);
   if (input.calibrationShards) for await (const shard of input.calibrationShards()) await disjoint(input.statistics, shard);
@@ -80,9 +116,20 @@ export async function fitPagedBoundaryEstimator(input: {
   const totalMass = Math.max(1, positive + negative);
   const gradient = new BoundaryGradientPass(new Array<number>(BOUNDARY_FEATURE_ORDER.length).fill(0), Math.log((positive + 0.5) / (negative + 0.5)));
   const features = new Float64Array(BOUNDARY_FEATURE_ORDER.length);
+  const trainingBinding = replay ? numericBinding(input.statistics, features.length + 2, hasher) : undefined;
+  if (replay && trainingBinding) await prepareNumericRows(input.statistics, replay, "training", trainingBinding, (row, values, offset) => {
+    for (let index = 0; index < features.length; index++) values[offset + index] = (row.featuresFixed[index] ?? 0) / 1_000_000;
+    values[offset + features.length] = row.positiveMass / 1_024;
+    values[offset + features.length + 1] = row.positiveMass / 1_024 + row.negativeMass / 1_024;
+  });
   for (let iteration = 0; iteration < iterations; iteration++) {
     gradient.begin();
-    await forEachCanonicalBoundaryRow(input.statistics, row => {
+    if (replay && trainingBinding) {
+      for await (const page of replay.pages("training", trainingBinding)) for (let offset = 0; offset < page.length; offset += trainingBinding.rowWidth) {
+        const mass = page[offset + features.length + 1]!;
+        if (mass > 0) gradient.add(page, offset, page[offset + features.length]!, mass);
+      }
+    } else await forEachCanonicalBoundaryRow(input.statistics, row => {
       if (row.positiveMass + row.negativeMass <= 0) return;
       for (let index = 0; index < features.length; index++) features[index] = (row.featuresFixed[index] ?? 0) / 1_000_000;
       gradient.add(features, 0, row.positiveMass / 1_024, row.positiveMass / 1_024 + row.negativeMass / 1_024);
@@ -93,11 +140,23 @@ export async function fitPagedBoundaryEstimator(input: {
   const heldout = input.calibrationStatistics;
   const hasHeldout = heldout !== undefined && heldout.header.positiveMass + heldout.header.negativeMass > 0;
   const calibration = new BoundaryCalibrationPass();
+  let calibrationBinding: BoundaryFitNumericBinding | undefined;
   if (hasHeldout) {
     const mass = Math.max(1, (heldout.header.positiveMass + heldout.header.negativeMass) / 1_024);
+    calibrationBinding = replay ? numericBinding(heldout, 3, hasher) : undefined;
+    if (replay && calibrationBinding) await prepareNumericRows(heldout, replay, "calibration", calibrationBinding, (row, values, offset) => {
+      for (let index = 0; index < features.length; index++) features[index] = row.featuresFixed[index]! / 1_000_000;
+      values[offset] = gradient.intercept + boundaryFitDot(gradient.weights, features);
+      values[offset + 1] = row.positiveMass / 1_024;
+      values[offset + 2] = row.positiveMass / 1_024 + row.negativeMass / 1_024;
+    });
     for (let iteration = 0; iteration < 160; iteration++) {
       calibration.begin();
-      await forEachCanonicalBoundaryRow(heldout, row => {
+      if (replay && calibrationBinding) {
+        for await (const page of replay.pages("calibration", calibrationBinding)) for (let offset = 0; offset < page.length; offset += calibrationBinding.rowWidth) {
+          if (page[offset + 2]! > 0) calibration.add(page[offset]!, page[offset + 1]!, page[offset + 2]!);
+        }
+      } else await forEachCanonicalBoundaryRow(heldout, row => {
         if (row.positiveMass + row.negativeMass <= 0) return;
         for (let index = 0; index < features.length; index++) features[index] = row.featuresFixed[index]! / 1_000_000;
         calibration.add(gradient.intercept + boundaryFitDot(gradient.weights, features), row.positiveMass / 1_024,
@@ -121,6 +180,8 @@ export async function fitPagedBoundaryEstimator(input: {
   const { negativeLogLikelihood: _likelihood, ...calibrationMetrics } = heldoutMetrics ?? { negativeLogLikelihood: 0,
     mass: 0, logLoss: null, brier: null, expectedCalibrationError: null, anchorPrecision: null,
     anchorRecall: null, predictiveCompressionGainNats: null };
+  if (trainingBinding && canonicalDigestHex(input.statistics.header, hasher) !== trainingBinding.headerDigest
+    || calibrationBinding && canonicalDigestHex(heldout!.header, hasher) !== calibrationBinding.headerDigest) throw new Error("Boundary statistics header changed during numeric replay");
   const canonical = { schema: BOUNDARY_ESTIMATOR_INFERENCE_SCHEMA, populationId: header.populationId,
     featureOrder: BOUNDARY_FEATURE_ORDER, weights: gradient.weights, intercept: gradient.intercept, trainingStatisticsId: header.id,
     sourceInventory: header.sourceInventory, iterations, l2,
