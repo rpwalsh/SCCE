@@ -35,7 +35,7 @@ async function* textChunks(storage: PostgresStorageAdapter, run: PostgresCorpusS
   while (offset < source.codePoints) {
     const evidenceAccess = storage.informationAccessPredicate("e", 5);
     const sourceAccess = storage.informationAccessPredicate("sv", 5 + evidenceAccess.params.length);
-    const rows = await storage.query<{text: string}>(`SELECT substring(e.text_content FROM $3 FOR $4) AS text
+    const rows = await storage.query<{text: string}>(`SELECT substring(e.text_content FROM $3::integer FOR $4::integer) AS text
       FROM ${storage.table("evidence_spans")} e JOIN ${storage.table("source_versions")} sv ON sv.id=e.source_version_id
       WHERE e.id=$1 AND sv.id=$2 AND e.status='promoted' AND ${evidenceAccess.sql} AND ${sourceAccess.sql}`,
       [source.evidenceId, source.sourceVersionId, offset + 1, chunkCodePoints, ...evidenceAccess.params, ...sourceAccess.params]);
