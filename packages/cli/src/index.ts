@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { runCodeCommand } from "./code-command.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
+import { completeInitialSourceBrainFromDialogueReport } from "@scce/adapters-node";
 import { parseUnitMetadataMaintenanceOptions } from "./db-maintenance-options.js";
 import { compactUnitSourceMetadata, UnitMetadataMaintenanceError } from "@scce/adapters-node";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
@@ -727,18 +728,14 @@ async function corpus(
     if (kind === "dialogue") {
       const access = config?.security?.informationAccess;
       if (!access) return usage("scce corpus train dialogue requires security.informationAccess in the runtime config");
+      const informationLabel = { tenantId: access.tenantId, principals: [access.principalId], compartments: [...access.compartments],
+        exportClass: "restricted" as const, mergePolicy: "isolated" as const };
       // The transcript is labelled with the operator's own access context, never the public corpus label.
       printJson(await trainDialogueCorpus({
         storage: runtime.storage,
         rootPath: path.resolve(target),
         authorship: "human_authored",
-        informationLabel: {
-          tenantId: access.tenantId,
-          principals: [access.principalId],
-          compartments: [...access.compartments],
-          exportClass: "restricted",
-          mergePolicy: "isolated"
-        },
+        informationLabel,
         startFileIndex: options.startFileIndex,
         maxFilesPerRun: options.maxFiles,
         maxFileBytes: options.maxFileBytes,
@@ -748,7 +745,10 @@ async function corpus(
         ngramVocabularyLimit: options.ngramVocabularyLimit,
         languageAliases: options.languageAliases,
         heapCheckpointMb: options.heapCheckpointMb,
-        ...(options.actsOnly ? { actsOnly: true } : {})
+        ...(options.actsOnly ? { actsOnly: true } : {}),
+        onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromDialogueReport({
+          storage: runtime.storage, informationLabel, report, configuration: options
+        })
       }));
       return;
     }

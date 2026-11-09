@@ -48,6 +48,7 @@ import { corpusSourceVersionIdFor, readCompletedCorpusCheckpoint, stampPattern, 
 import {persistDialogueComputationComponent,type DialogueComputationReport} from "./dialogue-computation-component.js";
 import { persistDialogueContextualQaComponent, type DialogueContextualQaReport } from "./dialogue-contextual-qa-component.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, runDialogueConversationalComponent } from "./dialogue-conversational-checkpoint.js";
+import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
 
 /**
  * Who wrote the text. Training on SCCE's own generations is self-training: the model would be fitted to its
@@ -74,6 +75,7 @@ export interface DialogueCorpusTrainOptions {
   heapCheckpointMb?: number;
   /** Compile the request-act classifier from this run's transcripts without re-training their n-gram memory. */
   actsOnly?: boolean;
+  onSourceBrainTrainingComplete?: (report: DialogueCorpusTrainReport) => Promise<SourceBrainBuildResult | SourceBrainBuildReceipt | void>;
 }
 
 export interface DialogueCorpusTrainReport {
@@ -94,6 +96,8 @@ export interface DialogueCorpusTrainReport {
   contextualQaConstructions?: DialogueContextualQaReport;
   stoppedByHeapSafetyBound: boolean;
   heapMiBAtExit: number;
+  selection?: { selectedSourceUris: string[]; completedSourceUris: string[]; languageTrainingComplete: boolean };
+  sourceBrainBuild?: SourceBrainBuildReceipt;
 }
 
 /** What the run's own replies taught the conversation-bound lane, and what of it reached the pattern store. */
@@ -174,6 +178,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     await walkTextFiles(root, Math.max(0, Math.floor(input.maxDepth ?? DEFAULT_MAX_DEPTH)), startFileIndex + maxFiles)
   ).slice(startFileIndex, startFileIndex + maxFiles);
   const reports: LanguageCorpusTrainingReport[] = [];
+  const completedSourceUris: string[] = [];
   const transcripts: DialogueTranscriptSource[] = [];
   const read: Array<{ sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[]; sourceMetadata?: Record<string, JsonValue> }> = [];
   const skipped: DialogueCorpusTrainReport["filesSkipped"] = [];
@@ -236,6 +241,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       };
       const replay = await readCompletedCorpusCheckpoint(trainingInput);
       reports.push(replay ?? await trainLanguageCorpusText(trainingInput));
+      completedSourceUris.push(pathToFileURL(file.absolutePath).href);
     } catch (error) {
       skipped.push({
         path: file.relativePath,
@@ -268,6 +274,8 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
   };
+  result.selection = { selectedSourceUris: files.map(file => pathToFileURL(file.absolutePath).href), completedSourceUris,
+    languageTrainingComplete: files.length > 0 && !input.actsOnly && !stoppedByHeapSafetyBound && skipped.length === 0 && completedSourceUris.length === files.length };
   if (input.storage.languageIdentities) {
     const profileIds = reports.map(report => report.artifacts.languageProfileId);
     if (!profileIds.length && read.length) {
@@ -278,6 +286,8 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     const identities = createLanguageIdentityRuntime({ store: input.storage.languageIdentities, hasher: createHasher(), now: Date.now, informationLabel: input.informationLabel });
     await input.storage.transaction(() => identities.ensure({ requiredProfileIds: profileIds, initializeIfMissing: true }));
   }
+  const sourceBrainBuild = result.selection?.languageTrainingComplete ? await input.onSourceBrainTrainingComplete?.(result) : undefined;
+  if (sourceBrainBuild) result.sourceBrainBuild = "lifecycle" in sourceBrainBuild ? sourceBrainBuildReceipt(sourceBrainBuild) : sourceBrainBuild;
   return result;
 }
 

@@ -2700,6 +2700,38 @@ describe("dialogue corpus training", () => {
     expect(JSON.stringify(prerequisites)).toContain(referencePattern.id);
   });
 
+  it("completes the explicit dialogue source selection through the ordinary initial-brain hook", async () => {
+    const root = await tempDir("dialogue-initial-brain-");
+    await writeFile(path.join(root, "session.json"), JSON.stringify(humanCreativePair), "utf8");
+    const fixture = memoryStorage();
+    exposeOwnedDialogueEvidence(fixture);
+    const complete = vi.fn(async () => {
+      expect(fixture.state.models.length).toBeGreaterThan(0);
+      expect(fixture.state.sourceVersions.length).toBeGreaterThan(0);
+    });
+    const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored",
+      informationLabel: ownerLabel, maxFilesPerRun: 1, onSourceBrainTrainingComplete: complete });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledWith(result);
+    expect(result.selection?.languageTrainingComplete).toBe(true);
+    expect(result.selection?.selectedSourceUris).toHaveLength(1);
+    expect(result.selection?.completedSourceUris).toEqual(result.selection?.selectedSourceUris);
+  });
+
+  it("retains an incomplete dialogue selection without attempting initial-brain completion", async () => {
+    const root = await tempDir("dialogue-incomplete-brain-");
+    await writeFile(path.join(root, "oversized.txt"), "x".repeat(1025), "utf8");
+    const fixture = memoryStorage(), complete = vi.fn(async () => undefined);
+    exposeOwnedDialogueEvidence(fixture);
+    const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored",
+      informationLabel: ownerLabel, maxFilesPerRun: 1, maxFileBytes: 1024, onSourceBrainTrainingComplete: complete });
+    expect(result.selection?.languageTrainingComplete).toBe(false);
+    expect(result.filesSkipped).toEqual([{ path: "oversized.txt", reason: "file_exceeds_maxFileBytes", byteLength: 1025 }]);
+    expect(result.selection?.completedSourceUris).toEqual([]);
+    expect(complete).not.toHaveBeenCalled();
+    expect(result.sourceBrainBuild).toBeUndefined();
+  });
+
   it("trains unlabelled genuine human dialogue through persistence into creative composition without granting source authority", async () => {
     const human = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/oasst-human-russian-creative-pair.json", import.meta.url), "utf8")) as { text:string;turns:TranscriptTurn[];sourceMetadata:JsonValue };
     const raw={...human,turns:human.turns.map(({requestAuthority:_annotation,...turn})=>turn)};

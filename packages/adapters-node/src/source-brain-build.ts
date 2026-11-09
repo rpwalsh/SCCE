@@ -19,6 +19,10 @@ import {
 import type { LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import type { OssCorpusTrainReport } from "./oss-corpus.js";
 import type { GutenbergCorpusTrainReport } from "./gutenberg-corpus.js";
+import type { DialogueCorpusTrainReport } from "./dialogue-corpus.js";
+
+export type DialogueSourceBrainReport = Pick<DialogueCorpusTrainReport, "rootPath" | "sourceSystem" | "authorship" | "startFileIndex"
+  | "filesTrained" | "filesSkipped" | "reports" | "stoppedByHeapSafetyBound" | "selection">;
 
 export interface SourceBrainSelectedItem {
   /** Stable raw source-version identity; one raw source may produce several trained projections. */
@@ -99,6 +103,42 @@ export function sourceBrainBuildExistingActiveReceipt(active: { activeBrainVersi
     idempotent: false,
     checks: []
   };
+}
+
+export async function completeInitialSourceBrainFromDialogueReport(input: {
+  storage: ScceStorage;
+  informationLabel: InformationLabel;
+  report: DialogueSourceBrainReport;
+  configuration?: unknown;
+  now?: number;
+}): Promise<SourceBrainBuildResult | SourceBrainBuildReceipt> {
+  const selection = input.report.selection;
+  if (input.report.authorship !== "human_authored" || !selection?.languageTrainingComplete
+    || !selection.selectedSourceUris.length || input.report.stoppedByHeapSafetyBound || input.report.filesSkipped.length
+    || new Set(selection.selectedSourceUris).size !== selection.selectedSourceUris.length
+    || new Set(selection.completedSourceUris).size !== selection.completedSourceUris.length
+    || !sameStrings([...selection.selectedSourceUris].sort(compare), [...selection.completedSourceUris].sort(compare))
+    || selection.completedSourceUris.length !== input.report.reports.length || input.report.filesTrained !== input.report.reports.length
+    || input.report.reports.some(report => report.sourceSystemId !== input.report.sourceSystem)) {
+    throw new Error("initial dialogue brain requires a complete explicit human-authored language-training selection");
+  }
+  const selectedItems = sourceBrainSelectedItemsFromReports(input.report.reports);
+  const selectedIds = selectedItems.map(item => item.sourceVersionId);
+  const sourceId = `dialogue:${input.report.rootPath}`;
+  const configuration = input.configuration ?? { startFileIndex: input.report.startFileIndex, selectedSourceUris: selection.selectedSourceUris };
+  try {
+    return await completeInitialSourceBrainBuild({ storage: input.storage, informationLabel: input.informationLabel,
+      sourceId, sourceSchema: "scce.dialogue.corpus.v1", rootPath: input.report.rootPath,
+      sourceManifestHash: sourceBrainInputManifestHash({ sourceId, sourceSchema: "scce.dialogue.corpus.v1", selectedItems, configuration }),
+      selectedItems, reports: input.report.reports, configuration, now: input.now,
+      completion: { explicitSelection: true, selectedItemIds: selectedIds, completedItemIds: selectedIds,
+        stoppedByHeapSafetyBound: false, interrupted: false, skippedRequiredItemIds: [] } });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("refuses to replace an existing active brain")) {
+      return sourceBrainBuildExistingActiveReceipt(await input.storage.brainImports.active());
+    }
+    throw error;
+  }
 }
 
 /** Activate the exact successful raw inputs in one local OSS trainer report. */

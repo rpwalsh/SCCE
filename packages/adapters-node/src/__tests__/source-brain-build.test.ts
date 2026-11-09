@@ -28,12 +28,34 @@ vi.mock("@scce/kernel", () => {
   };
 });
 
-import { completeInitialSourceBrainBuild } from "../source-brain-build.js";
+import { completeInitialSourceBrainBuild, completeInitialSourceBrainFromDialogueReport, type DialogueSourceBrainReport } from "../source-brain-build.js";
 
 const CONTENT_BYTES = new Uint8Array(64).fill(97);
 const CONTENT_HASH = `sha256_${createHash("sha256").update(CONTENT_BYTES).digest("hex")}`;
 
 describe("initial source brain completion", () => {
+  it("activates a completed dialogue selection through the same persisted-artifact validation", async () => {
+    const fixture = createFixture(), input = buildInput(fixture.storage);
+    const result = await completeInitialSourceBrainFromDialogueReport({ storage: fixture.storage,
+      informationLabel: input.informationLabel, report: dialogueReport(), now: 100 });
+    expect("lifecycle" in result && result.lifecycle.state).toBe("ACTIVE");
+    expect("report" in result && result.report.checks.every(check => check.passed)).toBe(true);
+    expect(fixture.activationCalls).toBe(1);
+  });
+
+  it.each(["missing-selection", "incomplete", "duplicate", "skipped", "foreign-corpus"])("refuses %s dialogue completion before activation", async kind => {
+    const fixture = createFixture(), input = buildInput(fixture.storage), value = dialogueReport();
+    if (kind === "missing-selection") delete value.selection;
+    if (kind === "incomplete") value.selection!.languageTrainingComplete = false;
+    if (kind === "duplicate") value.selection!.completedSourceUris.push(value.selection!.completedSourceUris[0]!);
+    if (kind === "skipped") value.filesSkipped.push({ path: "missing.txt", reason: "training_failed: unavailable" });
+    if (kind === "foreign-corpus") value.reports[0]!.sourceSystemId = "foreign";
+    await expect(completeInitialSourceBrainFromDialogueReport({ storage: fixture.storage,
+      informationLabel: input.informationLabel, report: value })).rejects.toThrow("complete explicit human-authored");
+    expect(fixture.activationCalls).toBe(0);
+    expect(fixture.lifecycle).toBeUndefined();
+  });
+
   it("validates persisted evidence, language models and identity before activation; retries idempotently", async () => {
     const fixture = createFixture();
     const result = await completeInitialSourceBrainBuild(buildInput(fixture.storage));
@@ -109,6 +131,14 @@ function report(): LanguageCorpusTrainingReport {
     alignmentCalibrationObservations: [], constructionCandidates: 0, languageConstructions: 0, graphSurfaceAlignments: 0,
     rejectedLanguageConstructions: 0, eventId: "event-one", warnings: []
   };
+}
+
+function dialogueReport(): DialogueSourceBrainReport {
+  return { rootPath: "C:/source/dialogue", sourceSystem: "source.dialogue" as DialogueSourceBrainReport["sourceSystem"],
+    authorship: "human_authored", startFileIndex: 0, filesTrained: 1, filesSkipped: [],
+    reports: [{ ...report(), sourceSystem: "dialogue", sourceSystemId: "source.dialogue" }],
+    stoppedByHeapSafetyBound: false,
+    selection: { selectedSourceUris: ["file:///C:/source/dialogue/session.txt"], completedSourceUris: ["file:///C:/source/dialogue/session.txt"], languageTrainingComplete: true } };
 }
 
 function createFixture(options: { activeAtStart?: boolean; competingBrainWinsAtActivation?: boolean } = {}) {
