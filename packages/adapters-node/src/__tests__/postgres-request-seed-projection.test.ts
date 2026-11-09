@@ -100,7 +100,7 @@ it("budgets projected metadata rather than full physical pages or decoded-progra
   }
   const sql = calls.at(-1)!.sql;
   expect(sql).not.toContain("running_stored_bytes");
-  expect(sql).toContain("NULL::numeric AS decoded_jsonb_bytes");
+  expect(sql).toContain("CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes");
   expect(sql).toContain("ranked.category_rank <= CEIL(");
   expect(sql).toContain("PARTITION BY CASE");
   expect(sql).toContain("octet_length(eligible.pattern_json::text)");

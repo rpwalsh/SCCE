@@ -85,7 +85,7 @@ function fixture() {
     if (sql.startsWith("SELECT id, information_label")) return { rows: [] };
     if (!sql.includes("INSERT INTO") && sql.includes('"induced_language_models"')) return { rows: rows.models };
     if (sql.includes("pattern_headers AS MATERIALIZED")) return { rows: rows.patterns.map(row => {
-      if (!sql.includes("NULL::numeric AS decoded_jsonb_bytes")) return row;
+      if (!sql.includes("CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes")) return row;
       const pattern: LanguagePatternRecord = { id: String(row.id), profileId: String(row.profile_id), patternKind: "semantic_role", support: Number(row.support), entropy: Number(row.entropy),
         patternJson: row.pattern_json as JsonValue, evidenceIds: evidence.id ? [evidence.id] : [], updatedAt: 1 };
       return { ...row, pattern_json: requestSeedLanguagePattern(pattern).patternJson };

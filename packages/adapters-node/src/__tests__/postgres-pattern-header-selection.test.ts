@@ -36,7 +36,7 @@ it.each([undefined, "request_seed" as const])("selects %s candidates without exp
   expect(header).not.toContain("jsonb_to_record");
   expect(header.replace("pg_column_size(pattern.pattern_json)", "stored_size")).not.toContain("pattern.pattern_json");
   for (const column of columns.filter(column => column !== "decoded_jsonb_bytes")) expect(header).toContain(`pattern.${column}`);
-  expect(header).toContain(view ? "NULL::numeric AS decoded_jsonb_bytes" : "pattern.decoded_jsonb_bytes AS decoded_jsonb_bytes");
+  expect(header).toContain(view ? "CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes" : "pattern.decoded_jsonb_bytes AS decoded_jsonb_bytes");
   expect(header).toContain("pattern.profile_id=ANY(");
   expect(sql).toContain("current_compilation");
   expect(sql).toContain("ranked.category_rank <= CEIL(");

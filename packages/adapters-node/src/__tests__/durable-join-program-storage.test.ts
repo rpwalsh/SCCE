@@ -187,7 +187,7 @@ describe("Postgres JOIN storage boundaries", () => {
     expect(fullSql).toContain("OR ranked.category_relevance_rank = 1");
     await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", maxTotalJsonBytes: bytes(encoded) * 2 });
     const seedSql = calls.at(-1)!;
-    expect(seedSql).toContain("NULL::numeric AS decoded_jsonb_bytes");
+    expect(seedSql).toContain("CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes");
     expect(seedSql).toContain("jsonb_object_agg(seed_field.key,seed_field.value)");
     expect(seedSql).not.toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END");
     await adapter.languageMemory.listLanguagePatterns({ patternIds: ["pattern.owned"], maxTotalJsonBytes: bytes(encoded) * 2 });
