@@ -653,11 +653,14 @@ export class PostgresStorageAdapter implements ScceStorage {
     return this.transaction(async () => {
       const changed = await this.query(`${sql} RETURNING 1 AS language_memory_changed`, params);
       if (!changed.length) return false;
-      const client = this.transactionContext.getStore();
-      if (client) this.languageRevisionDirty.add(client);
-      else await this.query(languageMemoryRevisionIncrementSql(this));
+      this.markLanguageMemoryChanged();
       return true;
     });
+  }
+
+  markLanguageMemoryChanged(): void {
+    this.requireActiveTransaction("language-memory revision mutation");
+    this.languageRevisionDirty.add(this.transactionContext.getStore()!);
   }
 
   async tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -1131,7 +1134,10 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         );
         const informationLabel = labels.get(source.sourceVersionId)!;
         await storage.query(`INSERT INTO ${storage.table("sources")}(id, namespace, canonical_uri, first_seen_at, last_seen_at) VALUES($1,$2,$3,TO_TIMESTAMP($4/1000.0),TO_TIMESTAMP($4/1000.0)) ON CONFLICT(id) DO UPDATE SET last_seen_at=GREATEST(sources.last_seen_at,EXCLUDED.last_seen_at)`, [source.sourceId, source.namespace, source.canonicalUri, source.observedAt]);
-        await storage.query(`INSERT INTO ${storage.table("source_versions")} AS stored(id, source_id, content_hash, media_type, observed_at, byte_length, trust_vector, metadata_json, information_label) VALUES($1,$2,$3,$4,TO_TIMESTAMP($5/1000.0),$6,$7::jsonb,$8::jsonb,$9::jsonb) ON CONFLICT(id) DO UPDATE SET information_label=EXCLUDED.information_label,
+        const changes = await storage.query(`WITH prior AS MATERIALIZED (
+          SELECT id,information_label,metadata_json FROM ${storage.table("source_versions")} WHERE id=$1
+        ), written AS (
+        INSERT INTO ${storage.table("source_versions")} AS stored(id, source_id, content_hash, media_type, observed_at, byte_length, trust_vector, metadata_json, information_label) VALUES($1,$2,$3,$4,TO_TIMESTAMP($5/1000.0),$6,$7::jsonb,$8::jsonb,$9::jsonb) ON CONFLICT(id) DO UPDATE SET information_label=EXCLUDED.information_label,
           metadata_json=CASE WHEN stored.source_id=EXCLUDED.source_id AND stored.content_hash=EXCLUDED.content_hash
             AND EXCLUDED.metadata_json->>'identityRecipe'='scce.gutenberg.source_identity.v2'
             THEN stored.metadata_json || jsonb_build_object('title', EXCLUDED.metadata_json->'title', 'identity', EXCLUDED.metadata_json->'identity', 'identityRecipe', EXCLUDED.metadata_json->'identityRecipe')
@@ -1145,7 +1151,12 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
             AND (NOT (stored.metadata_json ? 'sourceMetadataBinding')
               OR stored.metadata_json->'sourceMetadataBinding'=EXCLUDED.metadata_json->'sourceMetadataBinding')
             THEN jsonb_build_object('sourceMetadataBinding', EXCLUDED.metadata_json->'sourceMetadataBinding') ELSE '{}'::jsonb END
-          || ${sourceTranscriptArchiveAppendSql(storage.table("blobs"), storage.table("sources"))}`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
+          || ${sourceTranscriptArchiveAppendSql(storage.table("blobs"), storage.table("sources"))}
+          RETURNING id,information_label,metadata_json
+        ) SELECT 1 AS language_memory_changed FROM written LEFT JOIN prior USING(id)
+          WHERE prior.id IS NULL OR (written.information_label,written.metadata_json)
+            IS DISTINCT FROM (prior.information_label,prior.metadata_json)`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
+        if (changes.length) storage.markLanguageMemoryChanged();
       });
     },
     async putEvidenceVisual(input) {
@@ -1181,8 +1192,15 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     },
     async promoteEvidence(ids, reason) {
       if (ids.length === 0) return 0;
-      const rows = await storage.query<{ count: string }>(`UPDATE ${storage.table("evidence_spans")} SET status='promoted', provenance_json=provenance_json || $2::jsonb WHERE id=ANY($1) RETURNING id`, [ids, JSON.stringify({ promotionReason: reason })]);
-      return rows.length;
+      return storage.transaction(async () => {
+        const rows = await storage.query<{ id: string; admission_changed: boolean }>(`WITH prior AS MATERIALIZED (
+          SELECT id,status FROM ${storage.table("evidence_spans")} WHERE id=ANY($1) FOR UPDATE
+        ), written AS (UPDATE ${storage.table("evidence_spans")} SET status='promoted', provenance_json=provenance_json || $2::jsonb
+          WHERE id IN (SELECT id FROM prior) RETURNING id)
+        SELECT written.id,prior.status IS DISTINCT FROM 'promoted' AS admission_changed FROM written JOIN prior USING(id)`, [ids, JSON.stringify({ promotionReason: reason })]);
+        if (rows.some(row => row.admission_changed)) storage.markLanguageMemoryChanged();
+        return rows.length;
+      });
     },
     async getEvidence(id) {
       const access = storage.informationAccessPredicate("evidence", 2);
@@ -1668,8 +1686,12 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
       information_label: labels.get(span.id)!
     }));
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
-      await storage.query(
-        `WITH upserted AS (
+      const changes = await storage.query(
+        `WITH prior AS MATERIALIZED (
+       SELECT id,status,alpha,trust_vector,provenance_json,information_label,features
+       FROM ${storage.table("evidence_spans")}
+       WHERE id IN (SELECT value->>'id' FROM jsonb_array_elements($1::jsonb) AS input(value))
+     ), upserted AS (
        INSERT INTO ${storage.table("evidence_spans")} AS ev(id, source_id, source_version_id, chunk_id, content_hash, media_type, byte_start, byte_end, char_start, char_end, text_preview, text_content, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at, information_label)
      SELECT
        r.id,
@@ -1725,8 +1747,8 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        provenance_json=ev.provenance_json || EXCLUDED.provenance_json,
        information_label=EXCLUDED.information_label,
        features=ARRAY(SELECT DISTINCT value FROM unnest(ev.features || EXCLUDED.features) AS merged(value) ORDER BY value)
-     RETURNING id,features
-     )
+     RETURNING id,status,alpha,trust_vector,provenance_json,information_label,features
+     ), anchors AS (
      INSERT INTO ${storage.table("evidence_anchor_index")} AS anchor_index(evidence_id,features)
      SELECT upserted.id,
             ARRAY(
@@ -1746,9 +1768,13 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
          SELECT DISTINCT feature
          FROM unnest(anchor_index.features || EXCLUDED.features) AS feature
          ORDER BY feature
-       )`,
+       ) RETURNING evidence_id
+     ) SELECT 1 AS language_memory_changed FROM upserted LEFT JOIN prior USING(id)
+       WHERE prior.id IS NULL OR (upserted.status,upserted.alpha,upserted.trust_vector,upserted.provenance_json,upserted.information_label,upserted.features)
+         IS DISTINCT FROM (prior.status,prior.alpha,prior.trust_vector,prior.provenance_json,prior.information_label,prior.features)`,
         [payloadChunk]
       );
+      if (changes.length) storage.markLanguageMemoryChanged();
     }
   });
 }
