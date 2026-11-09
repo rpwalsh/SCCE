@@ -25,6 +25,7 @@ export interface ExtractiveQaPreparedSource {
 export interface ExtractiveQaPreparedRange {
   startCodePoint: number;
   endCodePoint: number;
+  answerRange?: { startCodePoint: number; endCodePoint: number };
 }
 export interface ExtractiveQaPreparedTurn {
   index: number;

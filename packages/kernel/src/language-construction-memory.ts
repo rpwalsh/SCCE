@@ -840,6 +840,12 @@ function prepareObservation(input: {
     || supervision.sourceId !== String(evidence.sourceId)
     || !validRange(supervision.replyStartCodePoint, supervision.replyEndCodePoint, evidencePoints.length)
     || !validRange(supervision.contextStartCodePoint, supervision.contextEndCodePoint, evidencePoints.length)
+    || (supervision.answerRange !== undefined && (!supervision.answerRange
+      || !validRange(supervision.answerRange.startCodePoint, supervision.answerRange.endCodePoint, evidencePoints.length)
+      || supervision.answerRange.startCodePoint < supervision.contextStartCodePoint || supervision.answerRange.endCodePoint > supervision.contextEndCodePoint
+      || supervision.answerRange.endCodePoint <= supervision.answerRange.startCodePoint
+      || evidencePoints.slice(supervision.answerRange.startCodePoint, supervision.answerRange.endCodePoint).join("")
+        !== evidencePoints.slice(supervision.replyStartCodePoint, supervision.replyEndCodePoint).join("")))
     || supervision.replyStartCodePoint === supervision.replyEndCodePoint || supervision.contextStartCodePoint === supervision.contextEndCodePoint
     || rangesOverlap(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint, supervision.replyStartCodePoint, supervision.replyEndCodePoint)
     || rangesOverlap(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint, supervision.contextStartCodePoint, supervision.contextEndCodePoint)

@@ -17,6 +17,7 @@ import { generalizeContextualQaSources, interpretContextualQaSourceGeneralizatio
 type Copy = { slotIndex: number; startCodePoint: number; endCodePoint: number; requestStart: number; requestEnd: number; value: string };
 type Measured = { sourceId: string; partition: string; recordId: string; sourceFamilyId?: string; profileId: string; span: EvidenceSpan; request: string; reply: string; context: string;
   requestStart: number; requestEnd: number; replyStart: number; replyEnd: number; contextStart: number; contextEnd: number;
+  answerRange?: { startCodePoint: number; endCodePoint: number };
   clause: string; clauseStart: number; clauseEnd: number; answerStart: number; answerEnd: number; copies: Copy[]; questionForm: ContextualQaRequestForm; sourceForm: ContextualQaRequestForm };
 export interface AcquiredContextualQaFamily { applicability: { fitBindings: number; heldOutBindings: number; outOfApplicability: number }; pattern: LanguagePatternRecord; sourceDependencies: NonNullable<LanguagePatternProjection["sourceDependencies"]> }
 
@@ -34,16 +35,26 @@ export function acquireContextualQaConstructions(input: { documents: readonly Co
       const record = reply.sourceRecordId ?? request.sourceRecordId;
       if (reply.sourceRecordId !== request.sourceRecordId || reply.sourceFamilyId !== request.sourceFamilyId) { rejected.push({ bindingId: "", reason: "original_record_owner_mismatch" }); continue; }
       const answer = reply.surface.trim();
-      const matches = reply.supportingSourceRanges.flatMap(range => occurrences(range.surface, answer).map(offset => ({ range, offset })));
+      const annotated = reply.supportingSourceRanges.filter(range => range.answerRange !== undefined);
+      const annotation = annotated[0]?.answerRange;
+      if (annotated.length && (annotated.length !== 1 || !annotation || !record
+        || !Number.isSafeInteger(annotation.startCodePoint) || !Number.isSafeInteger(annotation.endCodePoint)
+        || annotation.startCodePoint < annotated[0]!.startCodePoint || annotation.endCodePoint > annotated[0]!.endCodePoint
+        || annotation.endCodePoint <= annotation.startCodePoint
+        || [...annotated[0]!.surface].slice(annotation.startCodePoint - annotated[0]!.startCodePoint, annotation.endCodePoint - annotated[0]!.startCodePoint).join("") !== reply.surface)) {
+        rejected.push({ bindingId: "", reason: "declared_answer_range_invalid" }); continue;
+      }
+      const matches = annotated.length ? [{ range: annotated[0]!, answerOffset: annotation!.startCodePoint - annotated[0]!.startCodePoint
+        + [...reply.surface.slice(0, reply.surface.length - reply.surface.trimStart().length)].length }]
+        : reply.supportingSourceRanges.flatMap(range => occurrences(range.surface, answer).map(offset => ({ range, answerOffset: [...range.surface.slice(0, offset)].length })));
       if (!answer || matches.length !== 1) { rejected.push({ bindingId: "", reason: "declared_answer_not_unique" }); continue; }
-      const { range, offset } = matches[0]!;
+      const { range, answerOffset } = matches[0]!;
       const spans = document.spans.filter(span => span.status === "promoted" && String(span.sourceVersionId) === document.sourceVersionId
         && span.charEnd - span.charStart === [...span.text].length
         && [request, reply, range].every(part => part.startCodePoint >= span.charStart && part.endCodePoint <= span.charEnd
           && [...span.text].slice(part.startCodePoint - span.charStart, part.endCodePoint - span.charStart).join("") === part.surface));
       if (spans.length !== 1) { rejected.push({ bindingId: "", reason: "complete_owner_evidence_required" }); continue; }
       const span = spans[0]!;
-      const answerOffset = [...range.surface.slice(0, offset)].length;
       const clauseRanges = surfaceSentenceRanges(range.surface).filter(sentence => {
         const start = [...range.surface.slice(0, sentence.startUtf16)].length, end = [...range.surface.slice(0, sentence.endUtf16)].length;
         return answerOffset >= start && answerOffset + [...answer].length <= end;
@@ -77,6 +88,7 @@ export function acquireContextualQaConstructions(input: { documents: readonly Co
         requestStart: request.startCodePoint - span.charStart, requestEnd: request.endCodePoint - span.charStart,
         replyStart: reply.startCodePoint - span.charStart, replyEnd: reply.endCodePoint - span.charStart,
         contextStart: range.startCodePoint - span.charStart, contextEnd: range.endCodePoint - span.charStart,
+        ...(annotation ? { answerRange: { startCodePoint: annotation.startCodePoint - span.charStart, endCodePoint: annotation.endCodePoint - span.charStart } } : {}),
         clause, clauseStart: range.startCodePoint + clauseOffset - span.charStart,
         clauseEnd: range.startCodePoint + clauseOffset + [...clause].length - span.charStart, answerStart, answerEnd };
       const key = canonicalStringify([questionForm, sourceForm.filter(part => typeof part !== "string")]), group = groups.get(key) ?? []; group.push(measured); groups.set(key, group);
@@ -84,7 +96,8 @@ export function acquireContextualQaConstructions(input: { documents: readonly Co
   }
   const families = new Map<string, AcquiredContextualQaFamily>();
   for (const [key, measured_] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
-    const measured = [...new Map(measured_.map(row => [canonicalStringify([row.request, row.reply, row.context]), row])).values()]
+    const measured = [...new Map(measured_.map(row => [canonicalStringify([row.request, row.reply, row.context,
+      row.answerRange ? [row.answerRange.startCodePoint - row.contextStart, row.answerRange.endCodePoint - row.contextStart] : null]), row])).values()]
       .sort((a, b) => a.partition.localeCompare(b.partition) || a.sourceId.localeCompare(b.sourceId) || a.requestStart - b.requestStart);
     const partitions = [...new Set(measured.map(row => row.partition))].sort((a, b) => input.hasher.digestHex(a).localeCompare(input.hasher.digestHex(b)) || a.localeCompare(b));
     const heldPartition = partitions.at(-1), allFit = measured.filter(row => row.partition !== heldPartition), held = measured.filter(row => row.partition === heldPartition);
@@ -167,6 +180,7 @@ function observations(row: Measured, variables: ReadonlyMap<number, number>, rel
     nullRoles: [{ slotIndex: answerSlot, graphBinding: binding(answerSlot) }], contextualQaSupervision: { sourceRecordId: row.recordId,
       ...(row.sourceFamilyId ? { sourceFamilyId: row.sourceFamilyId } : {}),
       sourceId: row.sourceId, profileId: row.profileId,
+      ...(row.answerRange ? { answerRange: row.answerRange } : {}),
       replyStartCodePoint: row.replyStart, replyEndCodePoint: row.replyEnd, contextStartCodePoint: row.contextStart, contextEndCodePoint: row.contextEnd } },
   { ...common, surfaceStartCodePoint: row.clauseStart, surfaceEndCodePoint: row.clauseEnd,
     roles: [...row.copies.flatMap(copy => variables.has(copy.slotIndex) ? [{ slotIndex: variables.get(copy.slotIndex)!, startCodePoint: copy.startCodePoint, endCodePoint: copy.endCodePoint, graphBinding: binding(variables.get(copy.slotIndex)!) }] : []),
@@ -236,6 +250,8 @@ export function verifyContextualQaConstruction(input: { pattern: LanguagePattern
         { index: 1, speakerId: "source.reply", sourceRecordId: supervision.sourceRecordId, sourceFamilyId: supervision.sourceFamilyId, surface: reply, replyToTurnIndex: 0, commitmentScope: "external",
           startCodePoint: span.charStart + supervision.replyStartCodePoint, endCodePoint: span.charStart + supervision.replyEndCodePoint,
           supportingSourceRanges: [{ startCodePoint: span.charStart + supervision.contextStartCodePoint, endCodePoint: span.charStart + supervision.contextEndCodePoint,
+            ...(supervision.answerRange ? { answerRange: { startCodePoint: span.charStart + supervision.answerRange.startCodePoint,
+              endCodePoint: span.charStart + supervision.answerRange.endCodePoint } } : {}),
             surface: points.slice(supervision.contextStartCodePoint, supervision.contextEndCodePoint).join("") }] }
       ] });
     }

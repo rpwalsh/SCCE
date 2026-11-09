@@ -78,7 +78,9 @@ export function induceConversationalActConstructionTrainingSets(input: {
         startCodePoint: turn.startCodePoint - span.charStart, endCodePoint: turn.endCodePoint - span.charStart,
         ...(turn.replyToTurnIndex !== undefined ? { replyToTurnIndex: retainedIndexes!.get(turn.replyToTurnIndex)! } : {}),
         ...(turn.supportingSourceRanges ? { supportingSourceRanges: turn.supportingSourceRanges.map(range => ({ ...range,
-          startCodePoint: range.startCodePoint - span.charStart, endCodePoint: range.endCodePoint - span.charStart })) } : {})
+          startCodePoint: range.startCodePoint - span.charStart, endCodePoint: range.endCodePoint - span.charStart,
+          ...(range.answerRange ? { answerRange: { startCodePoint: range.answerRange.startCodePoint - span.charStart,
+            endCodePoint: range.answerRange.endCodePoint - span.charStart } } : {}) })) } : {})
       }));
       units.push({ span, points, sourceVersionId: document.sourceVersionId, profileId: document.profileId,
         ...(transcriptTurns ? { transcriptTurns } : {}) });

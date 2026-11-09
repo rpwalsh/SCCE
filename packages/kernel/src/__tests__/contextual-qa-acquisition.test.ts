@@ -85,6 +85,43 @@ it("retains ambiguous or non-independent observations unqualified", () => {
   expect(learned.rejected.some(row => row.reason === "declared_answer_not_unique")).toBe(true);
 });
 
+it("uses declared human answer ranges without licensing unannotated or malformed repeated text", () => {
+  const documents = sources().map(doc => {
+    const reply = doc.transcriptTurns[1]!, value = reply.surface;
+    const repeated = document(doc.transcriptTurns[0]!.surface.split(" ")[1]!, value, Number(doc.spans[0]!.sourceId.split(".")[1]),
+      `${doc.transcriptTurns[1]!.supportingSourceRanges![0]!.surface} \u25c7 ${value}.`);
+    const range = repeated.transcriptTurns[1]!.supportingSourceRanges![0]!;
+    return { ...repeated, transcriptTurns: repeated.transcriptTurns.map(turn => turn.index !== 1 ? turn : { ...turn,
+      supportingSourceRanges: [{ ...range, answerRange: { startCodePoint: range.startCodePoint + [...range.surface.slice(0, range.surface.indexOf(value))].length,
+        endCodePoint: range.startCodePoint + [...range.surface.slice(0, range.surface.indexOf(value))].length + [...value].length } }] }) };
+  });
+  const learned = acquireContextualQaConstructions({ documents, authorship: "human_authored", hasher, updatedAt: 1 });
+  expect(learned.families, JSON.stringify(learned.rejected)).toHaveLength(1);
+  const pattern = learned.families[0]!.pattern, evidence = documents.flatMap(doc => doc.spans);
+  const verified = verifyContextualQaConstruction({ pattern, evidence, hasher });
+  expect(verified).toBeDefined();
+  const wrongAnnotation = compileLanguageConstructionPattern({ bindingId: verified!.bindingId, profileId: pattern.profileId, evidence, hasher, updatedAt: 1,
+    acquisitionStatus: "document_heldout_qualified", storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
+    observations: verified!.sourceExamples.map(example => ({ sourceVersionId: example.sourceVersionId, evidenceId: example.evidenceId,
+      surfaceStartCodePoint: example.surfaceStartCodePoint, surfaceEndCodePoint: example.surfaceEndCodePoint,
+      roles: example.roles, nullRoles: example.nullRoles,
+      ...(example.contextualQaSupervision ? { contextualQaSupervision: { ...example.contextualQaSupervision,
+        answerRange: { startCodePoint: example.contextualQaSupervision.contextStartCodePoint, endCodePoint: example.contextualQaSupervision.contextStartCodePoint + 1 } } } : {}) })) });
+  expect(wrongAnnotation.status).toBe("rejected");
+  const unannotated = documents.map(doc => ({ ...doc, transcriptTurns: doc.transcriptTurns.map(turn => ({ ...turn,
+    supportingSourceRanges: turn.supportingSourceRanges?.map(({ answerRange: _answer, ...range }) => range) })) }));
+  expect(acquireContextualQaConstructions({ documents: unannotated, authorship: "human_authored", hasher, updatedAt: 1 }).families).toEqual([]);
+  for (const mode of ["mismatch", "outside", "multiple"] as const) {
+    const malformed = documents.map(doc => ({ ...doc, transcriptTurns: doc.transcriptTurns.map(turn => ({ ...turn,
+      supportingSourceRanges: turn.supportingSourceRanges?.flatMap(range => mode === "multiple" ? [range, range] : [{ ...range,
+        answerRange: mode === "outside" ? { startCodePoint: range.startCodePoint - 1, endCodePoint: range.startCodePoint + 1 }
+          : { startCodePoint: range.startCodePoint, endCodePoint: range.startCodePoint + [...turn.surface].length } }]) })) }));
+    const result = acquireContextualQaConstructions({ documents: malformed, authorship: "human_authored", hasher, updatedAt: 1 });
+    expect(result.families).toEqual([]); expect(result.rejected.filter(row => row.reason === "declared_answer_range_invalid")).toHaveLength(4);
+  }
+  expect(verifyContextualQaConstruction({ pattern, evidence: evidence.map(span => ({ ...span, status: "quarantined" })), hasher })).toBeUndefined();
+});
+
 it("rejects revoked, changed, foreign owners and a locally recompiled false relation", () => {
   const documents = sources(), evidence = documents.flatMap(doc => doc.spans);
   const pattern = acquireContextualQaConstructions({ documents, authorship: "human_authored", hasher, updatedAt: 1 }).families[0]!.pattern;

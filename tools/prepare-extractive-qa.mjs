@@ -38,7 +38,8 @@ export async function prepareExtractiveQa({ inputPath, outputDir, metadata, limi
       index: turn.index + turnBase, startCodePoint: turn.startCodePoint + base, endCodePoint: turn.endCodePoint + base,
       ...(turn.replyToTurnIndex === undefined ? {} : { replyToTurnIndex: turn.replyToTurnIndex + turnBase }),
       ...(turn.supportingSourceRanges ? { supportingSourceRanges: turn.supportingSourceRanges.map(range => ({
-        startCodePoint: range.startCodePoint + base, endCodePoint: range.endCodePoint + base })) } : {}) }))] };
+        startCodePoint: range.startCodePoint + base, endCodePoint: range.endCodePoint + base,
+        ...(range.answerRange ? { answerRange: { startCodePoint: range.answerRange.startCodePoint + base, endCodePoint: range.answerRange.endCodePoint + base } } : {}) })) } : {}) }))] };
   };
   const flush = async () => {
     if (!shard.turns.length) return;
@@ -58,7 +59,7 @@ export async function prepareExtractiveQa({ inputPath, outputDir, metadata, limi
         paragraphs++;
         if (typeof paragraph.context !== "string" || !Array.isArray(paragraph.qas)) throw Error("invalid paragraph context or QA records");
         const contextPoints = [...paragraph.context], context = paragraph.context.normalize("NFC"), turns = [];
-        let text = "";
+        let text = ""; const answerRanges = new Map();
         for (const qa of paragraph.qas) {
           questions++;
           if (typeof qa.id !== "string" || !qa.id || ids.has(qa.id) || typeof qa.question !== "string" || !qa.question.trim()
@@ -69,17 +70,25 @@ export async function prepareExtractiveQa({ inputPath, outputDir, metadata, limi
             || answer.answer_start < 0 || contextPoints.slice(answer.answer_start, answer.answer_start + [...answer.text].length).join("") !== answer.text) throw Error(`invalid original answer offset: ${qa.id}`);
           if (new Set(qa.answers.map(answer => JSON.stringify([answer.answer_start, answer.text]))).size !== 1) { ambiguousAnnotations++; continue; }
           const question = qa.question.normalize("NFC"), reply = qa.answers[0].text.normalize("NFC"), start = [...text].length;
+          const answerStart = [...contextPoints.slice(0, qa.answers[0].answer_start).join("").normalize("NFC")].length;
+          const answerEnd = answerStart + [...reply].length;
+          if ([...context].slice(answerStart, answerEnd).join("") !== reply) throw Error(`answer offset crosses NFC boundary: ${qa.id}`);
           turns.push({ index: turns.length, speakerId: "human.question", sourceRecordId: qa.id, sourceFamilyId,
             surface: question, startCodePoint: start, endCodePoint: start + [...question].length });
           text += question + "\n";
           const replyStart = [...text].length;
           turns.push({ index: turns.length, speakerId: "human.answer", sourceRecordId: qa.id, sourceFamilyId, surface: reply,
             startCodePoint: replyStart, endCodePoint: replyStart + [...reply].length, replyToTurnIndex: turns.length - 1, commitmentScope: "external" });
+          answerRanges.set(qa.id, { startCodePoint: answerStart, endCodePoint: answerEnd });
           text += reply + "\n"; prepared++;
         }
         if (!turns.length) continue;
         const startCodePoint = [...text].length; text += context;
-        for (const turn of turns) if (turn.commitmentScope === "external") turn.supportingSourceRanges = [{ startCodePoint, endCodePoint: [...text].length }];
+        for (const turn of turns) if (turn.commitmentScope === "external") {
+          const answer = answerRanges.get(turn.sourceRecordId);
+          turn.supportingSourceRanges = [{ startCodePoint, endCodePoint: [...text].length,
+            answerRange: { startCodePoint: startCodePoint + answer.startCodePoint, endCodePoint: startCodePoint + answer.endCodePoint } }];
+        }
         const entry = { text, turns }; let candidate = append(entry);
         if (Buffer.byteLength(encoded(candidate)) > caps.maxOutputFileBytes && shard.turns.length) { await flush(); candidate = append(entry); }
         if (Buffer.byteLength(encoded(candidate)) > caps.maxOutputFileBytes) throw Error("paragraph cannot fit maxOutputFileBytes");

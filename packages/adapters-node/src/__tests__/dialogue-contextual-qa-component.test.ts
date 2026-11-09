@@ -122,12 +122,14 @@ it("learns a genuine human extractive form across original articles and answers 
     const question = record.qa.question.normalize("NFC"), reply = answer.text.normalize("NFC"), context = record.context.normalize("NFC");
     const sourceRecordId = record.qa.id, sourceFamilyId = `source.article.${hasher.digestHex(JSON.stringify([human.sha256, record.articleTitle]))}`;
     const start = [...text].length, replyStart = start + [...question].length + 1, contextStart = replyStart + [...reply].length + 1;
+    const annotatedStart = [...[...record.context].slice(0, answer.answer_start).join("").normalize("NFC")].length;
     text += `${question}\n${reply}\n${context}\n`;
     turns.push({ index: turns.length, speakerId: "human.question", sourceRecordId, sourceFamilyId, surface: question,
       startCodePoint: start, endCodePoint: replyStart - 1 });
     turns.push({ index: turns.length, speakerId: "human.answer", sourceRecordId, sourceFamilyId, surface: reply, startCodePoint: replyStart,
       endCodePoint: contextStart - 1, replyToTurnIndex: turns.length - 1, commitmentScope: "external",
-      supportingSourceRanges: [{ startCodePoint: contextStart, endCodePoint: [...text].length - 1, surface: context }] });
+      supportingSourceRanges: [{ startCodePoint: contextStart, endCodePoint: [...text].length - 1, surface: context,
+        answerRange: { startCodePoint: contextStart + annotatedStart, endCodePoint: contextStart + annotatedStart + [...reply].length } }] });
   }
   expect(new Set(turns.map(turn => turn.sourceFamilyId)).size).toBe(4);
   const f = await fixture({ schema: "scce.dialogue_transcript.v1", text, turns });
@@ -136,6 +138,10 @@ it("learns a genuine human extractive form across original articles and answers 
     familyApplicability: [{ fitBindings: 2, heldOutBindings: 1, outOfApplicability: 2 }] });
   const qa = (await f.storage.languageMemory.listLanguagePatterns()).filter(pattern => jsonRecord(pattern.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE);
   expect(qa).toHaveLength(1);
+  const verifiedHuman = verifyContextualQaConstruction({ pattern: qa[0]!, evidence: f.evidence, hasher });
+  expect(verifiedHuman).toBeDefined();
+  expect(verifiedHuman!.sourceExamples.filter(example => example.contextualQaSupervision)
+    .every(example => example.contextualQaSupervision!.answerRange !== undefined)).toBe(true);
   const current = "V\u00eblora stations route glyphs for Neralis_\u6e2f\ud83e\udded.";
   const kernel = f.kernel();
   await kernel.ingest({ uri: "fixture://current-human-form-fact", content: current, mediaType: "text/plain", namespace: "workspace", informationLabel: label,
@@ -207,7 +213,7 @@ it("records unqualified contextual input once and skips unrelated dialogue compo
   expect(put).not.toHaveBeenCalled(); expect(search).not.toHaveBeenCalled();
 });
 
-it("upgrades an already-complete empty v1 QA checkpoint once without recompiling source models or changing source identity", async () => {
+it.each([CONTEXTUAL_QA_CONSTRUCTION_RECIPE, "kernel.dialogue_contextual_qa.compiler.v2"])("upgrades an already-complete empty %s QA checkpoint once without recompiling source models or changing source identity", async compilerFingerprint => {
   const f = await fixture(); await f.train();
   const all = await f.storage.languageMemory.listLanguagePatterns();
   const qa = all.find(row => jsonRecord(row.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE)!;
@@ -220,7 +226,7 @@ it("upgrades an already-complete empty v1 QA checkpoint once without recompiling
   expect(projection).toBeDefined();
   await f.storage.languageMemory.replaceLanguagePatternProjection!({ patterns: [], projection: { ...projection!, patternIds: [], sourceDependencies: [] } });
   const receipt = [...f.checkpoints.values()].find(row => jsonRecord(row.metadata).schema === "scce.dialogue_contextual_qa_compilation.v1")!;
-  receipt.metadata = { ...jsonRecord(receipt.metadata), compilerFingerprint: CONTEXTUAL_QA_CONSTRUCTION_RECIPE, projections: [] };
+  receipt.metadata = { ...jsonRecord(receipt.metadata), compilerFingerprint, projections: [] };
   const checkpointCount = f.checkpoints.size;
   const trainBody = vi.spyOn(sourceTrainer, "trainLanguageCorpusText").mockRejectedValue(new Error("cached source must not compile again"));
   const acquire = vi.spyOn(kernelModule, "acquireContextualQaConstructions");
@@ -229,7 +235,7 @@ it("upgrades an already-complete empty v1 QA checkpoint once without recompiling
   expect(upgraded.contextualQaConstructions).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
     pairs: 4, qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false });
   expect(CONTEXTUAL_QA_CONSTRUCTION_RECIPE).toBe("kernel.dialogue_contextual_qa.v1");
-  expect(CONTEXTUAL_QA_COMPILER_FINGERPRINT).toBe("kernel.dialogue_contextual_qa.compiler.v2");
+  expect(CONTEXTUAL_QA_COMPILER_FINGERPRINT).toBe("kernel.dialogue_contextual_qa.compiler.v3");
   expect(trainBody).not.toHaveBeenCalled(); expect(acquire).toHaveBeenCalledTimes(1);
   expect(publish).toHaveBeenCalledTimes(1); expect(put).toHaveBeenCalledTimes(1); expect(f.checkpoints.size).toBe(checkpointCount);
   expect(jsonRecord(f.checkpoints.get(receipt.id)!.metadata).compilerFingerprint).toBe(CONTEXTUAL_QA_COMPILER_FINGERPRINT);

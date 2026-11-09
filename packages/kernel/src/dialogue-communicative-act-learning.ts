@@ -24,7 +24,8 @@ export interface TranscriptTurn {
   /** Original shared context family used for independent acquisition partitions. */
   sourceFamilyId?: string;
   /** Documentary support ranges cannot overlap speech. */
-  supportingSourceRanges?: readonly { startCodePoint: number; endCodePoint: number; surface: string }[];
+  supportingSourceRanges?: readonly { startCodePoint: number; endCodePoint: number; surface: string;
+    answerRange?: { startCodePoint: number; endCodePoint: number } }[];
 }
 
 /** A source-declared segmentation; coordinates address the exact NFC source text, never inferred language. */
@@ -70,7 +71,13 @@ export function validateDeclaredTranscriptSource(value: unknown): DeclaredTransc
           || (range.surface !== undefined && (typeof range.surface !== "string" || !range.surface.trim()
             || points.slice(range.startCodePoint, range.endCodePoint).join("") !== range.surface))
           || !points.slice(range.startCodePoint, range.endCodePoint).join("").trim()) throw new Error(`invalid declared transcript support ${index}`);
+        const answer = range.answerRange;
+        if (answer !== undefined && (!answer || turn.commitmentScope !== "external" || turn.replyToTurnIndex === undefined
+          || !Number.isSafeInteger(answer.startCodePoint) || !Number.isSafeInteger(answer.endCodePoint)
+          || answer.startCodePoint < range.startCodePoint || answer.endCodePoint > range.endCodePoint || answer.endCodePoint <= answer.startCodePoint
+          || points.slice(answer.startCodePoint, answer.endCodePoint).join("") !== turn.surface)) throw new Error(`invalid declared transcript answer ${index}`);
       }
+      if (turn.supportingSourceRanges.filter((range: NonNullable<TranscriptTurn["supportingSourceRanges"]>[number]) => range.answerRange !== undefined).length > 1) throw new Error(`ambiguous declared transcript answer ${index}`);
     }
     turns.push({ ...turn, ...(turn.supportingSourceRanges ? { supportingSourceRanges: turn.supportingSourceRanges.map((range: NonNullable<TranscriptTurn["supportingSourceRanges"]>[number]) => ({
       ...range, surface: points.slice(range.startCodePoint, range.endCodePoint).join("")

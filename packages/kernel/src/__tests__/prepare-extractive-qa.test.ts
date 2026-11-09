@@ -33,7 +33,7 @@ it("stores each paragraph once, verifies code-point answer offsets and preserves
     const docs = raw.map(validateDeclaredTranscriptSource);
     return { result, raw, docs, turns: docs.flatMap(doc => doc.turns) };
   };
-  const whole = await prep("whole", 100000), sharded = await prep("sharded", 1600);
+  const whole = await prep("whole", 100000), sharded = await prep("sharded", 1900);
   expect(whole.result.preparation).toMatchObject({ paragraphs: 3, questions: 9, prepared: 6, unanswerable: 3, ambiguousAnnotations: 0, holdoutPartition: "original_article" });
   expect(sharded.result.outputs.length).toBeGreaterThan(whole.result.outputs.length);
   expect(sharded.turns.map(turn => [turn.sourceRecordId, turn.sourceFamilyId])).toEqual(whole.turns.map(turn => [turn.sourceRecordId, turn.sourceFamilyId]));
@@ -43,8 +43,45 @@ it("stores each paragraph once, verifies code-point answer offsets and preserves
   expect(whole.raw[0]!.text.split(f.context)).toHaveLength(4);
   expect(whole.raw[0]!.turns.filter(turn => turn.supportingSourceRanges).every(turn => turn.supportingSourceRanges!.every(range => !Object.hasOwn(range, "surface")))).toBe(true);
   expect(whole.turns.filter(turn => turn.supportingSourceRanges).every(turn => turn.supportingSourceRanges!.every(range => range.surface === f.context))).toBe(true);
+  for (const { text, turns } of [...whole.raw, ...sharded.raw]) for (const turn of turns.filter(turn => turn.commitmentScope === "external")) {
+    const range = turn.supportingSourceRanges![0]!, answer = range.answerRange!;
+    expect(answer.startCodePoint).toBeGreaterThanOrEqual(range.startCodePoint);
+    expect(answer.endCodePoint).toBeLessThanOrEqual(range.endCodePoint);
+    expect([...text].slice(answer.startCodePoint, answer.endCodePoint).join("")).toBe(turn.surface);
+  }
   const wrong = structuredClone(whole.raw[0]!); Object.assign(wrong.turns[1]!.supportingSourceRanges![0]!, { surface: "foreign context" });
   expect(() => validateDeclaredTranscriptSource(wrong)).toThrow("invalid declared transcript support");
+});
+it("preserves exact human-selected duplicate answers through NFC remapping and refuses malformed declared ranges", async () => {
+  const f = await fixture(), context = "\ud83e\udded A\u030aster \ua66e 907. 907.";
+  for (const article of f.source.data) for (const paragraph of article.paragraphs) {
+    paragraph.context = context;
+    for (const qa of paragraph.qas) for (const answer of qa.answers) answer.answer_start = [...context.slice(0, context.indexOf("907"))].length;
+  }
+  const outputDir = join(f.root, "nfc"), result = await prepareExtractiveQa({ inputPath: f.inputPath, outputDir, metadata: await f.write() });
+  const raw = JSON.parse(await readFile(join(outputDir, result.outputs[0]!.path), "utf8")) as ExtractiveQaPreparedTranscript;
+  const source = validateDeclaredTranscriptSource(raw), reply = source.turns[1]!, support = reply.supportingSourceRanges![0]!;
+  expect(support.surface).toBe(context.normalize("NFC"));
+  expect(support.surface.split("907")).toHaveLength(3);
+  expect(support.answerRange!.startCodePoint - support.startCodePoint).toBe([...context.normalize("NFC").slice(0, context.normalize("NFC").indexOf("907"))].length);
+  for (const answerRange of [null, { startCodePoint: support.startCodePoint - 1, endCodePoint: support.startCodePoint + 2 },
+    { startCodePoint: support.startCodePoint, endCodePoint: support.startCodePoint + 3 },
+    { startCodePoint: support.answerRange!.startCodePoint, endCodePoint: support.endCodePoint + 1 }]) {
+    const wrong = structuredClone(raw); Object.assign(wrong.turns[1]!.supportingSourceRanges![0]!, { answerRange });
+    expect(() => validateDeclaredTranscriptSource(wrong)).toThrow("invalid declared transcript answer");
+  }
+  const multiple = structuredClone(raw); multiple.turns[1]!.supportingSourceRanges!.push(structuredClone(multiple.turns[1]!.supportingSourceRanges![0]!));
+  expect(() => validateDeclaredTranscriptSource(multiple)).toThrow("ambiguous declared transcript answer");
+});
+it("rejects original answer annotations that do not survive exact NFC boundaries and retains ambiguous annotations unprepared", async () => {
+  const f = await fixture(), first = f.source.data[0]!.paragraphs[0]!;
+  first.context = "e\u0301"; first.qas[0]!.answers = [{ text: "e", answer_start: 0 }];
+  await expect(prepareExtractiveQa({ inputPath: f.inputPath, outputDir: join(f.root, "boundary"), metadata: await f.write() })).rejects.toThrow("NFC boundary");
+  const g = await fixture(), question = g.source.data[0]!.paragraphs[0]!.qas[0]!;
+  g.source.data[0]!.paragraphs[0]!.context += " 907";
+  question.answers.push({ text: "907", answer_start: [...g.context].length + 1 });
+  const result = await prepareExtractiveQa({ inputPath: g.inputPath, outputDir: join(g.root, "ambiguous"), metadata: await g.write() });
+  expect(result.preparation).toMatchObject({ prepared: 5, ambiguousAnnotations: 1 });
 });
 it("rejects changed hashes, invalid original offsets and duplicate original QA IDs without publishing partial output", async () => {
   const f = await fixture(), metadata = await f.write(), outputDir = join(f.root, "rejected");
