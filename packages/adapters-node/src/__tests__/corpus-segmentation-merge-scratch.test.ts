@@ -11,6 +11,7 @@ import { fixtureSegmentationScratch } from "../../../kernel/src/__tests__/fixtur
 import { segmentationOrdinalKey } from "../corpus-segmentation-store.js";
 import { BOUNDARY_MERGE_PAGE_SCHEMA, createPackedBoundaryMergeScratch, withPackedBoundaryMerges } from "../corpus-segmentation-merge-scratch.js";
 import { durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import { sortSegmentationScratch } from "../../../kernel/src/corpus-segmentation-sort.js";
 
 function fixture(pageRows = 4096, maxPageBytes = 16000) {
   const memory = fixtureSegmentationScratch(pageRows, maxPageBytes);
@@ -28,6 +29,22 @@ async function read(store: CorpusSegmentationScratch, collection: string, prefix
   const rows = []; for await (const page of store.pages({ collection, prefix, afterKey, pageRows: store.pageRows, maxPageBytes: store.maxPageBytes })) rows.push(...page); return rows;
 }
 const hasher = createHasher();
+it("uses the declared Node working budget to eliminate physical binary merge passes with identical packed rows",async()=>{
+  const results=[],writes:number[]=[],levels:number[]=[];
+  for(const binary of [true,false]){
+    const f=fixture(2,2048),store=binary?{...f.store,sortMergeBudget:{maxResidentBytes:8192+2*(4096+4),residentBytesPerInput:4096,residentOutputBytes:8192}}:f.store;
+    const lease=createPackedBoundaryMergeScratch(store),rows=Array.from({length:302},(_,index)=>({orderKey:segmentationOrdinalKey(index),value:{rank:301-index,text:"\u732b\ud83e\udded.e\u0301"}}));
+    try{
+      await lease.scratch.putMany("source",rows);await sortSegmentationScratch(lease.scratch,"source","sorted",(a,b)=>Number((a.value as {rank:number}).rank)-Number((b.value as {rank:number}).rank));
+      results.push(await read(lease.scratch,"sorted"));
+      const physical=f.writes.filter(row=>row.collection.startsWith("sorted.sort."));writes.push(physical.length);
+      levels.push(Math.max(...physical.map(row=>Number(/\.sort\.(\d+)\./u.exec(row.collection)![1]))));
+      expect(lease.scratch.sortMergeBudget!.maxResidentBytes).toBe(binary?16392:64*1024*1024);
+    }finally{await lease.dispose();}
+    for(const name of f.names)expect(await f.memory.count(name)).toBe(0);
+  }
+  expect(results[1]).toEqual(results[0]);expect(levels).toEqual([8,1]);expect(writes[1]!).toBeLessThan(writes[0]!/2);
+});
 function cursor(statistics: BoundarySufficientStatistics, chunk = 4096): BoundaryStatisticsCursor {
   const { rows, sourceDocumentIds, ...header } = statistics;
   return { header: { ...header, rowCount: rows.length, sourceInventory: { id: hasher.digestHex(JSON.stringify(sourceDocumentIds)), count: sourceDocumentIds.length } },

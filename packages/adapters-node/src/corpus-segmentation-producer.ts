@@ -215,6 +215,7 @@ async function consolidateCorpusSegmentationOwned(input:{storage:PostgresStorage
     return {runId:run.run.runId,alreadyComplete:true,minimumPoolConnections:CORPUS_SEGMENTATION_MIN_POOL_CONNECTIONS,model:active.inference};
   }
   if(state==="failed")throw new Error("Failed corpus segmentation run requires a new explicit run identity");
+  if(input.resume)await run.discardIncompleteMergeScratch(state);
   const source=state==="building"?await prepareCorpusSegmentationInput({storage,run,windowUtf16:input.windowUtf16,signal:input.signal,onProgress:input.onProgress}):await restoreCorpusSegmentationInput(storage,run);
   if(input.signal?.aborted)throw input.signal.reason??new Error("Corpus segmentation fit aborted by owner");
   let rootPopulationId:string|undefined;

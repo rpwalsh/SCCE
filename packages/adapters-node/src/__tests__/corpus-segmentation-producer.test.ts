@@ -15,7 +15,8 @@ import { BOUNDARY_MERGE_PAGE_SCHEMA } from "../corpus-segmentation-merge-scratch
 import * as numericFiles from "../boundary-fit-numeric-file.js";
 
 async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFamily=true, initialize=true) {
-  const memory=fixtureSegmentationScratch(pageRows,12000), calls:Array<{sql:string;params:unknown[]}>=[];
+  const memory=fixtureSegmentationScratch(pageRows,12000), calls:Array<{sql:string;params:unknown[]}>=[],collections=new Set<string>();
+  const put=memory.putMany;memory.putMany=async(collection,rows)=>{collections.add(collection);await put(collection,rows);};
   const label={tenantId:"owner",principals:["owner"],compartments:[],exportClass:"internal" as const,mergePolicy:"same_owner" as const};
   const texts=Array.from({length:sourceCount},(_,index)=>index%2===0?`opaque alpha delta. opaque beta delta. opaque alpha delta. e\u0301?? ${index}`:`opaque alpha delta. opaque gamma delta. opaque alpha delta. ??? ${index}`);
   const owners=texts.map((text,index)=>({evidenceId:`evidence.${index}`,sourceId:`source.${index}`,sourceVersionId:`version.${index}`,
@@ -51,6 +52,11 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
         return rows.map(row=>({order_key:row.orderKey,row_json:row.value,admitted:true,decoded_bytes:Buffer.byteLength(JSON.stringify(row))})) as T[];}
       if(sql.startsWith("DELETE")){await memory.deleteCollection(String(params[1]));return [];}
       if(sql.includes("SET state='fitting'")){state="fitting";snapshot=JSON.parse(String(params[1]));return [{run_id:"owned-run"}] as T[];}
+      if(sql.includes("removed AS")&&sql.includes("AS authorized")){
+        const authorized=state===params[1];let count=0;
+        if(authorized)for(const collection of collections)if(collection.startsWith(String(params[2]))){count+=await memory.count(collection);await memory.deleteCollection(collection);}
+        return [{authorized,count:String(count)}] as T[];
+      }
       if(sql.includes("AS count"))return [{count:String(await memory.count(String(params[1])))}] as T[];
       throw new Error(`Unimplemented fixture SQL: ${sql.slice(0,80)}`);
     }} as unknown as PostgresStorageAdapter;
@@ -58,7 +64,7 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
     normalizationContractId:canonicalNormalizationContract(createHasher()).id,recipeId:corpusSegmentationInputRecipe(28),createdAt:1};
   const bounds={pageRows,maxPageBytes:12000};
   const run=initialize?await createCorpusSegmentationRun(storage,declaration,bounds):null!;
-  return {storage,run,declaration,bounds,memory,calls,owners,texts,getSnapshot:()=>snapshot,getState:()=>state,getActive:()=>active,setPublicationFailure:(value:boolean)=>{failPublication=value;}};
+  return {storage,run,declaration,bounds,memory,collections,calls,owners,texts,getSnapshot:()=>snapshot,getState:()=>state,getActive:()=>active,setPublicationFailure:(value:boolean)=>{failPublication=value;}};
 }
 it("compiles all owned Unicode windows through the real statistics producer without inflating documents or families",async()=>{
   const f=await fixture(2), cursor=await prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28});
@@ -194,6 +200,24 @@ it("binds the actual numeric fit factory and removes its file when the owner abo
     expect(files).toBe(1);expect(pages).toBe(1);expect(await readdir(directory)).toEqual([]);
     expect(f.getState()).toBe("fitting");expect(f.getActive()).toBeNull();
   }finally{spy.mockRestore();await rm(directory,{recursive:true,force:true});}
+});
+it("reclaims old binary-sort levels on fitting resume without modifying immutable preparation or complete artifacts",async()=>{
+  const f=await fixture(3,false,8,false,false),options={storage:f.storage,scope:f.declaration.scope,runId:"owned-run",createdAt:1,bounds:f.bounds,windowUtf16:28,maxPopulations:1};
+  f.setPublicationFailure(true);await expect(consolidateCorpusSegmentation(options)).rejects.toThrow("publication failed");
+  f.setPublicationFailure(false);expect(f.getState()).toBe("fitting");
+  const inventory=async()=>{const rows=[];for(const collection of [...f.collections].filter(name=>name.startsWith("input/")).sort()){
+    const values=[];for await(const page of f.memory.pages({collection,...f.bounds}))values.push(...page);rows.push({collection,values});}return canonicalStringify(rows);};
+  const before=await inventory(),reads=f.calls.filter(call=>call.sql.includes("SELECT substring")).length;
+  const old=["scratch/fit.population.0.sortedRows.sort.7.0","scratch/fit.population.0.sortedRows.sort.6.1"];
+  for(const collection of [...old,"scratch/producer/windows","scratch/unrelated"])await f.memory.putMany(collection,[{orderKey:"old",value:"preserve unless leased"}]);
+  // Opening through the ordinary workflow validates its original declaration before resetting scratch.
+  const result=await consolidateCorpusSegmentation({...options,resume:true});
+  for(const collection of old)expect(await f.memory.count(collection)).toBe(0);
+  expect(await inventory()).toBe(before);expect(f.calls.filter(call=>call.sql.includes("SELECT substring"))).toHaveLength(reads);
+  expect(await f.memory.count("scratch/producer/windows")).toBe(1);expect(await f.memory.count("scratch/unrelated")).toBe(1);
+  const resets=f.calls.filter(call=>call.sql.includes("removed AS")&&call.sql.includes("AS authorized"));expect(resets).toHaveLength(1);expect(resets[0]!.params[2]).toBe("scratch/fit.");
+  const completed=await consolidateCorpusSegmentation({...options,resume:true});expect(completed.model).toEqual(result.model);
+  expect(f.calls.filter(call=>call.sql.includes("removed AS")&&call.sql.includes("AS authorized"))).toHaveLength(1);
 });
 
 it("singleflights identical in-process jobs while refusing conflicting scope or fit declarations",async()=>{

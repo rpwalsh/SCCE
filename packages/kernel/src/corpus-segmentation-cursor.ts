@@ -57,6 +57,8 @@ export interface BoundaryFitNumericReplay {
 export interface CorpusSegmentationScratch {
   readonly pageRows: number;
   readonly maxPageBytes: number;
+  /** Decoded-payload working quota; providers include their retained decoder/output copies. Not an RSS estimate. */
+  readonly sortMergeBudget?: { maxResidentBytes: number; residentBytesPerInput: number; residentOutputBytes: number };
   pages(query: { collection: string; afterKey?: string; prefix?: string; pageRows: number; maxPageBytes: number }): AsyncIterable<readonly CorpusSegmentationScratchRow[]>;
   putMany(collection: string, rows: readonly CorpusSegmentationScratchRow[]): Promise<void>;
   deleteCollection(collection: string): Promise<void>;

@@ -61,6 +61,21 @@ export class PostgresCorpusSegmentationRun {
     if(state&&!(Array.isArray(state)?state.includes(current):current===state))throw new Error("Segmentation run is unavailable or has incompatible state");
   }
   async putInput(collection: string, rows: readonly CorpusSegmentationScratchRow[]): Promise<void> { return this.put(`input/${collection}`, rows, "building"); }
+  /** Resume rebuilds these physical workspaces; immutable inputs and completed runs are never reset. */
+  async discardIncompleteMergeScratch(phase: "building" | "fitting"): Promise<number> {
+    if(phase!=="building"&&phase!=="fitting")throw new Error("Invalid segmentation scratch reset phase");
+    const prefix=phase==="building"?"scratch/producer/document.":"scratch/fit.",access=this.access(4);
+    const rows=await this.storage.query<{authorized:boolean;count:string}>(`WITH owned AS MATERIALIZED (
+      SELECT r.run_id FROM ${this.storage.table("segmentation_consolidation_runs")} r
+      WHERE r.run_id=$1 AND r.state=$2 AND ${access.sql} FOR SHARE OF r
+    ), removed AS (
+      DELETE FROM ${this.storage.table("segmentation_consolidation_rows")} v USING owned r
+      WHERE v.run_id=r.run_id AND starts_with(v.collection,$3::text) RETURNING 1
+    ) SELECT EXISTS(SELECT 1 FROM owned) AS authorized,(SELECT COUNT(*)::text FROM removed) AS count`,[this.run.runId,phase,prefix,...access.params]);
+    const count=Number(rows[0]?.count);
+    if(rows.length!==1||!rows[0]!.authorized||!Number.isSafeInteger(count)||count<0)throw new Error("Segmentation scratch reset requires the current accessible incomplete run");
+    return count;
+  }
   private async put(collection: string, rows: readonly CorpusSegmentationScratchRow[], state: "building" | "scratch"): Promise<void> {
     ascii(collection, "collection"); await this.assertState(state === "scratch" ? ["building", "fitting"] : "building");
     let batch: CorpusSegmentationScratchRow[] = [], bytes = 2;

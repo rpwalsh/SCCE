@@ -5,6 +5,7 @@ import { durableJoinProgramJsonByteLengths } from "./durable-join-program-storag
 import { createBoundaryFitNumericFile } from "./boundary-fit-numeric-file.js";
 
 export const BOUNDARY_MERGE_PAGE_SCHEMA = "scce.boundary_merge_scratch_page.v1";
+const SORT_WORKING_BYTES = 64 * 1024 * 1024;
 const invalid = (): never => { throw Error("Invalid packed boundary merge scratch"); };
 const ascii = (key: string, empty = false) => typeof key === "string" && (empty || key.length > 0) && /^[\x20-\x7e]*$/u.test(key);
 function logical(value: JsonValue): CorpusSegmentationScratchRow {
@@ -16,6 +17,7 @@ function logical(value: JsonValue): CorpusSegmentationScratchRow {
 /** The existing merge algorithm alone acquires this ordered temporary storage lease. */
 export function withPackedBoundaryMerges(store: CorpusSegmentationScratch): CorpusSegmentationScratch {
   return { ...store, boundaryMergeScratch: () => createPackedBoundaryMergeScratch(store),
+    sortMergeBudget: store.sortMergeBudget ?? { maxResidentBytes:SORT_WORKING_BYTES,residentBytesPerInput:store.maxPageBytes,residentOutputBytes:store.maxPageBytes*2 },
     boundaryFitNumericReplay: store.boundaryFitNumericReplay ?? (() => createBoundaryFitNumericFile(store)) };
 }
 
@@ -36,6 +38,8 @@ export function createPackedBoundaryMergeScratch(store: CorpusSegmentationScratc
   };
   const scratch: CorpusSegmentationScratch = {
     pageRows: store.pageRows, maxPageBytes: store.maxPageBytes,
+    sortMergeBudget: { maxResidentBytes:store.sortMergeBudget?.maxResidentBytes ?? SORT_WORKING_BYTES,
+      residentBytesPerInput:store.maxPageBytes*2,residentOutputBytes:store.maxPageBytes*4 },
     async putMany(collection, rows) {
       active();
       if (pending && pending.collection !== collection) await flush();

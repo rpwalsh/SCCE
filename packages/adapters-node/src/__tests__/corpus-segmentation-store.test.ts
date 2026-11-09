@@ -32,6 +32,30 @@ it("writes bounded batches and reclaims only the named current-run scratch colle
   expect(deletion.params.slice(0,2)).toEqual(["run-owned","scratch/candidate.1"]);
   expect(deletion.sql).toContain("r.state IN ('building','fitting')"); expect(deletion.sql).not.toMatch(/TRUNCATE/iu);
 });
+it.each(["building","fitting"] as const)("resets only leased merge scratch for an accessible %s resume",async phase=>{
+  const f=fixture(phase),prefix=phase==="building"?"scratch/producer/document.":"scratch/fit.";
+  const retained=["input/inventory","input/statistics/1","input/coverage","scratch/producer/windows","scratch/producer/owners","scratch/producer/class-membership","scratch/unrelated","scratch/fit-other.rows"];
+  const values=new Map([...retained,`${prefix}sortedRows.sort.7.0`,`${prefix}sortedRows.sort.6.1`].map(key=>[key,1]));
+  let accessible=true;
+  f.storage.query=async<T>(sql:string,params:unknown[]=[]):Promise<T[]>=>{
+    f.calls.push({sql,params});const authorized=accessible&&params[0]==="run-owned"&&params[1]===phase;let count=0;
+    if(authorized)for(const key of values.keys())if(key.startsWith(String(params[2]))){values.delete(key);count++;}
+    return [{authorized,count:String(count)}] as T[];
+  };
+  expect(await f.run.discardIncompleteMergeScratch(phase)).toBe(2);expect([...values.keys()]).toEqual(retained);
+  const call=f.calls.at(-1)!;expect(call.params).toEqual(["run-owned",phase,prefix,"owner"]);
+  expect(call.sql).toContain("r.state=$2");expect(call.sql).toContain("r.information_label->>'tenantId'=$4");
+  expect(call.sql).toContain("FOR SHARE OF r");expect(call.sql).toContain("COUNT(*)::text FROM removed");
+  expect(call.sql).not.toMatch(/TRUNCATE|RETURNING\s+v\./iu);
+  accessible=false;await expect(f.run.discardIncompleteMergeScratch(phase)).rejects.toThrow(/current accessible incomplete/);
+  expect([...values.keys()]).toEqual(retained);
+});
+it("refuses complete-run and malformed scratch reset receipts",async()=>{
+  const f=fixture("complete");f.storage.query=async<T>():Promise<T[]>=>[{authorized:false,count:"0"}] as T[];
+  await expect(f.run.discardIncompleteMergeScratch("fitting")).rejects.toThrow(/incomplete/);
+  f.storage.query=async<T>():Promise<T[]>=>[{authorized:true,count:"9007199254740992"}] as T[];
+  await expect(f.run.discardIncompleteMergeScratch("building")).rejects.toThrow(/incomplete/);
+});
 it("keeps budget-deferred keys for the next page instead of dropping the rest of the header prefix",async()=>{
   const {run,storage,calls}=fixture(); const keys=[1,2,3].map(segmentationOrdinalKey); const original=storage.query.bind(storage);
   storage.query=async<T>(sql:string,params:unknown[]=[]):Promise<T[]>=>{
