@@ -157,6 +157,7 @@ it("learns a genuine human extractive form across original articles and answers 
     { ...verified, result: structuredClone(proof!) }, { ...verified, result: headerOnly as VerifiedContextualQaBinding },
     { ...verified, storage: { ...f.storage } }, { ...verified, generation: 1 }, { ...verified, authorityContext: {} }, { ...verified, requestText: requestText.replace("stations", "arrays") },
     { ...verified, evidence: f.evidence.map(span => span.text === current ? { ...span, status: "quarantined" as const } : span) },
+    { ...verified, evidence: f.evidence.map(span => span.text === current ? { ...span, text: span.text.replace("V\u00eblora", "Otherkind") } : span) },
     { ...verified, evidence: f.evidence.map(span => span.text === current ? { ...span, sourceVersionId: "source.changed" as typeof span.sourceVersionId } : span) }
   ]) expect(projectRequestAuthority({ requirementField, verifiedContextualQa: invalid }).requestedAuthority).toBe("creative");
   for (const explicitAuthority of REQUESTED_AUTHORITY_IDS)

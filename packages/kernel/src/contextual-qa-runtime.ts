@@ -30,9 +30,9 @@ function directEvidence(span: EvidenceSpan): boolean {
   const admission = jsonRecord(jsonRecord(span.trustVector).admission);
   return span.status === "promoted" && admission.disposition === "promote" && jsonRecord(admission.context).intendedUse === "direct_evidence";
 }
-function sourceReceipts(evidence: readonly EvidenceSpan[]): string {
+function sourceReceipts(evidence: readonly EvidenceSpan[], hasher: Hasher): string {
   return canonicalStringify(evidence.map(span => [String(span.id), String(span.sourceId), String(span.sourceVersionId), String(span.contentHash),
-    span.charStart, span.charEnd, span.informationLabel ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+    hasher.digestHex(span.text), span.charStart, span.charEnd, span.informationLabel ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
 }
 export function contextualQaBindingVerified(input: { result: VerifiedContextualQaBinding; storage: ScceStorage; requestText: string;
   evidence: readonly EvidenceSpan[]; hasher: Hasher; generation: number; authorityContext: object }): boolean {
@@ -42,7 +42,7 @@ export function contextualQaBindingVerified(input: { result: VerifiedContextualQ
   if (!receipt || receipt.storage !== input.storage || receipt.generation !== input.generation || receipt.authorityContext !== input.authorityContext
     || result.requestDigest !== input.hasher.digestHex(input.requestText)) return false;
   const ids = new Set(result.binding.evidenceIds), current = input.evidence.filter(span => ids.has(String(span.id)) && directEvidence(span));
-  return ids.size > 0 && current.length === ids.size && sourceReceipts(current) === receipt.sources;
+  return ids.size > 0 && current.length === ids.size && sourceReceipts(current, input.hasher) === receipt.sources;
 }
 
 /** Header matching is nongenerative; full body hydration still replays exact human supervision. */
@@ -100,6 +100,6 @@ export async function contextualQaForRequest(input: {
   const value = freezeQaValue({ ...constructions, binding: { ...binding, subject: binding.subject, resolverId: resolver.id } });
   const ids = new Set(binding.evidenceIds);
   bindingReceipts.set(value, { storage: input.storage, generation: input.generation, authorityContext: input.authorityContext,
-    sources: sourceReceipts(direct.filter(span => ids.has(String(span.id)))) });
+    sources: sourceReceipts(direct.filter(span => ids.has(String(span.id))), input.hasher) });
   return value;
 }
