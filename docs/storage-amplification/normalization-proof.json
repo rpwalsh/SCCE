@@ -1,0 +1,27 @@
+{
+  "schema": "scce.normalization_proof.v1",
+  "scope": "Temporary tables only, available checkpoint",
+  "sourceApplicationRowsModified": 0,
+  "startedAt": "2026-11-09T02:41:19.795Z",
+  "requestWitnesses": {
+    "patterns": 2048,
+    "uniqueWitnesses": 1,
+    "oldAllocatedBytes": 119422976,
+    "newAllocatedBytes": 1859584,
+    "decodedJsonMismatches": 0,
+    "legacyData": true
+  },
+  "creativeEvents": {
+    "bundles": 14,
+    "events": 10106,
+    "uniqueWitnesses": 36,
+    "uniqueLexemes": 2630,
+    "oldAllocatedBytes": 4751360,
+    "newAllocatedBytes": 3719168,
+    "decodedSha256Mismatches": 0,
+    "retainedEventIds": true,
+    "retainedArgumentFrames": true
+  },
+  "complete": true,
+  "finishedAt": "2026-11-09T02:41:28.287Z"
+}
