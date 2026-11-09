@@ -7,7 +7,8 @@ import {
   compileBoundaryStatistics,
   fitBoundaryEstimator,
   mergeBoundaryStatistics,
-  type BoundaryEstimatorModel,
+  type BoundaryEstimatorMixture,
+  type BoundaryEstimatorState,
   type BoundaryObservation,
   type BoundarySufficientStatistics
 } from "./boundary-estimator.js";
@@ -26,9 +27,13 @@ import {
 import type { SemanticRole } from "./semantic-graph.js";
 import {
   boundaryMixtureForDocument,
+  boundaryMixtureForStatistics,
   learnSegmentationPopulations,
   type SegmentationPopulationModel
 } from "./segmentation-population.js";
+import type { SegmentationPopulationInferenceModel } from "./segmentation-population.js";
+import type { VerifiedCorpusSegmentation } from "./corpus-segmentation-cursor.js";
+import { validateCorpusSegmentationForDocuments } from "./corpus-segmentation-input.js";
 import {
   compileJoinProgram,
   compileJoinProgramMixture,
@@ -193,9 +198,9 @@ export interface InducedLanguageModel {
   ngrams: InducedNgram[];
   kneserNey: JsonValue;
   boundaryStatistics: BoundarySufficientStatistics;
-  boundaryEstimator: BoundaryEstimatorModel;
+  boundaryEstimator: BoundaryEstimatorState;
   boundaryFeatureContext: CompiledBoundaryFeatureContext;
-  segmentationPopulations: SegmentationPopulationModel;
+  segmentationPopulations: SegmentationPopulationModel | SegmentationPopulationInferenceModel;
   joinProgram: JoinProgramMixture;
   relationHypothesisModel: RelationHypothesisModel;
   boundarySignals: BoundarySignal[];
@@ -210,35 +215,45 @@ export interface InducedLanguageModel {
   audit: JsonValue;
 }
 
+export type CorpusInducedLanguageModel = Omit<InducedLanguageModel, "boundaryEstimator" | "segmentationPopulations"> & {
+  boundaryEstimator: BoundaryEstimatorMixture;
+  segmentationPopulations: SegmentationPopulationInferenceModel;
+};
+export interface LanguageInductionInput {
+  documents: LanguageInductionDocument[];
+  order?: NgramOrder;
+  maxNgrams?: number;
+  maxFrames?: number;
+  maxLexicalClasses?: number;
+  verifiedCorpusSegmentation?: VerifiedCorpusSegmentation;
+}
+
 
 export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabularyLimit?: number } = {}) {
   const hasher = options.hasher ?? createHasher();
   const vocabularyLimit = Math.max(512, Math.floor(options.vocabularyLimit ?? 50000));
-  return {
-    induce(input: { documents: LanguageInductionDocument[]; order?: NgramOrder; maxNgrams?: number; maxFrames?: number; maxLexicalClasses?: number }): InducedLanguageModel {
+  function induce(input: LanguageInductionInput): InducedLanguageModel {
       const documents = input.documents.filter(doc => doc.text.trim().length > 0);
+      const verified = input.verifiedCorpusSegmentation;
+      const corpus = verified ? validateCorpusSegmentationForDocuments(documents, verified, hasher) : undefined;
       const corpusText = documents.map(doc => doc.text).join("\n");
-      let initialLattices = documents.map(doc => ({
-        doc,
-        lattice: measureSurfaceBoundaries({
-          documentId: doc.id,
-          text: doc.text,
-          sourceVersionId: doc.sourceVersionId,
-          evidenceIds: doc.evidenceIds,
-          hasher
-        })
+      let initialLattices = documents.map(doc => ({ doc,
+        lattice: corpus ? corpus.measurements.get(doc.id)! : measureSurfaceBoundaries({ documentId: doc.id, text: doc.text,
+          sourceVersionId: doc.sourceVersionId, evidenceIds: doc.evidenceIds, hasher })
       }));
       const lexicalClassDocuments = initialLattices.map(({ lattice }) => lexicalUnits(lattice)
         .map(unit => ({ normalized: unit.normalized, scriptId: unit.scriptId })));
       const populationId = `surface_population.${hasher.digestHex(JSON.stringify(
         documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
       )).slice(0, 32)}`;
+      const corpusContext = corpus?.featureContext;
       let boundaryObservations = collectBoundaryTrainingObservations({
         lattices: initialLattices.map(row => row.lattice),
+        ...(corpusContext ? { featureContext: corpusContext } : {}),
         anchors: initialLattices.flatMap(({ doc }) =>
           (doc.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: doc.id })))
       });
-      const boundaryFeatureContext = compileBoundaryFeatureContext({
+      const boundaryFeatureContext = corpusContext ?? compileBoundaryFeatureContext({
         lattices: initialLattices.map(row => row.lattice),
         hasher
       });
@@ -273,30 +288,36 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         hasher,
         populationId
       );
-      const boundarySplit = splitBoundaryCalibrationDocuments(documentBoundaryStatistics, hasher);
-      const trainingBoundaryStatistics = mergeBoundaryStatistics(
-        boundarySplit.training.map(document => document.statistics),
+      const boundarySplit = verified ? undefined : splitBoundaryCalibrationDocuments(documentBoundaryStatistics, hasher);
+      const trainingBoundaryStatistics = verified ? undefined : mergeBoundaryStatistics(
+        boundarySplit!.training.map(document => document.statistics),
         hasher,
         populationId
       );
-      const heldoutBoundaryStatistics = boundarySplit.heldout.length
+      const heldoutBoundaryStatistics = boundarySplit?.heldout.length
         ? mergeBoundaryStatistics(
           boundarySplit.heldout.map(document => document.statistics),
           hasher,
           populationId
         )
         : undefined;
-      const boundaryEstimator = fitBoundaryEstimator({
-        statistics: trainingBoundaryStatistics,
+      const localBoundaryEstimator = verified ? undefined : fitBoundaryEstimator({
+        statistics: trainingBoundaryStatistics!,
         calibrationStatistics: heldoutBoundaryStatistics,
-        calibrationShards: boundarySplit.heldout.map(document => document.statistics),
+        calibrationShards: boundarySplit!.heldout.map(document => document.statistics),
         hasher
       });
-      const segmentationPopulations = learnSegmentationPopulations({
+      const localSegmentationPopulations = verified ? undefined : learnSegmentationPopulations({
         rootPopulationId: populationId,
         documents: documentBoundaryStatistics,
         hasher
       });
+      const segmentationPopulations = verified?.populationInference ?? localSegmentationPopulations!;
+      const corpusBoundaryEstimator = verified ? boundaryMixtureForStatistics(verified.populationInference, populationId, boundaryStatistics, hasher) : undefined;
+      const boundaryEstimator = corpusBoundaryEstimator ?? localBoundaryEstimator!;
+      const documentStatistics = verified ? new Map(documentBoundaryStatistics.map(document => [document.documentId, document.statistics])) : undefined;
+      const mixtures = verified ? new Map(documents.map(doc => [doc.id,
+        boundaryMixtureForStatistics(verified.populationInference, doc.id, documentStatistics!.get(doc.id)!, hasher)])) : undefined;
       const lattices = documents.map(doc => ({
         doc,
         lattice: buildSurfaceLattice({
@@ -304,18 +325,18 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           text: doc.text,
           sourceVersionId: doc.sourceVersionId,
           evidenceIds: doc.evidenceIds,
-          boundaryEstimator: boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
+          boundaryEstimator: verified ? mixtures!.get(doc.id)! : boundaryMixtureForDocument(localSegmentationPopulations!, doc.id, hasher),
           boundaryFeatureContext,
           hasher
         })
       }));
-      const selectedPopulationByDocument = new Map(
-        segmentationPopulations.assignments.map(assignment => [
-          assignment.documentId,
-          assignment.selectedPopulationId
-        ])
-      );
-      const defaultPopulationId = segmentationPopulations.populations[0]!.id;
+      const selectedPopulationByDocument = verified ? new Map(documents.map(doc => {
+        const mixture = mixtures!.get(doc.id)!;
+        const selected = [...mixture.components].sort((left, right) => right.weight - left.weight || left.populationId.localeCompare(right.populationId))[0];
+        if (!selected) throw new Error("corpus segmentation document was not routed");
+        return [doc.id, selected.populationId];
+      })) : new Map(localSegmentationPopulations!.assignments.map(assignment => [assignment.documentId, assignment.selectedPopulationId]));
+      const defaultPopulationId = verified ? undefined : localSegmentationPopulations!.populations[0]!.id;
       const joinProgram = compileJoinProgramMixture({
         populationModelId: segmentationPopulations.id,
         components: segmentationPopulations.populations.map(population => ({
@@ -381,7 +402,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         joinProgramId: joinProgram.id,
         relationHypothesisModelId: relationHypothesisModel.id
       })).slice(0, 32)}`;
-      return {
+      const result = {
         id,
         corpusDocuments: documents.length,
         symbolCount: symbolStrings.length,
@@ -423,10 +444,16 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           joinProgramComponentIds: joinProgram.components.map(component => component.program.id),
           relationHypothesisModelId: relationHypothesisModel.id,
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
-          corpusHash: hasher.digestHex(corpusText)
+          corpusHash: hasher.digestHex(corpusText),
+          ...(verified ? { corpusSegmentationSnapshotId: verified.populationInference.sourceInventory.id,
+            corpusSegmentationContextId: verified.populationInference.featureContextId,
+            corpusSegmentationInputDigest: corpus!.inputDigest } : {})
         })
       };
-    },
+      return verified ? { ...result, boundaryEstimator: corpusBoundaryEstimator!, segmentationPopulations: verified.populationInference }
+        : { ...result, boundaryEstimator: localBoundaryEstimator!, segmentationPopulations: localSegmentationPopulations! };
+  }
+  return { induce,
 
     scoreContinuation(input: {
       model: KneserNeyModel;

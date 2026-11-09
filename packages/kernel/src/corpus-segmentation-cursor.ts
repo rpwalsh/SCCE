@@ -78,3 +78,8 @@ export interface VerifiedCorpusSegmentation {
   populationInference: SegmentationPopulationInferenceModel;
   slices: readonly { preparation: PreparedCorpusSegmentationMeasurement; contextSlice: CorpusSegmentationContextSlice }[];
 }
+
+export interface CorpusSegmentationBatchLoader {
+  readonly identity: Pick<SegmentationPopulationInferenceModel, "id" | "featureContextId" | "sourceInventory" | "normalizationContractId">;
+  resolve(preparations: readonly PreparedCorpusSegmentationMeasurement[]): Promise<VerifiedCorpusSegmentation>;
+}

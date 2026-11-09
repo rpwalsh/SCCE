@@ -7,7 +7,8 @@ import { graphNodeSurface } from "./semantic-proof-adapter.js";
 import { type GraphBoundConstruction, type InducedLanguageModel, type LanguageInductionDocument } from "./language-induction.js";
 import { buildSurfaceLattice, buildSourceAlignmentSurfaceLattice, validateSurfaceLattice, type SurfaceLattice, type SourceAlignmentSurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
-import { compileSourceInductionWindows, sourceInductionInputDigest, sourceInductionBatches } from "./source-window-induction.js";
+import { compileSourceInductionWindows, compileSourceInductionWindowsFromCorpus, sourceInductionInputDigest, sourceInductionBatches } from "./source-window-induction.js";
+import type { CorpusSegmentationBatchLoader } from "./corpus-segmentation-cursor.js";
 import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
 import { UNRESOLVED_SEMANTIC_ROLE_ID_PREFIX } from "./opaque-role-induction.js";
 import { surfaceSentenceRanges } from "./surface-linguistics.js";
@@ -127,6 +128,7 @@ const preparedConstructionInductions = new WeakMap<PreparedConstructionInduction
   views: Map<string, ReturnType<typeof compileSourceInductionWindows>>;
   modelCache: NonNullable<Parameters<typeof compileSourceInductionWindows>[0]["modelCache"]>;
   contextDigest: string;
+  corpusIdentity?: CorpusSegmentationBatchLoader["identity"];
 }>();
 
 export function prepareConstructionInduction(input: {
@@ -137,11 +139,12 @@ export function prepareConstructionInduction(input: {
   prepared?: PreparedConstructionInduction;
 }): PreparedConstructionInduction {
   const original = input.prepared ? preparedConstructionInductions.get(input.prepared) : undefined;
-  const sourceDigest = sourceInductionInputDigest(input.documents, input.hasher);
+  const sourceDigest = sourceInductionInputDigest(input.documents, input.hasher, original?.corpusIdentity);
   if (input.prepared && (!original || !original.views.has(sourceDigest))) throw new Error("construction induction inputs changed; prepare again");
-  const contextDigest = sourceInductionInputDigest(input.contextDocuments ?? [], input.hasher);
+  const contextDigest = sourceInductionInputDigest(input.contextDocuments ?? [], input.hasher, original?.corpusIdentity);
   if (input.prepared && original?.contextDigest === contextDigest
-    && (input.additionalDocumentSets ?? []).every(documents => original.views.has(sourceInductionInputDigest(documents, input.hasher)))) return input.prepared;
+    && (input.additionalDocumentSets ?? []).every(documents => original.views.has(sourceInductionInputDigest(documents, input.hasher, original.corpusIdentity)))) return input.prepared;
+  if (original?.corpusIdentity) throw new Error("corpus construction views changed; prepare asynchronously again");
   const views = new Map<string, ReturnType<typeof compileSourceInductionWindows>>();
   if (original) views.set(sourceDigest, original.views.get(sourceDigest)!);
   const modelCache = new Map(original?.modelCache);
@@ -174,11 +177,45 @@ export function preparedLanguageInductionProducts(input: {
   prepared?: PreparedConstructionInduction;
 }): ReturnType<typeof compileSourceInductionWindows> {
   const prepared = input.prepared ?? prepareConstructionInduction(input);
-  const products = preparedConstructionInductions.get(prepared)?.views.get(sourceInductionInputDigest(input.documents, input.hasher));
+  const original = preparedConstructionInductions.get(prepared);
+  const products = original?.views.get(sourceInductionInputDigest(input.documents, input.hasher, original.corpusIdentity));
   if (!products) {
     throw new Error("construction induction inputs changed; prepare again");
   }
   return products;
+}
+
+export async function prepareConstructionInductionFromCorpus(input: {
+  documents: readonly LanguageInductionDocument[]; hasher: Hasher; corpusLoader: CorpusSegmentationBatchLoader;
+  additionalDocumentSets?: readonly (readonly LanguageInductionDocument[])[]; contextDocuments?: readonly LanguageInductionDocument[];
+  prepared?: PreparedConstructionInduction;
+}): Promise<PreparedConstructionInduction> {
+  const previous = input.prepared ? preparedConstructionInductions.get(input.prepared) : undefined;
+  if (input.prepared && (!previous || !previous.views.has(sourceInductionInputDigest(input.documents, input.hasher, previous.corpusIdentity)))) throw new Error("construction induction inputs changed; prepare again");
+  const source = input.corpusLoader.identity;
+  const corpusIdentity = Object.freeze({ id: source.id, featureContextId: source.featureContextId, normalizationContractId: source.normalizationContractId,
+    sourceInventory: Object.freeze({ ...source.sourceInventory }) });
+  const original = previous && canonicalStringify(previous.corpusIdentity ?? null) === canonicalStringify(corpusIdentity) ? previous : undefined;
+  const sourceDigest = sourceInductionInputDigest(input.documents, input.hasher, corpusIdentity);
+  const contextDigest = sourceInductionInputDigest(input.contextDocuments ?? [], input.hasher, corpusIdentity);
+  if (input.prepared && original?.contextDigest === contextDigest
+    && (input.additionalDocumentSets ?? []).every(documents => original.views.has(sourceInductionInputDigest(documents, input.hasher, corpusIdentity)))) return input.prepared;
+  const views = new Map<string, ReturnType<typeof compileSourceInductionWindows>>();
+  if (original?.views.has(sourceDigest)) views.set(sourceDigest, original.views.get(sourceDigest)!);
+  const modelCache = new Map(original?.modelCache);
+  const corpusLoader: CorpusSegmentationBatchLoader = { identity: corpusIdentity, resolve: preparations => input.corpusLoader.resolve(preparations) };
+  for (const documents of [input.documents, ...(input.additionalDocumentSets ?? [])]) {
+    const key = sourceInductionInputDigest(documents, input.hasher, corpusIdentity);
+    if (!views.has(key)) {
+      const products = await compileSourceInductionWindowsFromCorpus({ documents, hasher: input.hasher, corpusLoader, modelCache });
+      views.set(key, key === sourceDigest ? products : Object.freeze({ models: products.models, coverage: products.coverage }));
+    }
+  }
+  const prepared = Object.freeze({ inputDigest: input.hasher.digestHex(canonicalStringify({ sourceDigest,
+    viewDigests: [...views.keys()].sort(), contextDigest, corpusIdentity,
+    corpusCoverageDigests: [...views].map(([key, products]) => [key, products.coverage.inputDigest]).sort() })) });
+  preparedConstructionInductions.set(prepared, { views, modelCache, contextDigest, corpusIdentity });
+  return prepared;
 }
 
 function constructionInductionFor(input: {

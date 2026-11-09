@@ -307,7 +307,8 @@ export function measureSurfaceBoundaries(options: Omit<SurfaceLatticeBuildOption
 }
 
 type CorpusMeasurementOptions = Omit<Parameters<typeof measureSurfaceBoundaries>[0], "boundaryEstimator" | "boundaryFeatureContext">;
-const corpusMeasurements = new WeakMap<PreparedCorpusSegmentationMeasurement, { measurement: SurfaceBoundaryMeasurement; sourceDigest: string }>();
+const corpusMeasurements = new WeakMap<PreparedCorpusSegmentationMeasurement, { measurement: SurfaceBoundaryMeasurement; sourceDigest: string;
+  requiredClassIds: readonly string[]; requiredContextKeys: readonly string[] }>();
 function corpusMeasurementSourceDigest(options: CorpusMeasurementOptions, hasher: Hasher): string {
   return canonicalDigestHex({ latticeId: canonicalSurfaceLatticeId({ ...options, hasher }),
     maxUnits: Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS)) }, hasher);
@@ -321,13 +322,16 @@ export function prepareCorpusSegmentationMeasurement(options: CorpusMeasurementO
   const preparation = { id: measurement.boundaryMeasurement.id, documentId: options.documentId,
     requiredClassIds: [...new Set(hypotheses.map(unit => unit.surfaceFormClassId))].sort(),
     requiredContextKeys: [...new Set(hypotheses.map(boundaryContextKey))].sort() };
-  corpusMeasurements.set(preparation, { measurement, sourceDigest: corpusMeasurementSourceDigest(options, hasher) });
+  corpusMeasurements.set(preparation, { measurement, sourceDigest: corpusMeasurementSourceDigest(options, hasher),
+    requiredClassIds: [...preparation.requiredClassIds], requiredContextKeys: [...preparation.requiredContextKeys] });
   return preparation;
 }
 
 export function readPreparedCorpusSegmentationMeasurement(preparation: PreparedCorpusSegmentationMeasurement, options: CorpusMeasurementOptions): SurfaceBoundaryMeasurement {
   const stored = corpusMeasurements.get(preparation);
   if (!stored || preparation.id !== stored.measurement.boundaryMeasurement.id || preparation.documentId !== options.documentId
+    || preparation.requiredClassIds.length !== stored.requiredClassIds.length || preparation.requiredClassIds.some((key, index) => key !== stored.requiredClassIds[index])
+    || preparation.requiredContextKeys.length !== stored.requiredContextKeys.length || preparation.requiredContextKeys.some((key, index) => key !== stored.requiredContextKeys[index])
     || stored.sourceDigest !== corpusMeasurementSourceDigest(options, options.hasher ?? createHasher())) throw new Error("corpus boundary measurement inputs changed");
   return stored.measurement;
 }
@@ -733,7 +737,7 @@ export function collectBoundaryTrainingObservations(input: {
     || input.featureContext.sourceDocumentCount < 1)) throw new Error("Invalid boundary feature context header");
   const requiredCount = (counts: Record<string, number>, key: string, maximum?: number): number => {
     const count = counts[key];
-    if (!Number.isSafeInteger(count) || count < 0 || maximum !== undefined && count > maximum) throw new Error("Incomplete boundary feature context counts");
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || maximum !== undefined && count > maximum) throw new Error("Incomplete boundary feature context counts");
     return count;
   };
   const anchorsByDocument = new Map<string, BoundaryAnchor[]>();

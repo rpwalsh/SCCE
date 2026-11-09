@@ -8,6 +8,9 @@ import { inductionCharBudget, inductionDocumentCharCap } from "./training-orches
 import { surfaceSentenceRanges } from "./surface-linguistics.js";
 import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
 import type { Hasher } from "./types.js";
+import type { CorpusSegmentationBatchLoader, VerifiedCorpusSegmentation } from "./corpus-segmentation-cursor.js";
+import { prepareCorpusSegmentationMeasurement } from "./surface-lattice.js";
+import { validateCorpusSegmentationForDocuments } from "./corpus-segmentation-input.js";
 
 export const SOURCE_WINDOW_INDUCTION_RECIPE_ID = "kernel.source_window_induction.v1" as const;
 
@@ -43,15 +46,18 @@ export interface SourceInductionCoverage {
   windows: readonly SourceInductionWindow[];
 }
 
-export function sourceInductionInputDigest(documents: readonly LanguageInductionDocument[], hasher: Hasher): string {
+export function sourceInductionInputDigest(documents: readonly LanguageInductionDocument[], hasher: Hasher,
+  corpusIdentity?: CorpusSegmentationBatchLoader["identity"]): string {
   return hasher.digestHex(canonicalStringify({ recipe: SOURCE_WINDOW_INDUCTION_RECIPE_ID,
-    batchBudgetUtf16: inductionCharBudget(), windowCapUtf16: inductionDocumentCharCap(), documents }));
+    batchBudgetUtf16: inductionCharBudget(), windowCapUtf16: inductionDocumentCharCap(), documents,
+    ...(corpusIdentity ? { corpusSegmentation: corpusIdentity } : {}) }));
 }
 
-export function* sourceInductionBatches(documents: readonly LanguageInductionDocument[], hasher: Hasher): Generator<{
+interface SourceInductionBatch {
   documents: LanguageInductionDocument[];
   windows: SourceInductionWindow[];
-}> {
+}
+export function* sourceInductionBatches(documents: readonly LanguageInductionDocument[], hasher: Hasher): Generator<SourceInductionBatch> {
   const budget = inductionCharBudget();
   const cap = Math.min(budget, inductionDocumentCharCap());
   let batch: LanguageInductionDocument[] = [];
@@ -101,23 +107,32 @@ export function* sourceInductionBatches(documents: readonly LanguageInductionDoc
   if (batch.length) yield { documents: batch, windows };
 }
 
-export function compileSourceInductionWindows(input: { documents: readonly LanguageInductionDocument[]; hasher: Hasher;
-  modelCache?: Map<string, InducedLanguageMemoryModel> }): {
+export interface SourceInductionProducts {
   models: readonly InducedLanguageMemoryModel[];
   fullModel?: InducedLanguageModel;
   coverage: SourceInductionCoverage;
-} {
+}
+interface SourceInductionCompileInput { documents: readonly LanguageInductionDocument[]; hasher: Hasher; modelCache?: Map<string, InducedLanguageMemoryModel> }
+
+function createSourceInductionCompiler(input: SourceInductionCompileInput & { corpusIdentity?: CorpusSegmentationBatchLoader["identity"] }) {
   const models: InducedLanguageMemoryModel[] = [];
   const windows: SourceInductionWindow[] = [];
   let first: InducedLanguageModel | undefined;
-  for (const batch of sourceInductionBatches(input.documents, input.hasher)) {
+  const corpusBindings: string[] = [];
+  return { add(batch: SourceInductionBatch, verified?: VerifiedCorpusSegmentation): void {
     windows.push(...batch.windows);
-    if (!batch.documents.some(document => document.text.trim())) continue;
-    const batchKey = sourceInductionInputDigest(batch.documents, input.hasher);
+    if (!batch.documents.some(document => document.text.trim())) return;
+    let batchKey = sourceInductionInputDigest(batch.documents, input.hasher);
+    if (verified) {
+      const validated = validateCorpusSegmentationForDocuments(batch.documents.filter(document => document.text.trim()), verified, input.hasher);
+      corpusBindings.push(validated.inputDigest);
+      batchKey = input.hasher.digestHex(canonicalStringify([batchKey, validated.inputDigest]));
+    }
     const cached = input.modelCache?.get(batchKey);
-    if (cached) { first = undefined; models.push(cached); continue; }
+    if (cached) { first = undefined; models.push(cached); return; }
     if (models.length) first = undefined;
-    const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents: batch.documents });
+    const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents: batch.documents,
+      ...(verified ? { verifiedCorpusSegmentation: verified } : {}) });
     if (!models.length) first = model;
     else first = undefined;
     const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
@@ -146,14 +161,40 @@ export function compileSourceInductionWindows(input: { documents: readonly Langu
       }), lexicalClasses, relationHypothesisModel, translationSeeds });
     models.push(compact);
     input.modelCache?.set(batchKey, compact);
-  }
+  }, finish(): SourceInductionProducts {
   const inputUtf16Length = input.documents.reduce((total, document) => total + document.text.length, 0);
   const coveredUtf16Length = windows.reduce((total, window) => total + window.endUtf16 - window.startUtf16, 0);
   if (coveredUtf16Length !== inputUtf16Length) throw new Error("source induction windows do not cover the complete owned input");
   return Object.freeze({ models: freezeProducts(models), ...(first ? { fullModel: first } : {}), coverage: freezeProducts<SourceInductionCoverage>({
     schema: "scce.source_induction_coverage.v1", recipe: SOURCE_WINDOW_INDUCTION_RECIPE_ID,
-    inputDigest: sourceInductionInputDigest(input.documents, input.hasher), complete: true,
+    inputDigest: input.corpusIdentity ? input.hasher.digestHex(canonicalStringify({ source: sourceInductionInputDigest(input.documents, input.hasher, input.corpusIdentity), corpusBindings }))
+      : sourceInductionInputDigest(input.documents, input.hasher), complete: true,
     inputUtf16Length, coveredUtf16Length, batches: models.length,
     batchBudgetUtf16: inductionCharBudget(), windowCapUtf16: inductionDocumentCharCap(), windows
   }) });
+  } };
+}
+
+export function compileSourceInductionWindows(input: SourceInductionCompileInput): SourceInductionProducts {
+  const compiler = createSourceInductionCompiler(input);
+  for (const batch of sourceInductionBatches(input.documents, input.hasher)) compiler.add(batch);
+  return compiler.finish();
+}
+
+export async function compileSourceInductionWindowsFromCorpus(input: SourceInductionCompileInput & { corpusLoader: CorpusSegmentationBatchLoader }): Promise<SourceInductionProducts> {
+  const source = input.corpusLoader.identity;
+  const expected = { id: source.id, featureContextId: source.featureContextId, normalizationContractId: source.normalizationContractId, sourceInventory: { ...source.sourceInventory } };
+  const compiler = createSourceInductionCompiler({ ...input, corpusIdentity: expected });
+  for (const batch of sourceInductionBatches(input.documents, input.hasher)) {
+    const documents = batch.documents.filter(document => document.text.trim());
+    if (!documents.length) { compiler.add(batch); continue; }
+    const preparations = documents.map(document => prepareCorpusSegmentationMeasurement({ documentId: document.id, text: document.text,
+      sourceVersionId: document.sourceVersionId, evidenceIds: document.evidenceIds, hasher: input.hasher }));
+    const verified = await input.corpusLoader.resolve(preparations);
+    const actual = verified.populationInference;
+    if (actual.id !== expected.id || actual.featureContextId !== expected.featureContextId || actual.sourceInventory.id !== expected.sourceInventory.id
+      || actual.sourceInventory.count !== expected.sourceInventory.count || actual.normalizationContractId !== expected.normalizationContractId) throw new Error("corpus segmentation loader snapshot changed");
+    compiler.add(batch, verified);
+  }
+  return compiler.finish();
 }

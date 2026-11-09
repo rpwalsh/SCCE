@@ -12,6 +12,7 @@ import {
   observeLanguageTrainingSegmentation
 } from "./language-training-batch.js";
 import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
+import { SEGMENTATION_POPULATION_SCHEMA } from "./segmentation-population.js";
 import { CORPUS_ROLE_IDS, canonicalCorpusSourceSystemId, corpusSourceAlias, corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
 import {
   createLanguageAcquisitionEngine
@@ -507,7 +508,7 @@ export function createTrainingRuntime(options: {
         for (const pattern of projection.patterns) {
           await deps.storage.languageMemory.putLanguagePattern(pattern);
         }
-        if (deps.storage.segmentationPopulations) {
+        if (deps.storage.segmentationPopulations && inducedLanguageModel.segmentationPopulations.schema === SEGMENTATION_POPULATION_SCHEMA) {
           const projectedProfileIds = new Set(projection.profileIds);
           await deps.storage.segmentationPopulations.putModel({
             id: inducedLanguageModel.segmentationPopulations.id,

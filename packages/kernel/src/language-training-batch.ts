@@ -14,10 +14,12 @@ import { compileCreativeSourceCorrespondences } from "./creative-source-correspo
 import { compileCreativeSourceUtterancePatterns } from "./creative-source-utterance.js";
 import { compileSourceReferenceBindingPattern, type SourceReferenceBindingDeclaration } from "./source-reference-bindings.js";
 import type { TranscriptTurn } from "./dialogue-communicative-act-learning.js";
+import type { CorpusSegmentationBatchLoader } from "./corpus-segmentation-cursor.js";
 import {
   evaluateHeldOutConstructionCoverage,
   induceSourceBoundConstructionTrainingSets,
   prepareConstructionInduction,
+  prepareConstructionInductionFromCorpus,
   preparedLanguageInductionProducts,
   sourceLanguageInductionDocuments,
   type PreparedConstructionInduction,
@@ -1116,13 +1118,15 @@ function qualificationWindowSample(documents: readonly import("./language-induct
   }).map(candidate => candidate.document);
 }
 
-export function prepareLanguageTrainingInduction(input: {
+interface LanguageTrainingInductionInput {
   evidence: readonly EvidenceSpan[];
   constructionEvidence?: readonly EvidenceSpan[];
   constructionContextDocuments?: readonly import("./language-induction.js").LanguageInductionDocument[];
   hasher: Hasher;
   prepared?: PreparedConstructionInduction;
-}) {
+}
+
+function planLanguageTrainingInduction(input: LanguageTrainingInductionInput) {
   const documents = sourceLanguageInductionDocuments(input.evidence);
   const owned = [...new Map([...(input.constructionEvidence ?? []), ...input.evidence].map(span => [String(span.id), span])).values()];
   const currentIds = new Set(input.evidence.map(span => String(span.id)));
@@ -1170,9 +1174,22 @@ export function prepareLanguageTrainingInduction(input: {
   const qualificationSample = toJsonValue({ schema: "scce.construction_qualification_sample.v1", completeSourceProof: false,
     current: describe(sampledCurrent), prior: describe(sampledContext), fitFamilies: [...new Set(split.train.map(evidenceSourceFamilyId))].sort(),
     heldOutFamilies: [...heldFamilies].sort() });
-  const prepared = prepareConstructionInduction({ documents, hasher: input.hasher, contextDocuments: sampledContext,
-    additionalDocumentSets: split.heldOut.length ? [qualificationDocuments.train] : [], ...(input.prepared ? { prepared: input.prepared } : {}) });
-  return { prepared, qualificationDocuments, qualificationSample, split };
+  return { documents, sampledContext, qualificationDocuments, qualificationSample, split };
+}
+
+export function prepareLanguageTrainingInduction(input: LanguageTrainingInductionInput) {
+  const plan = planLanguageTrainingInduction(input);
+  const prepared = prepareConstructionInduction({ documents: plan.documents, hasher: input.hasher, contextDocuments: plan.sampledContext,
+    additionalDocumentSets: plan.split.heldOut.length ? [plan.qualificationDocuments.train] : [], ...(input.prepared ? { prepared: input.prepared } : {}) });
+  return { prepared, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
+}
+
+export async function prepareLanguageTrainingInductionFromCorpus(input: LanguageTrainingInductionInput & { corpusLoader: CorpusSegmentationBatchLoader }) {
+  const plan = planLanguageTrainingInduction(input);
+  const prepared = await prepareConstructionInductionFromCorpus({ documents: plan.documents, hasher: input.hasher, contextDocuments: plan.sampledContext,
+    additionalDocumentSets: plan.split.heldOut.length ? [plan.qualificationDocuments.train] : [], corpusLoader: input.corpusLoader,
+    ...(input.prepared ? { prepared: input.prepared } : {}) });
+  return { prepared, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
 }
 
 function splitConstructionEvidence(evidence: readonly EvidenceSpan[], hasher: Hasher): { train: EvidenceSpan[]; heldOut: EvidenceSpan[] } {
