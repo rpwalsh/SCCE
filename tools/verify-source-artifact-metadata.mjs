@@ -193,7 +193,8 @@ export async function verifySourceArtifactMetadata(options) {
     check('fixture-rows-revision-and-active-state-restored', () => assert.deepEqual(restored, initial)); report.fixtureRolledBack = true;
     await sourceQuery('ROLLBACK'); sourceOpen = false;
     report.passed = true; report.currentStage = 'complete';
-  } catch (error) { report.error = { stage: report.currentStage, name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null }; }
+  } catch (error) { report.error = { stage: report.currentStage, name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null,
+    ...(error?.code === 'ERR_ASSERTION' && error.generatedMessage === false ? { assertion: String(error.message).slice(0, 240) } : {}) }; }
   finally {
     if (fixtureOpen) await fixturePhysical?.query('ROLLBACK'); if (sourceOpen) await sourcePhysical?.query('ROLLBACK');
     for (const original of originals.reverse()) { original.adapter.pool.query = original.query; original.adapter.pool.connect = original.connect; }
