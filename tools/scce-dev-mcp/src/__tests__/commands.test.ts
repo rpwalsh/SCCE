@@ -21,6 +21,11 @@ describe('resolveCommand', () => {
     expect(() => resolveCommand('anything-not-registered')).toThrow(UnknownCommandError);
   });
 
+  it.each(['__proto__', 'constructor', 'toString'])('rejects inherited registry member %s', commandId => {
+    expect(() => resolveCommand(commandId)).toThrow(UnknownCommandError);
+    expect(() => resolveCommand(commandId, 'corpus-segmentation')).toThrow(UnknownCommandError);
+  });
+
   it('never exposes server/mcp:start/install/git-write commands', () => {
     expect(COMMAND_REGISTRY.server).toBeUndefined();
     expect(COMMAND_REGISTRY['mcp:start']).toBeUndefined();

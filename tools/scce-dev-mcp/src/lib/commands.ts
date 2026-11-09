@@ -101,6 +101,7 @@ export class InvalidFilterError extends Error {
  * could be read as an extra flag.
  */
 export function resolveCommand(commandId: string, filter?: string): { command: string; args: string[]; timeoutMs: number } {
+  if (!Object.hasOwn(COMMAND_REGISTRY, commandId)) throw new UnknownCommandError(commandId);
   const spec = COMMAND_REGISTRY[commandId];
   if (!spec) throw new UnknownCommandError(commandId);
   if (filter === undefined || filter === '') return { command: spec.command, args: spec.args, timeoutMs: spec.timeoutMs };
