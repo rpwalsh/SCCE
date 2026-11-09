@@ -1,7 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, canonicalStringify, createHasher, joinInformationLabels,
-  normalizeInformationLabel, type InformationLabel } from "@scce/kernel";
+  normalizeInformationLabel, validatePooledLanguageProfileOwnership, type InformationLabel, type LanguageProfile,
+  type PooledLanguageProfileOwnership } from "@scce/kernel";
+import { pooledProfileOwnershipSql, profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
 import { CREATIVE_EVENT_NORMALIZATION_TABLES, CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA, creativeEventRecord,
   creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage, verifyCreativeEventDomainRecord,
   type CreativeEventDomainRecord, type CreativeEventOwner } from "./creative-event-normalization.js";
@@ -18,7 +20,9 @@ export interface CreativeEventStorageHost {
 interface DomainRow { id: string; kind: string; value_json: Record<string, unknown>; information_label?: InformationLabel }
 interface OwnerRow {
   profile_id: string; source_id: string; source_version_id: string; source_content_hash: string; evidence_id: string; evidence_content_hash: string;
-  char_start: number; char_end: number; profile_label: InformationLabel; source_label: InformationLabel; evidence_label: InformationLabel;
+  char_start: number; char_end: number; byte_start: number; byte_end: number;
+  profile_source_version_id: string; has_pooled_binding: boolean; pooled_profile: LanguageProfile | null;
+  profile_label: InformationLabel; source_label: InformationLabel; evidence_label: InformationLabel;
 }
 const hasher = createHasher();
 export const CANONICAL_CREATIVE_EVENT_ARRAY_SCHEMA = "scce.creative_event_array_payload.v1";
@@ -52,21 +56,58 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
     for (let offset = 0; offset < entries.length; offset += PAGE_ROWS_PER_STATEMENT) {
       const params: unknown[] = [JSON.stringify(entries.slice(offset, offset + PAGE_ROWS_PER_STATEMENT))];
       const profileAccess = host.informationAccessPredicate("profile", params.length + 1); params.push(...profileAccess.params);
+      const lifecycle = { lifecycle: requirePromoted ? "current" as const : "historical" as const };
+      const directOwner = profileSourceOwnershipSql(host, params, "profile", lifecycle);
+      const pooledOwner = pooledProfileOwnershipSql(host, params, "profile.id", "profile.source_version_id", "(profile.profile_json->'pooledSourceBinding')", lifecycle);
       const versionAccess = host.informationAccessPredicate("version", params.length + 1); params.push(...versionAccess.params);
       const evidenceAccess = host.informationAccessPredicate("evidence", params.length + 1); params.push(...evidenceAccess.params);
-      const rows = await host.query<OwnerRow>(`SELECT profile.id AS profile_id,version.source_id,version.id AS source_version_id,version.content_hash AS source_content_hash,
-        evidence.id AS evidence_id,evidence.content_hash AS evidence_content_hash,evidence.char_start,evidence.char_end,
+      const rows = await host.query<OwnerRow>(`WITH requested AS MATERIALIZED (
+          SELECT * FROM jsonb_to_recordset($1::jsonb) AS request("profileId" text,"evidenceId" text)
+        ), admitted_profiles AS MATERIALIZED (
+          SELECT profile.id,profile.source_version_id,profile.information_label,
+            profile.profile_json->'pooledSourceBinding' AS pooled_binding,
+            CASE WHEN profile.profile_json->'pooledSourceBinding' IS NOT NULL THEN profile.profile_json ELSE NULL END AS pooled_profile
+          FROM ${host.table("language_profiles")} profile
+          JOIN (SELECT DISTINCT "profileId" FROM requested) owner ON owner."profileId"=profile.id
+          WHERE ${profileAccess.sql} AND CASE WHEN profile.profile_json->'pooledSourceBinding' IS NULL
+            THEN ${directOwner} ELSE ${pooledOwner} END
+        ), pooled_members AS MATERIALIZED (
+          SELECT profile.id AS profile_id,member.value FROM admitted_profiles profile
+          CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(profile.pooled_binding->'evidence')='array'
+            THEN profile.pooled_binding->'evidence' ELSE '[]'::jsonb END) member(value)
+        ) SELECT profile.id AS profile_id,version.source_id,version.id AS source_version_id,version.content_hash AS source_content_hash,
+        evidence.id AS evidence_id,evidence.content_hash AS evidence_content_hash,evidence.char_start,evidence.char_end,evidence.byte_start,evidence.byte_end,
+        profile.source_version_id AS profile_source_version_id,profile.pooled_binding IS NOT NULL AS has_pooled_binding,
+        CASE WHEN profile.pooled_binding IS NOT NULL AND ROW_NUMBER() OVER (PARTITION BY profile.id ORDER BY evidence.id)=1 THEN profile.pooled_profile ELSE NULL END AS pooled_profile,
         profile.information_label AS profile_label,version.information_label AS source_label,evidence.information_label AS evidence_label
-        FROM jsonb_to_recordset($1::jsonb) AS requested("profileId" text,"evidenceId" text)
-        JOIN ${host.table("language_profiles")} profile ON profile.id=requested."profileId"
-        JOIN ${host.table("source_versions")} version ON version.id=profile.source_version_id
-        JOIN ${host.table("sources")} source ON source.id=version.source_id
+        FROM requested JOIN admitted_profiles profile ON profile.id=requested."profileId"
         JOIN ${host.table("evidence_spans")} evidence ON evidence.id=requested."evidenceId"
-          AND evidence.source_version_id=version.id AND evidence.source_id=version.source_id
-        WHERE ${requirePromoted ? "evidence.status='promoted' AND " : ""}${profileAccess.sql} AND ${versionAccess.sql} AND ${evidenceAccess.sql}`, params);
+        JOIN ${host.table("source_versions")} version ON version.id=evidence.source_version_id AND version.source_id=evidence.source_id
+        JOIN ${host.table("sources")} source ON source.id=version.source_id
+        WHERE ${requirePromoted ? "evidence.status='promoted' AND " : ""}${versionAccess.sql} AND ${evidenceAccess.sql}
+          AND ((profile.pooled_binding IS NULL AND profile.source_version_id=version.id)
+            OR (profile.pooled_binding IS NOT NULL AND EXISTS (SELECT 1 FROM pooled_members member
+              WHERE member.profile_id=profile.id AND member.value->>'id'=evidence.id AND member.value->>'sourceId'=version.source_id
+                AND member.value->>'sourceVersionId'=version.id AND member.value->>'contentHash'=evidence.content_hash
+                AND member.value->>'byteStart'=evidence.byte_start::text AND member.value->>'byteEnd'=evidence.byte_end::text
+                AND member.value->>'charStart'=evidence.char_start::text AND member.value->>'charEnd'=evidence.char_end::text)))`, params);
+      const pooled = new Map<string, PooledLanguageProfileOwnership>();
+      for (const row of rows) if (row.pooled_profile) {
+        if (row.pooled_profile.id !== row.profile_id || row.pooled_profile.sourceVersionId !== row.profile_source_version_id || pooled.has(row.profile_id)) return fail("invalid pooled profile snapshot");
+        const ownership = validatePooledLanguageProfileOwnership(row.pooled_profile, hasher);
+        if (!ownership) return fail("missing pooled profile receipt");
+        pooled.set(row.profile_id, ownership);
+      }
       for (const row of rows) {
         const key = creativeEventStorageJson([row.profile_id, row.evidence_id]);
         if (!requests.has(key) || owners.has(key)) return fail("ambiguous canonical owner");
+        if (row.has_pooled_binding === true) {
+          const receipt = pooled.get(row.profile_id);
+          if (!receipt || !receipt.parents.includes(row.source_version_id) || receipt.evidence.filter(span => span.id === row.evidence_id
+            && span.sourceId === row.source_id && span.sourceVersionId === row.source_version_id && span.contentHash === row.evidence_content_hash
+            && span.byteStart === Number(row.byte_start) && span.byteEnd === Number(row.byte_end)
+            && span.charStart === Number(row.char_start) && span.charEnd === Number(row.char_end)).length !== 1) return fail("pooled evidence is outside the verified receipt");
+        } else if (row.has_pooled_binding !== false || row.profile_source_version_id !== row.source_version_id) return fail("invalid direct source profile binding");
         owners.set(key, { profileId: row.profile_id, sourceId: row.source_id, sourceVersionId: row.source_version_id, sourceContentHash: row.source_content_hash,
           evidenceId: row.evidence_id, evidenceContentHash: row.evidence_content_hash, evidenceCharStart: Number(row.char_start), evidenceCharEnd: Number(row.char_end),
           informationLabel: join([row.profile_label, row.source_label, row.evidence_label]) });
