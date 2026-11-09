@@ -3,10 +3,13 @@
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 import { canonicalNormalizationContract } from "./normalization-contract.js";
+import { boundaryFitDot as dot, boundaryFitSigmoid as sigmoid, boundaryFitQuantize as quantize,
+  BoundaryGradientPass, BoundaryCalibrationPass, BoundaryMetricsPass } from "./boundary-fit-math.js";
 
 export const BOUNDARY_ESTIMATOR_SCHEMA = "scce.boundary_estimator.v2" as const;
 export const BOUNDARY_ESTIMATOR_MIXTURE_SCHEMA = "scce.boundary_estimator_mixture.v2" as const;
 export const BOUNDARY_STATISTICS_SCHEMA = "scce.boundary_statistics.v2" as const;
+export const BOUNDARY_ESTIMATOR_INFERENCE_SCHEMA = "scce.boundary_estimator_inference.v1" as const;
 
 export interface BoundaryFeatureVector {
   whitespaceAdjacent: number;
@@ -117,11 +120,18 @@ export interface BoundaryEstimatorMixture {
   components: Array<{
     populationId: string;
     weight: number;
-    estimator: BoundaryEstimatorModel;
+    estimator: BoundaryEstimatorScoringModel;
   }>;
 }
 
-export type BoundaryEstimatorState = BoundaryEstimatorModel | BoundaryEstimatorMixture;
+export interface BoundaryEstimatorInferenceModel extends Omit<BoundaryEstimatorModel, "schema" | "calibration"> {
+  schema: typeof BOUNDARY_ESTIMATOR_INFERENCE_SCHEMA;
+  sourceInventory: { id: string; count: number };
+  calibration: Omit<BoundaryCalibrationReport, "heldoutSourceDocumentIds"> & { heldoutSourceInventory?: { id: string; count: number } };
+}
+
+export type BoundaryEstimatorScoringModel = BoundaryEstimatorModel | BoundaryEstimatorInferenceModel;
+export type BoundaryEstimatorState = BoundaryEstimatorScoringModel | BoundaryEstimatorMixture;
 
 const FEATURE_ORDER: readonly (keyof BoundaryFeatureVector)[] = [
   "whitespaceAdjacent",
@@ -137,6 +147,7 @@ const FEATURE_ORDER: readonly (keyof BoundaryFeatureVector)[] = [
   "exactPhraseRecurrence",
   "constructionReuse"
 ] as const;
+export const BOUNDARY_FEATURE_ORDER = FEATURE_ORDER;
 const FIXED_SCALE = 1_000_000;
 const MASS_SCALE = 1_024;
 
@@ -441,27 +452,16 @@ function computeBoundaryFitNumerics(input: BoundaryEstimatorFitInput, settings: 
     rowMass[r] = row.positiveMass / MASS_SCALE + row.negativeMass / MASS_SCALE;
   }
 
-  const gradients = new Float64Array(featureCount);
+  const gradient = new BoundaryGradientPass(weights, intercept);
   for (let iteration = 0; iteration < iterations; iteration += 1) {
-    gradients.fill(0);
-    let interceptGradient = 0;
+    gradient.begin();
     for (let r = 0; r < usable.length; r += 1) {
       const base = r * featureCount;
-      // Preserve Kahan order without allocating a per-row view.
-      const mass = rowMass[r]!;
-      const predicted = sigmoid(intercept + dot(weights, rowFeatures, base, featureCount));
-      const residual = predicted * mass - rowPositive[r]!;
-      interceptGradient += residual;
-      for (let f = 0; f < featureCount; f += 1) {
-        gradients[f] = gradients[f]! + residual * rowFeatures[base + f]!;
-      }
+      gradient.add(rowFeatures, base, rowPositive[r]!, rowMass[r]!);
     }
-    intercept = quantize(intercept - learningRate * interceptGradient / totalMass);
-    for (let index = 0; index < weights.length; index += 1) {
-      const regularized = gradients[index]! / totalMass + l2 * weights[index]!;
-      weights[index] = quantize(weights[index]! - learningRate * regularized);
-    }
+    gradient.finish(totalMass, learningRate, l2);
   }
+  intercept = gradient.intercept;
 
   const trainingLogLoss = rawBoundaryLogLoss(input.statistics, weights, intercept);
   const calibration = fitHeldoutCalibration({
@@ -475,7 +475,7 @@ function computeBoundaryFitNumerics(input: BoundaryEstimatorFitInput, settings: 
 }
 
 export function scoreBoundary(
-  model: BoundaryEstimatorModel,
+  model: BoundaryEstimatorScoringModel,
   features: BoundaryFeatureVector
 ): number {
   validateModel(model);
@@ -489,7 +489,7 @@ export function scoreBoundaryState(
   state: BoundaryEstimatorState,
   features: BoundaryFeatureVector
 ): number {
-  if (state.schema === BOUNDARY_ESTIMATOR_SCHEMA) return scoreBoundary(state, features);
+  if (state.schema === BOUNDARY_ESTIMATOR_SCHEMA || state.schema === BOUNDARY_ESTIMATOR_INFERENCE_SCHEMA) return scoreBoundary(state, features);
   if (state.schema !== BOUNDARY_ESTIMATOR_MIXTURE_SCHEMA || state.components.length === 0) {
     throw new Error("incompatible boundary estimator state");
   }
@@ -547,8 +547,7 @@ function fitHeldoutCalibration(input: {
       shardLogLossStdDev: null
     };
   }
-  let slope = 1;
-  let calibrationIntercept = 0;
+  const calibrationPass = new BoundaryCalibrationPass();
   const mass = Math.max(1, (statistics.positiveMass + statistics.negativeMass) / MASS_SCALE);
   const rows = statistics.rows.filter(row => row.positiveMass + row.negativeMass > 0);
   const rawLogits = new Float64Array(rows.length);
@@ -561,17 +560,14 @@ function fitHeldoutCalibration(input: {
     rawLogits[index] = input.intercept + dot(input.weights, row.featuresFixed.map(value => value / FIXED_SCALE));
   }
   for (let iteration = 0; iteration < 160; iteration += 1) {
-    let slopeGradient = 0;
-    let interceptGradient = 0;
+    calibrationPass.begin();
     for (let index = 0; index < rows.length; index++) {
-      const rawLogit = rawLogits[index]!;
-      const residual = sigmoid(slope * rawLogit + calibrationIntercept) * masses[index]! - positives[index]!;
-      slopeGradient += residual * rawLogit;
-      interceptGradient += residual;
+      calibrationPass.add(rawLogits[index]!, positives[index]!, masses[index]!);
     }
-    slope = quantize(Math.min(10, Math.max(0.05, slope - 0.08 * slopeGradient / mass)));
-    calibrationIntercept = quantize(calibrationIntercept - 0.08 * interceptGradient / mass);
+    calibrationPass.finish(mass);
   }
+  const slope = calibrationPass.slope;
+  const calibrationIntercept = calibrationPass.intercept;
   const metrics = calibrationMetrics(statistics, input.weights, input.intercept, slope, calibrationIntercept);
   const shardLosses = input.shards
     .filter(shard => shard.positiveMass + shard.negativeMass > 0)
@@ -618,63 +614,9 @@ function calibrationMetrics(
   anchorRecall: number | null;
   predictiveCompressionGainNats: number;
 } {
-  let logLoss = 0;
-  let brier = 0;
-  let mass = 0;
-  let truePositive = 0;
-  let falsePositive = 0;
-  let falseNegative = 0;
-  const bins = Array.from({ length: 10 }, () => ({ predicted: 0, positive: 0, mass: 0 }));
-  for (const row of statistics.rows) {
-    const positive = row.positiveMass / MASS_SCALE;
-    const negative = row.negativeMass / MASS_SCALE;
-    const rowMass = positive + negative;
-    if (rowMass <= 0) continue;
-    const rawLogit = rawIntercept + dot(weights, row.featuresFixed.map(value => value / FIXED_SCALE));
-    const predicted = clampProbability(sigmoid(slope * rawLogit + calibrationIntercept));
-    logLoss += -positive * Math.log(predicted) - negative * Math.log(1 - predicted);
-    brier += positive * (1 - predicted) ** 2 + negative * predicted ** 2;
-    mass += rowMass;
-    const bin = bins[Math.min(9, Math.floor(predicted * 10))]!;
-    bin.predicted += predicted * rowMass;
-    bin.positive += positive;
-    bin.mass += rowMass;
-    const anchorPositive = row.anchoredPositiveMass / MASS_SCALE;
-    const anchorNegative = row.anchoredNegativeMass / MASS_SCALE;
-    if (predicted >= 0.5) {
-      truePositive += anchorPositive;
-      falsePositive += anchorNegative;
-    } else {
-      falseNegative += anchorPositive;
-    }
-  }
-  let ece = 0;
-  for (const bin of bins) {
-    if (bin.mass <= 0) continue;
-    ece += bin.mass / Math.max(1, mass)
-      * Math.abs(bin.predicted / bin.mass - bin.positive / bin.mass);
-  }
-  const positiveRate = statistics.positiveMass
-    / Math.max(1, statistics.positiveMass + statistics.negativeMass);
-  const neutral = Math.min(1 - 1e-12, Math.max(1e-12, positiveRate));
-  const baselineLogLoss = (
-    -(statistics.positiveMass / MASS_SCALE) * Math.log(neutral)
-    -(statistics.negativeMass / MASS_SCALE) * Math.log(1 - neutral)
-  ) / Math.max(1, mass);
-  const averageLogLoss = logLoss / Math.max(1, mass);
-  return {
-    mass: quantize(mass),
-    logLoss: quantize(averageLogLoss),
-    brier: quantize(brier / Math.max(1, mass)),
-    expectedCalibrationError: quantize(ece),
-    anchorPrecision: truePositive + falsePositive > 0
-      ? quantize(truePositive / (truePositive + falsePositive))
-      : null,
-    anchorRecall: truePositive + falseNegative > 0
-      ? quantize(truePositive / (truePositive + falseNegative))
-      : null,
-    predictiveCompressionGainNats: quantize(baselineLogLoss - averageLogLoss)
-  };
+  const pass = new BoundaryMetricsPass(weights, rawIntercept, slope, calibrationIntercept);
+  for (const row of statistics.rows) pass.add(row);
+  return pass.finish(statistics.positiveMass, statistics.negativeMass);
 }
 
 function rawBoundaryLogLoss(
@@ -728,8 +670,8 @@ function validateSourceDisjoint(
   }
 }
 
-function validateModel(model: BoundaryEstimatorModel): void {
-  if (model.schema !== BOUNDARY_ESTIMATOR_SCHEMA
+function validateModel(model: BoundaryEstimatorScoringModel): void {
+  if ((model.schema !== BOUNDARY_ESTIMATOR_SCHEMA && model.schema !== BOUNDARY_ESTIMATOR_INFERENCE_SCHEMA)
     || model.featureOrder.length !== FEATURE_ORDER.length
     || model.weights.length !== FEATURE_ORDER.length) {
     throw new Error("incompatible boundary estimator model");
@@ -754,19 +696,6 @@ function emptyStatisticsRow(key: string, featuresFixed: number[]): BoundaryStati
 
 function featureArray(features: BoundaryFeatureVector): number[] {
   return FEATURE_ORDER.map(key => features[key]);
-}
-
-function dot(left: ArrayLike<number>, right: ArrayLike<number>, offset = 0, length = right.length): number {
-  let sum = 0;
-  let compensation = 0;
-  for (let index = 0; index < Math.max(left.length, length); index += 1) {
-    const product = (left[index] ?? 0) * (right[offset + index] ?? 0);
-    const adjusted = product - compensation;
-    const next = sum + adjusted;
-    compensation = (next - sum) - adjusted;
-    sum = next;
-  }
-  return sum;
 }
 
 function dotFeatureRecord(weights: readonly number[], features: BoundaryFeatureVector): number {
@@ -796,23 +725,10 @@ function dotFixedFeatureRow(weights: readonly number[], featuresFixed: readonly 
   return sum;
 }
 
-function sigmoid(value: number): number {
-  if (value >= 0) {
-    const inverse = Math.exp(-Math.min(60, value));
-    return 1 / (1 + inverse);
-  }
-  const exponent = Math.exp(Math.max(-60, value));
-  return exponent / (1 + exponent);
-}
-
 function standardDeviation(values: readonly number[]): number {
   if (!values.length) return 0;
   const average = values.reduce((sum, value) => sum + value, 0) / values.length;
   return Math.sqrt(values.reduce((sum, value) => sum + (value - average) ** 2, 0) / values.length);
-}
-
-function quantize(value: number): number {
-  return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
 function fixedMass(value: number): number {
