@@ -753,6 +753,7 @@ describe("learned rows carry the shard's provenance once", () => {
         const ids = input.patterns.map(pattern => pattern.id);
         fixture.state.patterns.push(...input.patterns);
         activeContractsBySource.set(input.projection.sourceId, ids);
+        await replaceFixtureLanguagePatternProjection.call(fixture.storage.languageMemory,input);
         return;
       }
       const upsert = <T extends { id: string }>(target: T[], rows: readonly T[]) => {
@@ -760,6 +761,7 @@ describe("learned rows carry the shard's provenance once", () => {
         target.splice(0, target.length, ...byId.values());
       };
       upsert(fixture.state.patterns, input.patterns);
+      await replaceFixtureLanguagePatternProjection.call(fixture.storage.languageMemory,input);
     };
     const report = await trainOssCorpus({ storage: fixture.storage, rootPath: root, sourceUriBase: "scce://assertion-fixture", maxFiles: 20,
       maxFilesPerRun: 20, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
@@ -3202,6 +3204,7 @@ function exposeOwnedDialogueEvidence(fixture: { storage: ScceStorage; state: Mem
 }
 
 function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
+  const projectCheckpoints = new Map<string, IngestionCheckpoint>();
   const state: MemoryState = {
     events: [],
     sourceVersions: [],
@@ -3228,15 +3231,16 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       putEvidenceSpans: async (spans: readonly EvidenceSpan[]) => { state.evidence.push(...spans); },
       promoteEvidence: async (ids: EvidenceSpan["id"][]) => ids.length,
       getEvidence: async () => null,
-      getEvidenceBatch: async () => [],
-      searchEvidence: async () => [],
+      getEvidenceBatch: async (ids: EvidenceSpan["id"][]) => state.evidence.filter(span=>ids.includes(span.id)),
+      searchEvidence: async (query: Parameters<ScceStorage["evidence"]["searchEvidence"]>[0]) => state.evidence.filter(span=>(!query.sourceVersionId||span.sourceVersionId===query.sourceVersionId)&&(!query.status||span.status===query.status)).slice(0,query.limit).map(span=>({span,score:1,reason:"canonical fixture"})),
+      sourceVersionById: async (id: SourceVersion["sourceVersionId"]) => [...state.sourceVersions].reverse().find(source=>source.sourceVersionId===id)??null,
       sourceVersionsForEvidence: async () => []
     },
     model: {
       readModel: async () => ({ languageProfiles: [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }),
       writeModel: async () => undefined,
       putLanguageProfile: async (profile: LanguageProfile) => { state.profiles.push(profile); },
-      listLanguageProfiles: async () => state.profiles
+      listLanguageProfiles: async (query: Parameters<ScceStorage["model"]["listLanguageProfiles"]>[0]) => state.profiles.filter(profile=>typeof query!=="object"||!query.sourceVersionIds||query.sourceVersionIds.includes(profile.sourceVersionId)).slice(0,typeof query==="number"?query:query?.limit)
     },
     languageMemory: {
       listSourceCompilationArtifactIds: async (query: Parameters<NonNullable<ScceStorage["languageMemory"]["listSourceCompilationArtifactIds"]>>[0]) => compilationArtifactIds(query.family === "units" ? state.units : query.family === "patterns" ? state.patterns : state.frames, query),
@@ -3263,17 +3267,18 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     init: async () => undefined,
     transaction: async <T>(fn: () => Promise<T>) => {
       const before = Object.fromEntries(Object.entries(state).map(([key, rows]) => [key, [...rows]]));
-      try { return await fn(); } catch (error) { Object.assign(state, before); throw error; }
+      const checkpointBefore=new Map(projectCheckpoints);
+      try { return await fn(); } catch (error) { Object.assign(state, before);projectCheckpoints.clear();for(const [id,row] of checkpointBefore)projectCheckpoints.set(id,row); throw error; }
     },
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),
     stats: async () => ({}),
     close: async () => undefined,
     conversation: unusedStore(),
-    ingestion: unusedStore(),
+    ingestion: {get:async(id:string)=>projectCheckpoints.get(id)??null,put:async(row:IngestionCheckpoint)=>{projectCheckpoints.set(row.id,row);},list:async()=>[...projectCheckpoints.values()]},
     graph: { getSlice: async (query: unknown) => ({ bounded: true, query, nodes: [], edges: [], hyperedges: [] }),
       upsertNodes: async () => undefined, upsertEdges: async () => undefined, upsertHyperedges: async () => undefined },
-    blobs: { put: async (bytes: Uint8Array) => { state.blobs.push(new Uint8Array(bytes)); return blobContentHash(bytes); } },
+    blobs: { put: async (bytes: Uint8Array) => { state.blobs.push(new Uint8Array(bytes)); return blobContentHash(bytes); },get:async(hash:string)=>{const bytes=state.blobs.find(row=>blobContentHash(row)===hash);if(!bytes)throw new Error("canonical fixture blob missing");return bytes;} },
     quarantine: unusedStore(),
     proofs: unusedStore(),
     constructs: unusedStore(),

@@ -6,7 +6,6 @@ import path from "node:path";
 import type { LanguageTrainingSegmentationDeclaration } from "./language-training-segmentation.js";
 import { pathToFileURL } from "node:url";
 import { getHeapStatistics } from "node:v8";
-import ts from "typescript";
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
   codeCommentProse,
@@ -30,7 +29,7 @@ import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLang
 import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
 import { compileSourceCodeFunctionsAsync } from "./source-code-function-learning.js";
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
-import { buildTypeScriptSemanticProgramIndex } from "./typescript-semantic-program-index.js";
+import { publishOssOwnedContractClosures, type OssContractClosureReport } from "./oss-owned-contract-closure.js";
 import {compileSourceOwnedContracts} from "./source-owned-contract-compiler.js";
 import { type GrammarContractFile } from "./grammar-source-owned-test-contracts.js";
 
@@ -107,6 +106,7 @@ export interface OssCorpusTrainReport {
   /** Whether folder inspection hit its repository ceiling. */
   inspectionTruncated: boolean;
   heapMiBAtExit: number;
+  sourceContractClosure?: OssContractClosureReport;
   sourceBrainBuild?: SourceBrainBuildReceipt;
 }
 
@@ -134,7 +134,7 @@ async function ingestSourceOwnedTestContracts(input: {
   hasher: ReturnType<typeof createHasher>;
   maxFileBytes: number;
 }): Promise<Map<string, JsonValue[]>> {
-  const result = await ingestTypeScriptSourceOwnedTestContracts(input);
+  const result = new Map<string, JsonValue[]>();
   const files: GrammarContractFile[] = [];
   let totalBytes = 0;
   for (const file of input.window) {
@@ -154,116 +154,6 @@ async function ingestSourceOwnedTestContracts(input: {
     knownPaths:input.knownPaths,complete:input.snapshotComplete,maxFileBytes:input.maxFileBytes,maxTotalBytes:8*1024*1024});
   for (const [sourcePath, contracts] of compiled) result.set(sourcePath, contracts);
   return result;
-}
-
-async function ingestTypeScriptSourceOwnedTestContracts(input: {
-  root: string;
-  window: readonly { path: string; absolutePath: string; byteLength: number; contentHash?: string }[];
-  sourceUriBase: string;
-  ids: ReturnType<typeof createIdFactory>;
-  hasher: ReturnType<typeof createHasher>;
-  maxFileBytes: number;
-}): Promise<Map<string, JsonValue[]>> {
-  const result = new Map<string, JsonValue[]>();
-  const configPath = path.join(input.root, "tsconfig.json");
-  let configBytes: Buffer;
-  try { configBytes = await readFile(configPath); } catch { return result; }
-  const available = input.window.filter(file => codeLanguageForPath(file.path)
-    && /\.(?:[cm]?js|jsx|[cm]?ts|tsx)$/iu.test(file.path) && file.byteLength <= input.maxFileBytes);
-  const availableByPath = new Map(available.map(file => [normalizeRelative(file.path), file]));
-  const testCandidates: Array<{ path: string; imports: string[] }> = [];
-  for (const file of available) {
-    const text = (await readFile(file.absolutePath)).toString("utf8");
-    if (importsSupportedTest(text, file.path)) testCandidates.push({ path: normalizeRelative(file.path), imports: relativeModulePaths(text, file.path) });
-  }
-  if (!testCandidates.length) return result;
-  const chosenTests = testCandidates.sort((a, b) => a.path.localeCompare(b.path)).slice(0, 32);
-  const sourceTargets = [...new Set(chosenTests.flatMap(test => test.imports).filter(importPath => availableByPath.has(importPath)))].sort().slice(0, 95);
-  const selectedPaths = [...chosenTests.map(test => test.path), ...sourceTargets].slice(0, 127);
-  const configRelative = "tsconfig.json";
-  const configSize = configBytes.byteLength;
-  const maxSnapshotBytes = 8 * 1024 * 1024;
-  if (configSize > maxSnapshotBytes) return result;
-  const candidates: typeof available = [];
-  let totalSnapshotBytes = configSize;
-  for (const selectedPath of selectedPaths) {
-    const file = availableByPath.get(selectedPath);
-    if (!file || totalSnapshotBytes + file.byteLength > maxSnapshotBytes) continue;
-    candidates.push(file);
-    totalSnapshotBytes += file.byteLength;
-  }
-  const workspacePaths = [...candidates.map(file => normalizeRelative(file.path)), configRelative].sort();
-  if (workspacePaths.length < 3) return result;
-  const sourceTexts = new Map<string, string>();
-  const testPaths: string[] = [];
-  const sourceVersions = new Map<string, { sourceVersionId: string; sourceHash: string }>();
-  const testVersions = new Map<string, { sourceVersionId: string; sourceHash: string }>();
-  for (const file of candidates) {
-    const relativePath = normalizeRelative(file.path);
-    const raw = await readFile(file.absolutePath);
-    const text = raw.toString("utf8");
-    const sourceHash = file.contentHash ?? sha256Bytes(raw);
-    const fileVersion = input.ids.sourceVersionId(canonicalStringify({
-      contract: "scce.oss-projection-source-version.v1",
-      sourceUri: `${input.sourceUriBase}#path=${encodeURIComponent(relativePath)}`,
-      sourceHash,
-      transformId: `${CODE_SURFACE_RECIPE_ID}:code_surface_tokens`,
-      projectedTextHash: input.hasher.digestHex(codeTrainingSurface(text))
-    }));
-    sourceTexts.set(relativePath, text);
-    const isTest = importsSupportedTest(text, relativePath);
-    if (isTest) {
-      testPaths.push(relativePath);
-      testVersions.set(relativePath, { sourceVersionId: String(fileVersion), sourceHash });
-    } else sourceVersions.set(relativePath, { sourceVersionId: String(fileVersion), sourceHash });
-  }
-  if (!testPaths.length || sourceVersions.size === 0) return result;
-  if (configSize > input.maxFileBytes) return result;
-  const program = await buildTypeScriptSemanticProgramIndex({
-    workspaceRoot: input.root,
-    tsconfigPath: configRelative,
-    compileOnlyBoundedFiles: true,
-    bounds: {
-      workspacePaths,
-      observedTestPaths: testPaths,
-      maxFiles: workspacePaths.length,
-      maxFileBytes: input.maxFileBytes,
-      maxTotalBytes: maxSnapshotBytes
-    }
-  });
-  const compiled=await compileSourceOwnedContracts({root:input.root,files:[...sourceTexts].map(([path,text])=>({path,bytes:Buffer.from(text,"utf8"),
-    sourceHash:(sourceVersions.get(path)??testVersions.get(path))!.sourceHash,sourceVersionId:(sourceVersions.get(path)??testVersions.get(path))!.sourceVersionId})),sourceUriBase:input.sourceUriBase,
-    knownPaths:workspacePaths,complete:true,maxFileBytes:input.maxFileBytes,maxTotalBytes:maxSnapshotBytes,semanticProgram:program});
-  for (const sourcePath of sourceVersions.keys()) result.set(sourcePath, []);
-  for (const [sourcePath, contracts] of compiled) result.set(sourcePath, contracts);
-  return result;
-}
-
-
-function importsSupportedTest(text: string, fileName: string): boolean {
-  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
-  return source.statements.some(statement => ts.isImportDeclaration(statement)
-    && ts.isStringLiteral(statement.moduleSpecifier) && (statement.moduleSpecifier.text === "node:test"
-      || statement.moduleSpecifier.text === "vitest" && !statement.importClause?.isTypeOnly
-        && statement.importClause?.namedBindings && ts.isNamedImports(statement.importClause.namedBindings)
-        && statement.importClause.namedBindings.elements.some(element => !element.isTypeOnly && ["test", "it"].includes(element.propertyName?.text ?? element.name.text))));
-}
-
-function relativeModulePaths(text: string, fileName: string): string[] {
-  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
-  const candidates = new Set<string>();
-  for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const specifier = statement.moduleSpecifier.text;
-    if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
-    const base = path.posix.normalize(path.posix.join(path.posix.dirname(normalizeRelative(fileName)), specifier));
-    candidates.add(base);
-    const extension = path.posix.extname(base);
-    if (extension === ".js" || extension === ".mjs" || extension === ".cjs") candidates.add(base.slice(0, -extension.length) + (extension === ".mjs" ? ".mts" : extension === ".cjs" ? ".cts" : ".ts"));
-    if (!extension) for (const suffix of [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]) candidates.add(base + suffix);
-    candidates.add(path.posix.join(base, "index.ts"));
-  }
-  return [...candidates].sort();
 }
 
 type OssCorpusSourceSystem = typeof CORPUS_SOURCE_SYSTEM_IDS.ossDocs | typeof CORPUS_SOURCE_SYSTEM_IDS.ossCode;
@@ -357,6 +247,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     }
 
     const rawBytes = await readFile(file.absolutePath);
+    if (file.contentHash && sha256Bytes(rawBytes) !== file.contentHash.replace(/^sha256[:_]/u, "")) throw new Error(`OSS source changed after snapshot inspection: ${file.path}`);
     const raw = rawBytes.toString("utf8");
     const artifactRole = await roles.roleFor(file.absolutePath);
     const license = await licenses.licenseFor(file.absolutePath);
@@ -500,8 +391,11 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   }
 
   const nextFileIndex = startFileIndex + (firstIncompleteFileOffset ?? filesConsidered);
+  const sourceContractClosure = includeSource ? await publishOssOwnedContractClosures({ storage: input.storage, root, inventory: importable, sourceUriBase, snapshotHash,
+    snapshotComplete: !inspectionTruncated, maxFileBytes: input.maxFileBytes ?? 1_000_000, informationLabel: OSS_CORPUS_INFORMATION_LABEL }) : undefined;
   const report: OssCorpusTrainReport = {
     schema: "scce.ossCorpusTrainReport.v1",
+    ...(sourceContractClosure ? { sourceContractClosure } : {}),
     rootPath: root,
     snapshotHash,
     snapshotKind,

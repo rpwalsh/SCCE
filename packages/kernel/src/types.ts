@@ -686,6 +686,7 @@ export interface ProgramBehaviorRequirement {
   readonly sourceSpan: { readonly charStart: number; readonly charEnd: number };
   /** Exact persisted source-owned assertion identity when this came from an admitted repository contract. */
   readonly sourceContract?: {
+    readonly projectClosure?: import("./source-owned-project-contract.js").SourceOwnedProjectContractClosure;
     readonly nativeAbi?: import("./program-native-abi.js").ProgramNativeCallableAbi;
     readonly nativeExpected?: import("./program-native-abi.js").ProgramNativeLiteral;
     readonly nativeArguments?: readonly import("./program-native-abi.js").ProgramNativeLiteral[];

@@ -41,6 +41,7 @@ async function ingestFixture(root: string) {
   const evidence: EvidenceSpan[] = [], versions = new Map<string, SourceVersion>(), checkpoints = new Map<string, IngestionCheckpoint>();
   const clock = createClock({ fixedTime: 100, stepMs: 1 }), recorded = storageFixtureForEvaluation({ evidence, clockNow: () => clock.now() });
   recorded.storage.evidence.putSourceVersion = async row => { versions.set(String(row.sourceVersionId), row); };
+  recorded.storage.evidence.sourceVersionById = async id => versions.get(String(id)) ?? null;
   recorded.storage.evidence.putEvidenceSpan = async row => { const index = evidence.findIndex(span => span.id === row.id); if (index < 0) evidence.push(row); else evidence[index] = row; };
   recorded.storage.evidence.sourceVersionsForEvidence = async ids => [...new Set(evidence.filter(span => ids.includes(span.id)).map(span => String(span.sourceVersionId)))].map(id => versions.get(id)!);
   recorded.storage.ingestion = { get: async id => checkpoints.get(id) ?? null, put: async row => { checkpoints.set(row.id, row); } } as typeof recorded.storage.ingestion;
@@ -144,7 +145,7 @@ it("acquires seven literal observations from the unchanged public repository sou
 
 it("uses Vitest-owned state traces in the existing native retry and passes separate unseen behavior checks", async () => {
   const f = await fixture("check('trace',()=>{put('a','111');verify(get('a')).toBe('111');put('a','222');verify(get('a')).toBe('222');});", undefined,
-    "const values=new Map<string,string>(); export function f0(key:string,value:string){values.set(key,value);} export function f1(key:string){return values.get(key);}\n");
+    "const values=new Map<string,string>(); export function f0(key:string,value:string){values.set(key,value);} export function f1(key:string){return values.get(key);} export function f2(value:number):number{return value*value+value;} export function f3(value:unknown):unknown{return value;}\n");
   expect(f.cases).toHaveLength(2);
   const { patterns } = await ingestFixture(f.root);
   expect(patterns).toHaveLength(1);

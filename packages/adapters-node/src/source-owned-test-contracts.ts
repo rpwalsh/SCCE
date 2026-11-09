@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import type { TypeScriptSemanticProgramIndex, TypeScriptSemanticCall, TypeScriptSemanticFile } from "./typescript-semantic-program-index.js";
 
 export const SOURCE_OWNED_TEST_CONTRACT_SCHEMA = "scce.source_owned_test_contract.v1" as const;
+export const SOURCE_OWNED_ASSERTION_FRAMEWORK_MODULES = Object.freeze(["vitest", "node:test", "node:assert", "node:assert/strict"] as const);
 
 export interface SourceOwnedInvocation {
   readonly nativeAbi?: ProgramNativeCallableAbi;

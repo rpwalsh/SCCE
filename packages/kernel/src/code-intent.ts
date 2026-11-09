@@ -5,6 +5,7 @@ import { codeLanguageForPath, type CodeRequestSignal } from "./code-request.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { ownedNativeArguments, ownedNativeCallableAbi, ownedNativeLiteral, type ProgramNativeCallableAbi } from "./program-native-abi.js";
 import type { EvidenceSpan, JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
+import {ownedProjectContractClosure,type SourceOwnedProjectContractClosure} from "./source-owned-project-contract.js";
 
 /**
  * What a request written in a human language has to do with code.
@@ -149,7 +150,7 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
   const references = new Set(input.intent.references.filter(row => row.sourceFamily && row.sourceHash)
     .map(row => `${row.sourceFamily}\u0000${row.relativePath}\u0000${row.sourceHash}`));
   const grouped = new Map<string, Array<Record<string, JsonValue>>>();
-  const matchedKeys = new Set<string>();
+  const matchedKeys = new Map<string,{closure:SourceOwnedProjectContractClosure|undefined;sourceHash:string;targetName:string;roots:Set<string>;versions:Set<string>}>();
   for (const pattern of input.patterns) {
     const body = objectRecord(pattern.patternJson);
     if (body.schema !== "scce.source_owned_test_contract.v1" || typeof body.sourcePath !== "string"
@@ -158,12 +159,21 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
       || typeof body.sourceHash !== "string" || !validContentHash(body.sourceHash) || typeof body.sourceVersionId !== "string"
       || typeof body.repositoryFamily !== "string" || !Array.isArray(body.cases)) continue;
     const key = `${body.repositoryFamily}\u0000${body.sourcePath}\u0000${body.sourceVersionId}\u0000${body.targetSymbolId}`;
-    if (matchedKeys.has(key)) return empty;
-    matchedKeys.add(key);
+    const projectClosure=body.sourceContractClosure===undefined?undefined:ownedProjectContractClosure(body.sourceContractClosure,body.repositoryFamily,body.componentRecipe);
+    if(body.sourceContractClosure!==undefined&&!projectClosure)return empty;
+    const previous=matchedKeys.get(key);
+    if(previous&&(!previous.closure||!projectClosure||previous.sourceHash!==body.sourceHash||previous.targetName!==body.targetName
+      ||previous.closure.scopeIdentity!==projectClosure.scopeIdentity||previous.closure.snapshotHash!==projectClosure.snapshotHash||previous.closure.configPath!==projectClosure.configPath||previous.closure.configHash!==projectClosure.configHash
+      ||previous.closure.recipe!==projectClosure.recipe||previous.closure.compilerVersion!==projectClosure.compilerVersion
+      ||previous.roots.has(projectClosure.testSourceId)||previous.versions.has(projectClosure.testSourceVersionId)))return empty;
+    const matched=previous??{closure:projectClosure,sourceHash:body.sourceHash,targetName:body.targetName,roots:new Set<string>(),versions:new Set<string>()};
+    if(projectClosure){matched.roots.add(projectClosure.testSourceId);matched.versions.add(projectClosure.testSourceVersionId);}
+    matchedKeys.set(key,matched);
     const cases = grouped.get(key) ?? [];
     for (const value of body.cases) {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       const row = value as Record<string, JsonValue>;
+      if(projectClosure&&(row.testPath!==projectClosure.testPath||row.testSourceVersionId!==projectClosure.testSourceVersionId||row.testHash!==projectClosure.testHash))return empty;
       if (row.targetSymbolId !== body.targetSymbolId || !Array.isArray(row.arguments) || !isJsonValue(row.expectedResult)
         || typeof row.testPath !== "string" || !row.testPath || typeof row.testSourceVersionId !== "string" || typeof row.testHash !== "string" || !validContentHash(row.testHash)
         || !validSpan(row.inputSpan) || !validSpan(row.expectedSpan) || !validSpan(row.assertionSpan)) continue;
@@ -173,7 +183,7 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
       if (row.nativeArguments !== undefined && !ownedNativeArguments(row.nativeArguments, row.arguments)) return empty;
       if (row.nativeResultProjection !== undefined && (body.formalLanguage !== "go" || row.nativeResultProjection !== "dereference")) return empty;
       cases.push({ ...row, sourceHash: body.sourceHash, sourcePath: body.sourcePath, sourceVersionId: body.sourceVersionId,
-        targetName: body.targetName, targetSymbolId: body.targetSymbolId, repositoryFamily: body.repositoryFamily });
+        targetName: body.targetName, targetSymbolId: body.targetSymbolId, repositoryFamily: body.repositoryFamily,projectClosure:projectClosure?toJsonValue(projectClosure):null });
     }
     grouped.set(key, cases);
   }
@@ -188,7 +198,7 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
   // Multiple independent source symbols/families are ambiguous without a formal caller name that selects one.
   if (selectedGroups.length !== 1) return empty;
   const [familyKey, rows] = selectedGroups[0]!;
-  const ordered = rows.sort((a, b) => spanStart(a.assertionSpan) - spanStart(b.assertionSpan));
+  const ordered = rows.sort((a, b) => (a.projectClosure&&b.projectClosure?String(a.testPath).localeCompare(String(b.testPath)):0)||spanStart(a.assertionSpan) - spanStart(b.assertionSpan));
   if (ordered.length < 2) return empty;
   const [family, sourcePath, sourceVersionId, targetSymbolId] = familyKey.split("\u0000");
   const sourceTargetName = ordered[0]!.targetName;
@@ -199,7 +209,7 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
   const requestHash = `sha256:${createHasher().digestHex(input.requestText)}`;
   const requestSpan = { charStart: 0, charEnd: [...input.requestText].length };
   const behaviorRequirements: ProgramBehaviorRequirement[] = ordered.map((row, index) => ({
-    id: `source_assertion.${createHasher().digestHex(canonicalStringify([family, sourcePath, sourceVersionId, targetSymbolId, row.testSourceVersionId, row.assertionSpan])).slice(0, 40)}`,
+    id: `source_assertion.${createHasher().digestHex(canonicalStringify([family, sourcePath, sourceVersionId, targetSymbolId, row.testSourceVersionId, row.assertionSpan,...(row.projectClosure?[row.projectClosure]:[])])).slice(0, 40)}`,
     requestHash,
     callableId,
     arguments: row.arguments as JsonValue[],
@@ -208,6 +218,7 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
     relationSurface: "source-owned-assertion",
     sourceSpan: requestSpan,
     sourceContract: {
+      ...(row.projectClosure?{projectClosure:row.projectClosure as unknown as SourceOwnedProjectContractClosure}:{}),
       ...(row.nativeAbi !== undefined ? { nativeAbi: ownedNativeCallableAbi(row.nativeAbi, { targetSymbolId, callableName: sourceTargetName,
         sourcePath, sourceVersionId, sourceHash: String(row.sourceHash), languageId: input.intent.languageId ?? "" })! } : {}),
       ...(row.nativeExpected !== undefined ? { nativeExpected: ownedNativeLiteral(row.nativeExpected, row.expectedResult!)! } : {}),

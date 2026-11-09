@@ -354,6 +354,7 @@ export { REQUEST_SEED_PATTERN_JSON_FIELDS, requestSeedLanguagePattern, REQUEST_S
 export * from "./program-native-abi.js";
 
 export * from "./workspace-code-contracts.js";
+export * from "./source-owned-project-contract.js";
 
 export * from "./program-validation-approval.js";
 

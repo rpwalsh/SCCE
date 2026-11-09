@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
+import { isSourceOwnedProjectProjection, SOURCE_OWNED_PROJECT_PROJECTION_PREFIX, projectContractDependencyEligibilitySql } from "./source-owned-project-projection.js";
 import { consolidateCorpusSegmentation, loadCorpusSegmentationContextSlice } from "./corpus-segmentation-producer.js";
 import { createCorpusSegmentationRun, openCorpusSegmentationRun, activateCorpusSegmentationRun, readActiveCorpusSegmentationRun } from "./corpus-segmentation-store.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -4146,13 +4147,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (!informationLabelAllowsRead(informationLabel, storage.requireInformationAccess())) return undefined;
       const key = activeLanguagePatternProjectionKey({ ...query, tenantId: informationLabel.tenantId });
       const computation = query.patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA;
+      const projectContract = query.patternSchema === "scce.source_owned_test_contract.v1" && isSourceOwnedProjectProjection(query.componentRecipe);
       const strictAuxiliary = computation || contextualQa;
+      const strictOwnership = strictAuxiliary || projectContract;
       const projectionParams: unknown[] = [key];
-      const projectionAccess = strictAuxiliary ? storage.informationAccessPredicate("active_projection", projectionParams.length + 1) : undefined;
+      const projectionAccess = strictOwnership ? storage.informationAccessPredicate("active_projection", projectionParams.length + 1) : undefined;
       if (projectionAccess) projectionParams.push(...projectionAccess.params);
-      const dependencyGuard = strictAuxiliary ? conversationalProjectionEligibilitySql(storage, projectionParams) : undefined;
+      const dependencyGuard = projectContract ? projectContractDependencyEligibilitySql(storage, projectionParams) : strictAuxiliary ? conversationalProjectionEligibilitySql(storage, projectionParams) : undefined;
       const found = await storage.query<{ value_json: JsonValue }>(
-        strictAuxiliary ? `SELECT value_json FROM (SELECT value_json,value_json->'informationLabel' AS information_label
+        strictOwnership ? `SELECT value_json FROM (SELECT value_json,value_json->'informationLabel' AS information_label
           FROM ${storage.table("storage_meta")} WHERE key=$1) active_projection
           WHERE ${projectionAccess!.sql} AND ${dependencyGuard}`
           : `SELECT value_json FROM ${storage.table("storage_meta")} WHERE key=$1`, projectionParams);
@@ -4165,10 +4168,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         || !Array.isArray(value.patternIds) || value.patternIds.some(id => typeof id !== "string")
         || new Set(value.patternIds).size !== value.patternIds.length) return undefined;
       const patternIds = [...value.patternIds as string[]].sort();
-      if ((query.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || strictAuxiliary)
+      if (projectContract && canonicalStringify(value.sourceContractRoot) !== canonicalStringify(query.sourceContractRoot)) return undefined;
+      if ((query.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || strictAuxiliary || projectContract)
         && (!Array.isArray(value.sourceDependencies) || (query.sourceDependencies !== undefined
           && canonicalStringify(query.sourceDependencies) !== canonicalStringify(value.sourceDependencies)))) return undefined;
-      if (query.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || strictAuxiliary || query.componentRecipe === REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE) {
+      if (query.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || strictAuxiliary || query.componentRecipe === REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE || projectContract) {
         const params: unknown[] = [patternIds, query.profileId, query.sourceVersionId, query.sourceSystem, query.patternSchema, query.componentRecipe];
         if (strictAuxiliary) params.push([...new Set((Array.isArray(value.sourceDependencies) ? value.sourceDependencies : []).flatMap(dependency =>
           dependency && typeof dependency === "object" && !Array.isArray(dependency) && Array.isArray(dependency.evidenceIds)
@@ -4193,7 +4197,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       return { profileId: query.profileId, sourceId: query.sourceId, sourceVersionId: query.sourceVersionId, sourceSystem: query.sourceSystem,
         patternSchema: query.patternSchema, componentRecipe: query.componentRecipe, informationLabel, patternIds,
-        ...(Array.isArray(value.sourceDependencies) ? { sourceDependencies: value.sourceDependencies as unknown as LanguagePatternProjection["sourceDependencies"] } : {}) };
+        ...(Array.isArray(value.sourceDependencies) ? { sourceDependencies: value.sourceDependencies as unknown as LanguagePatternProjection["sourceDependencies"] } : {}),
+        ...(projectContract ? {sourceContractRoot: value.sourceContractRoot as unknown as LanguagePatternProjection["sourceContractRoot"]} : {}) };
     },
     async replaceLanguagePatternProjection(input) {
       const projection = input.projection;
@@ -4203,7 +4208,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             || projection.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID
             || (projection.componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE && projection.sourceSystem === CONTEXTUAL_QA_SOURCE_SYSTEM)))
           || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA && projection.componentRecipe === SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID)
-          || (projection.patternSchema === "scce.source_owned_test_contract.v1" && projection.componentRecipe === "scce.source_owned_test_contract_projection.v1")
+          || (projection.patternSchema === "scce.source_owned_test_contract.v1" && (projection.componentRecipe === "scce.source_owned_test_contract_projection.v1" || isSourceOwnedProjectProjection(projection.componentRecipe)))
           || (projection.patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA && projection.componentRecipe === CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID)
           || (projection.patternSchema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA && projection.componentRecipe === REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE
             && projection.sourceSystem === REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM)
@@ -4216,9 +4221,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const conversational = projection.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID;
       const computation = projection.patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA;
       const contextualQa = projection.componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE;
-      const sourceDependent = conversational || computation || contextualQa;
+      const projectContract = projection.patternSchema === "scce.source_owned_test_contract.v1" && isSourceOwnedProjectProjection(projection.componentRecipe);
+      const sourceDependent = conversational || computation || contextualQa || projectContract;
       const dependencies = projection.sourceDependencies;
-      if (sourceDependent && (projection.sourceSystem !== "dialogue" || !Array.isArray(dependencies)
+      if (sourceDependent && ((projectContract ? projection.sourceSystem !== "oss_code" : projection.sourceSystem !== "dialogue") || !Array.isArray(dependencies)
         || (patternIds.length > 0 && dependencies.length === 0)
         || (patternIds.length > 0 && !dependencies.some(dependency => dependency?.sourceId === projection.sourceId && dependency.sourceVersionId === projection.sourceVersionId))
         || dependencies.some(dependency => !dependency || typeof dependency.sourceId !== "string" || !dependency.sourceId
@@ -4242,11 +4248,18 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           || (projection.patternSchema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA
             && (row.patternKind !== "discourse" || metadata.profileId !== projection.profileId || metadata.sourceId !== projection.sourceId
               || metadata.sourceVersionId !== projection.sourceVersionId || metadata.componentRecipe !== REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE || !row.evidenceIds.length))
-          || (sourceDependent && (row.patternKind !== "semantic_role" || metadata.sourceId !== projection.sourceId || metadata.sourceVersionId !== projection.sourceVersionId
+          || (sourceDependent && !projectContract && (row.patternKind !== "semantic_role" || metadata.sourceId !== projection.sourceId || metadata.sourceVersionId !== projection.sourceVersionId
             || ((computation || contextualQa) && metadata.profileId !== projection.profileId)
             || metadata.componentRecipe !== projection.componentRecipe || !row.evidenceIds.length
             || row.evidenceIds.some(id => !dependencies!.some(dependency => dependency.evidenceIds.includes(id)))));
       })) throw new Error("active language-pattern IDs must name rows in the replacement batch");
+      if (projectContract && (!projection.sourceContractRoot || !projection.sourceContractRoot.checkpointId || !projection.sourceContractRoot.snapshotCheckpointId || !projection.sourceContractRoot.snapshotHash || !/^[a-f0-9]{64}$/u.test(projection.sourceContractRoot.scopeIdentity) || !/^[a-f0-9]{64}$/u.test(projection.sourceContractRoot.inputDigest)
+        || projection.componentRecipe !== `${SOURCE_OWNED_PROJECT_PROJECTION_PREFIX}${createHasher().digestHex(String(projection.sourceContractRoot.sourceId))}`
+        || !dependencies?.length || dependencies.some(dependency => !dependency.contentHash || !dependency.originalContentHash || !dependency.originalSourceVersionId)
+        || !dependencies.some(dependency => dependency.sourceId === projection.sourceContractRoot!.sourceId && dependency.sourceVersionId === projection.sourceContractRoot!.sourceVersionId)
+        || patternIds.some(id => { const metadata = rows.get(id)!.patternJson as Record<string, JsonValue>; return metadata.componentRecipe !== projection.componentRecipe
+          || !metadata.sourceContractClosure || typeof metadata.sourceContractClosure !== "object" || Array.isArray(metadata.sourceContractClosure)
+          || metadata.sourceContractClosure.digest !== projection.sourceContractRoot!.inputDigest; }))) throw new Error("invalid owned project contract root/dependencies");
       const informationLabel = storage.requireWritableInformationLabel(projection.informationLabel);
       const key = activeLanguagePatternProjectionKey({ ...projection, tenantId: informationLabel.tenantId });
       const value = {
@@ -4259,7 +4272,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         componentRecipe: projection.componentRecipe,
         patternIds,
         informationLabel,
-        ...(sourceDependent ? { sourceDependencies: dependencies } : {})
+        ...(sourceDependent ? { sourceDependencies: dependencies } : {}),
+        ...(projectContract ? {sourceContractRoot: projection.sourceContractRoot} : {})
       };
       await storage.transaction(async () => {
         if (sourceDependent || projection.patternSchema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA) {
@@ -4270,6 +4284,20 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             FROM ${storage.table("language_profiles")} owner_profile JOIN ${storage.table("source_versions")} owner_version ON owner_version.id=owner_profile.source_version_id
             WHERE owner_profile.id=$1 AND owner_version.id=$2 AND owner_version.source_id=$3 AND ${profileAccess.sql} AND ${versionAccess.sql}`, params);
           if (!owner[0]?.source_owner_valid) throw new Error("auxiliary projection does not own its accessible source profile/version");
+        }
+        if (projectContract) {
+          const versionIds = [...new Set(dependencies!.flatMap(dependency => [dependency.sourceVersionId, dependency.originalSourceVersionId!]))].sort();
+          const evidenceIds = [...new Set(dependencies!.flatMap(dependency => dependency.evidenceIds))].sort();
+          const versionAccess = storage.informationAccessPredicate("locked_version", 2);
+          await storage.query(`SELECT locked_version.id FROM ${storage.table("source_versions")} locked_version WHERE locked_version.id=ANY($1::text[]) AND ${versionAccess.sql} ORDER BY locked_version.id FOR SHARE`, [versionIds,...versionAccess.params]);
+          const evidenceAccess = storage.informationAccessPredicate("locked_evidence", 2);
+          await storage.query(`SELECT locked_evidence.id FROM ${storage.table("evidence_spans")} locked_evidence WHERE locked_evidence.id=ANY($1::text[]) AND ${evidenceAccess.sql} ORDER BY locked_evidence.id FOR SHARE`, [evidenceIds,...evidenceAccess.params]);
+          await storage.query(`SELECT id FROM ${storage.table("ingestion_checkpoints")} WHERE id=ANY($1::text[]) ORDER BY id FOR SHARE`, [[projection.sourceContractRoot!.checkpointId,projection.sourceContractRoot!.snapshotCheckpointId].sort()]);
+          await storage.query(`SELECT id FROM ${storage.table("language_profiles")} WHERE id=$1 FOR SHARE`, [projection.profileId]);
+          const dependencyParams: unknown[] = [JSON.stringify(toJsonValue(value))];
+          const guard = projectContractDependencyEligibilitySql(storage, dependencyParams, patternIds.length === 0);
+          const valid = await storage.query<{project_contract_scope_valid:boolean}>(`SELECT TRUE AS project_contract_scope_valid FROM (SELECT $1::jsonb AS value_json) active_projection WHERE ${guard}`, dependencyParams);
+          if (!valid[0]?.project_contract_scope_valid) throw new Error("owned project contract dependency/root is stale, revoked or foreign");
         }
         await putLanguagePatternsBatch(storage, input.patterns);
         await storage.mutateLanguageMemory(
@@ -4813,6 +4841,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         const projectionSet = `active_projection_ids_${projectionSets.length}`;
         const conversationalGuard = patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA ? conversationalProjectionEligibilitySql(storage, params) : undefined;
         const computationGuard = computation ? conversationalProjectionEligibilitySql(storage, params) : undefined;
+        const projectGuard = patternSchema === "scce.source_owned_test_contract.v1" ? projectContractDependencyEligibilitySql(storage, params) : undefined;
         projectionSets.push(`${projectionSet}_headers AS MATERIALIZED (
           SELECT active_projection.value_json->>'profileId' AS profile_id,
             active_projection.value_json->>'sourceSystem' AS source_system,
@@ -4824,9 +4853,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           WHERE ${projectionAccess.sql}
             AND active_projection.value_json->>'schema'='scce.language_pattern_active_projection.v1'
             AND active_projection.value_json->>'patternSchema'=$${constructionSchemaParam}
-            AND (active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam}${conversationalGuard ? ` OR active_projection.value_json->>'componentRecipe' IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}')` : ""})
+            AND (active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam}${conversationalGuard ? ` OR active_projection.value_json->>'componentRecipe' IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}')` : ""}${projectGuard ? ` OR starts_with(active_projection.value_json->>'componentRecipe','${SOURCE_OWNED_PROJECT_PROJECTION_PREFIX}')` : ""})
             ${conversationalGuard ? `AND (active_projection.value_json->>'componentRecipe' NOT IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}') OR (${conversationalGuard}))` : ""}
             ${computationGuard ? `AND active_projection.value_json->>'sourceSystem'='${SOURCE_COMPUTATION_SOURCE_SYSTEM}' AND (${computationGuard})` : ""}
+            ${projectGuard ? `AND (active_projection.value_json->>'componentRecipe'=${constructionRecipeParam} OR (${projectGuard}))` : ""}
             ${patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA || ownedAct ? `AND EXISTS (
               SELECT 1 FROM ${storage.table("language_profiles")} projection_profile
               JOIN ${storage.table("source_versions")} projection_version ON projection_version.id=projection_profile.source_version_id
@@ -4863,7 +4893,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         )`);
         const recipeKey = patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA
           ? `,CASE WHEN pattern.component_recipe IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}') THEN pattern.component_recipe ELSE $${constructionRecipeParam} END`
-          : computation ? ",pattern.component_recipe,pattern.owned_source_version_id" : "";
+          : computation ? ",pattern.component_recipe,pattern.owned_source_version_id" : projectGuard ? `,COALESCE(pattern.component_recipe,${constructionRecipeParam})` : "";
         where.push(`(pattern.pattern_schema IS DISTINCT FROM $${constructionSchemaParam}
         OR (pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id${recipeKey}) IN (
           SELECT profile_id,source_system,pattern_schema,pattern_id${recipeKey ? ",projection_recipe" : ""}${computation ? ",source_version_id" : ""} FROM ${projectionSet}
@@ -5734,6 +5764,7 @@ function activeLanguagePatternProjectionKey(input: {
     || (input.patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA && input.componentRecipe === SOURCE_COMPUTATION_CONSTRUCTION_RECIPE)) return `active_language_pattern_projection:${JSON.stringify([
     "source-owned", input.tenantId, input.sourceSystem, input.sourceId, input.patternSchema, input.componentRecipe
   ])}`;
+  if (input.patternSchema === "scce.source_owned_test_contract.v1" && input.componentRecipe && isSourceOwnedProjectProjection(input.componentRecipe)) return `active_language_pattern_projection:${JSON.stringify(["source-owned",input.tenantId,input.sourceSystem,input.sourceId,input.patternSchema,input.componentRecipe])}`;
   if (input.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA || input.patternSchema === "scce.source_owned_test_contract.v1"
     || input.patternSchema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA) {
     return `active_language_pattern_projection:${JSON.stringify([

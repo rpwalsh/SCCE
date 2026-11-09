@@ -920,7 +920,9 @@ export interface LanguagePatternProjection {
   patternIds: readonly string[];
   informationLabel: InformationLabel;
   /** Exact pooled source support for an independently published conversational component. */
-  sourceDependencies?: readonly { sourceId: SourceId; sourceVersionId: SourceVersionId; evidenceIds: readonly EvidenceId[] }[];
+  sourceDependencies?: readonly { sourceId: SourceId; sourceVersionId: SourceVersionId; evidenceIds: readonly EvidenceId[];
+    contentHash?: ContentHash; originalSourceVersionId?: SourceVersionId; originalContentHash?: ContentHash }[];
+  sourceContractRoot?: { checkpointId: string; sourceId: SourceId; sourceVersionId: SourceVersionId; inputDigest: string; snapshotCheckpointId: string; snapshotHash: string;scopeIdentity:string };
 }
 
 export interface LanguageMemoryStore {
