@@ -31,7 +31,7 @@ it("retains every model, assignment, partition and statistics byte with independ
   const baseline=await complete(source()),input=source(),completed:number[]=[];let active=0,peak=0;
   const actual=await complete(input,{async fitCandidates(prepared,jobs){return Promise.all(jobs.map(async job=>{
     const work=new PagedPopulationWorkspace(input,prepared.rootPopulationId,prepared.namespace);await work.verifyPrepared(prepared);
-    active++;peak=Math.max(peak,active);const candidate=await work.fitCandidate(job.fit,job.holdout,job.populationCount,job.label);active--;completed.push(job.populationCount);return candidate;
+    active++;peak=Math.max(peak,active);const candidate=await work.fitCandidate(job.fit,job.holdout,job.populationCount,job.label,job.ranking);active--;completed.push(job.populationCount);return candidate;
   }));}});
   expect(actual).toBe(baseline);expect(peak).toBeGreaterThan(1);expect([...completed].sort()).toEqual([1,2,3]);
 });

@@ -36,8 +36,10 @@ async function main(){
     if(message.type!=="job"||active||closed){port!.postMessage({type:"error",error:"Invalid population worker lifecycle"});controller.abort();if(!active)void close();return;}
     const job=message.job;
     if(!job||!Number.isSafeInteger(job.populationCount)||job.populationCount<1||job.label!==`candidate.${job.populationCount}`||job.fit!==work.partitions.fit||job.holdout!==work.partitions.modelSelection){port!.postMessage({type:"error",error:"Population job scope differs"});void close();return;}
+    const ranking=input.prepared.fitRanking;
+    if(!ranking||!job.ranking||ranking.collection!==job.ranking.collection||ranking.fit!==job.ranking.fit||ranking.documentCount!==job.ranking.documentCount){port!.postMessage({type:"error",error:"Population job ranking differs"});void close();return;}
     active=true;
-    void(async()=>{try{const candidate=await work.fitCandidate(job.fit,job.holdout,job.populationCount,job.label);check();port!.postMessage({type:"result",populationCount:job.populationCount,candidate});}
+    void(async()=>{try{const candidate=await work.fitCandidate(job.fit,job.holdout,job.populationCount,job.label,job.ranking);check();port!.postMessage({type:"result",populationCount:job.populationCount,candidate});}
       catch(error){port!.postMessage({type:"error",error:error instanceof Error?error.message:"Population candidate failed"});controller.abort();}
       finally{active=false;if(controller.signal.aborted)await close();}})();
   });

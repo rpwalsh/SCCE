@@ -27,9 +27,12 @@ type Candidate = PagedPopulationCandidate;
 export interface PreparedPagedPopulationWorkspace {
   rootPopulationId:string; namespace:string; normalizationContractId:string;
   sourceInventory:{id:string;count:number}; collections:readonly {name:string;count:number;digest:string}[];
+  fitRanking?:PreparedPopulationFitRanking;
 }
-export interface PagedPopulationCandidateJob {populationCount:number;label:string;fit:string;holdout:string}
+export interface PreparedPopulationFitRanking {fit:string;collection:string;documentCount:number}
+export interface PagedPopulationCandidateJob {populationCount:number;label:string;fit:string;holdout:string;ranking?:PreparedPopulationFitRanking}
 export interface PagedPopulationCandidateExecution {
+  /** Settle only after every scheduled candidate has stopped using its prepared inputs. */
   fitCandidates(prepared:PreparedPagedPopulationWorkspace,jobs:readonly PagedPopulationCandidateJob[]):Promise<readonly PagedPopulationCandidate[]>;
 }
 function object(value: JsonValue | unknown): Record<string, JsonValue> {
@@ -276,11 +279,12 @@ async function learnPagedSegmentationPopulationsInner(input: Parameters<typeof l
   const documentCount = await work.scratch.count(work.documents);
   if (!documentCount) throw new Error("corpus population fit has no measured nonempty documents");
   const maximum = segmentationMaximumPopulationCount(await work.scratch.count(work.partitions.fit), input.maxPopulations);
-  const jobs=Array.from({length:maximum},(_,index)=>({populationCount:index+1,label:`candidate.${index+1}`,fit:work.partitions.fit,holdout:work.partitions.modelSelection}));
+  const ranking=await work.prepareFitRanking(work.partitions.fit,"candidateFit");
+  const jobs=Array.from({length:maximum},(_,index)=>({populationCount:index+1,label:`candidate.${index+1}`,fit:work.partitions.fit,holdout:work.partitions.modelSelection,ranking}));
   const candidates:Candidate[]=[];
-  if(input.candidateExecution){
+  await withCleanup(async()=>{if(input.candidateExecution){
     if(input.hasher)throw new Error("External population candidates require the canonical hasher");
-    const results=await input.candidateExecution.fitCandidates(await work.prepared(),jobs);
+    const results=await input.candidateExecution.fitCandidates(await work.prepared(ranking),jobs);
     if(results.length!==jobs.length)throw new Error("Population candidate result inventory differs");
     results.forEach((result,index)=>{
       const job=jobs[index]!;
@@ -292,7 +296,8 @@ async function learnPagedSegmentationPopulationsInner(input: Parameters<typeof l
         ||result.assignments!==""&&(!result.assignments.startsWith(assignmentPrefix)||!/^[0-9]+$/u.test(result.assignments.slice(assignmentPrefix.length))))throw new Error("Population candidate result scope differs");
       candidates.push(result);
     });
-  }else for(const job of jobs)candidates.push(await work.fitCandidate(job.fit,job.holdout,job.populationCount,job.label));
+  }else for(const job of jobs)candidates.push(await work.fitCandidate(job.fit,job.holdout,job.populationCount,job.label,job.ranking));
+  },[()=>work.scratch.deleteCollection(ranking.collection)]);
   const mergeGuard = `${input.namespace}.mergeGuardDocuments`;
   await joinDocumentCollections(work, [work.partitions.modelSelection, work.partitions.mergeGuard], mergeGuard, false);
   await applyPagedMergeGuards(work, candidates, mergeGuard, Math.max(0, input.mergeDescriptionMarginNats ?? 1), Math.max(0, input.heldoutRegressionToleranceNats ?? 0.01));
@@ -390,19 +395,19 @@ export class PagedPopulationWorkspace {
     this.partitions = { fit: `${namespace}.partition.fit`, modelSelection: `${namespace}.partition.modelSelection`,
       mergeGuard: `${namespace}.partition.mergeGuard`, finalEvaluation: `${namespace}.partition.finalEvaluation` };
   }
-  async prepared():Promise<PreparedPagedPopulationWorkspace>{
+  async prepared(fitRanking?:PreparedPopulationFitRanking):Promise<PreparedPagedPopulationWorkspace>{
     const collections=[];
-    for(const name of [this.documents,...Object.values(this.partitions)]){
+    for(const name of [this.documents,...Object.values(this.partitions),...(fitRanking?[fitRanking.collection]:[])]){
       const scratch=this.scratch;let count=0;
       const digest=await scratch.digestChunks((async function*(){for await(const row of segmentationScratchRows(scratch,name)){count++;yield new TextEncoder().encode(JSON.stringify(row)+"\n");}})());
       collections.push({name,count,digest});
     }
     return {rootPopulationId:this.rootPopulationId,namespace:this.namespace,normalizationContractId:this.normalizationContractId,
-      sourceInventory:{...this.source.sourceInventory},collections};
+      sourceInventory:{...this.source.sourceInventory},collections,...(fitRanking?{fitRanking}:{})};
   }
   async verifyPrepared(expected:PreparedPagedPopulationWorkspace):Promise<void>{
     this.normalizationContractId=expected.normalizationContractId;
-    if(canonicalDigestHex(await this.prepared(),this.hasher)!==canonicalDigestHex(expected,this.hasher))throw new Error("Population prepared workspace changed");
+    if(canonicalDigestHex(await this.prepared(expected.fitRanking),this.hasher)!==canonicalDigestHex(expected,this.hasher))throw new Error("Population prepared workspace changed");
   }
   async *docs(collection: string): AsyncGenerator<OwnedDocument> {
     for await (const row of segmentationScratchRows(this.scratch, collection)) yield owned(row.value);
@@ -506,25 +511,43 @@ export class PagedPopulationWorkspace {
       - losses[index]!.negativeLogLikelihood);
     return -segmentationLogSumExp(terms);
   }
-  async fitCandidate(fit: string, holdout: string, populationCount: number, label: string): Promise<Candidate> {
-    const n = await this.scratch.count(fit); const candidatePrefix = `${this.prefix}.${label}`;
-    if (!n || populationCount > 1 && n < populationCount * SEGMENTATION_MIN_DOCUMENTS_PER_POPULATION) return emptyCandidate(populationCount, "", populationCount > 1);
-    const signatures = `${candidatePrefix}.signatures`; await this.scratch.deleteCollection(signatures);
+  async prepareFitRanking(fit:string,label:string):Promise<PreparedPopulationFitRanking>{
+    const signatures = `${this.prefix}.${label}.signatures`,ranked=`${this.prefix}.${label}.ranked`;
+    const levels:number[]=[];
+    const scratch:CorpusSegmentationScratch={...this.scratch,putMany:async(collection,rows)=>{
+      if(collection.startsWith(`${ranked}.sort.`)){const [level,ordinal]=collection.slice(ranked.length+6).split(".").map(Number);
+        if(level!==undefined&&ordinal!==undefined)levels[level]=Math.max(levels[level]??-1,ordinal);}
+      await this.scratch.putMany(collection,rows);
+    }};
+    const clearSort=async()=>{const operations=levels.map((maximum,level)=>async()=>{
+      const errors:unknown[]=[];for(let ordinal=0;ordinal<=maximum;ordinal++)try{await this.scratch.deleteCollection(`${ranked}.sort.${level}.${ordinal}`);}catch(error){errors.push(error);}
+      if(errors.length)throw new AggregateError(errors,"Population ranking sort cleanup failed");});await cleanupAll(operations);};
+    try{
+    await this.scratch.deleteCollection(signatures);
     for await (const item of this.docs(fit)) {
       const pass = new SegmentationSignaturePass(item.document.statistics);
       await forEachCanonicalBoundaryRow(this.source.statistics(item.document), row => pass.add(row));
       await this.write(signatures, item.rank, { ...item, signature: pass.signature });
     }
-    const ranked = `${candidatePrefix}.ranked`;
-    await sortSegmentationScratch(this.scratch, signatures, ranked, (left, right) => finite(object(left.value).signature) - finite(object(right.value).signature)
+    await sortSegmentationScratch(scratch, signatures, ranked, (left, right) => finite(object(left.value).signature) - finite(object(right.value).signature)
       || owned(left.value).document.documentId.localeCompare(owned(right.value).document.documentId));
-    let assignments = `${candidatePrefix}.assignment.0`; await this.scratch.deleteCollection(assignments);
+    await this.scratch.deleteCollection(signatures);
+    return {fit,collection:ranked,documentCount:await this.scratch.count(ranked)};
+    }catch(error){return cleanupFailure(error,[()=>this.scratch.deleteCollection(signatures),()=>this.scratch.deleteCollection(ranked),clearSort]);}
+  }
+  async fitCandidate(fit: string, holdout: string, populationCount: number, label: string,ranking?:PreparedPopulationFitRanking): Promise<Candidate> {
+    const n = await this.scratch.count(fit); const candidatePrefix = `${this.prefix}.${label}`;
+    if (!n || populationCount > 1 && n < populationCount * SEGMENTATION_MIN_DOCUMENTS_PER_POPULATION) return emptyCandidate(populationCount, "", populationCount > 1);
+    const ranked=ranking??await this.prepareFitRanking(fit,label);
+    let assignments = `${candidatePrefix}.assignment.0`;
     let position = 0;
-    for await (const row of segmentationScratchRows(this.scratch, ranked)) {
+    await withCleanup(async()=>{
+    if(ranked.fit!==fit||ranked.documentCount!==n)throw new Error("Population ranking cohort differs");
+    await this.scratch.deleteCollection(assignments);
+    for await (const row of segmentationScratchRows(this.scratch, ranked.collection)) {
       const item = owned(row.value);
       await this.write(assignments, item.rank, { ...item, population: Math.min(populationCount - 1, Math.floor(position++ * populationCount / n)) });
-    }
-    await this.scratch.deleteCollection(signatures); await this.scratch.deleteCollection(ranked);
+    }if(position!==n)throw new Error("Population ranking document inventory changed");},ranking?[]:[()=>this.scratch.deleteCollection(ranked.collection)]);
     let estimators: BoundaryEstimatorInferenceModel[] = []; let priors: number[] = []; let changed = true;
     const refit = async (): Promise<boolean> => {
       const counts = new Array<number>(populationCount).fill(0);
