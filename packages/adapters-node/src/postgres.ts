@@ -1,6 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
+import { consolidateCorpusSegmentation, loadCorpusSegmentationContextSlice } from "./corpus-segmentation-producer.js";
+import { createCorpusSegmentationRun, openCorpusSegmentationRun, activateCorpusSegmentationRun, readActiveCorpusSegmentationRun } from "./corpus-segmentation-store.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { languageUnitMetadataMergeSql, SOURCE_METADATA_BINDING_SCHEMA } from "./unit-source-metadata.js";
 import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js";
@@ -268,6 +270,26 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly segmentationAggregates: SegmentationAggregateStore;
   readonly inducedLanguageModels: InducedLanguageModelStore;
   readonly segmentationPopulations: SegmentationPopulationModelStore;
+  readonly corpusSegmentation: import("@scce/kernel").CorpusSegmentationStore & {
+    createRun:(input:Parameters<typeof createCorpusSegmentationRun>[1],bounds:Parameters<typeof createCorpusSegmentationRun>[2])=>ReturnType<typeof createCorpusSegmentationRun>;
+    openRun:(id:string,bounds:Parameters<typeof openCorpusSegmentationRun>[2])=>ReturnType<typeof openCorpusSegmentationRun>;
+    activate:(run:Parameters<typeof activateCorpusSegmentationRun>[1],inference:Parameters<typeof activateCorpusSegmentationRun>[2])=>ReturnType<typeof activateCorpusSegmentationRun>;
+  } = {
+    consolidate: (input: Omit<Parameters<typeof consolidateCorpusSegmentation>[0],"storage">) => consolidateCorpusSegmentation({...input,storage:this}),
+    createRun: (input: Parameters<typeof createCorpusSegmentationRun>[1], bounds: Parameters<typeof createCorpusSegmentationRun>[2]) => createCorpusSegmentationRun(this,input,bounds),
+    openRun: (id: string,bounds: Parameters<typeof openCorpusSegmentationRun>[2]) => openCorpusSegmentationRun(this,id,bounds),
+    activate: (run: Parameters<typeof activateCorpusSegmentationRun>[1],inference: Parameters<typeof activateCorpusSegmentationRun>[2]) => activateCorpusSegmentationRun(this,run,inference),
+    readActive: async (scope: Parameters<typeof readActiveCorpusSegmentationRun>[1],required: Parameters<typeof readActiveCorpusSegmentationRun>[2],bounds: Parameters<typeof readActiveCorpusSegmentationRun>[3]) => {
+      const active=await readActiveCorpusSegmentationRun(this,scope,required,bounds);
+      if(!active)return null;
+      const inference=active.inference;
+      return {...active,loader:{identity:{id:inference.id,sourceInventory:inference.sourceInventory,featureContextId:inference.featureContextId,normalizationContractId:inference.normalizationContractId},
+        resolve:async(preparations:readonly import("@scce/kernel").PreparedCorpusSegmentationMeasurement[])=>{
+          const slices:Array<import("@scce/kernel").VerifiedCorpusSegmentation["slices"][number]>=[];for(const preparation of preparations)slices.push({preparation,contextSlice:await loadCorpusSegmentationContextSlice({storage:this,run:active.run,measurement:preparation,expected:inference})});
+          return {populationInference:inference,slices};
+        }}};
+    }
+  };
   readonly languageIdentities: LanguageIdentityStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
   private readonly languageRevisionDirty = new WeakSet<PoolClient>();

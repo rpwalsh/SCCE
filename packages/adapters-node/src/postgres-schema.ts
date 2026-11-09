@@ -503,6 +503,9 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_aggregates (segmentation_version TEXT NOT NULL, language_cluster TEXT NOT NULL, tenant_id TEXT NOT NULL, corpus_role TEXT NOT NULL, active_import_version TEXT NOT NULL, documents_observed BIGINT NOT NULL, lexical_segments_observed BIGINT NOT NULL, spaced_boundary_observations BIGINT NOT NULL, total_boundary_observations BIGINT NOT NULL, first_observed_at TIMESTAMPTZ NOT NULL, last_observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (segmentation_version, language_cluster, tenant_id, corpus_role, active_import_version))`,
     `CREATE TABLE IF NOT EXISTS ${q}.induced_language_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, corpus_documents INTEGER NOT NULL, vocabulary_size INTEGER NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_induced_language_models_created ON ${q}.induced_language_models(created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.segmentation_consolidation_runs (run_id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('building','fitting','complete','failed')), run_json JSONB NOT NULL, snapshot_json JSONB, inference_json JSONB, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.segmentation_consolidation_rows (run_id TEXT NOT NULL REFERENCES ${q}.segmentation_consolidation_runs(run_id), collection TEXT NOT NULL, order_key TEXT COLLATE "C" NOT NULL, row_json JSONB NOT NULL, PRIMARY KEY(run_id,collection,order_key))`,
+    `CREATE TABLE IF NOT EXISTS ${q}.segmentation_consolidation_active (scope_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES ${q}.segmentation_consolidation_runs(run_id), header_json JSONB NOT NULL, activated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_population_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, profile_ids TEXT[] NOT NULL, source_version_ids TEXT[] NOT NULL, population_count INTEGER NOT NULL, mdl_gain_nats DOUBLE PRECISION NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_profiles ON ${q}.segmentation_population_models USING GIN(profile_ids)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_created ON ${q}.segmentation_population_models(created_at DESC)`,
@@ -667,6 +670,9 @@ function clean(q: string): string {
 export function requiredHydrationColumns(): Record<string, string[]> {
   return {
     storage_meta: ["key", "value_json", "updated_at"],
+    segmentation_consolidation_runs: ["run_id", "scope_id", "state", "run_json", "snapshot_json", "inference_json", "information_label", "created_at"],
+    segmentation_consolidation_rows: ["run_id", "collection", "order_key", "row_json"],
+    segmentation_consolidation_active: ["scope_id", "run_id", "header_json", "activated_at"],
     events: ["id", "episode_id", "type_id", "payload_json", "ledger_hash"],
     conversation_turns: ["id", "session_id", "episode_id", "turn_index", "role_id", "text", "evidence_ids", "metadata_json"],
     blobs: ["content_hash", "media_type", "byte_length", "content"],

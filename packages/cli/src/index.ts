@@ -6,6 +6,7 @@ import { runModelCommand, runSensorCommand, runSettingsCommand } from "./setting
 import { runCodeCommand } from "./code-command.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { completeInitialSourceBrainFromDialogueReport } from "@scce/adapters-node";
+import { runCorpusSegmentationCommand } from "./corpus-segmentation-command.js";
 import { parseUnitMetadataMaintenanceOptions } from "./db-maintenance-options.js";
 import { compactUnitSourceMetadata, UnitMetadataMaintenanceError } from "@scce/adapters-node";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
@@ -1388,6 +1389,13 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 
 async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[], config: Awaited<ReturnType<typeof readScceRuntimeConfig>>): Promise<void> {
   const sub = args[0];
+  if (sub === "consolidate-segmentation") {
+    const argsWithoutResume=args.slice(1).filter(arg=>arg!=="--resume");
+    if(argsWithoutResume.length!==1||argsWithoutResume[0]!.startsWith("--"))return usage("scce db consolidate-segmentation <plan.json> [--resume] (PostgreSQL pool max >=2 required)");
+    const plan=JSON.parse(await readFile(path.resolve(argsWithoutResume[0]!),"utf8"));
+    return printJson(await runCorpusSegmentationCommand(runtime.storage,plan,{createdAt:Date.now(),resume:args.includes("--resume"),
+      onProgress:progress=>{process.stderr.write(`${JSON.stringify({schema:"scce.corpus_segmentation_progress.v1",...progress})}\n`);}}));
+  }
   if (sub === "compact-unit-metadata") {
     try {
       return printJson(await compactUnitSourceMetadata(runtime.storage, parseUnitMetadataMaintenanceOptions(args.slice(1))));
@@ -1479,7 +1487,7 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[],
     if (!report.passed) process.exitCode = 1;
     return;
   }
-  return usage("scce db <status|init|migrate|verify|stats|audit|compact-unit-metadata|reset --confirm-local-dev-only>");
+  return usage("scce db <status|init|migrate|verify|stats|audit|compact-unit-metadata|consolidate-segmentation|reset --confirm-local-dev-only>");
 }
 
 // Default thresholds a shadow model must clear to be considered
@@ -1916,6 +1924,8 @@ function usage(error?: string): void {
     "  pnpm scce db verify",
     "  pnpm scce db contract [--sql]",
     "  pnpm scce db stats",
+    "  pnpm scce db consolidate-segmentation <plan.json> [--resume]",
+    "    Requires configured PostgreSQL pool max >=2: one dedicated run-lease session plus ordinary job queries; no automatic pool increase.",
     "  pnpm scce db compact-unit-metadata [--batch-size=128] [--max-batches=100] [--max-batch-bytes=8388608] [--after-id=<lastCommittedAfterId>]",
     "  pnpm scce hydrate plan <scce2-fixture-path>",
     "  pnpm scce hydrate import <scce2-fixture-path> --plan=<planId>",

@@ -66,3 +66,7 @@ export * from "./code-mouth.js";
 export * from "./learned-code-proposer.js";
 export * from "./cross-lingual-translation.js";
 export * from "./unit-metadata-maintenance.js";
+
+export * from "./corpus-segmentation-store.js";
+export * from "./corpus-segmentation-producer.js";
+export * from "./corpus-segmentation-lease.js";

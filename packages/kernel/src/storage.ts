@@ -1268,6 +1268,7 @@ export interface ScceStorage extends StorageAdmin {
    * sufficient statistics, estimators, assignments, and selection trace.
    */
   segmentationPopulations?: import("./segmentation-population-persistence.js").SegmentationPopulationModelStore;
+  corpusSegmentation?: import("./corpus-segmentation-storage.js").CorpusSegmentationStore;
   /**
    * Learned language identities and the profile-to-identity assignment. Language admission at turn time reads
    * these; provenance stays on the artifacts and is never consulted for admission.
@@ -1361,7 +1362,7 @@ export interface KernelRuntimePorts {
 // independently bumped to 23 for its own new tables. Both are real,
 // distinct structural additions from the same base, so the merged
 // schema is one past the higher of the two, not either original value.
-export const POSTGRES_SCHEMA_VERSION = 31;
+export const POSTGRES_SCHEMA_VERSION = 32;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -1430,6 +1431,9 @@ export const POSTGRES_REQUIRED_TABLES = [
   "segmentation_aggregates",
   "induced_language_models",
   "segmentation_population_models",
+  "segmentation_consolidation_runs",
+  "segmentation_consolidation_rows",
+  "segmentation_consolidation_active",
   "user_model_claims",
   "task_resumption_snapshots",
   "document_generation_sessions",
