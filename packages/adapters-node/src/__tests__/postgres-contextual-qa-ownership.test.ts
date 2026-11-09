@@ -77,6 +77,26 @@ it("does no global catalog work for an empty contextual QA lookup", async () => 
   expect(calls).toEqual([]);
 });
 
+it("refuses partial owned pattern windows and strict decoded byte overflow when completeness is required", async () => {
+  const { adapter, calls } = fixture();
+  adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params });
+    return sql.startsWith("SELECT DISTINCT pattern.profile_id,pattern.source_system") ? [{ profile_id: "profile.qa", source_system: sourceSystem }] as T[] : []; };
+  await adapter.languageMemory.listLanguagePatterns({ contextualQaRequestFeatures: ["char:z"], patternSchemas: [schema], sourceSystem,
+    view: "request_seed", limit: 512, maxTotalJsonBytes: 8 * 1024 * 1024, requireComplete: true });
+  const read = calls.at(-1)!;
+  expect(read.sql).toContain("complete_read AS MATERIALIZED");
+  expect(read.sql).toContain("(SELECT COUNT(*) FROM candidate_pool)=(SELECT COUNT(*) FROM complete_read)");
+  expect(read.sql).toContain("SUM(COALESCE(eligible.decoded_jsonb_bytes, octet_length(eligible.pattern_json::text)))");
+  expect(read.sql).toContain("FROM complete_read");
+  expect(read.params).toContain(8 * 1024 * 1024);
+});
+
+it.each([{ limit: 0, maxTotalJsonBytes: 1 }, { limit: 1, maxTotalJsonBytes: Infinity }, { limit: 1 }])("rejects unbounded complete pattern reads before SQL", async bounds => {
+  const { adapter, calls } = fixture();
+  await expect(adapter.languageMemory.listLanguagePatterns({ ...bounds, requireComplete: true })).rejects.toThrow("positive finite");
+  expect(calls).toEqual([]);
+});
+
 it("rejects incompatible contextual QA scopes without reading another population", async () => {
   const { adapter, calls } = fixture();
   for (const scope of [{ sourceSystem: "foreign" }, { patternSchemas: ["foreign"] }, { patternKind: "discourse" as const }, { sourceComputationBindingId: "other" }])

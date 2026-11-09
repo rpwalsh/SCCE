@@ -959,7 +959,7 @@ export interface LanguageMemoryStore {
   /** Maintenance only: locked keyset prefix, decoded full-row byte bound, and explicit oversized-row progress. */
   listUnitSourceMetadataPage?(query: { afterId?: string; limit: number; maxTotalJsonBytes: number }): Promise<UnitSourceMetadataPage>;
   /** Request-seed views retain interpretation fields and omit generative syntax join programs. */
-  listLanguagePatterns(query?: { view?: "request_seed"; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
+  listLanguagePatterns(query?: { view?: "request_seed"; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; limit?: number; maxTotalJsonBytes?: number; requireComplete?: boolean }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { view?: "request_seed"; profileIds?: readonly string[]; sourceSystem?: string; surface?: string; requestSurface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }

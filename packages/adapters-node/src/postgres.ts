@@ -4515,6 +4515,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       return (await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} unit WHERE ${where.join(" AND ")} ORDER BY alpha DESC, id ASC LIMIT $${unitLimitParam}`, params)).map(rowToLanguageUnit);
     },
     async listLanguagePatterns(query = {}) {
+      if (query.requireComplete && (!Number.isSafeInteger(query.limit) || query.limit! <= 0
+        || !Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) throw new Error("complete pattern reads require positive finite row and decoded byte bounds");
       const params: unknown[] = [];
       const projectionSets: string[] = [];
       const projectionScope: string[] = [];
@@ -4782,6 +4784,14 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            WHERE ranked.running_json_bytes <= ${byteAllowance} OR ranked.category_relevance_rank = 1
            ORDER BY ${order("ranked")} LIMIT $${limitParam}`
         : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
+      const resultSelect = query.requireComplete
+        ? `, complete_read AS MATERIALIZED (${finalSelect})
+           SELECT * FROM complete_read
+           WHERE (SELECT COUNT(*) FROM candidate_pool)=(SELECT COUNT(*) FROM complete_read)
+             AND (SELECT COALESCE(SUM(COALESCE(eligible.decoded_jsonb_bytes, octet_length(eligible.pattern_json::text))),0)
+               FROM eligible_patterns eligible JOIN complete_read selected ON selected.id=eligible.id) <= $${params.length}
+           ORDER BY ${order("complete_read")}`
+        : finalSelect;
       // Carry checked scalar headers through admission instead of rescanning their materialized population.
       return (await storage.query<LanguagePatternRow>(
         `WITH ${projectionSets.length ? `${projectionSets.join(",\n")},` : ""}
@@ -4877,7 +4887,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            FROM ranked_request_patterns
            WHERE source_version_rank=1
          )
-         ${finalSelect}`,
+         ${resultSelect}`,
         params
       )).map(rowToLanguagePattern);
     },
