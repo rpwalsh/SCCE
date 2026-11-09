@@ -1020,7 +1020,7 @@ async function dispatch(
       });
       traceEvent(trace, { stage: "turn.kernel.returned", label: "api.turn", durationMs: Date.now() - turnStarted, counts: { evidence: result.evidence.length } });
       const programReadiness = (result.requestedAuthority === "program" || turn.requestedAuthority === "program") && !workspaceCodingInput
-        ? programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest })
+        ? programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest,construct:result.constructGraph })
         : undefined;
       if (programReadiness && programReadiness.status !== "ready") {
         const session=context.runtime.approvals?.snapshot();

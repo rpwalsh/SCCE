@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { BuildTestResult, ProgramGraph } from "@scce/kernel";
+import type { BuildTestResult, ConstructGraph, ProgramGraph } from "@scce/kernel";
 
 export type ProgramResponseReadiness =
   | { schema: "scce.program.response_readiness.v1"; status: "not_ready"; reasonId: string }
@@ -15,9 +15,19 @@ export function unsupportedProgramResponseReadiness(error: unknown): (ProgramRes
 }
 
 /** Code output is ready only when an owner-bound behavior contract was actually built and tested. */
-export function programResponseReadiness(input: { program?: ProgramGraph; buildTest?: BuildTestResult }): ProgramResponseReadiness {
+export function programResponseReadiness(input: { program?: ProgramGraph; buildTest?: BuildTestResult;construct?:Pick<ConstructGraph,"nodes"> }): ProgramResponseReadiness {
   const program = input.program;
-  if (!program) return { schema: "scce.program.response_readiness.v1", status: "not_ready", reasonId: "program.readiness.no_program" };
+  if (!program) {
+    const missingContract=input.construct?.nodes.some(node=>{
+      if(node.kind!=="program_emission_unavailable")return false;
+      const row=record(node.metadata),intent=record(row.programIntent);
+      return Array.isArray(row.reasonIds)&&row.reasonIds.includes("program.emission.declared_callable_unresolved")
+        &&Array.isArray(intent.declaredCallableIds)&&intent.declaredCallableIds.length>0
+        &&(intent.behaviorRequirements===undefined||Array.isArray(intent.behaviorRequirements)&&intent.behaviorRequirements.length===0)
+        &&(intent.statefulBehaviorRequirements===undefined||Array.isArray(intent.statefulBehaviorRequirements)&&intent.statefulBehaviorRequirements.length===0);
+    });
+    return { schema: "scce.program.response_readiness.v1", status: "not_ready", reasonId: missingContract?"program.readiness.behavior_contract_missing":"program.readiness.no_program" };
+  }
   const ownerRequirementIds = program.hydration?.ownerRequirementIds ?? [];
   if (program.hydration?.valid !== true || !ownerRequirementIds.length) {
     return { schema: "scce.program.response_readiness.v1", status: "not_ready", reasonId: "program.readiness.behavior_contract_missing" };
@@ -57,3 +67,5 @@ export function programResponseReadiness(input: { program?: ProgramGraph; buildT
     artifactCount: result.artifacts.length
   };
 }
+
+function record(value:unknown):Record<string,unknown>{return value!==null&&typeof value==="object"&&!Array.isArray(value)?value as Record<string,unknown>:{};}

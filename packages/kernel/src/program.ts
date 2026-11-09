@@ -23,7 +23,7 @@ export function createProgramGraphBuilder(options: { idFactory: IdFactory; hashe
   return {
     // `program`: an already-synthesized graph to keep (the proposal the judge selected), so the post-judge construct
     // carries the same program identity the candidates were planned over instead of a second, independent synthesis.
-    build(input: { episodeId: EpisodeId; text: string; entailment: SemanticEntailmentResult; evidence: EvidenceSpan[]; createdAt: number; programIntent?: ProgramConstructIntent; program?: ProgramGraph }): ConstructGraph {
+    build(input: { episodeId: EpisodeId; text: string; entailment: SemanticEntailmentResult; evidence: EvidenceSpan[]; createdAt: number; programIntent?: ProgramConstructIntent; sourcePlanningContext?: import("./source-program-provider.js").ProgramSourcePlanningContext; program?: ProgramGraph }): ConstructGraph {
       const activation = programActivation(input.text, input.entailment, input.evidence, input.programIntent);
       const shouldEmitProgram = activation.activate;
       const artifacts: FileArtifact[] = [];
@@ -31,7 +31,7 @@ export function createProgramGraphBuilder(options: { idFactory: IdFactory; hashe
       let emissionAvailability: ProgramEmissionAvailability | undefined;
       if (shouldEmitProgram && !program) {
         const emission = createProgramPlanner(options).emitIfAvailable({ episodeId: input.episodeId, requestText: input.text,
-          entailment: input.entailment, evidence: input.evidence, programIntent: input.programIntent });
+          entailment: input.entailment, evidence: input.evidence, programIntent: input.programIntent,sourcePlanningContext:input.sourcePlanningContext });
         program = emission.program;
         emissionAvailability = emission.availability;
       }

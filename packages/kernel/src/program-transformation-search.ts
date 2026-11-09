@@ -161,7 +161,7 @@ export function searchProgramTransformations(
         preconditions: preconditionsFor(expression.expression, group.arity),
         predictedFitObligationIds: stats.predictedIds,
         heldOutObligationIds: group.heldOut.slice().sort(compareStrings),
-        score: cleanNumber(stats.meanSquaredError + complexity * 1e-9),
+        score: programTransformationScore(stats.meanSquaredError, complexity),
         fitMeanSquaredError: cleanNumber(stats.meanSquaredError),
         complexity,
         provenance: {
@@ -205,13 +205,13 @@ export function evaluateProgramExpressionBindings(
   return evaluateExpression(expression, values, undefined, undefined, true, safeNumericDomain);
 }
 
-function topLevelOperator(expression: ProgramExpression): ProgramTransformationOperator {
+export function topLevelOperator(expression: ProgramExpression): ProgramTransformationOperator {
   return expression.kind === "unary" ? expression.operator
     : expression.kind === "binary" ? expression.operator
       : expression.kind;
 }
 
-function expressionOperands(expression: ProgramExpression): ProgramExpression[] {
+export function expressionOperands(expression: ProgramExpression): ProgramExpression[] {
   if (expression.kind === "unary") return [expression.operand];
   if (expression.kind === "binary") return [expression.left, expression.right];
   if (expression.kind === "member") return [expression.subject];
@@ -989,7 +989,7 @@ function deduplicateExpressions(expressions: readonly SearchExpression[]): Searc
   return [...byKey.values()];
 }
 
-function expressionComplexity(expression: ProgramExpression): number {
+export function expressionComplexity(expression: ProgramExpression): number {
   if (expression.kind === "argument" || expression.kind === "element" || expression.kind === "accumulator" || expression.kind === "literal") return 1;
   if (expression.kind === "value") return jsonNodeCount(expression.value);
   if (expression.kind === "unary") return 1 + expressionComplexity(expression.operand);
@@ -1128,4 +1128,8 @@ function compareStrings(left: string, right: string): number {
 function boundedInteger(value: number, minimum: number, maximum: number): number {
   if (!Number.isFinite(value)) return minimum;
   return Math.max(minimum, Math.min(maximum, Math.floor(value)));
+}
+
+export function programTransformationScore(fitMeanSquaredError: number, complexity: number): number {
+  return cleanNumber(fitMeanSquaredError + complexity * 1e-9);
 }

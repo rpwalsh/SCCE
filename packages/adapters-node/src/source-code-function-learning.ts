@@ -1,10 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import ts from "typescript";
-import { sourceCodeFunctionConstructionId, type SourceCodeFunctionConstruction, type ProgramExpression } from "@scce/kernel";
+import { sourceCodeFunctionConstructionId, createHasher, type SourceCodeFunctionConstruction, type ProgramExpression } from "@scce/kernel";
 import { compileTreeSitterSourceCodeFunctions } from "./source-code-function-tree-learning.js";
 
-export const SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID = "scce.source_code_function_compiler.v4";
+export const SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID = "scce.source_code_function_compiler.v5";
 
 export async function compileSourceCodeFunctionsAsync(input: { text: string; path: string; languageId?: string; sourceHash: string }): Promise<SourceCodeFunctionConstruction[]> {
   if (input.languageId === "typescript" || input.languageId === "javascript") return compileSourceCodeFunctions(input);
@@ -81,6 +81,16 @@ export function compileSourceCodeFunctions(input: { text: string; path: string; 
       sourceStart, sourceEnd, sourceText: input.text.slice(sourceStart, sourceEnd), dependencies,
       callable: { name: name.text, start: name.getStart(source) - sourceStart, end: name.getEnd() - sourceStart },
       parameters, expression: program.expression,
+      ...(input.languageId === "typescript" && callable.type?.kind === ts.SyntaxKind.NumberKeyword
+        && callable.parameters.every(parameter => parameter.type?.kind === ts.SyntaxKind.NumberKeyword) ? {
+          numericAbi: {
+            schema: "scce.source_numeric_callable_abi.v1" as const,languageId:"typescript" as const,
+            parameters: callable.parameters.map(parameter => ({ start: parameter.type!.getStart(source) - sourceStart,
+              end: parameter.type!.getEnd() - sourceStart, textHash: createHasher().digestHex(parameter.type!.getText(source)) })),
+            result: { start: callable.type.getStart(source) - sourceStart, end: callable.type.getEnd() - sourceStart,
+              textHash: createHasher().digestHex(callable.type.getText(source)) }
+          }
+        } : {}),
       ...(program.bindings.length ? { bindings: program.bindings } : {})
     };
     out.push({ ...material, id: sourceCodeFunctionConstructionId(material) });

@@ -6,7 +6,8 @@ import { COGNITIVE_OPERATOR_IDS, type CognitiveOperatorId } from "./turn-require
 import { hasEngineeringCorpusMetadata } from "./program.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { validateProgramGraphHydration } from "./program-runtime.js";
-import { searchProgramTransformations } from "./program-transformation-search.js";
+import {programImplementationCandidates,type ProgramSourcePlanningContext} from "./source-program-provider.js";
+import type { ProgramTransformationSearchResult } from "./program-transformation-search.js";
 import { searchStateTransitions } from "./state-transition-search.js";
 import { rankLearnedProgramTransformations, type ProgramTransformationLearningEpisode } from "./program-transformation-learning.js";
 
@@ -75,6 +76,7 @@ export interface OwnerBehaviorRepairSelection {
  */
 export function replanOwnerBehaviorProgramIntent(input: {
   readonly intent: ProgramConstructIntent;
+  readonly sourcePlanningContext?: ProgramSourcePlanningContext;
   readonly program: ProgramGraph;
   readonly failure: OwnerBehaviorValidationFailure;
   readonly hasher?: Hasher;
@@ -100,7 +102,7 @@ export function replanOwnerBehaviorProgramIntent(input: {
     || canonicalStringify(intentRequirementIds) !== canonicalStringify(failedRequirementIds)) {
     throw new Error("owner behavior failure requirements are not bound to the program intent and hydration");
   }
-  const scalarSearch = scalarRequirements.length ? searchProgramTransformations(scalarRequirements) : undefined;
+  const scalarSearch = scalarRequirements.length ? programImplementationCandidates(scalarRequirements,input.sourcePlanningContext) : undefined;
   const statefulSearch = statefulRequirements.length ? searchStateTransitions(statefulScenarios(statefulRequirements)) : undefined;
   const rankedScalarSearch = scalarSearch ? {
     ...scalarSearch,
@@ -216,7 +218,7 @@ function statefulScenarios(requirements: readonly ProgramStatefulBehaviorRequire
   }));
 }
 
-function validateScalarSearch(requirements: readonly NonNullable<ProgramConstructIntent["behaviorRequirements"]>[number][], search: ReturnType<typeof searchProgramTransformations>): void {
+function validateScalarSearch(requirements: readonly NonNullable<ProgramConstructIntent["behaviorRequirements"]>[number][], search: ProgramTransformationSearchResult): void {
   const requiredCallables = [...new Set(requirements.map(requirement => requirement.callableId))].sort(compareCanonical);
   const selectedCallables = search.selected.map(candidate => candidate.callableId).sort(compareCanonical);
   if (canonicalStringify(requiredCallables) !== canonicalStringify(selectedCallables)) throw new Error("owner behavior replan found no admissible transformation for every required callable");

@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import {prepareProgramSourcePlanningContext} from "./source-program-provider.js";
 import {sourceComputationForRequest} from "./source-computation-runtime.js";
 import { contextualQaForRequest, contextualQaConstructionsForRequest, contextualQaBindingVerified } from "./contextual-qa-runtime.js";
 import { createTypedIngestProjector, type TypedIngestProjection } from "./typed-ingest.js";
@@ -3566,7 +3567,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           evidenceCount:workspaceContracts?.status==="available"?workspaceContracts.evidence.length:null,
           sourceVersionCount:workspaceContracts?.status==="available"?workspaceContracts.sourceVersionIds.length:null}
       } });
-      const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now(), programIntent });
+      const codeLanguage = codeLanguageForRequirementState({ signal: programCodeSignal, requirementField, operators: operatorActivations });
+      const codePatternQueries = codeLanguage && deps.evaluationCondition?.flags.disableLanguageMemory !== true
+        ? [...new Set(programCodeSignal.behaviorRequirements.filter(row => row.verificationRole === "fit").map(row => row.arguments.length))]
+          .map(parameterCount => ({ sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode), patternKind: "source_code_function" as const, formalLanguage: codeLanguage, parameterCount }))
+        : [];
+      let codeFunctionPatterns: import("./storage.js").LanguagePatternRecord[] = [];
+      const refreshProgramSourceContext = async () => {
+        codeFunctionPatterns = (await Promise.all(codePatternQueries.map(query => deps.storage.languageMemory.listLanguagePatterns(query)))).flat();
+        const ids = [...new Set(codeFunctionPatterns.flatMap(pattern=>pattern.evidenceIds))];
+        const evidence = ids.length && programIntent?.behaviorRequirements?.length ? await deps.storage.evidence.getEvidenceBatch(ids) : [];
+        return codeLanguage ? prepareProgramSourcePlanningContext({languageId:codeLanguage,patterns:codeFunctionPatterns,evidence}) : undefined;
+      };
+      let programSourcePlanningContext = await refreshProgramSourceContext();
+      const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now(), programIntent,sourcePlanningContext:programSourcePlanningContext });
       kernelTrace({stage:"runtime.program.emission",label:"kernel.turn",support:{programPresent:Boolean(candidateConstructSeed.program),
         availability:candidateConstructSeed.nodes.filter(node=>node.kind==="program_emission_unavailable").map(node=>{const value=jsonRecord(node.metadata);return {status:value.status??null,languageId:value.languageId??null,reasonIds:value.reasonIds??[]};})}});
 
@@ -4809,8 +4823,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               const priorResult = buildTest;
               const priorConstruct = construct;
               const learnedProgramEpisodes = learningEpisodesFromEvents(await deps.storage.events.readRange({ typeId: "ProgramTransformationLearned", limit: 512 }));
+              programSourcePlanningContext = await refreshProgramSourceContext();
               const replan = replanOwnerBehaviorProgramIntent({
                 intent: priorBehaviorIntent,
+                sourcePlanningContext:programSourcePlanningContext,
                 program: priorProgram,
                 failure: {
                   observationId: `owner.behavior.failure.${hasher.digestHex(JSON.stringify({ programId: priorProgram.id, build: priorResult.build, test: priorResult.test })).slice(0, 40)}`,
@@ -4832,7 +4848,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 entailment: answerEntailment,
                 evidence: selectedEvidence,
                 createdAt: clock.now(),
-                programIntent: behaviorProgramIntent
+                programIntent: behaviorProgramIntent,
+                sourcePlanningContext:programSourcePlanningContext
               });
               const repairedResult = await executeOwnerValidatedRetry(construct, construct.program);
               if (!repairedResult) {
@@ -4870,7 +4887,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             // causal bridge used by later replans; it never supplies an answer
             // or bypasses current fit validation.
             const learnedProgramEpisodes = construct.program && behaviorProgramIntent
-              ? learningEpisodesFromVerifiedProgram({ episodeId, program: construct.program, intent: behaviorProgramIntent, buildTest, now: clock.now(), hasher })
+              ? learningEpisodesFromVerifiedProgram({ episodeId, program: construct.program, intent: behaviorProgramIntent,sourcePlanningContext:programSourcePlanningContext, buildTest, now: clock.now(), hasher })
               : [];
             for (const learnedEpisode of learnedProgramEpisodes) {
               events.push(await append(eventFactory.create({ episodeId, typeId: "ProgramTransformationLearned", payload: learnedEpisode })));
@@ -5042,12 +5059,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           return { support: 0, contradiction: 1 };
         }
       };
-      const codeLanguage = codeLanguageForRequirementState({ signal: programCodeSignal, requirementField, operators: operatorActivations });
-      const codePatternQueries = codeLanguage && deps.evaluationCondition?.flags.disableLanguageMemory !== true
-        ? [...new Set(programCodeSignal.behaviorRequirements.filter(row => row.verificationRole === "fit").map(row => row.arguments.length))]
-          .map(parameterCount => ({ sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode), patternKind: "source_code_function" as const, formalLanguage: codeLanguage, parameterCount }))
-        : [];
-      const codeFunctionPatterns = (await Promise.all(codePatternQueries.map(query => deps.storage.languageMemory.listLanguagePatterns(query)))).flat();
+
       const speakInput = {
         requestText: input.text,
         requestControlPatterns: turnRequestControlPatterns,

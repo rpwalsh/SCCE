@@ -128,3 +128,11 @@ function successfulBuild(program: ProgramGraph): BuildTestResult {
     artifacts: program.files
   };
 }
+
+it("preserves a known missing behavior contract when the planner refused the declared port before materialization",()=>{
+  const construct={nodes:[{id:"unavailable",kind:"program_emission_unavailable",label:"program.emission.unavailable",metadata:{reasonIds:["program.emission.declared_callable_unresolved"],programIntent:{declaredCallableIds:["opaque"],behaviorRequirements:[],statefulBehaviorRequirements:[]}}}]};
+  expect(programResponseReadiness({construct})).toMatchObject({status:"not_ready",reasonId:"program.readiness.behavior_contract_missing"});
+  expect(programResponseReadiness({})).toMatchObject({status:"not_ready",reasonId:"program.readiness.no_program"});
+  const different={nodes:construct.nodes.map(node=>({...node,metadata:{...node.metadata,reasonIds:["program.emission.artifact_target_unresolved"]}}))};
+  expect(programResponseReadiness({construct:different})).toMatchObject({status:"not_ready",reasonId:"program.readiness.no_program"});
+});

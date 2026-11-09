@@ -35,6 +35,7 @@ import {
   SOURCE_CODE_FUNCTION_PATTERN_SCHEMA,
   SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID,
   sourceCodeFunctionConstructionId,
+  sourceCodeFunctionPatternId,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
   publishCompiledLanguagePatterns,
@@ -1286,7 +1287,7 @@ function compactSourceCodeFunctionPatterns(input: {
       || typeof row.sourceStart !== "number" || typeof row.sourceEnd !== "number" || !Number.isSafeInteger(row.sourceStart) || !Number.isSafeInteger(row.sourceEnd)
       || row.sourceStart < 0 || row.sourceEnd <= row.sourceStart || row.sourceEnd > input.text.length
       || input.text.slice(row.sourceStart, row.sourceEnd) !== row.sourceText || !Array.isArray(row.parameters)) continue;
-    const patternId = `source.code.function.pattern.${input.hasher.digestHex(canonicalStringify({ constructionId: id, profileId: input.profileId, sourceVersionId: input.sourceVersionId }))}`;
+    const patternId = sourceCodeFunctionPatternId({ constructionId: id, profileId: input.profileId, sourceVersionId: input.sourceVersionId },input.hasher);
     patterns.set(patternId, { id: patternId, profileId: input.profileId, patternKind: "source_code_function", support: 1, entropy: 0,
       patternJson: { schema: "scce.source_code_function_pattern.v1", sourceSystem: input.sourceSystem, sourceHash, formalLanguage,
         parameterCount: row.parameters.length, sourceVersionId: input.sourceVersionId, originalSourceVersionId: input.originalSourceVersionId, codeFunctionConstructions: [value] },

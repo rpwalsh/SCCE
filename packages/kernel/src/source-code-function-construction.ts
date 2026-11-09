@@ -21,6 +21,12 @@ export interface SourceCodeFunctionConstruction {
   dependencies: string[];
   callable: { name: string; start: number; end: number };
   parameters: Array<{ name: string; declarationStart: number; declarationEnd: number; references: Array<{ start: number; end: number }> }>;
+  numericAbi?: {
+    readonly schema: "scce.source_numeric_callable_abi.v1";
+    readonly languageId: "typescript";
+    readonly parameters: readonly { readonly start: number; readonly end: number; readonly textHash: string }[];
+    readonly result: { readonly start: number; readonly end: number; readonly textHash: string };
+  };
   expression: ProgramExpression;
   bindings?: ProgramExpression[];
 }
@@ -126,4 +132,10 @@ function sameJsonResult(actual: JsonValue | undefined, expected: JsonValue): boo
     }
   }
   return true;
+}
+
+export { admittedConstruction as readSourceCodeFunctionConstruction };
+
+export function sourceCodeFunctionPatternId(input:{constructionId:string;profileId:string;sourceVersionId:string},hasher=createHasher()):string {
+  return `source.code.function.pattern.${hasher.digestHex(canonicalStringify(input))}`;
 }

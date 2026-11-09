@@ -15,7 +15,8 @@ import { nativeRustStatefulProgram } from "./native-rust-stateful-program.js";
 import { createEngineeringCorpusRuntime, packageManagerCommandName, plannerScriptKind } from "./engineering-corpus-runtime.js";
 import { createProgramHydrationContract, hydrationSummary } from "./program-runtime.js";
 import { composeProgramGraphFromBehavior, jsonValueTypeId, type ProgramModulePort, type ProgramModuleSpec } from "./program-composition.js";
-import { searchProgramTransformations, type ProgramExpression, type ProgramTransformationCandidate } from "./program-transformation-search.js";
+import { type ProgramExpression, type ProgramTransformationCandidate } from "./program-transformation-search.js";
+import {programImplementationCandidates,sourceProgramCandidateBindings,type ProgramSourcePlanningContext} from "./source-program-provider.js";
 import { searchStateTransitions, type StateTransitionCandidate } from "./state-transition-search.js";
 
 export interface ProgramTargetProfile {
@@ -152,6 +153,7 @@ export interface ProgramPlan {
 }
 
 export interface ProgramPlannerInput {
+  sourcePlanningContext?: ProgramSourcePlanningContext;
   episodeId: EpisodeId;
   requestText: string;
   entailment: SemanticEntailmentResult;
@@ -187,6 +189,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         explicitEvidenceIds: input.programIntent?.provenanceEvidenceIds ?? [],
         hasher: options.hasher
       });
+      if(input.sourcePlanningContext?.sourceIds.length && input.sourcePlanningContext.languageId!==shape.target.language)throw new NativeProgramEmissionError("program.emission.source_abi_incompatible","Source provider ABI differs from selected native language");
       const ownerBehaviorRequirements = validatedOwnerBehaviorRequirements(input.programIntent?.behaviorRequirements ?? []);
       const ownerStatefulBehaviorRequirements = validatedOwnerStatefulBehaviorRequirements(input.programIntent?.statefulBehaviorRequirements ?? []);
       if (ownerBehaviorRequirements.length && ownerStatefulBehaviorRequirements.length) {
@@ -199,7 +202,8 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         ownerBehaviorRequirements,
         ownerBehaviorImplementationPhase,
         input.programIntent?.behaviorTransformationCandidates ?? [],
-        input.programIntent?.selectedBehaviorTransformationIds ?? []
+        input.programIntent?.selectedBehaviorTransformationIds ?? [],
+        input.sourcePlanningContext
       );
       const ownerStatefulBehaviorTransformations = validatedOwnerStatefulBehaviorTransformations(
         ownerStatefulBehaviorRequirements,
@@ -1630,7 +1634,7 @@ function withOwnerBehaviorCompositionFiles(
       dependsOn: [file.path],
       invariants: ["describes emitted module exports", "contains no behavior implementation"]
     })) : [];
-  const nodeOwnerMode = nodeRuntimeForShape(shape) && compositionFiles.some(file => file.path === composition?.applicationPath || file.path === statefulComposition?.applicationPath);
+  const nodeOwnerMode = (nodeRuntimeForShape(shape) || (emittedRuntimeForShape(shape).commandName === "node" && !emittedRuntimeForShape(shape).sourcePath.endsWith(".cjs") && Boolean(composition))) && compositionFiles.some(file => file.path === composition?.applicationPath || file.path === statefulComposition?.applicationPath);
   const applicationPath = composition?.applicationPath ?? statefulComposition?.applicationPath;
   const applicationDeclarationPath = applicationPath?.endsWith(".mjs") ? applicationPath.replace(/\.mjs$/u, ".d.mts") : undefined;
   const providerPaths = composition?.callables.map(item => item.path)
@@ -1770,10 +1774,11 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
     byPath.set("source.program.json", `${JSON.stringify(sourceProgramContract(plan, input,proofBinding), null, 2)}\n`);
     const statefulComposition = ownerStatefulBehaviorCompositionPaths(plan.intent.shape, plan.ownerStatefulBehaviorRequirements, hasher);
     const composition = ownerBehaviorCompositionPaths(plan.intent.shape, plan.ownerBehaviorRequirements, hasher);
-    const nodeOwnerComposition = nodeRuntimeForShape(plan.intent.shape) && (composition || statefulComposition);
+    const nodeOwnerComposition = (nodeRuntimeForShape(plan.intent.shape) || (emittedRuntime.commandName === "node" && !emittedRuntime.sourcePath.endsWith(".cjs") && Boolean(composition))) && (composition || statefulComposition);
     if (nodeOwnerComposition && (composition || statefulComposition)) {
       const applicationPath = composition?.applicationPath ?? statefulComposition!.applicationPath;
-      byPath.set(emittedRuntime.sourcePath, `export * from ${JSON.stringify(moduleSpecifier(emittedRuntime.sourcePath, applicationPath))};\n`);
+      const relativePath=relativeNativeSourcePath(emittedRuntime.sourcePath,applicationPath);
+      byPath.set(emittedRuntime.sourcePath, `export * from ${JSON.stringify(relativePath.startsWith(".")?relativePath:`./${relativePath}`)};\n`);
       byPath.set(emittedRuntime.testPath, executableNodeOwnerBehaviorTest(plan));
     } else if (emittedRuntime.languageId === "python") {
       byPath.set(emittedRuntime.sourcePath, executablePythonProgramModule(plan, contracts, statefulContracts));
@@ -1852,7 +1857,7 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
     const ownerPath=plan.intent.shape.ownerEntrypointPath;
     if(ownerPath && (plan.ownerBehaviorRequirements.length || plan.ownerStatefulBehaviorRequirements.length)) {
       if(ownerPath.endsWith(".cjs")){byPath.set(ownerPath,executableNamedOwnerModule(plan,false,true));byPath.set(emittedRuntime.testPath,executableNodeOwnerBehaviorTest(plan));}
-      else if(ownerPath.endsWith(".ts") && plan.intent.shape.target.language==="typescript") byPath.set(ownerPath,executableNamedOwnerModule(plan,true,false));
+      else if(ownerPath.endsWith(".ts") && plan.intent.shape.target.language==="typescript" && !(nodeOwnerComposition&&composition)) byPath.set(ownerPath,executableNamedOwnerModule(plan,true,false));
     }
     byPath.set("BUILDING.md", buildNotes(plan));
   }
@@ -3731,8 +3736,16 @@ function executableBehaviorTransformationFunction(
     : "";
   const parameterType = typescript ? `: [${Array.from({ length: argumentCount }, (_, index) => numericArgumentIndexes.includes(index) ? "number" : "any").join(", ")}]` : "";
   const resultType = typescript ? numericExpressionResult(candidate.producedIr, new Set(numericArgumentIndexes)) ? ": number" : "" : "";
-  return `${exported?"export ":""}function ${callableId}(...args${parameterType})${resultType} {
+  const bindings=sourceProgramCandidateBindings(candidate),sourceProvider="sourceProvider" in candidate;
+  if(!sourceProvider)return `${exported?"export ":""}function ${callableId}(...args${parameterType})${resultType} {
   if (args.length !== ${argumentCount}${numericGuard}) throw new TypeError(${JSON.stringify(`program.argument_contract:${callableId}:${argumentCount}`)});
+  return ${renderProgramExpression(candidate.producedIr)};
+}`;
+  const signature=Array.from({length:argumentCount},(_,index)=>`arg${index}${typescript?": number":""}`).join(", ");
+  return `${exported?"export ":""}function ${callableId}(${signature})${sourceProvider&&typescript?": number":resultType} {
+  ${sourceProvider?`const args${typescript?": number[]":""} = [${Array.from({length:argumentCount},(_,index)=>`arg${index}`).join(", ")}];`:""}
+  if (${sourceProvider?"arguments.length":"args.length"} !== ${argumentCount}${numericGuard}) throw new TypeError(${JSON.stringify(`program.argument_contract:${callableId}:${argumentCount}`)});
+  ${bindings.map(binding=>`args.push(${renderProgramExpression(binding)});`).join("\n  ")}
   return ${renderProgramExpression(candidate.producedIr)};
 }`;
 }
@@ -3992,7 +4005,8 @@ function validatedOwnerBehaviorTransformations(
   requirements: readonly ProgramBehaviorRequirement[],
   phase: "probe" | "selected",
   suppliedCandidates: readonly ProgramTransformationCandidate[],
-  suppliedSelectedIds: readonly string[]
+  suppliedSelectedIds: readonly string[],
+  sourcePlanningContext?: ProgramSourcePlanningContext
 ): { candidates: ProgramTransformationCandidate[]; selectedIds: string[] } {
   if (phase === "probe") {
     if (suppliedCandidates.length || suppliedSelectedIds.length) {
@@ -4006,7 +4020,7 @@ function validatedOwnerBehaviorTransformations(
     }
     return { candidates: [], selectedIds: [] };
   }
-  const searched = searchProgramTransformations(requirements);
+  const searched = programImplementationCandidates(requirements,sourcePlanningContext);
   if (canonicalStringify(suppliedCandidates) !== canonicalStringify(searched.candidates)) {
     throw new Error("selected owner behavior transformations do not match bounded fit-role search");
   }

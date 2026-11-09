@@ -364,3 +364,5 @@ export * from "./source-computation-runtime.js";
 export * from "./program-artifact-wire.js";
 
 export * from "./corpus-segmentation-storage.js";
+
+export * from "./source-program-provider.js";

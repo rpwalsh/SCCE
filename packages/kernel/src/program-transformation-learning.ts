@@ -4,7 +4,7 @@
 import type { BuildTestResult, EpisodeId, Hasher, JsonValue, ProgramBehaviorRequirement, ProgramGraph, ProgramConstructIntent, ProgramStatefulBehaviorRequirement } from "./types.js";
 import { canonicalStringify, createHasher } from "./primitives.js";
 import type { ProgramTransformationCandidate } from "./program-transformation-search.js";
-import { searchProgramTransformations } from "./program-transformation-search.js";
+import {programImplementationCandidates,type ProgramSourcePlanningContext} from "./source-program-provider.js";
 import type { StateTransitionCandidate } from "./state-transition-search.js";
 import { searchStateTransitions } from "./state-transition-search.js";
 
@@ -30,6 +30,7 @@ export interface ProgramTransformationLearningEpisode {
 }
 
 export interface ProgramTransformationLearningInput {
+  readonly sourcePlanningContext?: ProgramSourcePlanningContext;
   readonly episodeId: EpisodeId;
   readonly program: ProgramGraph;
   readonly intent: ProgramConstructIntent;
@@ -66,7 +67,7 @@ export function learningEpisodesFromVerifiedProgram(input: ProgramTransformation
   // keeps a forged intent from turning a lookup/table candidate into training.
   if (!selectedIdsMatch(input.intent.selectedBehaviorTransformationIds, selectedScalar)
     || !selectedIdsMatch(input.intent.selectedStatefulBehaviorTransformationIds, selectedStateful)
-    || !selectedCandidatesAreCanonical(selectedScalar, scalarRequirements)
+    || !selectedCandidatesAreCanonical(selectedScalar, scalarRequirements,input.sourcePlanningContext)
     || !selectedStatefulCandidatesAreCanonical(selectedStateful, statefulRequirements)
     || !programDeclaresSelectedCandidates(input.program, selectedScalar, selectedStateful)) return [];
   const episodes: ProgramTransformationLearningEpisode[] = [];
@@ -173,10 +174,11 @@ function selectedIdsMatch<T extends { readonly id: string }>(selectedIds: readon
 
 function selectedCandidatesAreCanonical(
   selected: readonly ProgramTransformationCandidate[],
-  requirements: readonly ProgramBehaviorRequirement[]
+  requirements: readonly ProgramBehaviorRequirement[],
+  sourcePlanningContext?: ProgramSourcePlanningContext
 ): boolean {
   if (!selected.length) return true;
-  const searched = searchProgramTransformations(requirements);
+  const searched = programImplementationCandidates(requirements,sourcePlanningContext);
   const byId = new Map(searched.candidates.map(candidate => [candidate.id, candidate]));
   return selected.every(candidate => {
     const canonical = byId.get(candidate.id);
@@ -270,6 +272,7 @@ export function candidateStructuralSignature(
     return `expression:${canonicalStringify({
       operator: candidate.operator,
       producedIr: candidate.producedIr,
+      ...("sourceProvider" in candidate ? {sourceBindings:(candidate as unknown as {sourceBindings:unknown}).sourceBindings} : {}),
       preconditions: candidate.preconditions
     })}`;
   }
