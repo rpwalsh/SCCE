@@ -12,9 +12,7 @@ import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evide
 import { acquireAndTrainGithubOssRepository } from "../github-oss-acquisition.js";
 import { trainOssCorpus } from "../oss-corpus.js";
 import { trainGutenbergCorpus } from "../gutenberg-corpus.js";
-import { completeInitialSourceBrainFromStoredReports, validateStoredSourceBrainPlan } from "../source-brain-build.js";
-vi.mock("@scce/adapters-node", async () => await import("../source-brain-build.js"));
-import { plannedSourceFileAdmission, type LoadedCorpusBrainManifest } from "../../../cli/src/corpus-brain-manifest.js";
+import { completeInitialSourceBrainFromStoredReports, validateStoredSourceBrainPlan, createSourceBrainFileAdmission } from "../source-brain-build.js";
 import { trainDialogueCorpus } from "../dialogue-corpus.js";
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -75,7 +73,7 @@ async function fixture() {
 }
 it("trains genuine code, adjacent prose, documentation and Gutenberg through one explicit physical-file manifest without changing their real owners", async () => {
   const f = await fixture(), settings = { ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 128 };
-  const beforeSourceTraining = plannedSourceFileAdmission(loadedManifest(f));
+  const beforeSourceTraining = createSourceBrainFileAdmission(f.plan);
   const oss = await trainOssCorpus({ storage: f.storage, ...settings, beforeSourceTraining, rootPath: f.repo, sourceUriBase: f.sourceUriBase, maxFiles: 20, maxFilesPerRun: 20 });
   const books = await trainGutenbergCorpus({ storage: f.storage, ...settings, beforeSourceTraining, rootPath: f.books, maxFilesPerRun: 20 });
   expect(oss.filesSkipped).toEqual([]); expect(oss.sourceContractClosure?.complete).toBe(true); expect(books.filesSkipped).toEqual([]);
@@ -143,9 +141,6 @@ it("finalizes the ordinary pinned GitHub acquisition envelope from its genuine f
   expect((await completeInitialSourceBrainFromStoredReports(input)).idempotent).toBe(true);
 });
 
-function loadedManifest(f: Awaited<ReturnType<typeof fixture>>): LoadedCorpusBrainManifest {
-  return { path: path.join(f.root, "plan.json"), hash: "a".repeat(64), plan: f.plan, byteBudget: 1024 * 1024, manifestBytes: 0 };
-}
 it.each(["oss", "gutenberg", "dialogue"])("refuses an actual extra %s file before it can write source, learning or checkpoint state", async kind => {
   const f = await fixture(), settings = { ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 128 };
   const putSource = vi.spyOn(f.storage.evidence, "putSourceVersion"), checkpoint = vi.spyOn(f.storage.ingestion, "put"), profile = vi.spyOn(f.storage.model, "putLanguageProfile");
@@ -154,12 +149,12 @@ it.each(["oss", "gutenberg", "dialogue"])("refuses an actual extra %s file befor
     const base = `scce://oss-local/${f.hasher.digestHex(pathToFileURL(await realpath(f.repo)).href)}`;
     f.plan.selectedItems = f.plan.selectedItems.map(item => ({ ...item, canonicalUri: item.canonicalUri.replace(f.sourceUriBase, base) }));
     extraPath = path.join(f.repo, "00-extra.ts"); await writeFile(extraPath, f.code);
-    const admit = plannedSourceFileAdmission(loadedManifest(f));
+    const admit = createSourceBrainFileAdmission(f.plan);
     run = () => trainOssCorpus({ storage: f.storage, ...settings, rootPath: f.repo, maxFiles: 20, maxFilesPerRun: 20,
       beforeSourceTraining: source => { expect(source.canonicalUri).toContain(`${base}#path=`); admit(source); } });
   } else if (kind === "gutenberg") {
     extraPath = path.join(f.books, "00-extra.txt"); await writeFile(extraPath, f.alice);
-    run = () => trainGutenbergCorpus({ storage: f.storage, ...settings, rootPath: f.books, beforeSourceTraining: plannedSourceFileAdmission(loadedManifest(f)) });
+    run = () => trainGutenbergCorpus({ storage: f.storage, ...settings, rootPath: f.books, beforeSourceTraining: createSourceBrainFileAdmission(f.plan) });
   } else {
     const root = path.join(f.root, "dialogue"); await mkdir(root);
     const bytes = await readFile(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json", import.meta.url));
@@ -168,7 +163,7 @@ it.each(["oss", "gutenberg", "dialogue"])("refuses an actual extra %s file befor
     f.plan.selectedItems.push({ canonicalUri: pathToFileURL(filename).href, sourceFileHash: f.hasher.digestHex(bytes), contentHash: f.hasher.digestHex(transcript.text), byteLength: Buffer.byteLength(transcript.text) });
     extraPath = path.join(root, "00-extra.json"); await writeFile(extraPath, bytes);
     run = () => trainDialogueCorpus({ storage: f.storage, ...settings, rootPath: root, authorship: "human_authored", informationLabel: {
-      tenantId: "mixed.owner", principals: ["owner"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" }, beforeSourceTraining: plannedSourceFileAdmission(loadedManifest(f)) });
+      tenantId: "mixed.owner", principals: ["owner"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" }, beforeSourceTraining: createSourceBrainFileAdmission(f.plan) });
   }
   await expect(run()).rejects.toThrow("unplanned source file refused before training");
   expect(putSource).not.toHaveBeenCalled(); expect(checkpoint).not.toHaveBeenCalled(); expect(profile).not.toHaveBeenCalled();

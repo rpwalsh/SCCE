@@ -7,15 +7,20 @@ import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { createHasher, type ScceStorage } from "@scce/kernel";
 import { parseCorpusTrainOptions } from "../corpus-train-options.js";
+const admissionFactory = vi.hoisted(() => vi.fn());
 const complete = vi.hoisted(() => vi.fn(async (input: unknown) => ({ completed: input })));
-vi.mock("@scce/adapters-node", async () => ({
-  validateStoredSourceBrainPlan: (await import("../../../adapters-node/src/source-brain-build.js")).validateStoredSourceBrainPlan,
+vi.mock("@scce/adapters-node", async () => {
+  const actual = await import("../../../adapters-node/src/source-brain-build.js");
+  admissionFactory.mockImplementation(actual.createSourceBrainFileAdmission);
+  return {
+  validateStoredSourceBrainPlan: actual.validateStoredSourceBrainPlan,
+  createSourceBrainFileAdmission: admissionFactory,
   completeInitialSourceBrainFromStoredReports: complete,
   sourceBrainBuildReceipt: (value: unknown) => value
-}));
+}; });
 import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, plannedSourceFileAdmission } from "../corpus-brain-manifest.js";
 const roots: string[] = [];
-afterEach(async () => { complete.mockClear(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { complete.mockClear(); admissionFactory.mockClear(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), "scce-brain-manifest-")); roots.push(root);
   const hasher = createHasher(), report = JSON.stringify({ schema: "scce.storedCorpusConstructionTrainReport.v1", preserved: "all native fields" });
@@ -34,6 +39,7 @@ it("reads the exact pinned manifest/reports through the CLI helper and delegates
   expect(plannedStoredSourceIds(manifest)).toEqual(["wiki-owned"]);
   plannedSourceFileAdmission(manifest)({ canonicalUri: f.plan.selectedItems[1]!.canonicalUri, rawContentHash: createHasher().digestHex(f.transcript), rawByteLength: Buffer.byteLength(f.transcript),
     sourceContentHash: "b".repeat(64), sourceByteLength: 64, projections: [{ sourceSystemId: "human-dialogue" }] });
+  expect(admissionFactory).toHaveBeenCalledExactlyOnceWith(manifest.plan);
   await finalizeCorpusBrainManifest({ storage: {} as ScceStorage, informationLabel: { tenantId: "owner", principals: ["owner"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" }, manifestPath: f.manifestPath, maxTotalBytes: 65536 });
   expect(complete).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ plan: f.plan, reports: [JSON.parse(f.report)], sourceManifestHash: manifest.hash }));
 });

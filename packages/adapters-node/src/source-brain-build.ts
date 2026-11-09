@@ -310,6 +310,35 @@ export interface StoredSourceBrainPlan {
   reportFiles: Array<{ path: string; sha256?: string }>;
 }
 
+/** The normal producer owns URI/byte/projection preparation; the plan only admits its exact declaration. */
+export function createSourceBrainFileAdmission(plan: StoredSourceBrainPlan): (source: SourceBrainFileAdmission) => void {
+  const byUri = new Map(structuredClone(plan.selectedItems).map(item => [item.canonicalUri, item]));
+  const bareHash = (value: string) => value.replace(/^sha256_/iu, "").toLowerCase();
+  return source => {
+    const item = byUri.get(source.canonicalUri);
+    if (!item) throw new Error(`unplanned source file refused before training: ${source.canonicalUri}`);
+    if (!item.sourceFileHash || item.sourceFileHash !== bareHash(source.rawContentHash)
+      || bareHash(item.contentHash) !== bareHash(source.sourceContentHash) || item.byteLength !== source.sourceByteLength)
+      throw new Error(`planned source file hash/bytes changed before training: ${source.canonicalUri}`);
+    if (!Number.isSafeInteger(source.rawByteLength) || source.rawByteLength <= 0 || !source.projections.length)
+      throw new Error("invalid source file preparation before training");
+    if (!item.projections) {
+      if (source.projections.length !== 1 || source.projections.some(row => row.projection !== undefined || row.transformId !== undefined))
+        throw new Error("planned source file requires explicit projection declarations before training");
+    } else {
+      if (item.projections.length !== source.projections.length) throw new Error("planned source projection set changed before training");
+      const matched = new Set<number>();
+      for (const expected of item.projections) {
+        const found = source.projections.flatMap((row, index) => row.sourceSystemId === expected.sourceSystemId
+          && (expected.projection === undefined || expected.projection === row.projection)
+          && (expected.transformId === undefined || expected.transformId === row.transformId) ? [index] : []);
+        if (found.length !== 1 || matched.has(found[0]!)) throw new Error("planned source projection changed or is ambiguous before training");
+        matched.add(found[0]!);
+      }
+    }
+  };
+}
+
 /** Validate the explicit cohort independently of any completed report subset. */
 export function validateStoredSourceBrainPlan(value: unknown, complete = false): StoredSourceBrainPlan {
   const plan = objectRecord(value);
