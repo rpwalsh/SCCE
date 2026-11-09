@@ -1,0 +1,233 @@
+{
+  "schema": "scce.stored_construction_diagnostic.v1",
+  "startedAt": "2026-11-09T03:25:00.410Z",
+  "readOnlyApplicationData": true,
+  "selection": "First 12 Wikipedia source-example patterns ordered by support descending then id; no new training",
+  "replays": [
+    {
+      "bundleId": "surface.construction.bundle.04293ca4429cef127bddb41ce20bb14603076a90e23ce4fb518773a38edecf2a",
+      "exampleId": "surface.construction.example.09d62997d3fc5b6f3dcfa4ac45db10027971e2b2dbbbac5c6aefe14763facfa9",
+      "sourceSurface": "the 19th century",
+      "status": "realized",
+      "realizedSurface": "the 19th century",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.06a4ee9a26021d931abf5149cec1479dc139a8ccedf3130f462b6ed58d080a23",
+      "exampleId": "surface.construction.example.25803d61eeddf65a786625db29275cdcebf19199be6ffac6e5d4dd7f310fb907",
+      "sourceSurface": "In response to",
+      "status": "realized",
+      "realizedSurface": "In response to",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.1cdcfaf5b0b7c31970f36d77afa8fdd98b78a2daadf9545e3ce1b1d1725825d8",
+      "exampleId": "surface.construction.example.2b9a79916b19e7c6e6ac31de0896e3031fcf79669c06a9275631b3ded39bc7bf",
+      "sourceSurface": "reflected back to",
+      "status": "realized",
+      "realizedSurface": "reflected back to",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.2338a9fb8664c762ec73c5ac6c2f7efcd47c37b74d2b84c16d46bad9745ee000",
+      "exampleId": "surface.construction.example.074ffa4a9853392a1977071200cbaf80271a6e44eb508472f13137ddbbefba4b",
+      "sourceSurface": "the same distance",
+      "status": "realized",
+      "realizedSurface": "the same distance",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.2eb8039df12274323f416e7c3c8c7b0119aab1b4aedc12440a35c7c2c1b7c1b0",
+      "exampleId": "surface.construction.example.5e1294d99a82842f11401d0dbd52fb6975f982e7f7b652d72730036104e6ffd8",
+      "sourceSurface": "the net effect",
+      "status": "realized",
+      "realizedSurface": "the net effect",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.3d4b38ac0876a89dfb95acbf9ab30416c56d99970cd90cc4d6f7fa4510cf03d9",
+      "exampleId": "surface.construction.example.5255fa3a3fd70b8a84b9a85997c715b63ee02c4c8d463eea1f84de220d487f86",
+      "sourceSurface": "to achieve their",
+      "status": "realized",
+      "realizedSurface": "to achieve their",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.4d6701cea5fe4e5676f5925e8cb8d35948fff1373195204d93d98d04b41302c5",
+      "exampleId": "surface.construction.example.0359b340d92103aaea75012bf0ab0e7f6e3524ee23c885f52cbfb68fff52c004",
+      "sourceSurface": "progress toward such",
+      "status": "realized",
+      "realizedSurface": "progress toward such",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.62296d153d0d6c62dfffea23835514cdf010b2d41b9bce7d5a9410faaa686c8e",
+      "exampleId": "surface.construction.example.220abcb6e4d73a598d4df54040d88a92f683004199c40958e6b6c9ff3308e5d4",
+      "sourceSurface": "in particular argue",
+      "status": "realized",
+      "realizedSurface": "in particular argue",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.6c0186dfd7b0a0a6defe4bcdde9ce861ff33e5fdbd5510221856e42162691d72",
+      "exampleId": "surface.construction.example.6b9a558382f76d3742ba8dd7f562baa7a690593e42e55d5dc057f79828fc93a4",
+      "sourceSurface": "would result in",
+      "status": "realized",
+      "realizedSurface": "would result in",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.75b4aa308d7c3a63dbb6932f29112f4db96856019414d549a731633f0613fd6c",
+      "exampleId": "surface.construction.example.116478c003ad629ef08367d4d24d6f96ab71d63610603d26a5abe2ed330e2b75",
+      "sourceSurface": "a ruling theory",
+      "status": "realized",
+      "realizedSurface": "a ruling theory",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.db0c9e5f47759543015d3e685b8817ad653446fb855b9b8d69ca31495eca416b",
+      "exampleId": "surface.construction.example.3db5c9156e0f5fb3671eaec40cd1497ad3b4b95414045ead0ec781b2d9868cf9",
+      "sourceSurface": "of incident light",
+      "status": "realized",
+      "realizedSurface": "of incident light",
+      "exactSourceRecovered": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.ede23ab82341e69fb1b9e8ec1fc8179188417ace4c6d4cac025c0993cd4a3bf6",
+      "exampleId": "surface.construction.example.172bcdb7b77dd5c9467f3fab2719ce9a93ca4fdb535b26a9d787bbbc199e017b",
+      "sourceSurface": "Russian Civil War",
+      "status": "realized",
+      "realizedSurface": "Russian Civil War",
+      "exactSourceRecovered": true
+    }
+  ],
+  "recombinations": [
+    {
+      "bundleId": "surface.construction.bundle.04293ca4429cef127bddb41ce20bb14603076a90e23ce4fb518773a38edecf2a",
+      "original": "the 19th century",
+      "replacedRoleId": "surface.construction.role.030be0f9b47c791f875f4ebd8b80a80d2872b10e9c4c40c715e2fe5b5739a049",
+      "originalSlot": "the",
+      "replacementSlot": "late",
+      "status": "realized",
+      "realizedSurface": "late 19th century",
+      "surfaceNotInBundleExamples": false
+    },
+    {
+      "bundleId": "surface.construction.bundle.06a4ee9a26021d931abf5149cec1479dc139a8ccedf3130f462b6ed58d080a23",
+      "original": "In response to",
+      "replacedRoleId": "surface.construction.role.a913979e95542381ee48a78090a5afc76767aa7162d42c021ed238203da8a349",
+      "originalSlot": "In",
+      "replacementSlot": "in",
+      "status": "realized",
+      "realizedSurface": "in response to",
+      "surfaceNotInBundleExamples": false
+    },
+    {
+      "bundleId": "surface.construction.bundle.1cdcfaf5b0b7c31970f36d77afa8fdd98b78a2daadf9545e3ce1b1d1725825d8",
+      "original": "reflected back to",
+      "replacedRoleId": "surface.construction.role.31e112d3cd158fa68e209f081aa6883bef2c94a95caf86279ab1c689389780bc",
+      "originalSlot": "reflected",
+      "replacementSlot": "energy",
+      "status": "realized",
+      "realizedSurface": "energy back to",
+      "surfaceNotInBundleExamples": false
+    },
+    {
+      "bundleId": "surface.construction.bundle.2338a9fb8664c762ec73c5ac6c2f7efcd47c37b74d2b84c16d46bad9745ee000",
+      "original": "the same distance",
+      "replacedRoleId": "surface.construction.role.ba359a756528db91517d63471a6a7b4f60e2cebbe8ab012877e7363654cbe2f1",
+      "originalSlot": "distance",
+      "replacementSlot": "surface",
+      "status": "realized",
+      "realizedSurface": "the same surface",
+      "surfaceNotInBundleExamples": false
+    },
+    {
+      "bundleId": "surface.construction.bundle.2eb8039df12274323f416e7c3c8c7b0119aab1b4aedc12440a35c7c2c1b7c1b0",
+      "original": "the net effect",
+      "replacedRoleId": "surface.construction.role.985c2536f889eea880b0e76f174b7639dd7802b0b4f8fd56cdf19382bbe91864",
+      "originalSlot": "the",
+      "replacementSlot": "a",
+      "status": "realized",
+      "realizedSurface": "a net effect",
+      "surfaceNotInBundleExamples": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.3d4b38ac0876a89dfb95acbf9ab30416c56d99970cd90cc4d6f7fa4510cf03d9",
+      "original": "to achieve their",
+      "replacedRoleId": "surface.construction.role.cfae15cf4acae6f7fd6ca4fa70a5aaa81084ed9245dc8343ca6b417db1325dfa",
+      "originalSlot": "to",
+      "replacementSlot": "help",
+      "status": "realized",
+      "realizedSurface": "help achieve their",
+      "surfaceNotInBundleExamples": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.4d6701cea5fe4e5676f5925e8cb8d35948fff1373195204d93d98d04b41302c5",
+      "original": "progress toward such",
+      "replacedRoleId": "surface.construction.role.d3fc79d64c8684de4a3f89213c8806ec020236df6bc92810c7c74118d4bb3218",
+      "originalSlot": "progress",
+      "replacementSlot": "transmitted",
+      "status": "realized",
+      "realizedSurface": "transmitted toward such",
+      "surfaceNotInBundleExamples": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.62296d153d0d6c62dfffea23835514cdf010b2d41b9bce7d5a9410faaa686c8e",
+      "original": "in particular argue",
+      "replacedRoleId": "surface.construction.role.3f506cd4c02cbd964038d942bb660f4f281eefeec7ce3faa053454c4479d2740",
+      "originalSlot": "in",
+      "replacementSlot": "single",
+      "status": "realized",
+      "realizedSurface": "single particular argue",
+      "surfaceNotInBundleExamples": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.6c0186dfd7b0a0a6defe4bcdde9ce861ff33e5fdbd5510221856e42162691d72",
+      "original": "would result in",
+      "replacedRoleId": "surface.construction.role.c9fe25987efde65be413caf9700cfc469470e2e05be4fdaf750874ef9c78d1e1",
+      "originalSlot": "would",
+      "replacementSlot": "The",
+      "status": "realized",
+      "realizedSurface": "The result in",
+      "surfaceNotInBundleExamples": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.75b4aa308d7c3a63dbb6932f29112f4db96856019414d549a731633f0613fd6c",
+      "original": "a ruling theory",
+      "replacedRoleId": "surface.construction.role.46381ecfb3df60fa489e7b827265a8964215754cdc20f3c2e740bf95ffc63fb8",
+      "originalSlot": "a",
+      "replacementSlot": "the",
+      "status": "realized",
+      "realizedSurface": "the ruling theory",
+      "surfaceNotInBundleExamples": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.db0c9e5f47759543015d3e685b8817ad653446fb855b9b8d69ca31495eca416b",
+      "original": "of incident light",
+      "replacedRoleId": "surface.construction.role.d107d04d84de69f291d00c38f7a19e6fecb0f316e0dcd29bf369e67d40c17bbe",
+      "originalSlot": "of",
+      "replacementSlot": "all",
+      "status": "realized",
+      "realizedSurface": "all incident light",
+      "surfaceNotInBundleExamples": true
+    },
+    {
+      "bundleId": "surface.construction.bundle.ede23ab82341e69fb1b9e8ec1fc8179188417ace4c6d4cac025c0993cd4a3bf6",
+      "original": "Russian Civil War",
+      "replacedRoleId": "surface.construction.role.3e6c3b8e0400e21f9b38f043f63addd75e80e83f9fb4ac08ed442f5b803b631e",
+      "originalSlot": "Russian",
+      "replacementSlot": "Spanish",
+      "status": "realized",
+      "realizedSurface": "Spanish Civil War",
+      "surfaceNotInBundleExamples": false
+    }
+  ],
+  "selectedPatterns": 12,
+  "hydratedBundles": 12,
+  "rejected": [],
+  "completed": true,
+  "qualification": "Typed meaning plans built from stored source roles; parser and request routing are bypassed. Exact replay proves hydration/realization integrity, not general English. Recombination is attempted only when the same stored bundle has an alternative observed role filler; no invented training examples or rules are supplied.",
+  "finishedAt": "2026-11-09T03:25:00.658Z",
+  "backend": "PostgreSQL 18.6 / PGlite 0.5.15"
+}

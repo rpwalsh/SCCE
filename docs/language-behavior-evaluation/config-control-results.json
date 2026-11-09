@@ -1,0 +1,135 @@
+{
+  "schema": "scce.language_behavior_diagnostic.v1",
+  "startedAt": "2026-11-09T03:28:34.556Z",
+  "casesSha256": "9e1859556498492d54a0cc71521831e7789151b407cef1d022dcd53f93e0d6f1",
+  "sourceCodeCommit": "1ac82eac41b5f33b7f58fb1dc485c7a9fa83e2e7",
+  "scope": "Available checkpoint; not Windows 29-article candidate",
+  "externalWebEnabled": false,
+  "externalInferenceRequested": false,
+  "canonicalApplicationWrites": "each case is rolled back",
+  "syntheticRequestRequirementBootstrap": true,
+  "functionalCognitionAuthorization": true,
+  "kernelBudgetMs": 60000,
+  "results": [
+    {
+      "id": "instruction-copy",
+      "category": "instruction",
+      "prompt": "Reply with exactly these three words and nothing else: amber violet teal",
+      "criterion": "Exactly amber violet teal.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 1,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.evidence",
+            "subject": "Reply with exactly these three words and nothing else: amber violet teal"
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 1,
+      "evidenceIds": [
+        "evidence_span.7c39230ac4a80ee0bd58aa3c9877b52166032c9ba4589ed6"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 51295,
+        "seedMs": 24862,
+        "graphSliceMs": 3230,
+        "proofMs": 3017,
+        "candidateMs": 3418,
+        "planningMs": 16120,
+        "mouthMs": 611,
+        "validationMs": 37,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 31668.607,
+          "cpuSystemMs": 3565.41,
+          "peakResidentSetBytes": 1431072768,
+          "wallClockMs": 51288.55325,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 51497
+    }
+  ],
+  "productionReadiness": {
+    "passed": true,
+    "activeBrainVersion": "source_brain_v1_9334b0d9c31c78c8a4108e51e7fcc418",
+    "activeImportRunIds": [
+      "source_brain.9334b0d9c31c78c8a4108e51e7fcc418246f6585"
+    ]
+  },
+  "completed": true,
+  "finishedAt": "2026-11-09T03:29:26.068Z",
+  "qualification": "Direct production kernel turns against the recorded checkpoint. No training on prompts, no web, no external inference. Exact tasks use predefined accepted strings; open-ended tasks require manual rubric review. Runtime errors do not establish linguistic inability. This small diagnostic cannot establish broad English fluency or attribute any success solely to corpus learning."
+}

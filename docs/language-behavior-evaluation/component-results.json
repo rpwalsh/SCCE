@@ -1,0 +1,291 @@
+{
+  "schema": "scce.language_component_diagnostic.v1",
+  "startedAt": "2026-11-09T03:23:57.178Z",
+  "sourceCodeCommit": "1ac82eac41b5f33b7f58fb1dc485c7a9fa83e2e7",
+  "readOnlyApplicationData": true,
+  "controlsSha256": "dcb014fca4480b58320899844ba3e05fdf33712d8c2b3439e2ad73266d3d8c85",
+  "cohorts": [
+    {
+      "sourceSystem": "wikipedia",
+      "persistedStructures": 1,
+      "selectedStructures": 1,
+      "selectedModelIds": [
+        "ngram_model_23d045fdddb53b3f899acfd6eac7c29fcc7dfa8dace81395e2902f9c6135a900"
+      ],
+      "pairs": [
+        {
+          "id": "bird-wall",
+          "english": "the small bird sat on the wall",
+          "permuted": "wall the on sat bird small the",
+          "englishInformation": 7.4587159597543256,
+          "permutedInformation": 7.820771163276863,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "book-table",
+          "english": "she put the book on the table",
+          "permuted": "table the on book the put she",
+          "englishInformation": 7.803434583181955,
+          "permutedInformation": 8.13901702659552,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "children-garden",
+          "english": "the children are playing in the garden",
+          "permuted": "garden the in playing are children the",
+          "englishInformation": 7.082843835603187,
+          "permutedInformation": 7.36410526449137,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "open-window",
+          "english": "please open the window before you leave",
+          "permuted": "leave you before window the open please",
+          "englishInformation": 9.386181766191516,
+          "permutedInformation": 9.386181766191516,
+          "englishPreferred": false,
+          "tie": true
+        },
+        {
+          "id": "rain-home",
+          "english": "it was raining when we came home",
+          "permuted": "home came we when raining was it",
+          "englishInformation": 8.626507580018092,
+          "permutedInformation": 8.797519964057493,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "glass-water",
+          "english": "could you bring me a glass of water",
+          "permuted": "water of glass a me bring you could",
+          "englishInformation": 8.27223630704941,
+          "permutedInformation": 8.320568156489523,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "old-house",
+          "english": "there is an old house near the river",
+          "permuted": "river the near house old an is there",
+          "englishInformation": 7.24163929269832,
+          "permutedInformation": 8.219285126414205,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "friend-story",
+          "english": "my friend told me a story about the sea",
+          "permuted": "sea the about story a me told friend my",
+          "englishInformation": 8.608190214656592,
+          "permutedInformation": 8.641308437658328,
+          "englishPreferred": true,
+          "tie": false
+        }
+      ],
+      "englishPreferred": 7,
+      "totalPairs": 8
+    },
+    {
+      "sourceSystem": "dialogue",
+      "persistedStructures": 374,
+      "selectedStructures": 36,
+      "selectedModelIds": [
+        "ngram_model_45e367a26022ea8c88b49dc019fb0f4776e3eea3704090a24fe9ec54f0dc966a",
+        "ngram_model_fda2f4fe884662fe541323cda0f4adfc70253aeceaf11653c4fb60eceedb1558",
+        "ngram_model_46770deb542326338dcbb1d3c00722e5108f42de75d62beab886a69af3c5ab78",
+        "ngram_model_beae38dfc26965d84c1ce34e9f14d0e65fb85793e0d0c8607828e995762fe31a",
+        "ngram_model_2bfc3f1dff4ce53dba9ebcaaae1ed1f14231cb0a00ab6ac36d8f15931e22f15e",
+        "ngram_model_f22ebfe541e6107c2e2a268635596c06fdc4be4be8770092ff1533b14e010800",
+        "ngram_model_165ff1c4f67aee3a6e91366ec1902f427629ad078aa3fb18d6faec8579104d07",
+        "ngram_model_a4332ee628c3a74e15c90dacd62e910b1844782d69bcbcfb840d62977e73e927",
+        "ngram_model_e2d1f16628cc1d1d8e8c0787be62d68ae306e4b0fdc46ccb8c5f18532c0bea4c",
+        "ngram_model_4379880702679f8ddb44fb81eb425d04b8089d07d3b1b8abfbcbb06403b57584",
+        "ngram_model_c0fabc68d9bc0766e5990f12a0cb8ddcf810adba758b1848149d3b201e66a346",
+        "ngram_model_1b9799c64b2a97bf8562ee7b3d584c9e71418cd9b2736ae2c161aec3d0595fe4",
+        "ngram_model_5e425c89cb7137911a50601c9d03e68397f70ae145350ee68802174d100587fb",
+        "ngram_model_be2eb8a3ea7167529b4c0aa94e4e4a71419908d5ad3d50a56109ea91809fb2ad",
+        "ngram_model_033df4639beb08b04faeecdf441dd7c76df5708e96db42abffa631ace5da0d14",
+        "ngram_model_5ff6399324744ba9ac4ce500424e0d3748cf15ec547714b9328af567eb8eeca7",
+        "ngram_model_7ad4b1ba0fb4783c18a713cbb18be6594f0cc6be211f2462e10479be7c0f90db",
+        "ngram_model_9f174f4bbfd65080568c0fab4b4574f499680949c34a8573405fca7db3ebb24d",
+        "ngram_model_3a7d76dcedc4af54dd821a20eb95117e99bc00d929036c0469dbb5045ec9bed9",
+        "ngram_model_936a24fabb815869919e0e70f1fb4a1cf52302a1ef2d476575023f0ec9e76e14",
+        "ngram_model_afb1cb8ea1720c50cc24ca30ee94cb62b3e2749dd7758fe452c6e79bde76c214",
+        "ngram_model_d352fc3fa58fa31669833be2c115b28e8cd54a2d679b8de18121a8c62de026f8",
+        "ngram_model_0dca254a47eae4e0e3195c9034891485be5c64b81e59c717e37c48b7cbbc3126",
+        "ngram_model_a0f20c3268ef06098c957156a1395e98a01c35fea1d7a5e12eb0fc83806e2af5",
+        "ngram_model_e46239ea2d2ea0f0538979f470c533643cc899145b4c2ef53eb9434550d38213",
+        "ngram_model_9315bda27060d744cd8cc8d97fe8511de2632c8fe00493500296c5c282d09b1e",
+        "ngram_model_0b7c2e380ab651321d2847eb740a373c7b8f239fd4ffb03aa7440129fbe8a5ae",
+        "ngram_model_0e4c076cf08ae5fa7d2632e563bddedac6ee2e4d274067fb3148d1d87b67a807",
+        "ngram_model_d7b7c2d465318e5ffb1ac33e0e5658710e0241d259ff937f37fa436f70a46ab9",
+        "ngram_model_6516dae3282de64da72275249db53c8add3dbef3e55e5bcf8cf57ecedeffa29b",
+        "ngram_model_77effaeda683fa68f2147491adac274fa309e4c0bc4c80f32e0a1f873021c2d3",
+        "ngram_model_2415b9df4110f37fe97af75635730840bd46392bd2437be2225403a6e3a923af",
+        "ngram_model_21c5c09c90dfb4754f2fd0b7d5d6c39c388a39aa686c7fb375455afe5b087ce3",
+        "ngram_model_5ff6621d572b652aec2ed0a2ed557986c6f91b33745c0b4c9fdc296d0ee3c1b0",
+        "ngram_model_e035c6dd912adef01492f117a2fb619deeb9fcabfb05b8880c2e686436b675e5",
+        "ngram_model_20f9f945121987bcf8d286877245923d89cb091af634027c5886c3ce5b446eee"
+      ],
+      "pairs": [
+        {
+          "id": "bird-wall",
+          "english": "the small bird sat on the wall",
+          "permuted": "wall the on sat bird small the",
+          "englishInformation": 7.096223777151949,
+          "permutedInformation": 7.470165197346797,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "book-table",
+          "english": "she put the book on the table",
+          "permuted": "table the on book the put she",
+          "englishInformation": 6.922543266609675,
+          "permutedInformation": 7.326331913149968,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "children-garden",
+          "english": "the children are playing in the garden",
+          "permuted": "garden the in playing are children the",
+          "englishInformation": 6.6536667656695005,
+          "permutedInformation": 6.947022957057167,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "open-window",
+          "english": "please open the window before you leave",
+          "permuted": "leave you before window the open please",
+          "englishInformation": 8.074657581539256,
+          "permutedInformation": 8.119240456118119,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "rain-home",
+          "english": "it was raining when we came home",
+          "permuted": "home came we when raining was it",
+          "englishInformation": 7.51607200695814,
+          "permutedInformation": 7.950308474031472,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "glass-water",
+          "english": "could you bring me a glass of water",
+          "permuted": "water of glass a me bring you could",
+          "englishInformation": 7.354647124365638,
+          "permutedInformation": 7.510523795517092,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "old-house",
+          "english": "there is an old house near the river",
+          "permuted": "river the near house old an is there",
+          "englishInformation": 7.090709224872292,
+          "permutedInformation": 7.593633075107895,
+          "englishPreferred": true,
+          "tie": false
+        },
+        {
+          "id": "friend-story",
+          "english": "my friend told me a story about the sea",
+          "permuted": "sea the about story a me told friend my",
+          "englishInformation": 7.592367125547706,
+          "permutedInformation": 7.898299350869209,
+          "englishPreferred": true,
+          "tie": false
+        }
+      ],
+      "englishPreferred": 8,
+      "totalPairs": 8
+    }
+  ],
+  "modelInventory": [
+    {
+      "source_system": "dialogue",
+      "rows": 374,
+      "stored_bytes": "64489659"
+    },
+    {
+      "source_system": "gutenberg",
+      "rows": 1,
+      "stored_bytes": "677019"
+    },
+    {
+      "source_system": "oss_docs",
+      "rows": 2,
+      "stored_bytes": "12461"
+    },
+    {
+      "source_system": "wikipedia",
+      "rows": 1,
+      "stored_bytes": "412860"
+    }
+  ],
+  "requestPatterns": [
+    {
+      "source_system": "request_communicative_act",
+      "schema": "scce.request_communicative_act_pattern.v1",
+      "recipe": null,
+      "class_counts": {
+        "actshape.2e5b7f40": 8300,
+        "actshape.3d30dbe2": 1,
+        "actshape.b651af12": 115,
+        "actshape.cb0810e5": 3579
+      },
+      "rows": 2048
+    }
+  ],
+  "requestClassifier": {
+    "loadedRows": 2048,
+    "compatibleModelBuilt": true,
+    "classification": {
+      "schema": "scce.request_communicative_act_classification.v1",
+      "status": "active",
+      "actId": "actshape.2e5b7f40",
+      "matchedPatternIds": [
+        "start:please",
+        "any:please",
+        "any:this"
+      ],
+      "logOddsOverNeutral": 0,
+      "classIds": [
+        "actshape.2e5b7f40",
+        "actshape.3d30dbe2",
+        "actshape.b651af12",
+        "actshape.cb0810e5"
+      ]
+    }
+  },
+  "completed": true,
+  "finishedAt": "2026-11-09T03:24:25.478Z",
+  "backend": "PostgreSQL 18.6 / PGlite 0.5.15",
+  "requestInformationLabels": [
+    {
+      "information_label": {
+        "tenantId": "scce.local",
+        "principals": [
+          "scce.local.owner"
+        ],
+        "exportClass": "restricted",
+        "mergePolicy": "isolated",
+        "compartments": [
+          "scce.cognitive"
+        ]
+      },
+      "rows": 2048
+    }
+  ],
+  "requestAccess": {
+    "accessible_rows": 2048
+  }
+}
