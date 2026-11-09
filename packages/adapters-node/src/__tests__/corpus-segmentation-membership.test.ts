@@ -1,18 +1,20 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFileSync } from "node:fs";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { boundaryContextKey, createHasher, measureSurfaceBoundaries, type JsonValue } from "@scce/kernel";
 import { fixtureSegmentationScratch } from "../../../kernel/src/__tests__/fixtures/corpus-segmentation-scratch.js";
 import { corpusSegmentationWindows } from "../corpus-segmentation-windows.js";
 import { corpusCountPageEntries, prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages,
   type CorpusMembershipRun, type CorpusMembershipStorage } from "../corpus-segmentation-membership.js";
 import { durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import * as durableJson from "../durable-join-program-storage.js";
 import { corpusMembershipSqlFixture } from "./fixtures/corpus-membership-sql.js";
 
 function fixture(pageRows = 2, maxPageBytes = 12000) {
   const memory = fixtureSegmentationScratch(pageRows, maxPageBytes), calls: Array<{ sql: string; params: unknown[] }> = [];
   const writes: Array<{ collection: string; bytes: number; members: number }> = [];
+  const reads: Array<{ collection: string; pageRows: number | undefined }> = [];
   const bounds = { pageRows, maxPageBytes };
   let accessible = true;
   const run: CorpusMembershipRun = { run: { runId: "owned", recipeId: "scce.corpus_segmentation_input.v2:256" }, bounds,
@@ -21,7 +23,7 @@ function fixture(pageRows = 2, maxPageBytes = 12000) {
         writes.push({ collection, bytes: durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2, members: (value.entries as JsonValue[]).length }); }
         await memory.putMany(`scratch/${collection}`, rows); },
       count: collection => memory.count(`scratch/${collection}`), deleteCollection: collection => memory.deleteCollection(`scratch/${collection}`) },
-    pages: (collection, query) => memory.pages({ ...bounds, ...query, collection }),
+    pages: (collection, query) => { reads.push({ collection, pageRows: query?.pageRows }); return memory.pages({ ...bounds, ...query, collection }); },
     putInput: (collection, rows) => memory.putMany(`input/${collection}`, rows), assertState: async () => { if (!accessible) throw Error("inaccessible run"); } };
   const storage: CorpusMembershipStorage = { table: name => `"fixture"."${name}"`,
     informationAccessPredicate: (alias, index) => ({ sql: `${alias}.information_label->>'tenantId'=$${index}`, params: ["owner"] }),
@@ -34,7 +36,7 @@ function fixture(pageRows = 2, maxPageBytes = 12000) {
       if (!result) throw Error("unimplemented membership SQL");
       return result as T[];
     } };
-  return { memory, run, storage, calls, writes, deny: () => { accessible = false; } };
+  return { memory, run, storage, calls, writes, reads, deny: () => { accessible = false; } };
 }
 
 it("packs genuine human Unicode memberships and preserves every exact per-pair count without permanent pair rows", async () => {
@@ -79,6 +81,8 @@ it("packs genuine human Unicode memberships and preserves every exact per-pair c
   const aggregations = f.calls.filter(call => call.sql.includes("exact_counts AS MATERIALIZED"));
   expect(aggregations).toHaveLength(2);
   expect(aggregations.every(call => call.sql.includes('COUNT(DISTINCT') && call.sql.includes('COLLATE "C"') && call.sql.includes("ON CONFLICT(run_id,collection,order_key) DO NOTHING"))).toBe(true);
+  expect(aggregations.every(call => call.sql.includes("FOR SHARE OF r"))).toBe(true);
+  expect(f.reads.filter(read => /input\/(class|context)-counts/u.test(read.collection)).every(read => read.pageRows === 1)).toBe(true);
   const before = aggregations.length;
   await prepareCorpusMembershipCounts(f.storage, f.run, { id: "owned.inventory", count: texts.length });
   expect(f.calls.filter(call => call.sql.includes("exact_counts AS MATERIALIZED"))).toHaveLength(before);
@@ -120,4 +124,18 @@ it("refuses an entry that cannot fit its decoded operational page budget", async
   const f = fixture(1, 400);
   await expect(writeCorpusMembershipPages(f.run, { kind: "class", windowKey: "0", documentId: "owner", sourceVersionId: "version", entries: ["雪".repeat(1000)] })).rejects.toThrow(/decoded JSON page budget/);
   expect(f.writes).toEqual([]);
+});
+
+it("sizes the immutable source header once while writing many bounded pages", async () => {
+  const f = fixture(16, 1200), size = vi.spyOn(durableJson, "durableJoinProgramJsonByteLengths");
+  try {
+    await writeCorpusMembershipPages(f.run, { kind: "class", windowKey: "0", documentId: "owner", sourceVersionId: "version",
+      entries: Array.from({ length: 100 }, (_, index) => `class.${index}.雪🧭`) });
+    const headers = size.mock.calls.filter(([value]) => value !== null && typeof value === "object" && !Array.isArray(value)
+      && "value" in value && Array.isArray((value as { value: { entries: unknown[] } }).value.entries)
+      && (value as { value: { entries: unknown[] } }).value.entries.length === 0);
+    expect(headers).toHaveLength(1);
+    expect(f.writes.length).toBeGreaterThan(1);
+    expect(f.writes.every(write => write.bytes <= f.run.bounds.maxPageBytes)).toBe(true);
+  } finally { size.mockRestore(); }
 });

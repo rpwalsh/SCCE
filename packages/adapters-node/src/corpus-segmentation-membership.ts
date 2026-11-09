@@ -25,17 +25,18 @@ export async function writeCorpusMembershipPages(run: CorpusMembershipRun, input
   let entries: Array<string | readonly [string, string]> = [], page = 0, entryBytes = 0;
   const orderKey = () => `${input.windowKey}:${String(page).padStart(16, "0")}`;
   const value = () => ({ schema: CORPUS_MEMBERSHIP_SCHEMA, kind: input.kind, documentId: input.documentId, sourceVersionId: input.sourceVersionId, entries });
-  const overhead = () => durableJoinProgramJsonByteLengths({ orderKey: orderKey(), value: { ...value(), entries: [] } }).decodedJsonbBytes + 2;
+  const headerBytes = durableJoinProgramJsonByteLengths({ orderKey: orderKey(), value: { ...value(), entries: [] } }).decodedJsonbBytes + 2;
   const flush = async () => {
     if (!entries.length) return;
     await run.scratch.putMany(membershipCollection(input.kind), [{ orderKey: orderKey(), value: toJsonValue(value()) }]);
     entries = []; entryBytes = 0; page++;
+    if (!Number.isSafeInteger(page)) throw Error("Corpus membership page ordinal exceeds its exact representation");
   };
   for (const entry of input.entries) {
     if (input.kind === "class" ? typeof entry !== "string" : !Array.isArray(entry) || entry.length !== 2 || entry.some(value => typeof value !== "string")) return fail();
     const bytes = durableJoinProgramJsonByteLengths(entry).decodedJsonbBytes + 2;
-    if (overhead() + bytes > run.bounds.maxPageBytes) throw Error("Corpus membership entry exceeds decoded JSON page budget");
-    if (entries.length && overhead() + entryBytes + bytes > run.bounds.maxPageBytes) await flush();
+    if (headerBytes + bytes > run.bounds.maxPageBytes) throw Error("Corpus membership entry exceeds decoded JSON page budget");
+    if (entries.length && headerBytes + entryBytes + bytes > run.bounds.maxPageBytes) await flush();
     entries.push(entry); entryBytes += bytes;
   }
   await flush(); return page;
@@ -50,7 +51,7 @@ async function aggregate(storage: CorpusMembershipStorage, run: CorpusMembership
     : "jsonb_typeof(member.value)='array' AND jsonb_array_length(member.value)=2 AND jsonb_typeof(member.value->0)='string' AND jsonb_typeof(member.value->1)='string'";
   const rows = await storage.query<{ authorized: boolean; valid: boolean; expected: string; matched: string }>(`
     WITH admitted_run AS MATERIALIZED (
-      SELECT r.run_id FROM ${storage.table("segmentation_consolidation_runs")} r WHERE r.run_id=$1 AND r.state='building' AND ${access.sql}
+      SELECT r.run_id FROM ${storage.table("segmentation_consolidation_runs")} r WHERE r.run_id=$1 AND r.state='building' AND ${access.sql} FOR SHARE OF r
     ), owned_pages AS MATERIALIZED (
       SELECT page.row_json,inventory.order_key AS owner_key FROM ${storage.table("segmentation_consolidation_rows")} page
       JOIN admitted_run r ON r.run_id=page.run_id
@@ -119,7 +120,7 @@ export function corpusCountPageEntries(value: JsonValue): Array<{ hash: string; 
 
 async function countDigest(run: CorpusMembershipRun, kind: CorpusMembershipKind): Promise<{ id: string; count: number }> {
   const digest = createHash("sha256"); let count = 0, previous = "";
-  for await (const page of run.pages(countCollection(kind))) for (const row of page) {
+  for await (const page of run.pages(countCollection(kind), { pageRows: 1 })) for (const row of page) {
     const entries = corpusCountPageEntries(row.value);
     if (row.orderKey !== entries[0]!.hash || row.orderKey <= previous) return fail();
     previous = entries.at(-1)!.hash;
