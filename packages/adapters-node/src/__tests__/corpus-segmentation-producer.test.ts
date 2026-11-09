@@ -152,7 +152,7 @@ it("rejects disagreement between the declared span hash and the actual maintaine
 });
 
 it("stores completed count pages while reclaiming pair memberships before fitting",async()=>{
-  const f=await fixture(3);await prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28});
+  const f=await fixture(3),cursor=await prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28});
   expect(await f.memory.count("input/class-documents")).toBe(0);
   expect(await f.memory.count("input/context-classes")).toBe(0);
   expect(await f.memory.count("input/class-counts")).toBeGreaterThan(0);
@@ -162,4 +162,10 @@ it("stores completed count pages while reclaiming pair memberships before fittin
   expect(await f.memory.count("scratch/producer/context-membership")).toBe(0);
   expect(f.calls.filter(call=>call.sql.includes("exact_counts AS MATERIALIZED"))).toHaveLength(2);
   expect(f.calls.filter(call=>call.sql.includes("page_members AS MATERIALIZED")).every(call=>call.sql.includes("SELECT DISTINCT order_key FROM located")&&call.sql.includes('ORDER BY v.order_key COLLATE "C" DESC LIMIT 1'))).toBe(true);
+  for await(const page of cursor.documents())for(const document of page){
+    const physical=await f.memory.count(`input/statistics/${segmentationOrdinalKey(document.ordinal)}`),logical=[];
+    for await(const rows of cursor.statistics(document).rows())logical.push(...rows);
+    expect(logical).toHaveLength(document.statistics.rowCount);
+    expect(physical).toBeLessThan(document.statistics.rowCount);
+  }
 });

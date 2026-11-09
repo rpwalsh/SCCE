@@ -11,6 +11,7 @@ import { CORPUS_SEGMENTATION_MIN_POOL_CONNECTIONS, withCorpusSegmentationLease }
 import { resolveCorpusSegmentationOwner } from "./corpus-segmentation-owner.js";
 import { corpusSegmentationWindows } from "./corpus-segmentation-windows.js";
 import { prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages } from "./corpus-segmentation-membership.js";
+import { readCorpusStatisticsPages, writeCorpusStatisticsPages } from "./corpus-segmentation-statistics-pages.js";
 
 interface Owner {
   evidenceId: string; sourceId: string; sourceVersionId: string; textSha256: string; codePoints: number;
@@ -136,8 +137,7 @@ export async function prepareCorpusSegmentationInput(input: { storage: PostgresS
       }
     };
     const merged = await mergePagedBoundaryStatistics({ sources, scratch: run.scratch, populationId, collectionPrefix: "producer/document", hasher });
-    let rowOrdinal = 0;
-    for await (const rows of merged.rows()) await run.putInput(`statistics/${docKey}`, rows.map(value => ({orderKey: segmentationOrdinalKey(++rowOrdinal),value: toJsonValue(value)})));
+    await writeCorpusStatisticsPages(run, docKey, merged.rows(), merged.header.rowCount);
     const document: CorpusSegmentationDocument = {ordinal,documentId: source.evidenceId,sourceFamilyId: source.sourceFamilyId,statistics: merged.header};
     await run.putInput("documents", [{orderKey: docKey,value: toJsonValue(document)}]);
     await merged.dispose?.();
@@ -152,7 +152,7 @@ export function corpusSegmentationDocumentCursor(run: PostgresCorpusSegmentation
   return { ...snapshot, scratch: run.scratch,
     documents: async function* () { for await (const page of run.pages("input/documents")) yield page.map(row => row.value as unknown as CorpusSegmentationDocument); },
     statistics: document => ({ header: document.statistics,
-      rows: async function* () { for await (const page of run.pages(`input/statistics/${segmentationOrdinalKey(document.ordinal)}`)) yield page.map(row => row.value as unknown as import("@scce/kernel").BoundaryStatisticsRow); },
+      rows: () => readCorpusStatisticsPages(run, segmentationOrdinalKey(document.ordinal), document.statistics.rowCount),
       sourceDocuments: async function* () { yield [document.documentId]; } }) };
 }
 
