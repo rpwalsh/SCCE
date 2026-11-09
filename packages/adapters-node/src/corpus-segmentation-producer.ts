@@ -13,7 +13,7 @@ import { corpusSegmentationWindows } from "./corpus-segmentation-windows.js";
 
 interface Owner {
   evidenceId: string; sourceId: string; sourceVersionId: string; textSha256: string; codePoints: number;
-  sourceFamilyId: string; byteStart: number; byteEnd: number; charStart: number; charEnd: number;
+  sourceFamilyId: string; evidenceContentHash:string; byteStart: number; byteEnd: number; charStart: number; charEnd: number;
 }
 interface Window { documentId: string; sourceVersionId: string; ordinal: number; windowOrdinal: number; startUtf16: number; endUtf16: number; ownedStartUtf16: number; text: string }
 const hash = (value: unknown) => createHash("sha256").update(canonicalStringify(value)).digest("hex");
@@ -25,7 +25,7 @@ export function corpusSegmentationInputRecipe(windowUtf16: number): string {
 function owner(value: JsonValue): Owner {
   const row = value as unknown as Owner;
   if (!row || !row.evidenceId || !row.sourceId || !row.sourceVersionId || !row.sourceFamilyId
-    || !/^[a-f0-9]{64}$/u.test(row.textSha256) || !Number.isSafeInteger(row.codePoints) || row.codePoints < 0
+    || row.evidenceContentHash!==`sha256_${row.textSha256}` || !/^[a-f0-9]{64}$/u.test(row.textSha256) || !Number.isSafeInteger(row.codePoints) || row.codePoints < 0
     || [row.byteStart,row.byteEnd,row.charStart,row.charEnd].some(value => !Number.isSafeInteger(value) || value < 0)
     || row.byteEnd < row.byteStart || row.charEnd < row.charStart) throw new Error("Malformed corpus segmentation source ownership");
   return row;

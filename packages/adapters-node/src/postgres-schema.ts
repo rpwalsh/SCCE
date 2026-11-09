@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_SOURCE_SYSTEM,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type InformationAccessContext } from "@scce/kernel";
+import { evidenceTextDigestSchemaStatements } from "./evidence-text-digest.js";
 import { LANGUAGE_PATTERN_SELECTION_HEADERS, languagePatternSelectionHeaderStatement } from "./postgres-language-pattern-headers.js";
 import { canonicalCreativeEventSchemaStatements } from "./canonical-creative-event-store.js";
 
@@ -279,6 +280,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `ALTER TABLE ${q}.source_versions ALTER COLUMN trust_vector DROP DEFAULT`,
     `ALTER TABLE ${q}.source_versions DROP COLUMN IF EXISTS trust`,
     `CREATE TABLE IF NOT EXISTS ${q}.evidence_spans (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id), chunk_id TEXT NOT NULL, content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, byte_start BIGINT NOT NULL, byte_end BIGINT NOT NULL, char_start BIGINT NOT NULL, char_end BIGINT NOT NULL, text_preview TEXT NOT NULL, text_content TEXT NOT NULL, language_hints JSONB NOT NULL, script_hints JSONB NOT NULL, trust_vector JSONB NOT NULL, provenance_json JSONB NOT NULL, features TEXT[] NOT NULL, status TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, observed_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    ...evidenceTextDigestSchemaStatements(q),
     `CREATE TABLE IF NOT EXISTS ${q}.evidence_anchor_index (evidence_id TEXT PRIMARY KEY REFERENCES ${q}.evidence_spans(id) ON DELETE CASCADE, features TEXT[] NOT NULL)`,
     `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS visual_embedding vector(512)`,
     `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS visual_regions JSONB`,
@@ -680,7 +682,7 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     blobs: ["content_hash", "media_type", "byte_length", "content"],
     sources: ["id", "namespace", "canonical_uri"],
     source_versions: ["id", "source_id", "content_hash", "media_type", "observed_at", "byte_length", "trust_vector", "metadata_json", "information_label"],
-    evidence_spans: ["id", "source_id", "source_version_id", "content_hash", "byte_start", "byte_end", "text_content", "trust_vector", "provenance_json", "features", "status", "alpha", "information_label"],
+    evidence_spans: ["id", "source_id", "source_version_id", "content_hash", "byte_start", "byte_end", "text_content", "text_sha256", "trust_vector", "provenance_json", "features", "status", "alpha", "information_label"],
     evidence_anchor_index: ["evidence_id", "features"],
     graph_nodes: ["id", "type_id", "representation_json", "alpha", "evidence_ids", "features", "metadata_json", "information_label"],
     graph_edges: ["id", "source_node_id", "target_node_id", "relation_id", "alpha", "weight", "evidence_ids", "metadata_json", "information_label"],

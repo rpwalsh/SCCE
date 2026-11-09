@@ -13,7 +13,7 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
   const label={tenantId:"owner",principals:["owner"],compartments:[],exportClass:"internal" as const,mergePolicy:"same_owner" as const};
   const texts=Array.from({length:sourceCount},(_,index)=>index%2===0?`opaque alpha delta. opaque beta delta. opaque alpha delta. e\u0301?? ${index}`:`opaque alpha delta. opaque gamma delta. opaque alpha delta. ??? ${index}`);
   const owners=texts.map((text,index)=>({evidenceId:`evidence.${index}`,sourceId:`source.${index}`,sourceVersionId:`version.${index}`,
-    sourceContentHash:`hash.${index}`,evidenceContentHash:`chunk.${index}`,textSha256:createHash("sha256").update(text).digest("hex"),
+    sourceContentHash:`hash.${index}`,evidenceContentHash:`sha256_${createHash("sha256").update(text).digest("hex")}`,textSha256:createHash("sha256").update(text).digest("hex"),
     codePoints:[...text].length,sourceFamilyId:`source.${index}`,byteStart:0,byteEnd:Buffer.byteLength(text),charStart:0,charEnd:[...text].length,
     informationLabel:label,sourceInformationLabel:label}));
   let state="building", runJson:JsonValue=null, snapshot:unknown, active:JsonValue|null=null, failPublication=false;
@@ -26,6 +26,7 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
     transaction:async<T>(operation:()=>Promise<T>)=>{const previousState=state,previousActive=active;try{return await operation();}catch(error){state=previousState;active=previousActive;throw error;}},
     mutateLanguageMemory:async(sql:string,params:unknown[])=>{calls.push({sql,params});state="complete";active=JSON.parse(String(params[2]));if(failPublication)throw new Error("publication failed");return true;},
     query:async<T>(sql:string,params:unknown[]=[]):Promise<T[]>=>{ calls.push({sql,params});
+      if(sql.includes("pg_catalog.pg_trigger"))return [{valid:true}] as T[];
       if(sql.includes("INSERT INTO")&&sql.includes("(run_id,scope_id,state,run_json")){runJson=JSON.parse(String(params[2]));return [{run_id:"owned-run"}] as T[];}
       if(sql.includes("segmentation_consolidation_active")&&sql.includes("SELECT r.run_json"))return active&&params[0]===(runJson as Record<string,JsonValue>).scopeId?[{run_json:runJson,snapshot_json:snapshot,inference_json:active,fits:true}] as T[]:[];
       if(sql.includes("END AS run_json")&&!sql.includes("segmentation_consolidation_active"))return [{fits:true,run_json:runJson}] as T[];
@@ -67,6 +68,10 @@ it("compiles all owned Unicode windows through the real statistics producer with
   expect(f.getState()).toBe("fitting");expect(f.getSnapshot()).toMatchObject({snapshot:{completeUnicodeCoverage:true,documentCount:2,coveredUtf16:f.texts.reduce((sum,text)=>sum+text.length,0)}});
   expect(await f.memory.count("scratch/producer/windows")).toBe(0);
   expect(f.calls.some(call=>call.sql.includes("e.status='promoted'")&&call.sql.includes("sv.information_label=")&&call.sql.includes("e.information_label="))).toBe(true);
+  const inventorySql=f.calls.filter(call=>call.sql.includes("'evidenceContentHash'"));
+  expect(inventorySql.length).toBeGreaterThan(0);
+  expect(inventorySql.every(call=>call.sql.includes("encode(e.text_sha256,'hex')")&&call.sql.includes("'codePoints',e.char_end-e.char_start"))).toBe(true);
+  expect(inventorySql.some(call=>/sha256\(.*text_content|char_length\(e.text_content\)/u.test(call.sql))).toBe(false);
 });
 it("has identical source/statistics identities across storage page sizes",async()=>{
   const results=[];
@@ -110,6 +115,13 @@ it("fits real source observations then publishes one matched snapshot atomically
   expect(Object.values(slice.featureContext.documentCountBySurfaceFormClass)).toContain(0);
   await expect(readActiveCorpusSegmentationRun(f.storage,f.run.run.scope,{...required,recipeId:"different"},f.run.bounds)).rejects.toThrow(/incompatible/);
   await expect(loadCorpusSegmentationContextSlice({storage:f.storage,run:f.run,measurement:preparation,expected:{...model,featureContextId:"different"}})).rejects.toThrow(/does not match/);
+  const owned=f.owners[0]!,originalDigest=owned.textSha256;
+  const identityBefore={evidenceId:owned.evidenceId,sourceVersionId:owned.sourceVersionId,evidenceContentHash:owned.evidenceContentHash};
+  owned.textSha256=createHash("sha256").update("same declared hash, modified actual body").digest("hex");
+  await expect(readActiveCorpusSegmentationRun(f.storage,f.run.run.scope,required,f.run.bounds)).rejects.toThrow(/dependencies changed/);
+  expect({evidenceId:owned.evidenceId,sourceVersionId:owned.sourceVersionId,evidenceContentHash:owned.evidenceContentHash}).toEqual(identityBefore);
+  owned.textSha256=originalDigest;
+  expect((await readActiveCorpusSegmentationRun(f.storage,f.run.run.scope,required,f.run.bounds))?.inference.id).toBe(model.id);
   f.owners[0]!.sourceVersionId="changed-version";
   await expect(readActiveCorpusSegmentationRun(f.storage,f.run.run.scope,required,f.run.bounds)).rejects.toThrow(/dependencies changed|derivation dependencies/);
 });
@@ -131,4 +143,11 @@ it("singleflights identical in-process jobs while refusing conflicting scope or 
   await expect(consolidateCorpusSegmentation({...options,maxPopulations:2})).rejects.toThrow(/declaration differs/);
   const [a,b]=await Promise.all([first,second]);expect(a.model.id).toBe(b.model.id);expect(a.runId).toBe(b.runId);
   expect(f.calls.filter(call=>call.sql.includes("(run_id,scope_id,state,run_json"))).toHaveLength(1);
+});
+
+it("rejects disagreement between the declared span hash and the actual maintained body digest",async()=>{
+  const f=await fixture(2);f.owners[0]!.textSha256=createHash("sha256").update("tampered body").digest("hex");
+  await f.memory.putMany("input/inventory",f.owners.map((value,index)=>({orderKey:segmentationOrdinalKey(index+1),value})));
+  await expect(prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28})).rejects.toThrow(/source ownership/);
+  expect(f.getState()).toBe("building");expect(f.getSnapshot()).toBeUndefined();
 });
