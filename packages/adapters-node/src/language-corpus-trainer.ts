@@ -1062,9 +1062,10 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     : compiledBatch.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
   let units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
   const compiledConstructionPatterns: LanguagePatternRecord[] = [...compiledBatch.constructionPatterns];
+  const compiledConstructionPatternIds = new Set(compiledConstructionPatterns.map(pattern => pattern.id));
   const constructionWarnings: string[] = [...compiledBatch.warnings];
   let patterns = [
-    ...compiledBatch.patterns.filter(pattern => !compiledConstructionPatterns.some(item => item.id === pattern.id)),
+    ...compiledBatch.patterns.filter(pattern => !compiledConstructionPatternIds.has(pattern.id)),
     ...compiledConstructionPatterns,
     ...compactSourceCodeFunctionPatterns({ constructions: sourceCodeFunctions, metadata, sourceSystem, profileId: profile.id, sourceVersionId,
       originalSourceVersionId: originalSourceVersionId ?? sourceVersionId, text: originalBytes ? Buffer.from(originalBytes).toString("utf8") : input.text,

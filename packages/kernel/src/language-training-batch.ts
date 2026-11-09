@@ -691,11 +691,13 @@ export function compileLanguageTrainingBatch(input: {
       artifacts: { units, patterns, semanticFrames }, hasher: input.hasher }) : undefined;
   const models = stamped?.models ?? rawModels;
   if (stamped) { units = stamped.units; patterns = stamped.patterns; semanticFrames = stamped.semanticFrames; }
+  const patternsById = new Map<string, LanguagePatternRecord>();
+  for (const pattern of patterns) if (!patternsById.has(pattern.id)) patternsById.set(pattern.id, pattern);
   return {
     ...(inducedLanguageProducts ? { preparedInduction } : {}),
     observations: uniqueRecords(memories.flatMap(memory => memory.observations)),
     models, units, patterns, semanticFrames,
-    constructionPatterns: constructionPatterns.map(record => patterns.find(item => item.id === record.id) ?? record),
+    constructionPatterns: constructionPatterns.map(record => patternsById.get(record.id) ?? record),
     reversibleConstructionPatterns,
     pairedAntiUnifiedConstructionPatterns,
     optionalNullRealizationPatterns,

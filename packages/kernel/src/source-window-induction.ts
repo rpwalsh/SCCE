@@ -122,12 +122,28 @@ export function compileSourceInductionWindows(input: { documents: readonly Langu
     else first = undefined;
     const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds } = model;
+    const windowsByEvidence = new Map<string, number[]>();
+    for (let index = 0; graphBoundConstructions.length && index < batch.windows.length; index++) {
+      const window = batch.windows[index]!;
+      for (const evidenceId of new Set(window.evidenceIds)) {
+        const matches = windowsByEvidence.get(evidenceId);
+        if (matches) matches.push(index);
+        else windowsByEvidence.set(evidenceId, [index]);
+      }
+    }
     const compact = freezeProducts({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
       joinProgram: joinProgramMixtureStorageForm(joinProgram, { immutable: true }),
-      semanticFrames, graphBoundConstructions: graphBoundConstructions.map(construction => ({ ...construction,
-        sourceWindows: batch.windows.filter(window => window.evidenceIds.some(id => construction.evidenceIds.includes(id as typeof construction.evidenceIds[number])))
-          .map(({ ownerDocumentId, startUtf16, endUtf16 }) => ({ ownerDocumentId, startUtf16, endUtf16 }))
-      })), lexicalClasses, relationHypothesisModel, translationSeeds });
+      semanticFrames, graphBoundConstructions: graphBoundConstructions.map(construction => {
+        const matches = new Set<number>();
+        for (const evidenceId of construction.evidenceIds) {
+          for (const index of windowsByEvidence.get(evidenceId) ?? []) matches.add(index);
+        }
+        // Preserve physical source-window order independently of construction evidence order.
+        return { ...construction, sourceWindows: [...matches].sort((left, right) => left - right).map(index => {
+          const { ownerDocumentId, startUtf16, endUtf16 } = batch.windows[index]!;
+          return { ownerDocumentId, startUtf16, endUtf16 };
+        }) };
+      }), lexicalClasses, relationHypothesisModel, translationSeeds });
     models.push(compact);
     input.modelCache?.set(batchKey, compact);
   }

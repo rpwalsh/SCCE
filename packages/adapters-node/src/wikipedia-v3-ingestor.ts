@@ -1375,13 +1375,14 @@ export class WikipediaV3Ingestor {
       skipNgramObservationPersistence: true,
       episodeId
     };
+    const entityConstructions = inducedProducts.models.flatMap(model => model.graphBoundConstructions);
     const semanticCandidates = samples.flatMap(sample => {
       const current = sample.evidence[0];
       if (!current) return sample.semanticCandidates;
       const projected = this.typedIngest.project({ sourceId: current.sourceId, sourceVersionId: sample.sourceVersionId,
         uri: sample.uri, mediaType: current.mediaType, text: sample.text, metadata: toJsonValue({ title: sample.title ?? "", sourceFamilyId: evidenceSourceFamilyId(current) }),
         evidence: sample.evidence, observedAt: sample.createdAt,
-        entityConstructions: inducedProducts.models.flatMap(model => model.graphBoundConstructions),
+        entityConstructions,
         entitySurfaces: inducedProducts.models.flatMap(model => observedEntitySurfacesFromInducedLanguageModel(model, sample.evidence.map(span => String(span.id)))) });
       return [...sample.semanticCandidates.filter(candidate => candidate.channel !== "weak_free_surface"), ...projected.semanticCandidates.filter(candidate => candidate.channel === "weak_free_surface")];
     });
