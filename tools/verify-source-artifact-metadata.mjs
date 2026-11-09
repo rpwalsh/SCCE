@@ -150,9 +150,10 @@ export async function verifySourceArtifactMetadata(options) {
         const receipt = record(record(models[0].modelJson).sourceCompilation), text = Buffer.from(await source.blobs.get(owner.contentHash)).toString('utf8');
         const chunks = [...models].sort((a, b) => record(record(a.modelJson).sourceCompilation).chunk.index - record(record(b.modelJson).sourceCompilation).chunk.index)
           .map(row => { const chunk = record(record(row.modelJson).sourceCompilation).chunk; return text.slice(chunk.start, chunk.end); });
-        const rebound = stampSourceLanguageCompilation({ owner: { sourceId: owner.sourceId, sourceVersionId, contentHash: owner.contentHash }, profileId: profile.id,
+        const stamped = stampSourceLanguageCompilation({ owner: { sourceId: owner.sourceId, sourceVersionId, contentHash: owner.contentHash }, profileId: profile.id,
           sourceSystem: options.sourceSystem, streamId: receipt.parentStreamId, text, chunks, models, options: receipt.options,
           artifacts: { units, patterns, semanticFrames: frames }, inheritedMetadata: inherited, hasher });
+        const rebound = { ...stamped, patterns: stamped.patterns.map(row => row.informationLabel ? row : { ...row, informationLabel: profile.informationLabel }) };
         const holders = rebound.patterns.filter(row => row.patternKind === 'source_compilation' && record(row.patternJson).inheritedMetadata);
         assert.equal(holders.length, 1, 'Current compiler must publish exactly one metadata holder');
         await fixture.languageMemory.putLanguagePatterns(holders);
@@ -235,7 +236,8 @@ export async function verifySourceArtifactMetadata(options) {
     await sourceQuery('ROLLBACK'); sourceOpen = false;
     report.passed = true; report.currentStage = 'complete';
   } catch (error) { report.error = { stage: report.currentStage, name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null,
-    ...(error?.code === 'ERR_ASSERTION' && error.generatedMessage === false ? { assertion: String(error.message).slice(0, 240) } : {}) }; }
+    ...(error?.code === 'ERR_ASSERTION' && error.generatedMessage === false ? { assertion: String(error.message).slice(0, 240) } : {}),
+    frames: typeof error?.stack === 'string' ? error.stack.split('\n').slice(1, 5).map(line => line.trim()) : [] }; }
   finally {
     if (fixtureOpen) await fixturePhysical?.query('ROLLBACK'); if (sourceOpen) await sourcePhysical?.query('ROLLBACK');
     for (const original of originals.reverse()) { original.adapter.pool.query = original.query; original.adapter.pool.connect = original.connect; }
