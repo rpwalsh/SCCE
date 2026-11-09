@@ -107,6 +107,61 @@ describe("Wikipedia recovery boundaries", () => {
       expect(pipeline.activate).toHaveBeenLastCalledWith(expect.objectContaining({ fullTrainingComplete: true }));
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
+  it.each(["preparation", "commit-phase"])("journals an owner stop arriving during %s before any learned writes and resumes the same batch", async stopAt => {
+    const f = await fixture();
+    try {
+      const p = mockPipeline(f.config); p.train.mockRestore();
+      const hasher = createHasher();
+      const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), namespace: "wiki-preparation-stop", deterministicReplay: true });
+      const language = createLanguageAcquisitionEngine({ idFactory: ids });
+      const extractor = createEvidenceExtractor({ hasher, idFactory: ids });
+      p.page.mockImplementation(async (...args: any[]) => {
+        const file = args[0]; const sourceId = ids.sourceId("wikipedia", file.uri);
+        const sourceVersionId = ids.sourceVersionId(canonicalStringify({ sourceId, contentHash: ids.contentHash(file.text) }));
+        const evidence = extractor.extract({ sourceId, sourceVersionId, namespace: "wikipedia", uri: file.uri, mediaType: "text/plain", text: file.text,
+          languageProfile: language.acquire({ sourceVersionId, text: file.text, createdAt: 1 }), observedAt: 1, exactSourceText: true, maxChunkBytes: 65536,
+          metadata: { sourceFamilyId: "wikimedia:wikipedia" }, sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1,
+            freshness: 1, independenceGroup: "wikimedia:wikipedia", accessScope: "public", licenseStatus: "fixture" } }).spans
+          .map(span => ({ ...span, status: "promoted" as const, provenance: { ...span.provenance as object, sourceFamilyId: "wikimedia:wikipedia" } }));
+        return { ...p.counts, languageSample: { uri: file.uri, title: "source", text: file.text, evidence, sourceVersionId, createdAt: 1,
+          languageAliases: [], semanticCandidates: [] } };
+      });
+      const stopFile = path.join(f.root, "owner.stop");
+      const prepare = vi.spyOn(corpusTrainer, "prepareLanguageCorpusTraining").mockImplementation(async () => {
+        if (stopAt === "preparation") await writeFile(stopFile, "owner requested stop during preparation"); return {} as any;
+      });
+      const commit = vi.spyOn(corpusTrainer, "commitLanguageCorpusTraining").mockResolvedValue(p.counts as any);
+      const stages: string[] = [], statuses: any[] = [], profileStages: Array<string | undefined> = [];
+      const acquire = (p.ingestor as any).language.acquire.bind((p.ingestor as any).language);
+      vi.spyOn((p.ingestor as any).language, "acquire").mockImplementation((input: any) => {
+        profileStages.push(stages.at(-1)); return acquire(input);
+      });
+      const stopped = await p.ingestor.ingest({ dumpPath: f.dumpPath, stopFile, onStatus: async status => {
+        stages.push(status.stage!); statuses.push(status);
+        if (stopAt === "commit-phase" && status.stage === "committing-language") await writeFile(stopFile, "owner requested stop before commit");
+      } });
+      expect(stopped.stoppedByOwner).toBe(true);
+      expect(commit).not.toHaveBeenCalled();
+      expect(profileStages).toEqual(["language-profile"]);
+      expect(p.rows().filter(row => row.phase === "stored" && row.itemUri.includes("/block/"))).toHaveLength(0);
+      expect(stages.slice(stages.indexOf("preparing-language"), stages.indexOf("compiling-language") + 1)).toEqual([
+        "preparing-language", "language-profile", "language-induction", "language-profile-binding", "compiling-language"]);
+      expect(statuses.find(status => status.stage === "language-profile")).toMatchObject({
+        state: "running", pendingLanguagePages: 2, pendingLanguageChars: expect.any(Number), committedLanguageDocuments: 0 });
+      expect(statuses.find(status => status.stage === "language-profile").pendingLanguageChars).toBeGreaterThan(0);
+      expect(statuses.at(-1)).toMatchObject({ state: "stopped", stoppedByOwner: true, fullTrainingComplete: false,
+        pendingLanguagePages: 2, committedLanguageDocuments: 0 });
+      await rm(stopFile); prepare.mockResolvedValue({} as any);
+      vi.mocked((p.ingestor as any).language.acquire).mockRestore();
+      const resumed = await p.ingestor.ingest({ dumpPath: f.dumpPath, stopFile });
+      expect(resumed.pages).toBe(0);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(p.page).toHaveBeenCalledTimes(2);
+      const journal = p.rows().find(row => row.itemUri.endsWith("/language-batch"))!;
+      expect((journal.metadata as any).languageBatch).toMatchObject({ state: "idle", pendingSamples: [], pendingChars: 0, blockComplete: true, blockOrdinal: 2 });
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
   it.each(["aggregate", "rows"])("propagates a failed relation-prior %s read instead of treating it as no evidence", async failedRead => {
     const unavailable = async () => { throw new Error("prior storage unavailable"); };
     const ingestor = createWikipediaV3Ingestor({ config: { runtime: {} } as any, storage: {
@@ -273,7 +328,7 @@ describe("Wikipedia recovery boundaries", () => {
       await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true, startOffset: 0 }))
         .rejects.toThrow(/requires stored resume/);
       await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true }))
-        .rejects.toThrow(/requires an open language batch journal/);
+        .rejects.toThrow(/requires a stored language batch journal/);
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
 
@@ -417,6 +472,62 @@ describe("Wikipedia recovery boundaries", () => {
       await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/open language batch compiler attestation differs or is missing/);
       expect(p.page).not.toHaveBeenCalled(); expect(p.train).not.toHaveBeenCalled(); expect(p.activate).not.toHaveBeenCalled();
       expect(p.storage.ingestion.put).not.toHaveBeenCalled(); expect(p.storage.events.append).not.toHaveBeenCalled();
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it.each(["idle", "legacy-open"])("upgrades after a complete-boundary drain with a %s payload-free journal", async state => {
+    const f = await fixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxBlocks: 1 });
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      const journal = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))!.metadata as any).languageBatch;
+      expect(journal).toMatchObject({ state: "idle", pendingSamples: [], pendingChars: 0, blockComplete: true });
+      if (state === "legacy-open") journal.state = "open";
+      compiler.mockResolvedValue("compiler-after");
+      const resumed = await p.ingestor.ingest({ dumpPath: f.dumpPath });
+      expect(resumed.pages).toBe(1);
+      expect(p.page).toHaveBeenCalledTimes(2);
+      expect(p.trainedShards.flatMap(shard => shard.samples)).toHaveLength(2);
+      const trainedCount = p.train.mock.calls.length;
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      expect(p.train).toHaveBeenCalledTimes(trainedCount);
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it("validates legacy empty complete journals before treating them as compiler-independent", async () => {
+    const f = await fixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxBlocks: 1 });
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      const journal = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))!.metadata as any).languageBatch;
+      journal.state = "open"; journal.pendingChars = 1;
+      compiler.mockResolvedValue("compiler-after");
+      p.storage.ingestion.put.mockClear(); p.storage.events.append.mockClear(); p.train.mockClear(); p.page.mockClear();
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/character count is invalid/);
+      expect(p.storage.ingestion.put).not.toHaveBeenCalled(); expect(p.storage.events.append).not.toHaveBeenCalled();
+      expect(p.train).not.toHaveBeenCalled(); expect(p.page).not.toHaveBeenCalled();
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it("retains the compiler fence and exact cursor for a drained midblock journal", async () => {
+    const f = await sameBlockFixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      const journal = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))!.metadata as any).languageBatch;
+      expect(journal).toMatchObject({ state: "open", pendingSamples: [], pendingChars: 0, blockComplete: false, processedPageCount: 1 });
+      compiler.mockResolvedValue("compiler-after");
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/compiler attestation differs or is missing/);
+      compiler.mockResolvedValue("compiler-before");
+      const resumed = await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      expect(resumed.pages).toBe(1); expect(p.page).toHaveBeenCalledTimes(2);
+      expect(p.trainedShards.flatMap(shard => shard.samples)).toHaveLength(2);
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
 

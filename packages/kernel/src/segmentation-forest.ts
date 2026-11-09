@@ -99,6 +99,17 @@ export interface SegmentationForestBuildInput {
   hasher?: Hasher;
 }
 
+export interface SegmentationBoundaryMeasurement {
+  schema: "scce.segmentation_boundary_measurement.v1";
+  id: string;
+  latticeId: string;
+  estimatorId: string;
+  normalizationContractId: string;
+  graphemeCount: number;
+  partitionLogZ: number;
+  boundaryMarginals: SegmentationBoundaryMarginal[];
+}
+
 interface PathState {
   unitIds: string[];
   energy: number;
@@ -144,13 +155,7 @@ const DEFAULT_LIMITS: SegmentationForestLimits = {
   maxConstructionDepth: 256
 };
 
-/**
- * Compiles a probability-normalized segmentation forest. The full partition and
- * boundary marginals are evaluated over every valid lattice arc. Operational
- * limits are then applied for k-best materialization, while all returned path
- * probabilities remain relative to the full partition.
- */
-export function buildSegmentationForest(input: SegmentationForestBuildInput): SurfaceSegmentationForest {
+function prepareSegmentationForest(input: SegmentationForestBuildInput) {
   const hasher = input.hasher ?? createHasher();
   const normalizationContractId = input.normalizationContractId
     ?? canonicalNormalizationContract(hasher).id;
@@ -197,6 +202,23 @@ export function buildSegmentationForest(input: SegmentationForestBuildInput): Su
     partitionLogZ: fullPartitionLogZ,
     graphemeCount
   });
+
+  return { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart,
+    fullPartitionLogZ, boundaryMarginals };
+}
+
+export function measureSegmentationBoundaries(input: SegmentationForestBuildInput): SegmentationBoundaryMeasurement {
+  const { hasher, normalizationContractId, graphemeCount, fullPartitionLogZ, boundaryMarginals } = prepareSegmentationForest(input);
+  const canonical = { schema: "scce.segmentation_boundary_measurement.v1" as const,
+    latticeId: input.latticeId, estimatorId: input.estimatorId, normalizationContractId, graphemeCount,
+    partitionLogZ: quantize(finiteOrZero(fullPartitionLogZ)), boundaryMarginals };
+  return { ...canonical, id: `segmentation_measurement.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}` };
+}
+
+/** Measure every valid arc before applying operational limits to path materialization. */
+export function buildSegmentationForest(input: SegmentationForestBuildInput): SurfaceSegmentationForest {
+  const { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart,
+    fullPartitionLogZ, boundaryMarginals } = prepareSegmentationForest(input);
 
   const pruning = pruneArcs(allArcsByStart, graphemeCount, limits);
   const arcsByStart = pruning.arcsByStart;

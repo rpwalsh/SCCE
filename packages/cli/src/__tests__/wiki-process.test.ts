@@ -6,9 +6,19 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths, withWikiIngestCancellation } from "../wiki-process.js";
+import { wikiChildArgs, wikiChildFailureStatus, wikiContinueAfterConfiguredPageCap, wikiRunPaths, withWikiIngestCancellation } from "../wiki-process.js";
 
 describe("Wikipedia supervisor isolation", () => {
+  it("records a crashed child as failed while retaining exact progress and preparation stage", () => {
+    const running = { state: "running" as const, stage: "language-induction" as const, pages: 74, lastCheckpointOffset: 132,
+      pendingLanguagePages: 20, pendingLanguageChars: 1200000, committedLanguageDocuments: 54, fullTrainingComplete: true, updatedAt: 1 };
+    const failed = wikiChildFailureStatus(running, 134, 999);
+    expect(failed).toEqual({ ...running, state: "failed", fullTrainingComplete: false, updatedAt: 999, finishedAt: 999,
+      stopReason: "ingest child exited 134 before publishing a successful completion" });
+    expect(running).toMatchObject({ state: "running", updatedAt: 1 });
+    expect(wikiChildFailureStatus(null, 134, 999)).toBeUndefined();
+  });
+
   it.each(["SIGINT", "SIGTERM"])("passes %s to the existing ingestion and removes its listeners", async event => {
     const events = new EventEmitter();
     const result = await withWikiIngestCancellation(async signal => {

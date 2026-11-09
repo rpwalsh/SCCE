@@ -332,7 +332,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   const constructionsByPredicate = indexConstructionVariants(constructions);
   const bySlotOrdinal = new Map<string, number>();
   const setsByBindingId = new Map<string, SourceBoundLanguageConstructionTrainingSet>();
-  const tracesByBindingId = new Map<string, GraphSurfaceTransportTrace[]>();
+  const summariesByBindingId = new Map<string, ReturnType<typeof createGraphSurfaceTraceSummaryAccumulator>>();
   const latticesByBindingId = new Map<string, GraphSurfaceLatticeSummary[]>();
   const slotGraphBindings = new Map<string, Map<string, Map<string, SourceConstructionGraphBinding>>>();
   const pendingNullRoleBindings: Array<{
@@ -340,10 +340,9 @@ export function induceSourceBoundConstructionTrainingSets(input: {
     observation: SourceBoundLanguageConstructionTrainingSet["observations"][number];
     evidenceId: string;
     construction: GraphBoundConstruction;
-    roles: Array<{ role: SelectedRoleAlignment; graphBinding?: SourceConstructionGraphBinding }>;
+    roles: Array<{ surface: string; graphBinding?: SourceConstructionGraphBinding }>;
     nullRoles: Array<{ slotIndex: number; occurrenceIndex?: number }>;
     facts: readonly SourceGraphFact[];
-    trace: GraphSurfaceTransportTrace;
   }> = [];
   const graphBindings = sourceGraphRoleBindings(input.graphSnapshot);
 
@@ -385,10 +384,10 @@ export function induceSourceBoundConstructionTrainingSets(input: {
           declarations.set(key, variants);
           slotGraphBindings.set(bindingId, declarations);
         }
-        if (aligned.nullRoleBindingContext) pendingNullRoleBindings.push({ bindingId, observation: aligned.observation, ...aligned.nullRoleBindingContext, trace: aligned.trace });
-        const traces = tracesByBindingId.get(bindingId) ?? [];
-        traces.push(aligned.trace);
-        tracesByBindingId.set(bindingId, traces);
+        if (aligned.nullRoleBindingContext) pendingNullRoleBindings.push({ bindingId, observation: aligned.observation, ...aligned.nullRoleBindingContext });
+        const summary = summariesByBindingId.get(bindingId) ?? createGraphSurfaceTraceSummaryAccumulator();
+        summary.observe(aligned.trace);
+        summariesByBindingId.set(bindingId, summary);
         const summaries = latticesByBindingId.get(bindingId) ?? [];
         if (!summaries.some(summary => summary.latticeId === latticeSummary.latticeId)) summaries.push(latticeSummary);
         latticesByBindingId.set(bindingId, summaries);
@@ -407,7 +406,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
       facts: pending.facts,
       slotGraphBindings: declarations
     });
-    pending.trace.nullRoleBindingAudit = bindingResult.audit;
+    summariesByBindingId.get(pending.bindingId)!.observeNullRoleAudit(bindingResult.audit);
     const set = setsByBindingId.get(pending.bindingId);
     const rows = set?.observations as SourceBoundLanguageConstructionTrainingSet["observations"][number][] | undefined;
     const index = rows?.indexOf(pending.observation) ?? -1;
@@ -425,10 +424,9 @@ export function induceSourceBoundConstructionTrainingSets(input: {
     .filter(set => set.observations.length >= 2)
     .map(set => ({
       ...set,
-      alignmentSummary: alignmentSummaryJson({
+      alignmentSummary: summariesByBindingId.get(set.bindingId)!.summary({
         bindingId: set.bindingId,
-        lattices: latticesByBindingId.get(set.bindingId) ?? [],
-        traces: tracesByBindingId.get(set.bindingId) ?? []
+        lattices: latticesByBindingId.get(set.bindingId) ?? []
       })
     }))
     .sort((a, b) => a.bindingId.localeCompare(b.bindingId));
@@ -574,7 +572,7 @@ function sourceBoundObservationForOccurrence(input: {
   nullRoleBindingContext?: {
     evidenceId: string;
     construction: GraphBoundConstruction;
-    roles: Array<{ role: SelectedRoleAlignment; graphBinding?: SourceConstructionGraphBinding }>;
+    roles: Array<{ surface: string; graphBinding?: SourceConstructionGraphBinding }>;
     nullRoles: Array<{ slotIndex: number; occurrenceIndex?: number }>;
     facts: readonly SourceGraphFact[];
   } } | undefined {
@@ -614,7 +612,7 @@ function sourceBoundObservationForOccurrence(input: {
     },
     trace: selected.trace,
     ...(selected.nullRoles.length ? { nullRoleBindingContext: { evidenceId, construction: input.construction,
-      roles: graphBoundRoles, nullRoles: selected.nullRoles, facts } } : {})
+      roles: graphBoundRoles.map(({ role, graphBinding }) => ({ surface: role.segment.surface, graphBinding })), nullRoles: selected.nullRoles, facts } } : {})
   };
 }
 
@@ -681,7 +679,7 @@ function sourceGraphRoleBindings(graph: GraphSnapshot | undefined): SourceGraphR
 function bindSourceNullRoles(input: {
   evidenceId: string;
   construction: GraphBoundConstruction;
-  roles: readonly { role: SelectedRoleAlignment; graphBinding?: SourceConstructionGraphBinding }[];
+  roles: readonly { surface: string; graphBinding?: SourceConstructionGraphBinding }[];
   nullRoles: readonly { slotIndex: number; occurrenceIndex?: number }[];
   facts: readonly SourceGraphFact[];
   slotGraphBindings: ReadonlyMap<string, ReadonlyMap<string, SourceConstructionGraphBinding>>;
@@ -714,7 +712,7 @@ function bindSourceNullRoles(input: {
   if (anchorScopes.size !== 1) { reasonForAll("no_matching_fact"); return { bindings, audit: audits }; }
   const matchingFacts = input.facts.filter(fact => fact.evidenceIds.includes(input.evidenceId)
     && anchors.every(anchor => fact.ports.filter(port => port.realization === "observed" && port.nodeId !== null
-      && port.surface === anchor.role.segment.surface && port.evidenceIds.includes(input.evidenceId)
+      && port.surface === anchor.surface && port.evidenceIds.includes(input.evidenceId)
       && sameGraphBinding(port.binding, anchor.graphBinding)).length === 1)
     && fact.ports.filter(port => port.realization === "observed" && port.nodeId !== null && port.evidenceIds.includes(input.evidenceId)).length === anchors.length);
   if (!matchingFacts.length) { reasonForAll("no_matching_fact"); return { bindings, audit: audits }; }
@@ -1119,34 +1117,46 @@ function summarizeLattice(lattice: AlignmentSurfaceLattice): GraphSurfaceLattice
   };
 }
 
-function alignmentSummaryJson(input: {
-  bindingId: string;
-  lattices: readonly GraphSurfaceLatticeSummary[];
-  traces: readonly GraphSurfaceTransportTrace[];
-}): JsonValue {
-  const selectedCells = input.traces.flatMap(trace => trace.cells.filter(cell => cell.selected));
-  const nullRoleAudit = input.traces.flatMap(trace => trace.nullRoleBindingAudit ?? []);
+/** Source-bound compilation emits sufficient statistics, so candidate cells need not survive their occurrence. */
+export function createGraphSurfaceTraceSummaryAccumulator() {
+  let traceCount = 0, selectedCellCount = 0, posteriorSum = 0, costSum = 0, evaluatedNullRoles = 0, boundNullRoles = 0;
+  let firstObjective: GraphSurfaceTransportTrace["objective"] | undefined;
   const nullRoleReasons = new Map<string, number>();
-  for (const row of nullRoleAudit) nullRoleReasons.set(row.reason, (nullRoleReasons.get(row.reason) ?? 0) + 1);
-  return toJsonValue({
+  const observeNullRoleAudit = (rows: readonly NullRoleBindingAudit[]) => {
+    for (const row of rows) {
+      evaluatedNullRoles++; if (row.reason === "bound") boundNullRoles++;
+      nullRoleReasons.set(row.reason, (nullRoleReasons.get(row.reason) ?? 0) + 1);
+    }
+  };
+  return {
+    observe(trace: GraphSurfaceTransportTrace): void {
+      if (!traceCount) firstObjective = { ...trace.objective };
+      traceCount++;
+      for (const cell of trace.cells) if (cell.selected) {
+        selectedCellCount++; posteriorSum += cell.posterior; costSum += cell.cost;
+      }
+      observeNullRoleAudit(trace.nullRoleBindingAudit ?? []);
+    },
+    observeNullRoleAudit,
+    summary(input: { bindingId: string; lattices: readonly GraphSurfaceLatticeSummary[] }): JsonValue { return toJsonValue({
     schema: "scce.graph_surface_alignment.summary.v1",
     bindingId: input.bindingId,
     latticeCount: input.lattices.length,
-    traceCount: input.traces.length,
-    selectedCellCount: selectedCells.length,
-    meanSelectedPosterior: selectedCells.length
-      ? selectedCells.reduce((sum, cell) => sum + cell.posterior, 0) / selectedCells.length
+    traceCount,
+    selectedCellCount,
+    meanSelectedPosterior: selectedCellCount
+      ? posteriorSum / selectedCellCount
       : 0,
-    meanSelectedCost: selectedCells.length
-      ? selectedCells.reduce((sum, cell) => sum + cell.cost, 0) / selectedCells.length
+    meanSelectedCost: selectedCellCount
+      ? costSum / selectedCellCount
       : 0,
     nullRoleBindingAudit: {
-      evaluated: nullRoleAudit.length,
-      bound: nullRoleAudit.filter(row => row.reason === "bound").length,
+      evaluated: evaluatedNullRoles,
+      bound: boundNullRoles,
       reasons: [...nullRoleReasons].sort(([left], [right]) => left.localeCompare(right)).map(([reason, count]) => ({ reason, count }))
     },
     lattices: input.lattices,
-    objective: input.traces[0]?.objective ?? {
+    objective: firstObjective ?? {
       solver: "sparse_anchor_transport_v1",
       featureWeight: 0.42,
       structuralWeight: 0.22,
@@ -1154,5 +1164,6 @@ function alignmentSummaryJson(input: {
       massWeight: 0.08,
       priorWeight: 0.04
     }
-  });
+  }); }
+  };
 }
