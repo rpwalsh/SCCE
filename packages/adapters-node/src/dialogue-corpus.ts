@@ -213,10 +213,12 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
         rawByteLength: rawBytes.byteLength, sourceContentHash: sha256(canonicalText), sourceByteLength: Buffer.byteLength(canonicalText, "utf8"),
         projections: [{ sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.dialogue }] });
     }
-    transcripts.push(declared ?? text);
-    read.push({ sourceUri: pathToFileURL(file.absolutePath).href, text,
-      ...(declared ? { transcriptTurns: declared.turns, ...(declared.sourceMetadata ? { sourceMetadata: declared.sourceMetadata } : {}) } : {}) });
-    if (input.actsOnly) continue;
+    const includeCompletedSource=()=>{
+      transcripts.push(declared ?? text);
+      read.push({sourceUri:pathToFileURL(file.absolutePath).href,text,
+        ...(declared?{transcriptTurns:declared.turns,...(declared.sourceMetadata?{sourceMetadata:declared.sourceMetadata}:{})}:{})});
+    };
+    if (input.actsOnly){includeCompletedSource();continue;}
     // One pathological file costs that file, never the whole run.
     try {
       const trainingInput: LanguageCorpusTrainingInput = {
@@ -253,6 +255,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       const replay = await readCompletedCorpusCheckpoint(trainingInput);
       reports.push(replay ?? await trainLanguageCorpusText(trainingInput));
       completedSourceUris.push(pathToFileURL(file.absolutePath).href);
+      includeCompletedSource();
     } catch (error) {
       skipped.push({
         path: file.relativePath,

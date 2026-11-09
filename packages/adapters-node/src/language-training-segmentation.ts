@@ -1,10 +1,17 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { canonicalDigestHex, canonicalStringify, createHasher, normalizeInformationLabel, type CorpusSegmentationScope, type SegmentationPageBounds,
+import { canonicalDigestHex, canonicalStringify, createHasher, joinInformationLabels, normalizeInformationLabel, type InformationLabel, type CorpusSegmentationScope, type SegmentationPageBounds,
   type CorpusSegmentationBatchLoader, type ScceStorage } from "@scce/kernel";
 
 export interface LanguageTrainingSegmentationDeclaration {
   scope: CorpusSegmentationScope; recipeId: string; normalizationContractId: string; bounds: SegmentationPageBounds;
+}
+/** An unrestricted public population adds no access restriction to its source-owned derived learning. */
+export function languageTrainingSegmentationLabel(source:InformationLabel,corpus?:InformationLabel):InformationLabel{
+  if(!corpus)return source;
+  const dependency=normalizeInformationLabel(corpus);
+  if(dependency.exportClass==="public"&&dependency.mergePolicy==="same_owner"&&!dependency.principals.length&&!dependency.compartments.length)return source;
+  return joinInformationLabels([source,dependency],{explicitMergeAuthority:false});
 }
 export interface PreparedLanguageTrainingSegmentation {
   readonly identity: {

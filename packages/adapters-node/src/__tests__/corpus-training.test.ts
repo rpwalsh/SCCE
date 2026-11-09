@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { corpusSegmentationInputRecipe } from "../corpus-segmentation-producer.js";
 import { prepareLanguageTrainingSegmentationInput } from "../language-training-segmentation.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
+import {fixtureSegmentationScratch} from "../../../kernel/src/__tests__/fixtures/corpus-segmentation-scratch.js";
 import type { TranscriptTurn } from "../../../kernel/src/dialogue-communicative-act-learning.js";
 const humanCreativePair = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
 import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
@@ -14,6 +15,7 @@ import { creativeSourceUtterances, realizeCreativeSourceUtterance } from "../../
 import { compileCreativeRequestFrameFromCompatibilityModels } from "../../../kernel/src/creative-event-compatibility.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import {pathToFileURL} from "node:url";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -2716,6 +2718,65 @@ describe("dialogue corpus training", () => {
     exportClass: "restricted",
     mergePolicy: "isolated"
   };
+  it("learns private genuine human dialogue through the verified public Wikipedia population without changing either owner's provenance",async()=>{
+    const fixture=memoryStorage();exposeOwnedDialogueEvidence(fixture);
+    const wiki=await trainLanguageCorpusText({storage:fixture.storage,sourceSystem:"wikipedia",streamUri:"wiki://public-owner",sourceUri:"https://en.wikipedia.org/wiki/Animalia",
+      text:await readFile(new URL("../../../kernel/src/__tests__/fixtures/animalia-source.md",import.meta.url),"utf8"),ngramMaxOrder:2,ngramMaxCountersPerOrder:64});
+    const publicSources=kernel.canonicalStringify(fixture.state.sourceVersions),publicSpans=kernel.canonicalStringify(fixture.state.evidence);
+    const spans=fixture.state.evidence.filter(span=>span.sourceVersionId===wiki.sourceVersionId),hasher=createHasher();
+    const measurements=spans.map(span=>kernel.measureSurfaceBoundaries({documentId:String(span.id),text:span.text,hasher}));
+    const context=kernel.compileBoundaryFeatureContext({lattices:measurements,hasher}),observations=kernel.collectBoundaryTrainingObservations({lattices:measurements,featureContext:context});
+    const statistics=spans.map(span=>kernel.compileBoundaryStatistics({populationId:"public.wiki",sourceDocumentIds:[String(span.id)],hasher,observations:observations.filter(row=>row.sourceDocumentId===span.id)}));
+    const cursors=statistics.map(({rows,sourceDocumentIds,...header})=>({header:{...header,rowCount:rows.length,sourceInventory:{id:hasher.digestHex(kernel.canonicalStringify(sourceDocumentIds)),count:sourceDocumentIds.length}},
+      rows:async function*(){yield rows;},sourceDocuments:async function*(){yield sourceDocumentIds;}}));
+    const documents=cursors.map((cursor,ordinal)=>({ordinal,documentId:String(spans[ordinal]!.id),sourceFamilyId:String(spans[ordinal]!.sourceId),statistics:cursor.header}));
+    const source:kernel.CorpusSegmentationDocumentCursor={scratch:fixtureSegmentationScratch(3),documentCount:documents.length,sourceInventory:{id:hasher.digestHex(kernel.canonicalStringify(documents)),count:documents.length},
+      documents:async function*(){yield documents;},statistics:document=>cursors[document.ordinal]!};
+    const {model}=await kernel.learnPagedSegmentationPopulations({rootPopulationId:"public.wiki",source,namespace:"fit",featureContextId:context.id,maxPopulations:1});
+    const loader:kernel.CorpusSegmentationBatchLoader={identity:{id:model.id,featureContextId:model.featureContextId,sourceInventory:model.sourceInventory,normalizationContractId:model.normalizationContractId},
+      resolve:async preparations=>({populationInference:model,slices:preparations.map(preparation=>{
+        const featureContext={...context,documentCountBySurfaceFormClass:Object.fromEntries(preparation.requiredClassIds.map(key=>[key,context.documentCountBySurfaceFormClass[key]??0])),
+          classCountByBoundaryContext:Object.fromEntries(preparation.requiredContextKeys.map(key=>[key,context.classCountByBoundaryContext[key]??0]))};
+        const binding={measurementId:preparation.id,snapshotId:model.sourceInventory.id,sourceInventory:model.sourceInventory,contextId:model.featureContextId,normalizationContractId:model.normalizationContractId};
+        return {preparation,contextSlice:{featureContext,binding:{...binding,valueDigest:kernel.corpusSegmentationContextSliceDigest({featureContext,binding},hasher)}}};
+      })})};
+    let depth=0,locked=false;const transaction=fixture.storage.transaction.bind(fixture.storage);
+    fixture.storage.transaction=async work=>{depth++;try{return await transaction(work);}finally{depth--;}};
+    const readActive=vi.fn(async(...args:Parameters<NonNullable<ScceStorage["corpusSegmentation"]>["readActive"]>)=>{if(args[3]?.lockForCommit){expect(depth).toBeGreaterThan(0);locked=true;}return {inference:model,loader};});
+    fixture.storage.corpusSegmentation={readActive,consolidate:async()=>{throw Error("no refit during source training");}};
+    const putModels=fixture.storage.languageMemory.putNgramModels!;fixture.storage.languageMemory.putNgramModels=async rows=>{expect(locked).toBe(true);await putModels(rows);};
+    const root=await tempDir("private-dialogue-public-wiki-");await writeFile(path.join(root,"human.json"),JSON.stringify(humanCreativePair),"utf8");
+    const complete=vi.fn(async()=>undefined),options={storage:fixture.storage,rootPath:root,authorship:"human_authored" as const,informationLabel:ownerLabel,maxFilesPerRun:1,
+      ngramMaxOrder:2,ngramMaxCountersPerOrder:64,onSourceBrainTrainingComplete:complete,
+      corpusSegmentation:{scope:{informationLabel:publicCorpusInformationLabel,sourceVersionIds:[wiki.sourceVersionId]},recipeId:corpusSegmentationInputRecipe(4096),normalizationContractId:model.normalizationContractId,bounds:{pageRows:3,maxPageBytes:65536}}};
+    const result=await trainDialogueCorpus(options);expect(result.filesSkipped).toEqual([]);expect(result.filesTrained).toBe(1);expect(result.selection?.languageTrainingComplete).toBe(true);expect(complete).toHaveBeenCalledTimes(1);
+    const report=result.reports[0]!,profileId=report.artifacts.languageProfileId;expect(report.segmentation?.mode).toBe("corpus_snapshot");
+    expect(fixture.state.profiles.find(row=>row.id===profileId)?.informationLabel).toEqual(ownerLabel);
+    for(const row of [...fixture.state.models.filter(row=>recordOf(row.modelJson).profileId===profileId),...fixture.state.units.filter(row=>row.profileId===profileId),...fixture.state.patterns.filter(row=>row.profileId===profileId)])expect(row.informationLabel).toEqual(ownerLabel);
+    expect(fixture.state.evidence.filter(row=>row.sourceVersionId===report.sourceVersionId).every(row=>kernel.canonicalStringify(row.informationLabel)===kernel.canonicalStringify(ownerLabel))).toBe(true);
+    expect(kernel.canonicalStringify(fixture.state.sourceVersions.filter(row=>row.sourceVersionId===wiki.sourceVersionId))).toBe(publicSources);
+    expect(kernel.canonicalStringify(fixture.state.evidence.filter(row=>row.sourceVersionId===wiki.sourceVersionId))).toBe(publicSpans);
+    const before={sources:fixture.state.sourceVersions.map(row=>row.sourceVersionId),profiles:fixture.state.profiles.map(row=>row.id),models:fixture.state.models.map(row=>row.id)};
+    const replay=await trainDialogueCorpus(options);expect(replay.filesSkipped).toEqual([]);
+    expect({sources:fixture.state.sourceVersions.map(row=>row.sourceVersionId),profiles:fixture.state.profiles.map(row=>row.id),models:fixture.state.models.map(row=>row.id)}).toEqual(before);
+    expect(readActive.mock.calls.some(call=>call[3]?.lockForCommit)).toBe(true);
+  });
+  it.each([false,true])("reports the original failed file cause and compiles pooled auxiliary artifacts only from completed owners (all failed=%s)",async allFailed=>{
+    const fixture=memoryStorage();exposeOwnedDialogueEvidence(fixture);const root=await tempDir("dialogue-partial-owner-");
+    await writeFile(path.join(root,"a-failed.json"),JSON.stringify(humanCreativePair),"utf8");await writeFile(path.join(root,"b-complete.json"),JSON.stringify(humanCreativePair),"utf8");
+    const write=fixture.storage.languageMemory.putNgramModels!;let failed=false;
+    fixture.storage.languageMemory.putNgramModels=async rows=>{if(allFailed||!failed){failed=true;throw Error("original per-file storage cause");}await write(rows);};
+    const complete=vi.fn(async()=>undefined),result=await trainDialogueCorpus({storage:fixture.storage,rootPath:root,authorship:"human_authored",informationLabel:ownerLabel,maxFilesPerRun:2,ngramMaxOrder:2,ngramMaxCountersPerOrder:64,onSourceBrainTrainingComplete:complete});
+    expect(result.filesTrained).toBe(allFailed?0:1);expect(result.filesSkipped).toEqual((allFailed?["a-failed.json","b-complete.json"]:["a-failed.json"]).map(path=>expect.objectContaining({path,reason:"training_failed: original per-file storage cause"})));
+    expect(result.selection?.languageTrainingComplete).toBe(false);expect(result.selection?.completedSourceUris).toEqual(allFailed?[]:[pathToFileURL(path.join(root,"b-complete.json")).href]);expect(complete).not.toHaveBeenCalled();
+    expect(result.conversationalConstructions?.documentsWithEvidence).toBe(allFailed?0:1);
+  });
+  it("still refuses pooled compilation when a completed source's promoted evidence is inaccessible",async()=>{
+    const fixture=memoryStorage(),root=await tempDir("dialogue-inaccessible-owner-");await writeFile(path.join(root,"human.json"),JSON.stringify(humanCreativePair),"utf8");
+    fixture.storage.evidence.searchEvidence=async()=>[];
+    await expect(trainDialogueCorpus({storage:fixture.storage,rootPath:root,authorship:"human_authored",informationLabel:ownerLabel,maxFilesPerRun:1,ngramMaxOrder:2,ngramMaxCountersPerOrder:64}))
+      .rejects.toThrow("Conversational compilation requires every pooled source's promoted owner evidence");
+  });
 
   it("replays an unchanged dialogue file without preparing or writing its source or auxiliary learned rows again", async () => {
     const root = await tempDir("dialogue-stable-checkpoint-");

@@ -6,7 +6,7 @@ import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import { blobContentHash } from "./postgres.js";
 import { prepareCorpusSourceGraphProjection, SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "./corpus-source-graph-projection.js";
 import { sourceMetadataBoundOwner, unitSourceMetadataNormalizer } from "./unit-source-metadata.js";
-import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationLoader,
+import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationLoader, languageTrainingSegmentationLabel,
   type LanguageTrainingSegmentationDeclaration, type PreparedLanguageTrainingSegmentation as PreparedCorpusSegmentationSelection } from "./language-training-segmentation.js";
 import { prepareSourceTranscriptArchive, type SourceTranscriptArchiveDescriptor } from "./source-transcript-archive.js";
 import { SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID } from "./source-code-function-learning.js";
@@ -1029,7 +1029,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   );
   evidence = evidence.map(span => ({ ...span, informationLabel: sourceEvidenceInformationLabel }));
   const corpusLabel = input.preparedCorpusSegmentation?.identity.declaration?.scope.informationLabel;
-  const informationLabel = corpusLabel ? joinInformationLabels([sourceEvidenceInformationLabel, corpusLabel], { explicitMergeAuthority: false }) : sourceEvidenceInformationLabel;
+  const informationLabel = languageTrainingSegmentationLabel(sourceEvidenceInformationLabel,corpusLabel);
   profile = attachSourceDerivedLanguageAliases({ profile, metadata, evidence });
   profile = { ...profile, informationLabel };
   // Identity discovery counts documents. A document-owning training call (a book, a source file, a dialogue
