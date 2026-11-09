@@ -416,9 +416,8 @@ async function dispatch(
     }
     const postgres = await loadPostgresStatus(context.runtime, options);
     const exactCounts = hasExactPostgresCounts(postgres);
-    const ok = healthOk(postgres) && hasRequestedPostgresDetail(postgres, options);
-    if (ok) rememberHydratedRuntimeMarker(context, postgres);
-    else invalidateHydratedRuntimeReadiness(context);
+    const ok = healthOk(postgres) && hasRequestedPostgresDetail(postgres, options) && rememberHydratedRuntimeMarker(context, postgres);
+    if (!ok) invalidateHydratedRuntimeReadiness(context);
     return json({ ok, warmup, postgres, exactCounts, serverUrl: context.config.server.url, manifest: ROUTES.length }, ok ? 200 : 503);
   }
   // Calibration surface, off unless SCCE_ALLOW_CALIBRATION_API=1. A fitter has to evaluate one id at many
@@ -1869,11 +1868,11 @@ async function hydratedRuntimeForTurn(
   return { marker, source: "durable_verification" };
 }
 
-function rememberHydratedRuntimeMarker(context: ApiContext, status: unknown): void {
-  if (!isRecord(status) || !isRecord(status.activeBrain)) return;
+function rememberHydratedRuntimeMarker(context: ApiContext, status: unknown): boolean {
+  if (!isRecord(status) || !isRecord(status.activeBrain)) return false;
   const activeBrainVersion = status.activeBrain.activeBrainVersion;
   const activeImportRunIds = optionalStringArray(status.activeBrain.activeImportRunIds);
-  if (typeof activeBrainVersion !== "string" || !activeBrainVersion.trim() || activeImportRunIds.length === 0) return;
+  if (typeof activeBrainVersion !== "string" || !activeBrainVersion.trim() || activeImportRunIds.length === 0) return false;
   const storageKey = context.runtime.storage as object;
   const epoch = hydratedRuntimeEpoch(storageKey);
   hydratedRuntimeReadyByStorage.set(storageKey, {
@@ -1881,6 +1880,7 @@ function rememberHydratedRuntimeMarker(context: ApiContext, status: unknown): vo
     verifiedAt: Date.now(),
     epoch
   });
+  return true;
 }
 
 function hydratedRuntimeEpoch(storageKey: object): number {

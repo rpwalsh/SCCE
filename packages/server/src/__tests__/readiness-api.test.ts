@@ -12,6 +12,14 @@ afterEach(async () => {
 });
 
 describe("server readiness API", () => {
+  it.each([undefined, { activeImportRunIds: [] }, { activeBrainVersion: " ", activeImportRunIds: ["import-one"] }])(
+    "declines turn readiness without a complete active-brain marker: %j", async activeBrain => {
+      const readiness = createRuntimeStartupReadiness();
+      readiness.begin(); readiness.complete();
+      const url = await startFixture(readiness, { ...healthyStatus(), activeBrain });
+      expect(await getReady(url)).toMatchObject({ status: 503, body: { ok: false } });
+    });
+
   it("returns 503 until warmup completes and exposes background warmup failure", async () => {
     const readiness = createRuntimeStartupReadiness();
     const url = await startFixture(readiness);
@@ -163,6 +171,7 @@ describe("server readiness API", () => {
 
 function healthyStatus(detail = "readiness", population?: string): Record<string, unknown> {
   return { schema: "scce.postgres.status.v1", ok: true, connected: true, detail,
+    activeBrain: { activeBrainVersion: "brain-one", activeImportRunIds: ["import-one"] },
     countSemantics: detail === "exact" ? "postgres_exact_table_counts" : detail === "population" ? "postgres_bounded_population" : "postgres_schema_readiness",
     ...(detail === "exact" ? { tableCounts: { evidence_spans: 1 } } : detail === "population" ? { population, tablePopulation: {} } : {}) };
 }
