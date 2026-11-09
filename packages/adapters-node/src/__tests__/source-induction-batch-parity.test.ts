@@ -1,13 +1,13 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, expect, it, vi } from "vitest";
-import { createHasher, canonicalStringify } from "../primitives.js";
-import { compileSourceInductionWindows, compileSourceInductionWindowsAsync, compileSourceInductionWindowsFromCorpus, sourceInductionBatches } from "../source-window-induction.js";
-import { prepareConstructionInduction, prepareConstructionInductionAsync, preparedLanguageInductionProducts } from "../graph-surface-alignment.js";
-import type { SourceInductionBatchExecution, SourceInductionBatchProduct } from "../source-induction-execution.js";
-import type { InducedLanguageMemoryModel } from "../language-induction-memory.js";
-import { createSourceInductionWorkerSession } from "../../../adapters-node/src/source-induction-worker-session.js";
-import { rawCorpusSegmentationFixture } from "./fixtures/raw-corpus-segmentation.js";
+import { createHasher, canonicalStringify } from "../../../kernel/src/primitives.js";
+import { compileSourceInductionWindows, compileSourceInductionWindowsAsync, compileSourceInductionWindowsFromCorpus, sourceInductionBatches } from "../../../kernel/src/source-window-induction.js";
+import { prepareConstructionInduction, prepareConstructionInductionAsync, preparedLanguageInductionProducts } from "../../../kernel/src/graph-surface-alignment.js";
+import type { SourceInductionBatchExecution, SourceInductionBatchProduct } from "../../../kernel/src/source-induction-execution.js";
+import type { InducedLanguageMemoryModel } from "../../../kernel/src/language-induction-memory.js";
+import { createSourceInductionWorkerSession } from "../source-induction-worker-session.js";
+import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
 const hasher = createHasher();
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 function port(options: { reorder?: boolean; fail?: number; wrongDigest?: boolean; reversePrepare?: boolean } = {}) {
