@@ -285,6 +285,15 @@ export async function completeInitialSourceBrainFromStoredReport(input: {
     completion: { explicitSelection: true, selectedItemIds: ids, completedItemIds: ids, stoppedByHeapSafetyBound: false, interrupted: false, skippedRequiredItemIds: [] } });
 }
 
+export interface SourceBrainFileAdmission {
+  canonicalUri: string;
+  rawContentHash: string;
+  rawByteLength: number;
+  sourceContentHash: string;
+  sourceByteLength: number;
+  projections: readonly { sourceSystemId: string; projection?: string; transformId?: string }[];
+}
+
 export interface SourceBrainPlannedProjection {
   sourceSystemId: string;
   projection?: string;

@@ -13,7 +13,7 @@ vi.mock("@scce/adapters-node", async () => ({
   completeInitialSourceBrainFromStoredReports: complete,
   sourceBrainBuildReceipt: (value: unknown) => value
 }));
-import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, verifyPlannedSourceFiles } from "../corpus-brain-manifest.js";
+import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, plannedSourceFileAdmission } from "../corpus-brain-manifest.js";
 const roots: string[] = [];
 afterEach(async () => { complete.mockClear(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function fixture() {
@@ -32,7 +32,8 @@ it("reads the exact pinned manifest/reports through the CLI helper and delegates
   const f = await fixture(), manifest = await readCorpusBrainManifest(f.manifestPath, 65536, true);
   expect(parseCorpusTrainOptions([`--brain-manifest=${f.manifestPath}`])).toEqual({ brainManifestPath: f.manifestPath });
   expect(plannedStoredSourceIds(manifest)).toEqual(["wiki-owned"]);
-  await verifyPlannedSourceFiles(manifest, f.root);
+  plannedSourceFileAdmission(manifest)({ canonicalUri: f.plan.selectedItems[1]!.canonicalUri, rawContentHash: createHasher().digestHex(f.transcript), rawByteLength: Buffer.byteLength(f.transcript),
+    sourceContentHash: "b".repeat(64), sourceByteLength: 64, projections: [{ sourceSystemId: "human-dialogue" }] });
   await finalizeCorpusBrainManifest({ storage: {} as ScceStorage, informationLabel: { tenantId: "owner", principals: ["owner"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" }, manifestPath: f.manifestPath, maxTotalBytes: 65536 });
   expect(complete).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ plan: f.plan, reports: [JSON.parse(f.report)], sourceManifestHash: manifest.hash }));
 });
@@ -40,7 +41,8 @@ it("refuses changed report/file hashes, foreign stored selection and cumulative 
   const f = await fixture(), manifest = await readCorpusBrainManifest(f.manifestPath, 65536, true);
   expect(() => plannedStoredSourceIds(manifest, ["not-planned"])).toThrow("outside");
   await writeFile(path.join(f.root, "human.json"), "changed");
-  await expect(verifyPlannedSourceFiles(manifest, f.root)).rejects.toThrow("file hash changed");
+  expect(() => plannedSourceFileAdmission(manifest)({ canonicalUri: f.plan.selectedItems[1]!.canonicalUri, rawContentHash: createHasher().digestHex("changed"), rawByteLength: 7,
+    sourceContentHash: "b".repeat(64), sourceByteLength: 64, projections: [{ sourceSystemId: "human-dialogue" }] })).toThrow("file hash/bytes changed");
   await writeFile(path.join(f.root, "report.json"), f.report + " ");
   const args = { storage: {} as ScceStorage, informationLabel: { tenantId: "owner", principals: ["owner"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const }, manifestPath: f.manifestPath, maxTotalBytes: 65536 };
   await expect(finalizeCorpusBrainManifest(args)).rejects.toThrow("report hash changed");

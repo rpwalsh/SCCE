@@ -13,9 +13,10 @@ import {
   type ScceStorage
 } from "@scce/kernel";
 import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
-import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
+import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult, type SourceBrainFileAdmission } from "./source-brain-build.js";
 
 export interface GutenbergCorpusTrainOptions {
+  beforeSourceTraining?: (source: SourceBrainFileAdmission) => void | Promise<void>;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   storage: ScceStorage;
   rootPath: string;
@@ -122,6 +123,9 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
       skipped.push({ path: file.relativePath, reason: "empty_after_boilerplate_strip", byteLength: file.byteLength });
       continue;
     }
+    const transformId = "scce.gutenberg.boilerplate-strip.v1";
+    if (input.beforeSourceTraining) await input.beforeSourceTraining({ canonicalUri: pathToFileURL(file.absolutePath).href, rawContentHash: sha256Bytes(rawBytes), rawByteLength: rawBytes.byteLength,
+      sourceContentHash: sha256Bytes(rawBytes), sourceByteLength: rawBytes.byteLength, projections: [{ sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.gutenberg, transformId }] });
     const languageAliases = sourceLanguageAliases(raw, input.languageAliases);
     const relativePath = normalizeRelative(file.relativePath);
     const title = sourceTitleFromUri(relativePath);
@@ -141,7 +145,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
           rootUri: pathToFileURL(root).href,
           itemUri: `${relativePath}#${GUTENBERG_IDENTITY_RECIPE_ID}`,
           contentHash: sha256Bytes(rawBytes),
-          transformId: "scce.gutenberg.boilerplate-strip.v1",
+          transformId,
           originalSourceUri: pathToFileURL(file.absolutePath).href,
           byteLength: rawBytes.byteLength
         },
@@ -149,7 +153,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
         originalSource: {
           bytes: rawBytes,
           sourceUri: pathToFileURL(file.absolutePath).href,
-          transformId: "scce.gutenberg.boilerplate-strip.v1",
+          transformId,
           kind: "extracted-text",
           originalCoordinateSpace: "source-bytes"
         },

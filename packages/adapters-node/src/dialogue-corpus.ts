@@ -45,11 +45,11 @@ import {
   type ScceStorage,
   type SourceVersionId
 } from "@scce/kernel";
-import { corpusSourceVersionIdFor, readCompletedCorpusCheckpoint, stampPattern, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { corpusSourceVersionIdFor, normalizeCorpusTrainingText, readCompletedCorpusCheckpoint, stampPattern, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import {persistDialogueComputationComponent,type DialogueComputationReport} from "./dialogue-computation-component.js";
 import { persistDialogueContextualQaComponent, type DialogueContextualQaReport } from "./dialogue-contextual-qa-component.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, runDialogueConversationalComponent } from "./dialogue-conversational-checkpoint.js";
-import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
+import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult, type SourceBrainFileAdmission } from "./source-brain-build.js";
 
 /**
  * Who wrote the text. Training on SCCE's own generations is self-training: the model would be fitted to its
@@ -58,6 +58,7 @@ import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrain
 export type DialogueCorpusAuthorship = "human_authored" | "system_generated";
 
 export interface DialogueCorpusTrainOptions {
+  beforeSourceTraining?: (source: SourceBrainFileAdmission) => void | Promise<void>;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   storage: ScceStorage;
   rootPath: string;
@@ -197,13 +198,20 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       skipped.push({ path: file.relativePath, reason: "file_exceeds_maxFileBytes", byteLength: file.byteLength });
       continue;
     }
-    const raw = await readFile(file.absolutePath, "utf8");
+    const rawBytes = await readFile(file.absolutePath);
+    const raw = rawBytes.toString("utf8");
     const declared = path.extname(file.absolutePath).toLowerCase() === ".json"
       ? validateDeclaredTranscriptSource(JSON.parse(raw)) : undefined;
     const text = declared?.text ?? raw.trim();
     if (!text) {
       skipped.push({ path: file.relativePath, reason: "empty_file", byteLength: file.byteLength });
       continue;
+    }
+    if (input.beforeSourceTraining) {
+      const canonicalText = normalizeCorpusTrainingText(text);
+      await input.beforeSourceTraining({ canonicalUri: pathToFileURL(file.absolutePath).href, rawContentHash: createHash("sha256").update(rawBytes).digest("hex"),
+        rawByteLength: rawBytes.byteLength, sourceContentHash: sha256(canonicalText), sourceByteLength: Buffer.byteLength(canonicalText, "utf8"),
+        projections: [{ sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.dialogue }] });
     }
     transcripts.push(declared ?? text);
     read.push({ sourceUri: pathToFileURL(file.absolutePath).href, text,

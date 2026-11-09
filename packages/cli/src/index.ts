@@ -6,7 +6,7 @@ import { runModelCommand, runSensorCommand, runSettingsCommand } from "./setting
 import { runCodeCommand } from "./code-command.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { completeInitialSourceBrainFromStoredReport, completeInitialSourceBrainFromDialogueReport } from "@scce/adapters-node";
-import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, verifyPlannedSourceFiles } from "./corpus-brain-manifest.js";
+import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, plannedSourceFileAdmission } from "./corpus-brain-manifest.js";
 import { runCorpusSegmentationCommand } from "./corpus-segmentation-command.js";
 import { canonicalCorpusSourceSystemId, CORPUS_SOURCE_SYSTEM_IDS } from "@scce/kernel";
 import { parseUnitMetadataMaintenanceOptions } from "./db-maintenance-options.js";
@@ -752,17 +752,18 @@ async function corpus(
     if (!target || (kind !== "gutenberg" && kind !== "oss" && kind !== "oss-github" && kind !== "dialogue")) return usage("scce corpus train <gutenberg|oss|oss-github|dialogue|wikipedia-stored> <path-or-url> [--commit=<sha>] [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-total-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>] [--acts-only]");
     const options = parseCorpusTrainOptions(args.slice(3));
     const manifest = options.brainManifestPath ? await readCorpusBrainManifest(options.brainManifestPath, options.maxTotalBytes ?? 64 * 1024 * 1024) : undefined;
+    const beforeSourceTraining = manifest ? plannedSourceFileAdmission(manifest) : undefined;
     if (kind === "dialogue") {
       const access = config?.security?.informationAccess;
       if (!access) return usage("scce corpus train dialogue requires security.informationAccess in the runtime config");
       const informationLabel = { tenantId: access.tenantId, principals: [access.principalId], compartments: [...access.compartments],
         exportClass: "restricted" as const, mergePolicy: "isolated" as const };
-      if (manifest) await verifyPlannedSourceFiles(manifest, target);
       // The transcript is labelled with the operator's own access context, never the public corpus label.
       printJson(await trainDialogueCorpus({
         corpusSegmentation: config?.runtime.corpusSegmentation,
         storage: runtime.storage,
         rootPath: path.resolve(target),
+        beforeSourceTraining,
         authorship: "human_authored",
         informationLabel,
         startFileIndex: options.startFileIndex,
@@ -795,6 +796,7 @@ async function corpus(
           ...(options.maxDepth !== undefined ? { maxDepth: options.maxDepth } : {})
         },
         training: {
+          beforeSourceTraining,
           corpusSegmentation: config?.runtime.corpusSegmentation,
           includeDocs: options.includeDocs,
           includeSource: options.includeSource,
@@ -833,11 +835,11 @@ async function corpus(
       return;
     }
     if (kind === "gutenberg") {
-      if (manifest) await verifyPlannedSourceFiles(manifest, target);
       printJson(await trainGutenbergCorpus({
         corpusSegmentation: config?.runtime.corpusSegmentation,
         storage: runtime.storage,
         rootPath: path.resolve(target),
+        beforeSourceTraining,
         startFileIndex: options.startFileIndex,
         maxFilesPerRun: options.maxFiles,
         maxFileBytes: options.maxFileBytes,
@@ -876,6 +878,7 @@ async function corpus(
       storage: runtime.storage,
       rootPath: path.resolve(target),
       ...trainingOptions,
+      beforeSourceTraining,
       ...(manifest ? {} : { onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromOssReport({
         storage: runtime.storage,
         informationLabel,

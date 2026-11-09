@@ -28,7 +28,7 @@ import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } f
 import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
 import { compileSourceCodeFunctionsAsync } from "./source-code-function-learning.js";
-import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
+import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult, type SourceBrainFileAdmission } from "./source-brain-build.js";
 import { publishOssOwnedContractClosures, type OssContractClosureReport } from "./oss-owned-contract-closure.js";
 import {compileSourceOwnedContracts} from "./source-owned-contract-compiler.js";
 import { type GrammarContractFile } from "./grammar-source-owned-test-contracts.js";
@@ -37,6 +37,7 @@ export const DEFAULT_OSS_FILES_PER_RUN = 2000;
 export const DEFAULT_OSS_FILES_PER_REPOSITORY = 100000;
 
 export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
+  beforeSourceTraining?: (source: SourceBrainFileAdmission) => void | Promise<void>;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   storage: ScceStorage;
   rootPath: string;
@@ -286,15 +287,19 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
             : [])
         ];
 
+    const sourceUri = `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`;
+    const preparedProjections = projections.map(projected => ({ ...projected, transformId: projected.projection === "code_surface_tokens"
+      ? `${CODE_SURFACE_RECIPE_ID}:${projected.projection}` : `scce.oss.corpus-projection.v1:${projected.projection}` }));
+    if (input.beforeSourceTraining) await input.beforeSourceTraining({ canonicalUri: sourceUri, rawContentHash: sourceHash, rawByteLength: rawBytes.byteLength,
+      sourceContentHash: sourceHash, sourceByteLength: rawBytes.byteLength,
+      projections: preparedProjections.filter(row => row.text.trim()).map(row => ({ sourceSystemId: row.sourceSystem, projection: row.projection, transformId: row.transformId })) });
     let trainedAnyProjection = false;
     let fileCompleted = true;
-    for (const projected of projections) {
+    for (const projected of preparedProjections) {
       if (!projected.text.trim()) continue;
       trainedAnyProjection = true;
       const relativePath = normalizeRelative(file.path);
-      const sourceUri = `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`;
-      const transformId = projected.projection === "code_surface_tokens"
-        ? `${CODE_SURFACE_RECIPE_ID}:${projected.projection}` : `scce.oss.corpus-projection.v1:${projected.projection}`;
+      const transformId = projected.transformId;
       const trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
         storage: input.storage,

@@ -826,10 +826,14 @@ async function resolveTrainingSegmentationInput(input: LanguageCorpusTrainingInp
   return { ...input, preparedCorpusSegmentation: selection };
 }
 
+export function normalizeCorpusTrainingText(text: string): string {
+  return text.replace(/\u0000/g, " ").normalize("NFC");
+}
+
 /** The source version this text is stored under, so a later pass can find its evidence without re-training it. */
 export function corpusSourceVersionIdFor(input: { sourceUri: string; text: string }): SourceVersionId {
   const hasher = createHasher();
-  const text = input.text.replace(/\u0000/g, " ").normalize("NFC");
+  const text = normalizeCorpusTrainingText(input.text);
   return createIdFactory({ clock: createClock(), hasher })
     .sourceVersionId(`${input.sourceUri}${hasher.digestHex(Buffer.from(text, "utf8"))}`);
 }
@@ -856,7 +860,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const sourceUri = input.sourceUri ?? input.streamUri;
   const namespace = input.namespace ?? `corpus:${sourceSystemId}`;
   const createdAt = input.createdAt ?? clock.now();
-  const text = input.text.replace(/\u0000/g, " ").normalize("NFC");
+  const text = normalizeCorpusTrainingText(input.text);
   const bytes = Buffer.from(text, "utf8");
   const sourceVersionId = input.sourceVersionId ?? corpusSourceVersionIdFor({ sourceUri, text });
   const sourceId = ids.sourceId(namespace, sourceUri);

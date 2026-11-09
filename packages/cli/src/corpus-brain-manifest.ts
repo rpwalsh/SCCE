@@ -2,10 +2,9 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { open } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { createHasher, type InformationLabel, type ScceStorage } from "@scce/kernel";
 import { completeInitialSourceBrainFromStoredReports, sourceBrainBuildReceipt, validateStoredSourceBrainPlan,
-  type StoredSourceBrainPlan } from "@scce/adapters-node";
+  type StoredSourceBrainPlan, type SourceBrainFileAdmission } from "@scce/adapters-node";
 
 export interface LoadedCorpusBrainManifest { path: string; hash: string; plan: StoredSourceBrainPlan; byteBudget: number; manifestBytes: number }
 export async function readCorpusBrainManifest(manifestPath: string, byteBudget: number, complete = false): Promise<LoadedCorpusBrainManifest> {
@@ -14,18 +13,33 @@ export async function readCorpusBrainManifest(manifestPath: string, byteBudget: 
   return { path: filename, hash: createHasher().digestHex(bytes), plan: validateStoredSourceBrainPlan(JSON.parse(bytes.toString("utf8")), complete), byteBudget, manifestBytes: bytes.byteLength };
 }
 
-/** File hashes are checked before normal file training; canonical decoded source hashes are checked at finalization. */
-export async function verifyPlannedSourceFiles(manifest: LoadedCorpusBrainManifest, rootPath: string): Promise<void> {
-  const root = path.resolve(rootPath), hasher = createHasher(); let count = 0;
-  for (const item of manifest.plan.selectedItems) {
-    if (!item.sourceFileHash || !item.canonicalUri.startsWith("file:")) continue;
-    const filename = fileURLToPath(item.canonicalUri), relative = path.relative(root, filename);
-    if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) continue;
-    const bytes = await readBounded(filename, manifest.byteBudget);
-    if (hasher.digestHex(bytes) !== item.sourceFileHash) throw new Error(`planned source file hash changed: ${item.canonicalUri}`);
-    count++;
-  }
-  if (!count) throw new Error("brain manifest contains no planned source files under this training root");
+/** The normal producer owns URI/byte/projection preparation; the plan only admits its exact declaration. */
+export function plannedSourceFileAdmission(manifest: LoadedCorpusBrainManifest): (source: SourceBrainFileAdmission) => void {
+  const byUri = new Map(structuredClone(manifest.plan.selectedItems).map(item => [item.canonicalUri, item]));
+  const bareHash = (value: string) => value.replace(/^sha256_/iu, "").toLowerCase();
+  return source => {
+    const item = byUri.get(source.canonicalUri);
+    if (!item) throw new Error(`unplanned source file refused before training: ${source.canonicalUri}`);
+    if (!item.sourceFileHash || item.sourceFileHash !== bareHash(source.rawContentHash)
+      || bareHash(item.contentHash) !== bareHash(source.sourceContentHash) || item.byteLength !== source.sourceByteLength)
+      throw new Error(`planned source file hash/bytes changed before training: ${source.canonicalUri}`);
+    if (!Number.isSafeInteger(source.rawByteLength) || source.rawByteLength <= 0 || !source.projections.length)
+      throw new Error("invalid source file preparation before training");
+    if (!item.projections) {
+      if (source.projections.length !== 1 || source.projections.some(row => row.projection !== undefined || row.transformId !== undefined))
+        throw new Error("planned source file requires explicit projection declarations before training");
+    } else {
+      if (item.projections.length !== source.projections.length) throw new Error("planned source projection set changed before training");
+      const matched = new Set<number>();
+      for (const expected of item.projections) {
+        const found = source.projections.flatMap((row, index) => row.sourceSystemId === expected.sourceSystemId
+          && (expected.projection === undefined || expected.projection === row.projection)
+          && (expected.transformId === undefined || expected.transformId === row.transformId) ? [index] : []);
+        if (found.length !== 1 || matched.has(found[0]!)) throw new Error("planned source projection changed or is ambiguous before training");
+        matched.add(found[0]!);
+      }
+    }
+  };
 }
 export function plannedStoredSourceIds(manifest: LoadedCorpusBrainManifest, requested?: readonly string[]): string[] {
   const all = manifest.plan.selectedItems.filter(item => !item.sourceFileHash).map(item => item.sourceVersionId!);
