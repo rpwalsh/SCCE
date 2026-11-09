@@ -1,0 +1,109 @@
+{
+  "schema": "scce.language_behavior_database_guard.v1",
+  "startedAt": "2026-11-09T03:28:32.062Z",
+  "backend": "PostgreSQL 18.6 / PGlite 0.5.15",
+  "promptPreexistence": [
+    {
+      "id": "reading-active",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "reading-passive",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "reading-object",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "reading-negation",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "reading-pronoun",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "reading-state-update",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "instruction-copy",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "instruction-order",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "instruction-select",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "grammar-agreement",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "grammar-past-tense",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "paraphrase-synonym",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "definition-novel",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "question-generation",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "conversation-relevance",
+      "exactPromptMatchesInStoredBlobs": 0
+    },
+    {
+      "id": "unsupported-private-fact",
+      "exactPromptMatchesInStoredBlobs": 0
+    }
+  ],
+  "before": {
+    "events": "4200",
+    "language_patterns": "249338",
+    "language_units": "75390",
+    "language_profiles": "378",
+    "ngram_models": "378",
+    "semantic_frames": "397",
+    "source_versions": "452",
+    "blobs": "809",
+    "user_model_claims": "0"
+  },
+  "metadataBefore": [
+    {
+      "key": "language_memory.revision",
+      "value_json": 37
+    }
+  ],
+  "exitCode": 0,
+  "after": {
+    "events": "4200",
+    "language_patterns": "249338",
+    "language_units": "75390",
+    "language_profiles": "378",
+    "ngram_models": "378",
+    "semantic_frames": "397",
+    "source_versions": "452",
+    "blobs": "809",
+    "user_model_claims": "0"
+  },
+  "metadataAfter": [
+    {
+      "key": "language_memory.revision",
+      "value_json": 37
+    }
+  ],
+  "rowCountsUnchanged": true,
+  "languageRevisionAndActiveMetadataUnchanged": true,
+  "finishedAt": "2026-11-09T03:29:26.294Z"
+}
