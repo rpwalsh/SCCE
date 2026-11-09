@@ -1,0 +1,122 @@
+{
+  "schema": "scce.windows_storage_audit_receipt.v1",
+  "at": "2026-11-09T03:06:56.373Z",
+  "auditSha256": "0a143fe529908273ff4c7d3152967d468b26d4e68976c83892f5f00515103d92",
+  "sourceRevision": "9c52e96be3bce2c4ce5dbbee64cd771d216daa0e",
+  "cohort": {
+    "trainedWikipediaArticles": 29,
+    "acquiredWikipediaArticles": 33,
+    "learnedWikipediaUtf8Bytes": 1057235,
+    "humanDollyRecords": 16,
+    "dialogueTranscripts": 1,
+    "freshIdenticalBuild": false
+  },
+  "scope": "Windows candidate: 29 trained Wikipedia articles, 33 acquired articles, after lossless event rewrite; also 16 human Dolly records in one transcript; no fresh-build claim",
+  "server": {
+    "version": "16.11"
+  },
+  "allocatedBytes": 424804352,
+  "patternAllocation": {
+    "table": "language_patterns",
+    "heap_bytes": "9445376",
+    "table_and_toast_bytes": "181878784",
+    "index_bytes": "3670016",
+    "allocated_bytes": "185548800",
+    "toast_bytes": "172408832"
+  },
+  "patternLive": {
+    "rows": "10471",
+    "pattern_json_stored_bytes": "160636924",
+    "evidence_ids_stored_bytes": "5154236",
+    "information_label_stored_bytes": "1521764"
+  },
+  "patternPayloadShare": 86.57394927911147,
+  "patternIndexShare": 1.9779249448123621,
+  "largestPatternFamilies": [
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.creative_event_construction_pattern.v3",
+      "rows": "201",
+      "stored_json_bytes": "46466963",
+      "largest_stored_json_bytes": "251454"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "rows": "72",
+      "stored_json_bytes": "41634783",
+      "largest_stored_json_bytes": "1111332"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.induced_language_model.semantic_memory.v1",
+      "rows": "72",
+      "stored_json_bytes": "37642993",
+      "largest_stored_json_bytes": "579955"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.language_construction_pattern.v1",
+      "rows": "9599",
+      "stored_json_bytes": "29390161",
+      "largest_stored_json_bytes": "40440"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "morphology",
+      "schema": "scce.induced_language_model.morphology_memory.v1",
+      "rows": "72",
+      "stored_json_bytes": "2097093",
+      "largest_stored_json_bytes": "32085"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.language_construction_pattern.v1",
+      "rows": "366",
+      "stored_json_bytes": "905357",
+      "largest_stored_json_bytes": "8514"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.creative_event_construction_pattern.v3",
+      "rows": "4",
+      "stored_json_bytes": "635182",
+      "largest_stored_json_bytes": "162572"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.induced_language_model.semantic_memory.v1",
+      "rows": "2",
+      "stored_json_bytes": "617189",
+      "largest_stored_json_bytes": "469709"
+    }
+  ],
+  "developmentWitnesses": [],
+  "sourceBytes": [
+    {
+      "source_system": "dialogue",
+      "role": null,
+      "versions": "1",
+      "bytes": "17248"
+    },
+    {
+      "source_system": "wikipedia",
+      "role": "evidence-derivative",
+      "versions": "33",
+      "bytes": "1206205"
+    },
+    {
+      "source_system": "wikipedia",
+      "role": "original",
+      "versions": "33",
+      "bytes": "2939070"
+    }
+  ]
+}

@@ -2,6 +2,8 @@
 
 Measured 2026-11-09. Diagnosis and proposed repair; no production migration applied.
 
+SCCE has no external users yet. Older development encodings impose no permanent compatibility requirement. The target is one canonical representation and read/write path. Rebuild development data from pinned inputs after verifying decoded information and answer equivalence; temporary comparison readers are verification tools.
+
 SCCE is persisting large, richly annotated language structures and repeating information across records. In the available checkpoint, most pattern-table space belongs to live JSON payload. The first repair should normalize those payloads and their shared provenance. Index maintenance cannot remove that live content.
 
 This establishes a real representation problem. It does **not** establish that the entire reported 448 MiB Windows candidate has the same breakdown, or that the prototype below eliminates its roughly 400-fold expansion.
@@ -104,7 +106,7 @@ The proposed repair uses ordinary PostgreSQL normalization and references. It do
 5. **Migrate legacy records separately.** Preserve or normalize the old request witnesses with exact reconstruction. Do not simply delete them because the new writer no longer emits them. Immutable event histories remain append-only.
 6. **Reclaim physical space after validation.** A side-by-side rebuild or deliberate maintenance step may be needed after the logical migration. A smaller live payload does not by itself prove that the existing relation files immediately shrink.
 
-Ship readers before writers. Keep the old representation available until migration verification and restart tests pass. Migration should be resumable, reject concurrent changes, and emit per-record decoded digests and a byte ledger.
+Verify the canonical representation in isolated builds before replacing development data. Preserve comparison snapshots until hash, answer, restart and citation checks pass. Any in-place rewrite must be resumable, reject concurrent changes, and emit per-record decoded digests and a byte ledger.
 
 Acceptance requires exact decoded canonical hashes; unchanged record identities, source ownership, labels, evidence coordinates, learned counts and timestamps; deterministic replay; restart and citation checks; and the same stored regression questions producing the same supported answers. Compare storage growth and query latency on identical inputs. A smaller corpus, dropped evidence, lower induction limits or reduced functionality is not the proposed fix.
 
@@ -127,5 +129,13 @@ Evidence:
 - [Temporary normalization experiment](storage-amplification/normalization-proof.json)
 - [Portable auditor execution](storage-amplification/portable-audit-receipt.json)
 - [Read-only auditor](../tools/audit-storage-amplification.mjs)
+
+## Native Windows follow-up
+
+The supplied auditor ran on PostgreSQL 16.11 against `scce_candidate_20261108`. Its scope was 29 trained Wikipedia articles, 33 acquired Wikipedia articles, and one transcript containing 16 original human-authored Dolly records. This is a current-state audit, not an identical fresh-build comparison. The [native receipt](storage-amplification/windows-native-current-summary.json) records the exact cohort and the complete report's SHA-256.
+
+After the separately verified lossless event-page rewrite, live pattern JSON occupied 160,636,924 bytes, or 86.6% of the pattern relation's 185,548,800 allocated bytes. Pattern indexes occupied 3,670,016 bytes, or 2.0%. The native measurement confirms the need to normalize live payloads.
+
+The rewrite preserved all 201 Wikipedia event-page decoded hashes, ownership columns and decoded-size ledgers. Its native temporary-table comparison measured 96,046,934 versus 46,466,963 stored payload bytes. Physical compaction reduced the Wikipedia candidate from its original 469,835,776 bytes to 419,921,920 bytes before the Dolly transcript was added. These are a limited representation improvement; the canonical template, lexical-form, witness and occurrence repair remains required.
 
 PostgreSQL size semantics: [size functions](https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADMIN-DBSIZE). Space reclamation: [routine vacuuming](https://www.postgresql.org/docs/18/routine-vacuuming.html).
