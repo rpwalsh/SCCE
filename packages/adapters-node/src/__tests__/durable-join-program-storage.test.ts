@@ -3,7 +3,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { canonicalDigestHex, canonicalStringify, CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, createHasher, hashEvent, joinProgramMixtureStorageForm, type JoinProgramMixture, type JsonValue, type ScceEvent } from "@scce/kernel";
-import { DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA } from "../durable-creative-event-storage.js";
 import { decodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA,
   durableJoinProgramJsonByteLengths, encodeDurableJoinPrograms } from "../durable-join-program-storage.js";
 import { PostgresStorageAdapter } from "../postgres.js";
@@ -128,40 +127,15 @@ function offlineStorage() {
 describe("Postgres JOIN storage boundaries", () => {
   const label = { tenantId: "tenant.owned", principals: [], compartments: [], exportClass: "public" as const, mergePolicy: "isolated" as const };
 
-  it("uses the same creative page codec and decoded-byte ledger at pattern, induced model and event boundaries", async () => {
-    const { adapter, rows, calls } = offlineStorage();
-    const page = { schema: CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, contentDigest: "unaltered", bundle: {
-      schema: CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, profileId: "profile.owned", sourceVersionIds: ["version.owned"],
-      events: Array.from({ length: 64 }, (_, index) => ({ id: `event.${index}`, evidenceId: "evidence.current.owned",
-        argumentFrame: { schema: "frame.owned", roleIds: ["role.agent"], bindings: [], retained: null } })) } };
-    const pattern = { id: "pattern.creative.owned", profileId: "profile.owned", patternKind: "semantic_role" as const,
-      support: 64, entropy: 0, evidenceIds: [], updatedAt: 1000, informationLabel: label, patternJson: page };
-    await adapter.languageMemory.putLanguagePattern(pattern);
-    const stored = rows.patterns[0]!.pattern_json as Record<string, unknown>;
-    expect(JSON.stringify(stored)).toContain(DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA);
-    const ledger = stored[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] as Record<string, number>;
-    expect(ledger.decodedJsonBytes).toBe(bytes(page));
-    expect(ledger.decodedJsonbBytes).toBeGreaterThan(bytes(stored));
-    expect((await adapter.languageMemory.listLanguagePatterns({ patternIds: [pattern.id], limit: 1, maxTotalJsonBytes: Number(ledger.decodedJsonbBytes), requireComplete: true }))[0]!.patternJson).toEqual(page);
-    expect(calls.at(-1)).toContain("SUM(COALESCE(eligible.decoded_jsonb_bytes, octet_length(eligible.pattern_json::text)))");
-    expect(calls.at(-1)).toContain("WHERE (SELECT COUNT(*) FROM candidate_pool)=(SELECT COUNT(*) FROM complete_read)");
-    await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", maxTotalJsonBytes: bytes(stored) });
-    expect(calls.at(-1)).toContain("NULL::numeric AS decoded_jsonb_bytes");
-    expect(calls.at(-1)).not.toContain("{bundle,events}");
-    const model = { id: "induction.creative.owned", corpusDocuments: 1, vocabularySize: 2, projection: page };
-    await adapter.inducedLanguageModels.putModel({ id: model.id, model: model as never, trainingPlanId: "plan.owned", createdAt: 1000, informationLabel: label });
-    expect(JSON.stringify(rows.models[0]!.model_json)).toContain(DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA);
-    expect((await adapter.inducedLanguageModels.readById(model.id))!.model).toEqual(model);
-    const event = { id: "event.creative.owned", episodeId: "episode.owned", typeId: "InducedLanguageModelPersisted", t: 1000, parents: [],
-      payload: { memoryProjection: { patterns: [{ patternJson: page }] } } } as unknown as Omit<ScceEvent, "hash">;
-    const original = { ...event, hash: hashEvent(event, [], createHasher()) };
-    await adapter.events.append(original);
-    expect(JSON.stringify(rows.events[0]!.payload_json)).toContain(DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA);
-    const decoded = (await adapter.events.readEpisode(original.episodeId))[0]!;
-    expect(decoded).toEqual(original);
-    expect(hashEvent(decoded, [], createHasher())).toBe(original.hash);
+  it("rejects unowned noncanonical creative event lookalikes before canonical records are published", async () => {
+    const { adapter, rows } = offlineStorage();
+    const page = { schema: CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, contentDigest: "unowned", bundle: {
+      schema: CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, profileId: "profile.unowned", compilerId: "compiler.unowned",
+      events: Array.from({ length: 64 }, (_, index) => ({ id: `event.${index}`, profileId: "profile.unowned", evidenceId: "evidence.unowned" })) } };
+    await expect(adapter.languageMemory.putLanguagePattern({ id: "pattern.unowned", profileId: "profile.unowned", patternKind: "semantic_role",
+      support: 64, entropy: 0, evidenceIds: [], updatedAt: 1000, informationLabel: label, patternJson: page })).rejects.toThrow("source owner missing");
+    expect(rows.patterns).toEqual([]);
   });
-
   it("normalizes pattern cold writes and decodes list reads", async () => {
     const { adapter, rows } = offlineStorage();
     const pattern = { id: "pattern.owned", profileId: "profile.owned", patternKind: "syntax" as const, support: 1, entropy: 0, evidenceIds: [], updatedAt: 1000, informationLabel: label,

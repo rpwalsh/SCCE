@@ -6,7 +6,7 @@ import { createCorpusSegmentationRun, openCorpusSegmentationRun, activateCorpusS
 import { AsyncLocalStorage } from "node:async_hooks";
 import { languageUnitMetadataMergeSql, SOURCE_METADATA_BINDING_SCHEMA } from "./unit-source-metadata.js";
 import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js";
-import { decodeDurableJoinPrograms, encodeDurableJoinPrograms } from "./durable-join-program-storage.js";
+import { createCanonicalCreativeEventCodec } from "./canonical-creative-event-store.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "./dialogue-conversational-checkpoint.js";
 import { pooledProfileOwnershipSql, profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
 import {
@@ -867,6 +867,17 @@ async function readEventLedgerHead(query: (sql: string, params: readonly unknown
   return head;
 }
 
+function canonicalCreativeCodec(storage: PostgresStorageAdapter, client?: PoolClient) {
+  return createCanonicalCreativeEventCodec({
+    table: name => storage.table(name),
+    query: async <T>(sql: string, params: unknown[] = []): Promise<T[]> => client
+      ? (await client.query(sql, params)).rows as T[] : storage.query<T>(sql, params),
+    requireWritableInformationLabel: label => storage.requireWritableInformationLabel(label),
+    informationAccessPredicate: (alias, firstParameter) => storage.informationAccessPredicate(alias, firstParameter),
+    informationAccess: storage.informationAccess
+  });
+}
+
 function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
   const appendQueues = new WeakMap<PoolClient, Promise<void>>();
   return {
@@ -897,17 +908,21 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
           const repeated = [...unique.values()].filter(event => existingById.has(String(event.id)));
           if (repeated.length) {
             const bodies = await client.query<EventRow>(`SELECT * FROM ${table} WHERE id=ANY($1)`, [repeated.map(event => String(event.id))]);
-            const stored = new Map(bodies.rows.map(row => [row.id, rowToEvent(row)]));
+            const payloads = await canonicalCreativeCodec(storage, client).decodeMany(bodies.rows.map(row => row.payload_json));
+            const stored = new Map(bodies.rows.map((row, index) => [row.id, rowToEvent({ ...row, payload_json: payloads[index] as JsonValue })]));
             for (const event of repeated) if (canonicalStringify(stored.get(String(event.id))) !== canonicalStringify(event)) throw eventIdentityConflict(String(event.id));
           }
           const fresh = [...unique.values()].filter(event => !existingById.has(String(event.id)));
           if (!fresh.length) return;
           // Hashing stays synchronous; the queue serializes head selection and persistence on one client.
-          const rows = fresh.map(event => {
+          const rows: unknown[][] = [];
+          const codec = canonicalCreativeCodec(storage, client);
+          const payloads = await codec.encodeMany(fresh.map(event => ({ value: event.payload })));
+          for (const [index, event] of fresh.entries()) {
             const ledgerHash = sha256(`${prev}\u001f${event.hash}`);
             prev = ledgerHash;
-            return [event.id, event.episodeId, event.typeId, event.t, JSON.stringify(encodeDurableJoinPrograms(event.payload)), event.parents, event.hash, ledgerHash];
-          });
+            rows.push([event.id, event.episodeId, event.typeId, event.t, JSON.stringify(payloads[index]), event.parents, event.hash, ledgerHash]);
+          }
           for (let start = 0; start < rows.length; start += EVENT_INSERT_MAX_ROWS_PER_STATEMENT) {
             const params: unknown[] = [];
             const tuples = rows.slice(start, start + EVENT_INSERT_MAX_ROWS_PER_STATEMENT).map(row => `(${row.map((value, column) => {
@@ -932,7 +947,8 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
     },
     async readEpisode(episodeId) {
       const rows = await storage.query<EventRow>(`SELECT * FROM ${storage.table("events")} WHERE episode_id=$1 ORDER BY t,id`, [episodeId]);
-      return rows.map(rowToEvent);
+      const payloads = await canonicalCreativeCodec(storage).decodeMany(rows.map(row => row.payload_json));
+      return rows.map((row, index) => rowToEvent({ ...row, payload_json: payloads[index] as JsonValue }));
     },
     async readEpisodeEventSkeletons(episodeIds) {
       if (!episodeIds.length) return [];
@@ -954,7 +970,8 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
       if (input.beforeT !== undefined) { params.push(input.beforeT); where.push(`t <= $${params.length}`); }
       params.push(input.limit ?? 200);
       const rows = await storage.query<EventRow>(`SELECT * FROM ${storage.table("events")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY t DESC,id DESC LIMIT $${params.length}`, params);
-      return rows.map(rowToEvent);
+      const payloads = await canonicalCreativeCodec(storage).decodeMany(rows.map(row => row.payload_json));
+      return rows.map((row, index) => rowToEvent({ ...row, payload_json: payloads[index] as JsonValue }));
     },
     async latestLedgerHash() {
       const head = await readEventLedgerHead((sql, params) => storage.query<{ value_json: EventLedgerHead }>(sql, [...params]), storage.table("storage_meta"));
@@ -2930,7 +2947,7 @@ interface InducedLanguageModelRow {
 function rowToInducedLanguageModelRecord(row: InducedLanguageModelRow): InducedLanguageModelRecord {
   return {
     id: row.id,
-    model: decodeDurableJoinPrograms<InducedLanguageModel>(row.model_json),
+    model: row.model_json,
     trainingPlanId: row.training_plan_id,
     createdAt: row.created_at.getTime(),
     informationLabel: normalizeInformationLabel(row.information_label as never)
@@ -2941,6 +2958,8 @@ function rowToInducedLanguageModelRecord(row: InducedLanguageModelRow): InducedL
 function createInducedLanguageModelStore(storage: PostgresStorageAdapter): InducedLanguageModelStore {
   return {
     async putModel(record) {
+      await storage.transaction(async () => {
+      const model = await canonicalCreativeCodec(storage).encode(record.model, record.informationLabel);
       await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("induced_language_models")}(id,training_plan_id,model_json,corpus_documents,vocabulary_size,information_label,created_at)
          VALUES($1,$2,$3::jsonb,$4,$5,$6::jsonb,TO_TIMESTAMP($7/1000.0))
@@ -2948,20 +2967,23 @@ function createInducedLanguageModelStore(storage: PostgresStorageAdapter): Induc
         [
           record.id,
           record.trainingPlanId,
-          JSON.stringify(encodeDurableJoinPrograms(record.model)),
+          JSON.stringify(model),
           record.model.corpusDocuments,
           record.model.vocabularySize,
           JSON.stringify(record.informationLabel),
           record.createdAt
         ]
       );
+      });
     },
     async readById(id) {
       const rows = await storage.query<InducedLanguageModelRow>(
         `SELECT * FROM ${storage.table("induced_language_models")} WHERE id=$1`,
         [id]
       );
-      return rows[0] ? rowToInducedLanguageModelRecord(rows[0]) : undefined;
+      if (!rows[0]) return undefined;
+      const [model] = await canonicalCreativeCodec(storage).decodeMany([rows[0].model_json]);
+      return rowToInducedLanguageModelRecord({ ...rows[0], model_json: model as InducedLanguageModel });
     },
     async listRecent(query = {}) {
       const limit = Math.max(1, Math.min(200, query.limit ?? 20));
@@ -2969,7 +2991,8 @@ function createInducedLanguageModelStore(storage: PostgresStorageAdapter): Induc
         `SELECT * FROM ${storage.table("induced_language_models")} ORDER BY created_at DESC LIMIT $1`,
         [limit]
       );
-      return rows.map(rowToInducedLanguageModelRecord);
+      const models = await canonicalCreativeCodec(storage).decodeMany(rows.map(row => row.model_json));
+      return rows.map((row, index) => rowToInducedLanguageModelRecord({ ...row, model_json: models[index] as InducedLanguageModel }));
     }
   };
 }
@@ -4860,7 +4883,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            ORDER BY ${order("complete_read")}`
         : finalSelect;
       // Carry checked scalar headers through admission instead of rescanning their materialized population.
-      return (await storage.query<LanguagePatternRow>(
+      const rows = await storage.query<LanguagePatternRow>(
         `WITH ${projectionSets.length ? `${projectionSets.join(",\n")},` : ""}
          pattern_headers AS MATERIALIZED (
            SELECT pattern.id, pattern.profile_id, pattern.pattern_kind, pattern.support, pattern.entropy,
@@ -4956,7 +4979,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
          )
          ${resultSelect}`,
         params
-      )).map(rowToLanguagePattern);
+      );
+      const patterns = await canonicalCreativeCodec(storage).decodeMany(rows.map(row => row.pattern_json));
+      return rows.map((row, index) => rowToLanguagePattern({ ...row, pattern_json: patterns[index] as JsonValue }));
     },
     async listSemanticFrames(query = {}) {
       const params: unknown[] = [];
@@ -5103,17 +5128,19 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
   if (!patterns.length) return;
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "language_patterns", patterns.map(pattern => ({ id: pattern.id, informationLabel: pattern.informationLabel })));
-    const payload = patterns.map(pattern => ({
+    const codec = canonicalCreativeCodec(storage), payload = [];
+    const encoded = await codec.encodeMany(patterns.map(pattern => ({ value: pattern.patternJson, informationLabel: labels.get(pattern.id)! })));
+    for (const [index, pattern] of patterns.entries()) payload.push({
     id: pattern.id,
     profile_id: pattern.profileId,
     pattern_kind: pattern.patternKind,
     support: pattern.support,
     entropy: pattern.entropy,
-    pattern_json: encodeDurableJoinPrograms(pattern.patternJson),
+    pattern_json: encoded[index],
     evidence_ids_json: pattern.evidenceIds,
       updated_at_ms: pattern.updatedAt,
       information_label: labels.get(pattern.id)!
-    }));
+    });
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
       await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("language_patterns")} AS lp(id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label)
@@ -6514,7 +6541,7 @@ function rowToCalibrationObservation(row: CalibrationObservationRow): Calibratio
 }
 
 interface EventRow { id: string; episode_id: string; type_id: string; t: string; payload_json: JsonValue; parents: string[]; hash: string }
-function rowToEvent(row: EventRow): ScceEvent { return { id: row.id as never, episodeId: row.episode_id as never, typeId: row.type_id as never, t: Number(row.t), payload: decodeDurableJoinPrograms<JsonValue>(row.payload_json), parents: row.parents as never[], hash: row.hash }; }
+function rowToEvent(row: EventRow): ScceEvent { return { id: row.id as never, episodeId: row.episode_id as never, typeId: row.type_id as never, t: Number(row.t), payload: row.payload_json, parents: row.parents as never[], hash: row.hash }; }
 
 interface ConversationTurnRow { id: string; session_id: string; episode_id: string; turn_index: string; role_id: string; text: string; evidence_ids: string[]; metadata_json: JsonValue; created_at: Date }
 function rowToConversationTurn(row: ConversationTurnRow): ConversationTurnRecord {
@@ -6941,7 +6968,7 @@ interface LanguageUnitRow { id: string; profile_id: string; source_version_id: s
 function rowToLanguageUnit(row: LanguageUnitRow): LanguageUnitRecord { return { id: row.id, profileId: row.profile_id, sourceVersionId: row.source_version_id as SourceVersionId, script: row.script, unitKind: row.unit_kind, text: row.unit_text, features: row.features, competenceVector: row.competence_vector.map(Number), alpha: Number(row.alpha), evidenceIds: row.evidence_ids as EvidenceId[], metadata: row.metadata_json, informationLabel: normalizeInformationLabel(row.information_label) }; }
 
 interface LanguagePatternRow { id: string; profile_id: string; pattern_kind: LanguagePatternRecord["patternKind"]; support: string; entropy: string; pattern_json: JsonValue; evidence_ids: string[]; updated_at: Date; information_label: InformationLabel }
-function rowToLanguagePattern(row: LanguagePatternRow): LanguagePatternRecord { return { id: row.id, profileId: row.profile_id, patternKind: row.pattern_kind, support: Number(row.support), entropy: Number(row.entropy), patternJson: decodeDurableJoinPrograms<JsonValue>(row.pattern_json), evidenceIds: row.evidence_ids as EvidenceId[], updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
+function rowToLanguagePattern(row: LanguagePatternRow): LanguagePatternRecord { return { id: row.id, profileId: row.profile_id, patternKind: row.pattern_kind, support: Number(row.support), entropy: Number(row.entropy), patternJson: row.pattern_json, evidenceIds: row.evidence_ids as EvidenceId[], updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
 
 interface SemanticFrameRow { id: string; frame_json: JsonValue; embedding: string; evidence_ids: string[]; alpha: string; created_at: Date; information_label: InformationLabel }
 function rowToSemanticFrame(row: SemanticFrameRow): SemanticFrameRecord { return { id: row.id, frameJson: row.frame_json, embedding: parseVectorText(row.embedding, 64), evidenceIds: row.evidence_ids as EvidenceId[], alpha: Number(row.alpha), createdAt: row.created_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }

@@ -215,6 +215,30 @@ export interface DurableCreativeEventClosedClassConnector {
   endCodePoint: number;
 }
 
+export type UniversalCreativeEventSource = Omit<DurableCreativeEventConstruction,
+  "id" | "constructionId" | "relationId" | "sourceLabelDigest" | "argumentFrame"> & {
+    argumentFrame: Omit<DurableCreativeEventArgumentFrame, "id">;
+  };
+
+/** Compiler and durable normalization share exactly the same redundant identities. */
+export function deriveUniversalCreativeEvent(input: UniversalCreativeEventSource, hasher: Hasher): DurableCreativeEventConstruction {
+  if (input.compilerId !== UNIVERSAL_CREATIVE_EVENT_COMPILER_ID || input.argumentFrame.compilerId !== input.compilerId) {
+    throw new Error("unsupported universal creative-event compiler identity");
+  }
+  const relationId = stableId(hasher, "language.source_relation", [input.profileId, normalizeMemorySurface(input.sourceLabel)]);
+  const constructionId = stableId(hasher, "surface.creative_event.construction", [input.compilerId, input.profileId, input.tenseId, input.valencyId]);
+  const bindings = input.argumentFrame.bindings.map(binding => ({ ...binding, surfaceDigest: hasher.digestHex(binding.surface),
+    ...(binding.connector ? { connector: { ...binding.connector, surfaceDigest: hasher.digestHex(binding.connector.surface) } } : {}) }));
+  const argumentFrame = { ...input.argumentFrame, bindings, id: stableId(hasher, "surface.creative_event.argument_frame", [
+    input.compilerId, input.profileId, relationId, input.argumentFrame.roleIds,
+    bindings.map(binding => ({ roleId: binding.roleId, connector: binding.connector ? normalizeMemorySurface(binding.connector.surface) : null }))
+  ]) };
+  const sourceLabelDigest = hasher.digestHex(input.sourceLabel);
+  const id = stableId(hasher, "surface.creative_event", [input.compilerId, constructionId, input.sourceVersionId,
+    input.evidenceId, input.evidenceContentHash, input.labelStartCodePoint, input.labelEndCodePoint, relationId, sourceLabelDigest, argumentFrame, input.forms]);
+  return { ...input, id, constructionId, relationId, sourceLabelDigest, argumentFrame };
+}
+
 export interface LanguageConstructionMemoryIssue {
   code: LanguageConstructionMemoryRejectionId;
   patternId?: string;
@@ -638,22 +662,13 @@ function compileUniversalCreativeEvent(input: {
     bindings.push({
       roleId: "scce.role.patient",
       surface: right.surface,
-      surfaceDigest: hasher.digestHex(right.surface),
+      surfaceDigest: "",
       startCodePoint: right.codePointStart,
       endCodePoint: right.codePointEnd
     });
   }
   const roleIds = ["scce.role.agent", ...bindings.map(binding => binding.roleId)];
-  const relationId = stableId(hasher, "language.source_relation", [input.profileId, normalizeMemorySurface(predicate)]);
-  const argumentFrameId = stableId(hasher, "surface.creative_event.argument_frame", [
-    UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
-    input.profileId,
-    relationId,
-    roleIds,
-    bindings.map(binding => ({ roleId: binding.roleId, connector: null }))
-  ]);
-  const argumentFrame: DurableCreativeEventArgumentFrame = {
-    id: argumentFrameId,
+  const argumentFrame: UniversalCreativeEventSource["argumentFrame"] = {
     schema: CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
     compilerId: UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
     sourceSentenceStartCodePoint: left.codePointStart,
@@ -663,29 +678,8 @@ function compileUniversalCreativeEvent(input: {
   };
   const valencyId = bindings.length ? "scce.valency.agent_patient" as const : "scce.valency.agent" as const;
   const forms = { infinitive: predicate, past: predicate, present: predicate, gerund: predicate, participle: predicate };
-  const constructionId = stableId(hasher, "surface.creative_event.construction", [
-    UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
-    input.profileId,
-    "scce.tense.unknown",
-    valencyId
-  ]);
-  const id = stableId(hasher, "surface.creative_event", [
-    UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
-    constructionId,
-    String(evidence.sourceVersionId),
-    String(evidence.id),
-    String(evidence.contentHash),
-    segment.codePointStart,
-    segment.codePointEnd,
-    relationId,
-    hasher.digestHex(predicate),
-    argumentFrame,
-    forms
-  ]);
-  return {
-    id,
+  return deriveUniversalCreativeEvent({
     compilerId: UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
-    constructionId,
     profileId: input.profileId,
     sourceVersionId: String(evidence.sourceVersionId),
     evidenceId: String(evidence.id),
@@ -695,15 +689,13 @@ function compileUniversalCreativeEvent(input: {
     labelStartCodePoint: segment.codePointStart,
     labelEndCodePoint: segment.codePointEnd,
     sourceOrdinal: evidence.charStart + segment.codePointStart,
-    relationId,
     sourceLabel: predicate,
-    sourceLabelDigest: hasher.digestHex(predicate),
     tenseId: "scce.tense.unknown",
     valencyId,
     roleIds,
     argumentFrame,
     forms
-  };
+  }, hasher);
 }
 
 interface SourceSentenceRange {

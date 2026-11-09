@@ -3,6 +3,7 @@
 import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_SOURCE_SYSTEM,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type InformationAccessContext } from "@scce/kernel";
 import { LANGUAGE_PATTERN_SELECTION_HEADERS, languagePatternSelectionHeaderStatement } from "./postgres-language-pattern-headers.js";
+import { canonicalCreativeEventSchemaStatements } from "./canonical-creative-event-store.js";
 
 export type InformationLabeledTable =
   | "source_versions"
@@ -378,6 +379,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.language_profile_signatures (id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL, scripts JSONB NOT NULL, direction TEXT NOT NULL, top_continuation JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    ...canonicalCreativeEventSchemaStatements(q),
     // candidate_pool's scope filter reads this instead of detoasting pattern_json (5.4GB) per row.
     `ALTER TABLE ${q}.language_patterns ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (pattern_json->>'sourceSystem') STORED`,
     languagePatternSelectionHeaderStatement(q),
@@ -692,6 +694,10 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     ngram_observations: ["id", "stream_id", "language_hint", "order_n", "history", "symbol", "count", "metadata_json", "information_label"],
     ngram_models: ["id", "stream_id", "language_hint", "max_order", "discount", "model_json", "information_label"],
     language_units: ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json", "information_label"],
+    creative_event_templates: ["id", "kind", "value_json"],
+    creative_event_lexemes: ["id", "kind", "value_json"],
+    creative_event_witnesses: ["id", "kind", "value_json", "information_label"],
+    creative_event_occurrences: ["id", "kind", "value_json", "information_label"],
     language_patterns: ["id", "profile_id", "pattern_kind", "support", "entropy", "pattern_json", "evidence_ids", "information_label", ...LANGUAGE_PATTERN_SELECTION_HEADERS],
     semantic_frames: ["id", "frame_json", "normalized_surface_hash", "embedding", "evidence_ids", "alpha", "information_label"],
     translation_alignments: ["id", "source_frame_id", "target_frame_id", "source_language", "target_language", "force", "alignment_json", "evidence_ids", "information_label"],
