@@ -709,12 +709,14 @@ function isCanonicalSurface(surface: string): boolean {
 export function collectBoundaryTrainingObservations(input: {
   lattices: readonly (SurfaceLattice | SurfaceBoundaryMeasurement)[];
   anchors?: readonly BoundaryAnchor[];
+  /** Exact snapshot counts for every requested class/context key; missing keys are an error. */
+  featureContext?: CompiledBoundaryFeatureContext;
 }): BoundaryObservation[] {
   const observations: BoundaryObservation[] = [];
   const lattices = [...input.lattices].sort((left, right) => left.id.localeCompare(right.id));
   const documentsByUnitClass = new Map<string, Set<string>>();
   const unitsByContext = new Map<string, Set<string>>();
-  for (const lattice of lattices) {
+  for (const lattice of input.featureContext ? [] : lattices) {
     for (const unit of lattice.units) {
       if (unit.overlapClass === "base_partition") continue;
       const documents = documentsByUnitClass.get(unit.surfaceFormClassId) ?? new Set<string>();
@@ -726,6 +728,14 @@ export function collectBoundaryTrainingObservations(input: {
       unitsByContext.set(contextKey, classes);
     }
   }
+  if (input.featureContext && (input.featureContext.schema !== "scce.boundary_feature_context.v1"
+    || !input.featureContext.id || !Number.isSafeInteger(input.featureContext.sourceDocumentCount)
+    || input.featureContext.sourceDocumentCount < 1)) throw new Error("Invalid boundary feature context header");
+  const requiredCount = (counts: Record<string, number>, key: string, maximum?: number): number => {
+    const count = counts[key];
+    if (!Number.isSafeInteger(count) || count < 0 || maximum !== undefined && count > maximum) throw new Error("Incomplete boundary feature context counts");
+    return count;
+  };
   const anchorsByDocument = new Map<string, BoundaryAnchor[]>();
   for (const anchor of input.anchors ?? []) {
     if (!anchor.sourceId.trim()) throw new Error("boundary anchor requires a sourceId");
@@ -746,12 +756,14 @@ export function collectBoundaryTrainingObservations(input: {
     }
 
     for (const unit of hypotheses) {
-      const documentSupport = documentsByUnitClass.get(unit.surfaceFormClassId)?.size ?? 1;
+      const documentSupport = input.featureContext
+        ? requiredCount(input.featureContext.documentCountBySurfaceFormClass, unit.surfaceFormClassId, input.featureContext.sourceDocumentCount)
+        : documentsByUnitClass.get(unit.surfaceFormClassId)?.size ?? 1;
       const recurrenceFeature = clamp01(Math.log1p(Math.max(0, documentSupport - 1)) / 6);
       const spanLength = Math.max(1, unit.graphemeEnd - unit.graphemeStart);
       const compressionFeature = clamp01(recurrenceFeature * (1 - 1 / spanLength));
       const substitutionFeature = clamp01(
-        Math.log1p(Math.max(0, (unitsByContext.get(boundaryContextKey(unit))?.size ?? 1) - 1)) / 6
+        Math.log1p(Math.max(0, (input.featureContext ? requiredCount(input.featureContext.classCountByBoundaryContext, boundaryContextKey(unit)) : unitsByContext.get(boundaryContextKey(unit))?.size ?? 1) - 1)) / 6
       );
       for (let position = Math.max(1, unit.graphemeStart);
         position <= Math.min(graphemes.length - 1, unit.graphemeEnd);
@@ -892,7 +904,7 @@ export function compileBoundaryFeatureContext(input: {
   };
 }
 
-function boundaryContextKey(unit: SurfaceLatticeUnit): string {
+export function boundaryContextKey(unit: SurfaceLatticeUnit): string {
   return boundaryContextKeyParts(unit.leftContextSketch, unit.rightContextSketch);
 }
 
