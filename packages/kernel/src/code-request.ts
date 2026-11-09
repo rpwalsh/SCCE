@@ -62,6 +62,8 @@ export interface CodeRequestSignal {
   demand: number;
   /** Paths the request names, in request order. */
   paths: string[];
+  /** Explicit code or markup artifact paths, independent of the selected executable language. */
+  artifactPaths?: readonly string[];
   signals: string[];
   /** Typed, request-local structural observations used by routing and later learning. */
   observations: CodeStructureObservation[];
@@ -160,7 +162,7 @@ function hasFormalCallShape(text: string): boolean {
   return false;
 }
 const CODE_PUNCTUATION = /=>|::|\{\s*\}|<\p{Lu}[\p{L}\p{N}]*>/u;
-const PATH_SHAPE = /(?:[\p{L}\p{N}_$.@-]+\/)+[\p{L}\p{N}_$.-]+\.([\p{L}\p{N}]{1,4})\b|\b[\p{L}\p{N}_$-]+\.([\p{L}\p{N}]{1,4})\b/gu;
+const PATH_SHAPE = /(?:[\p{L}\p{N}_$.@-]+\/)+[\p{L}\p{N}_$.-]+\.([\p{L}\p{N}]{1,4})\b|(?<![\p{L}\p{N}_$])[\p{L}\p{N}_$-]+\.([\p{L}\p{N}]{1,4})\b/gu;
 
 /**
  * Structural, language-neutral evidence that a request is about code: fenced
@@ -198,9 +200,13 @@ export function codeRequestSignal(requestText: string, options: CodeRequestSigna
   }
 
   const paths: string[] = [];
+  const artifactPaths: string[] = [];
   for (const match of text.matchAll(PATH_SHAPE)) {
     const extension = String(match[1] ?? match[2] ?? "").toLocaleLowerCase();
     const extensionLanguage = CODE_EXTENSION_LANGUAGES.get(extension);
+    if (extensionLanguage || extension === "html" || extension === "htm") {
+      if (!artifactPaths.includes(match[0])) artifactPaths.push(match[0]);
+    }
     if (!extensionLanguage) continue;
     const path = match[0];
     if (!paths.includes(path)) paths.push(path);
@@ -232,7 +238,8 @@ export function codeRequestSignal(requestText: string, options: CodeRequestSigna
     observe("owner_stateful_behavior_example");
   }
 
-  return { ...(language ? { language } : {}), declaredCallableIds: [...declaredCallableIds(text)], demand: codeRequestDemand(observations, options.demandModel), paths: paths.slice(0, 8), signals, observations, behaviorRequirements, statefulBehaviorRequirements };
+  return { ...(language ? { language } : {}), declaredCallableIds: [...declaredCallableIds(text)], artifactPaths,
+    demand: codeRequestDemand(observations, options.demandModel), paths: paths.slice(0, 8), signals, observations, behaviorRequirements, statefulBehaviorRequirements };
 }
 
 /**
@@ -377,7 +384,7 @@ function declaredCallableIds(text: string): Set<string> {
     if (!call) continue;
     cursor = call.end;
     const parameters = splitParameterList(call.inner).map(declaredParameterName);
-    if (parameters.length > 0 && parameters.every((value): value is string => value !== undefined)) {
+    if ((!call.inner.trim() || parameters.length > 0) && parameters.every((value): value is string => value !== undefined)) {
       result.add(identifier.value);
     }
   }

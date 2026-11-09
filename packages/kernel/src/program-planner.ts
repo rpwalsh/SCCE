@@ -124,6 +124,8 @@ export interface SourceEmissionPlan {
 }
 
 export interface ProgramPlan {
+  declaredCallableIds?: readonly string[];
+  requiredArtifactPaths?: readonly string[];
   nativeDeclarations?: import("./program-native-abi.js").ProgramNativeCallableAbi[];
   artifactProofBinding?:JsonValue;
   id: string;
@@ -161,6 +163,7 @@ export interface ProgramEmissionAvailability {
   status: "available" | "unavailable";
   languageId: string;
   reasonIds: string[];
+  unresolved?: { callableIds: string[]; artifactPaths: string[] };
 }
 
 export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Hasher }) {
@@ -214,6 +217,8 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       const build = buildCommand(shape, files);
       const test = testCommand(shape, files);
       const planId = options.idFactory.semanticId("program_plan", { shape, files, build, test,
+        ...(input.programIntent?.declaredCallableIds?.length ? { declaredCallableIds: input.programIntent.declaredCallableIds } : {}),
+        ...(input.programIntent?.requiredArtifactPaths?.length ? { requiredArtifactPaths: input.programIntent.requiredArtifactPaths } : {}),
         ownerBehaviorRequirements, ownerStatefulBehaviorRequirements, artifactConstruction,
         nativeDeclarations:input.programIntent&&"nativeDeclarations" in input.programIntent?toJsonValue(input.programIntent.nativeDeclarations):[],
         ownerScope: programArtifactMetadata(input.programIntent?.metadata),
@@ -305,6 +310,8 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         artifactConstruction,
         files,
         sourceEmission,
+        ...(input.programIntent?.declaredCallableIds?.length ? { declaredCallableIds: [...input.programIntent.declaredCallableIds] } : {}),
+        ...(input.programIntent?.requiredArtifactPaths?.length ? { requiredArtifactPaths: [...input.programIntent.requiredArtifactPaths] } : {}),
         ...(input.programIntent?.nativeDeclarations?.length?{nativeDeclarations:input.programIntent.nativeDeclarations}:{}),
         ownerBehaviorRequirements,
         ownerStatefulBehaviorRequirements,
@@ -344,6 +351,10 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
     },
 
     emitPlanned(plan: ProgramPlan, input: ProgramPlannerInput): ProgramGraph {
+      const unresolved = unresolvedOwnerProgramDeclarations(plan);
+      if (unresolved.callableIds.length || unresolved.artifactPaths.length) throw new NativeProgramEmissionError(
+        unresolved.callableIds.length ? "program.emission.declared_callable_unresolved" : "program.emission.artifact_target_unresolved",
+        "Owner-declared program ports or artifact targets have no owned lowering");
       const files = emitFiles(plan, input, options.idFactory, options.hasher);
       const emittedRuntime = emittedRuntimeForShape(plan.intent.shape);
       const usesFallbackRuntime = !nodeRuntimeForShape(plan.intent.shape);
@@ -1982,6 +1993,8 @@ function programGraphManifest(plan: ProgramPlan, input: ProgramPlannerInput,proo
     kind: "program_graph",
     version: 4,
     planId: plan.id,
+    ...(plan.declaredCallableIds?.length ? { declaredCallableIds: plan.declaredCallableIds } : {}),
+    ...(plan.requiredArtifactPaths?.length ? { requiredArtifactPaths: plan.requiredArtifactPaths } : {}),
     shape: plan.intent.shape,
     graph: plan.graph,
     sourceEmission: plan.sourceEmission,
@@ -3643,6 +3656,10 @@ function rustOwnerRequirementIssue(plan: ProgramPlan, requestText?: string): Rus
 
 export function programPlanEmissionAvailability(plan: ProgramPlan, requestText: string): ProgramEmissionAvailability {
   const languageId = emittedRuntimeForShape(plan.intent.shape).languageId;
+  const unresolved = unresolvedOwnerProgramDeclarations(plan);
+  if (unresolved.callableIds.length || unresolved.artifactPaths.length) return { status: "unavailable", languageId,
+    reasonIds: [...(unresolved.callableIds.length ? ["program.emission.declared_callable_unresolved"] : []),
+      ...(unresolved.artifactPaths.length ? ["program.emission.artifact_target_unresolved"] : [])], unresolved };
   if (languageId === "go" || languageId === "rust" && (plan.ownerStatefulBehaviorRequirements.length || hasOwnedRustScalarAbi(plan))) {
     try { if (languageId === "go") nativeGoProgram(plan); else if(plan.ownerStatefulBehaviorRequirements.length) nativeRustStatefulProgram(plan, emittedRuntimeForShape(plan.intent.shape)); else nativeRustProgram(plan,emittedRuntimeForShape(plan.intent.shape)); } catch (error) {
       if (error instanceof NativeProgramEmissionError) return { status: "unavailable", languageId, reasonIds: [error.reasonId] };
@@ -3651,6 +3668,14 @@ export function programPlanEmissionAvailability(plan: ProgramPlan, requestText: 
   }
   const issue = languageId === "rust" && !plan.ownerStatefulBehaviorRequirements.length && !hasOwnedRustScalarAbi(plan) ? rustOwnerRequirementIssue(plan, requestText) : undefined;
   return { status: issue ? "unavailable" : "available", languageId, reasonIds: issue ? [issue.reasonId] : [] };
+}
+
+function unresolvedOwnerProgramDeclarations(plan: ProgramPlan): { callableIds: string[]; artifactPaths: string[] } {
+  const ownedCallables = new Set([...plan.ownerBehaviorRequirements.map(requirement => requirement.callableId),
+    ...plan.ownerStatefulBehaviorRequirements.flatMap(requirement => requirement.invocations.map(invocation => invocation.callableId))]);
+  const paths = new Set(plan.files.map(file => file.path));
+  return { callableIds: [...new Set(plan.declaredCallableIds ?? [])].filter(id => !ownedCallables.has(id)),
+    artifactPaths: [...new Set(plan.requiredArtifactPaths ?? [])].filter(path => !paths.has(path)) };
 }
 
 function rustOwnerRequirements(plan: ProgramPlan): Map<string, ProgramBehaviorRequirement[]> {

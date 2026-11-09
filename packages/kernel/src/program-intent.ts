@@ -31,6 +31,8 @@ export function programIntentForTurn(input: {
     capabilityIds: input.codeSignal.paths.length ? ["program.capability.source_edit_plan"] : [],
     ...(input.codeSignal.language ? { languageId: input.codeSignal.language } : {}),
     ...(input.codeSignal.paths.length ? { entrypointPath: input.codeSignal.paths[0] } : {}),
+    ...(input.codeSignal.declaredCallableIds?.length ? { declaredCallableIds: [...input.codeSignal.declaredCallableIds] } : {}),
+    ...((input.codeSignal.artifactPaths ?? input.codeSignal.paths).length ? { requiredArtifactPaths: [...(input.codeSignal.artifactPaths ?? input.codeSignal.paths)] } : {}),
     constraints: engineering.length ? ["program.constraint.source_backed"] : [],
     provenanceEvidenceIds: engineering.map(span => String(span.id)),
     ...(input.codeSignal.nativeDeclarations?.length?{nativeDeclarations:input.codeSignal.nativeDeclarations}:{}),

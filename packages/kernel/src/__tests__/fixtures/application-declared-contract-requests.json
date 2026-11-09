@@ -1,0 +1,25 @@
+{
+  "schema": "scce.test_public_application_requests.v1",
+  "provenance": "owner_preselected_development_diagnostic_public_specs",
+  "requests": [
+    {
+      "id": "typescript-web-crud",
+      "language": "typescript",
+      "spec": "Build a complete TypeScript phonebook CRUD web application, app.ts and index.html. app.ts exports createPhonebook() with the following domain contract: A contact has string id, name and phone. create(contact) rejects duplicate ids; read(id) returns the contact or null; update(id, patch) changes only provided name/phone and returns the contact or null; remove(id) returns whether removed; list() returns contacts ordered by id. Different book instances are isolated. Support Unicode ids and strings. No fixed sample records. On --serve PORT, bind only 127.0.0.1, accept port zero, print LISTENING followed by the actual port. Implement JSON REST: GET /contacts returns list; POST /contacts creates (201, duplicate409); GET /contacts/{percent-encoded-id} returns contact or404; PUT updates supplied fields (200 or404); DELETE removes (204 or404). Importing the module must not start a server. Use only the native standard library and generated files. GET / returns index.html. The page provides labeled id/name/phone inputs with name attributes id,name,phone; buttons data-action=create,update,delete; and #contacts displaying all records. Buttons operate the REST service and refresh the visible contact list. Provide complete runnable source and native unit tests. This is an application, not just a numeric function or a text design.",
+      "requiredCallable": "createPhonebook",
+      "requiredArtifacts": [
+        "app.ts",
+        "index.html"
+      ]
+    },
+    {
+      "id": "python-cli-service",
+      "language": "python",
+      "spec": "Build a complete Python standard-library persistent phonebook CLI and HTTP service, phonebook.py. Export class Phonebook(store_path=None) implementing: A contact has string id, name and phone. create(contact) rejects duplicate ids; read(id) returns the contact or null; update(id, patch) changes only provided name/phone and returns the contact or null; remove(id) returns whether removed; list() returns contacts ordered by id. Different book instances are isolated. Support Unicode ids and strings. No fixed sample records. When store_path is provided, load/save JSON atomically and preserve changes between process invocations. On --serve PORT, bind only 127.0.0.1, accept port zero, print LISTENING followed by the actual port. Implement JSON REST: GET /contacts returns list; POST /contacts creates (201, duplicate409); GET /contacts/{percent-encoded-id} returns contact or404; PUT updates supplied fields (200 or404); DELETE removes (204 or404). Importing the module must not start a server. Use only the native standard library and generated files. CLI grammar: python phonebook.py --store FILE add ID NAME PHONE; get ID; update ID NAME PHONE; delete ID; list. Every successful command emits exactly one JSON value; absent get emits null. Provide complete runnable source and native unit tests.",
+      "requiredCallable": "Phonebook",
+      "requiredArtifacts": [
+        "phonebook.py"
+      ]
+    }
+  ]
+}

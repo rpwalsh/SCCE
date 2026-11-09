@@ -649,6 +649,9 @@ export interface ProgramConstructIntent {
   runtimeTargetId?: string;
   packageManagerId?: string;
   entrypointPath?: string;
+  /** Owner-declared ports require lowering; names alone never license behavior or proof. */
+  declaredCallableIds?: readonly string[];
+  requiredArtifactPaths?: readonly string[];
   inputMediaTypes?: string[];
   outputMediaTypes?: string[];
   constraints?: string[];
