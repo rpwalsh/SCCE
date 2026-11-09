@@ -4,7 +4,7 @@ import { BOUNDARY_ESTIMATOR_INFERENCE_SCHEMA, BOUNDARY_FEATURE_ORDER, type Bound
 import type { BoundaryStatisticsCursor, BoundaryStatisticsCursorHeader, CorpusSegmentationDocument, CorpusSegmentationDocumentCursor,
   CorpusSegmentationScratch, CorpusSegmentationScratchRow } from "./corpus-segmentation-cursor.js";
 import { segmentationOrdinalKey, segmentationScratchRows, sortSegmentationScratch } from "./corpus-segmentation-sort.js";
-import { fitPagedBoundaryEstimator, forEachCanonicalBoundaryRow, pagedBoundaryNegativeLogLikelihood } from "./paged-boundary-estimator.js";
+import { fitPagedBoundaryEstimator, forEachCanonicalBoundaryRow, pagedBoundaryNegativeLogLikelihood, pagedBoundaryNegativeLogLikelihoods } from "./paged-boundary-estimator.js";
 import { mergePagedBoundaryStatistics } from "./paged-boundary-statistics.js";
 import { SEGMENTATION_POPULATION_INFERENCE_SCHEMA, SEGMENTATION_MIN_DOCUMENTS_PER_POPULATION, SegmentationSignaturePass,
   segmentationMaximumPopulationCount, segmentationSourcePartitionCounts, segmentationLogSumExp, preferSegmentationCollapseMove,
@@ -138,9 +138,8 @@ async function applyPagedMergeGuards(work: PagedPopulationWorkspace, candidates:
     if (!fine) continue;
     const sums = Array.from({ length: fine.populationCount }, () => ({ fine: 0, coarse: 0, count: 0 }));
     for await (const item of work.docs(holdout)) {
-      const fineLosses: number[] = []; const coarseLosses: number[] = [];
-      for (const estimator of fine.estimators) fineLosses.push((await pagedBoundaryNegativeLogLikelihood(estimator, work.source.statistics(item.document))).averageLogLoss);
-      for (const estimator of coarse.estimators) coarseLosses.push((await pagedBoundaryNegativeLogLikelihood(estimator, work.source.statistics(item.document))).averageLogLoss);
+      const losses=await pagedBoundaryNegativeLogLikelihoods([...fine.estimators,...coarse.estimators],work.source.statistics(item.document));
+      const fineLosses=losses.slice(0,fine.estimators.length).map(value=>value.averageLogLoss),coarseLosses=losses.slice(fine.estimators.length).map(value=>value.averageLogLoss);
       let index = 0; for (let current = 1; current < fineLosses.length; current++) if (fineLosses[current]! < fineLosses[index]!) index = current;
       sums[index]!.fine += fineLosses[index]!; sums[index]!.coarse += Math.min(...coarseLosses); sums[index]!.count++;
     }
@@ -502,8 +501,9 @@ export class PagedPopulationWorkspace {
   }
   async mixtureLoss(document: CorpusSegmentationDocument, estimators: readonly BoundaryEstimatorInferenceModel[], priors: readonly number[]): Promise<number> {
     const terms: number[] = [];
+    const losses=await pagedBoundaryNegativeLogLikelihoods(estimators,this.source.statistics(document));
     for (let index = 0; index < estimators.length; index++) terms.push(Math.log(Math.max(1e-12, priors[index] ?? 0))
-      - (await pagedBoundaryNegativeLogLikelihood(estimators[index]!, this.source.statistics(document))).negativeLogLikelihood);
+      - losses[index]!.negativeLogLikelihood);
     return -segmentationLogSumExp(terms);
   }
   async fitCandidate(fit: string, holdout: string, populationCount: number, label: string): Promise<Candidate> {
@@ -544,8 +544,7 @@ export class PagedPopulationWorkspace {
       const next = `${candidatePrefix}.assignment.${iteration + 1}`; await this.scratch.deleteCollection(next);
       const counts = new Array<number>(populationCount).fill(0);
       for await (const item of this.docs(fit)) {
-        const costs: number[] = [];
-        for (const estimator of estimators) costs.push((await pagedBoundaryNegativeLogLikelihood(estimator, this.source.statistics(item.document))).averageLogLoss);
+        const costs=(await pagedBoundaryNegativeLogLikelihoods(estimators,this.source.statistics(item.document))).map(value=>value.averageLogLoss);
         let population = 0; for (let index = 1; index < costs.length; index++) if (costs[index]! < costs[population]!) population = index;
         counts[population] = counts[population]! + 1; await this.write(next, item.rank, { ...item, costs, population });
       }

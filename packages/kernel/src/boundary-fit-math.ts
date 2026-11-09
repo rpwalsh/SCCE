@@ -89,12 +89,12 @@ export class BoundaryMetricsPass {
 
   constructor(readonly weights: readonly number[], readonly rawIntercept: number, readonly slope: number, readonly calibrationIntercept: number) {}
 
-  add(row: BoundaryStatisticsRow): void {
+  add(row: BoundaryStatisticsRow, features?: readonly number[]): void {
     const positive = row.positiveMass / 1_024;
     const negative = row.negativeMass / 1_024;
     const rowMass = positive + negative;
     if (rowMass <= 0) return;
-    const rawLogit = this.rawIntercept + boundaryFitDot(this.weights, row.featuresFixed.map(value => value / 1_000_000));
+    const rawLogit = this.rawIntercept + boundaryFitDot(this.weights, features ?? row.featuresFixed.map(value => value / 1_000_000));
     const predicted = Math.min(1 - 1e-12, Math.max(1e-12, Math.min(1, Math.max(0, boundaryFitSigmoid(this.slope * rawLogit + this.calibrationIntercept)))));
     this.logLoss += -positive * Math.log(predicted) - negative * Math.log(1 - predicted);
     this.brier += positive * (1 - predicted) ** 2 + negative * predicted ** 2;

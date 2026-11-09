@@ -77,8 +77,20 @@ async function metrics(source: BoundaryStatisticsCursor, weights: readonly numbe
 }
 
 export async function pagedBoundaryNegativeLogLikelihood(model: BoundaryEstimatorScoringModel, source: BoundaryStatisticsCursor) {
-  const value = await metrics(source, model.weights, model.intercept, model.calibration.slope, model.calibration.intercept);
-  return { negativeLogLikelihood: value.negativeLogLikelihood, mass: value.mass, averageLogLoss: value.logLoss };
+  return (await pagedBoundaryNegativeLogLikelihoods([model],source))[0]!;
+}
+
+export async function pagedBoundaryNegativeLogLikelihoods(models:readonly BoundaryEstimatorScoringModel[],source:BoundaryStatisticsCursor){
+  if(!models.length)return [];
+  const passes=models.map(model=>new BoundaryMetricsPass(model.weights,model.intercept,model.calibration.slope,model.calibration.intercept));
+  await forEachCanonicalBoundaryRow(source,row=>{
+    const features=row.featuresFixed.map(value=>value/1_000_000);
+    for(const pass of passes)pass.add(row,features);
+  });
+  return passes.map(pass=>{
+    const value=pass.finish(source.header.positiveMass,source.header.negativeMass);
+    return {negativeLogLikelihood:boundaryFitQuantize(pass.logLoss),mass:value.mass,averageLogLoss:value.logLoss};
+  });
 }
 
 export async function fitPagedBoundaryEstimator(input: {
