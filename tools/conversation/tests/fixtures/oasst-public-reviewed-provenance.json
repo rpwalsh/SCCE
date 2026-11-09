@@ -1,0 +1,149 @@
+{
+  "schema": "scce.public_source_fixture.v1",
+  "source": {
+    "archiveSha256": "286a6e9a5a413b3272ae9c0b5a20d327983dea1c24342ae28cb244a6da65185c",
+    "captureSha256": "6dbd58b1af22db95d1f46ead64e90b8057136a9f5daf9d2f64a0fd6cf43ccd53",
+    "dataset": "OpenAssistant/oasst1",
+    "license": "Apache-2.0",
+    "licenseSha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "revision": "fdf72ae0827c1cda404aff25b6603abec9e3399b",
+    "url": "https://huggingface.co/datasets/OpenAssistant/oasst1/resolve/fdf72ae0827c1cda404aff25b6603abec9e3399b/2023-04-12_oasst_ready.messages.jsonl.gz"
+  },
+  "selection": {
+    "mode": "root-pairs",
+    "limits": {
+      "en": 3,
+      "ru": 3,
+      "es": 3,
+      "ca": 3
+    },
+    "recipe": "Existing prepareOasst eligibility and source-ID hash ordering; no topic/text selection"
+  },
+  "fixture": {
+    "path": "oasst-public-reviewed-messages.jsonl",
+    "sha256": "b84708a44ebe754a93502413ed24bfa0ac26df981690d0aa112cfd88012a7cc6",
+    "records": 24
+  },
+  "messages": [
+    {
+      "messageId": "acc13476-1b75-4c72-bbd4-28fb0ee43a65",
+      "lineNumber": 3908,
+      "rawLineSha256": "af0db092c9edad8e1d23fec22d2affa4e2961dafa5c933fa246b9889180f468b"
+    },
+    {
+      "messageId": "c50011bd-d054-4575-a319-f731d04581e0",
+      "lineNumber": 3910,
+      "rawLineSha256": "f3d9ae6588b2813bc40b990a12a7054b459e1ced514d246eba1f128186307efa"
+    },
+    {
+      "messageId": "b28106a3-8fa0-49dc-b588-28350fc2b38c",
+      "lineNumber": 5407,
+      "rawLineSha256": "cefe888fd59ec7052e2795eb1e32545d72ac6f58c4b302b43ad7a23ffcc902c0"
+    },
+    {
+      "messageId": "1c9d514e-a358-47c9-b89f-aed1b5276ea1",
+      "lineNumber": 5410,
+      "rawLineSha256": "771a3e50b887b520f93dcf23a28cd37e0853dc52892ea716aaa8e92bf1e03eee"
+    },
+    {
+      "messageId": "0c58cbd0-cab4-45d1-b575-5122b5050d72",
+      "lineNumber": 8024,
+      "rawLineSha256": "d4303944717c889e48371712b432d150044d822c17ff0ed1cd60f406783c037e"
+    },
+    {
+      "messageId": "516bd4ea-4f48-49c4-b0b5-8dde913d41d9",
+      "lineNumber": 8027,
+      "rawLineSha256": "d7e384bafa067ade46d6a6b7915da8141ac469ebf4539ad89bd4a13c2d04f6f2"
+    },
+    {
+      "messageId": "9ad65d96-ee83-47ac-b7d4-10fbceba3eff",
+      "lineNumber": 8120,
+      "rawLineSha256": "c45adf3d0d488ff938d21ddc1357eec8dca08147ddee4717930ed1a1528525e6"
+    },
+    {
+      "messageId": "c816a32c-ff4a-458d-9063-3436c34cf519",
+      "lineNumber": 8126,
+      "rawLineSha256": "51c89525df952a822255e2a55c8909a2521f32565aa14db57ed97f7d580291b5"
+    },
+    {
+      "messageId": "8d0fc966-7061-476b-9113-8462a66a44d0",
+      "lineNumber": 8690,
+      "rawLineSha256": "9810140d05c2ec5c131d834b9c8eb18c99e81ead337e87c75dcd9468c3cbfc22"
+    },
+    {
+      "messageId": "56bdfa6e-cde0-498f-901e-797f2fba3bc1",
+      "lineNumber": 8693,
+      "rawLineSha256": "acd0dba5dc23392eeb65eb5cfeb74e5ad7929ec6dd471bd8bd284c16ca60cbda"
+    },
+    {
+      "messageId": "62a49e90-574d-4083-9ce0-e8cfdecbf33a",
+      "lineNumber": 9308,
+      "rawLineSha256": "4d374c710f06113d69d15f32cbd433a79c5860d1e80950ea3219cee9092f3487"
+    },
+    {
+      "messageId": "d83d7fb5-0bfd-4539-a432-c6509374c1c6",
+      "lineNumber": 9311,
+      "rawLineSha256": "9e6b475c6965ef96d665dda837a57467a153fffaf410c546ef226d7f5925a1f3"
+    },
+    {
+      "messageId": "24bb4c9e-c6fa-41b8-a5d2-048d4f1956d3",
+      "lineNumber": 23556,
+      "rawLineSha256": "dd59d665bffa1038f0ee6b512c25df1c9d805c5346c905dbd3f8e0943449bbb2"
+    },
+    {
+      "messageId": "d0e8c19c-8790-4619-ba02-2259f702ad08",
+      "lineNumber": 23557,
+      "rawLineSha256": "1d044ad05b55a11bb9bbf4a77ca9a3563e76de2eb81f81fe4012ad74d5fedbf8"
+    },
+    {
+      "messageId": "a047930d-76f1-43fa-a544-11ec0d5460a4",
+      "lineNumber": 27247,
+      "rawLineSha256": "1fab4a83a68b4176ffd2da4a4587b8108cf71750f9a49a9e8f718acca113f31e"
+    },
+    {
+      "messageId": "75321015-1f0e-49a9-843a-77e924131693",
+      "lineNumber": 27248,
+      "rawLineSha256": "5bd79ffe5779ab152c1017235caa667d2c9e143da12ee48668b9491e6e266cd8"
+    },
+    {
+      "messageId": "1427a1da-1a6f-4786-b5f3-0035a8ea3f09",
+      "lineNumber": 31187,
+      "rawLineSha256": "45d14bea67feaa25a516a5832fef15e7bfe776b0287813a368093bd5adee84e9"
+    },
+    {
+      "messageId": "a72a7dc4-91f4-4953-a6b3-138e6e1fc3be",
+      "lineNumber": 31194,
+      "rawLineSha256": "66a498db1bd9fc046ece32dc53a74b6c24cb064ee47dbc8ef4c87e711fdb2c7d"
+    },
+    {
+      "messageId": "d704f216-0013-4679-a782-c17887a86a9f",
+      "lineNumber": 59988,
+      "rawLineSha256": "b5bc5ac7bf595a95efbe901257ec80402d79726dcf032a10b14f320055191d20"
+    },
+    {
+      "messageId": "7c96c4b4-b4e7-43a5-8cd7-64ba90df272b",
+      "lineNumber": 59995,
+      "rawLineSha256": "0f3c81320c0546c1794060177f3296b3e55fc992f18327ae3c3925b2526785e6"
+    },
+    {
+      "messageId": "9b05381e-363d-4ca0-beec-5987c00e8a88",
+      "lineNumber": 67080,
+      "rawLineSha256": "e14b17a9ffe6ff699fa51a4e0b3a76cca2af8929a21b151d552cd7573a97a5db"
+    },
+    {
+      "messageId": "f556a75c-802c-4a4a-bf9b-7b4d0014547b",
+      "lineNumber": 67083,
+      "rawLineSha256": "8a5adb3524ff293dcfef17e9dca6bd4403e63aa3bc4bb4caf0e9a715e9b112aa"
+    },
+    {
+      "messageId": "b76675cc-a508-4573-9fc7-983beb7ba9a4",
+      "lineNumber": 86883,
+      "rawLineSha256": "b0ee223079241e920cd66914239b8e4787a3adbbc53ef92ba655d4560c5cf4c2"
+    },
+    {
+      "messageId": "792edb99-7903-465b-8874-4d1c79b51dbc",
+      "lineNumber": 86896,
+      "rawLineSha256": "dce67c4e3a33e6c96a08c45849f9491a0508af372142744a52af779873d0c298"
+    }
+  ]
+}

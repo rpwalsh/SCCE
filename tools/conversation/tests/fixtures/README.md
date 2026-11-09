@@ -1,0 +1,3 @@
+These 24 unchanged JSONL records are public human-reviewed, nonsynthetic OASST1 source messages from the pinned release in `oasst-public-reviewed-provenance.json`, licensed Apache-2.0 by the OpenAssistant contributors. `OASST1-LICENSE.txt` retains the exact captured license bytes.
+
+The existing preparer's source-ID hash selection chose three root/reply pairs per en/ru/es/ca locale; no prompt, topic, answer, or benchmark outcome selected this fixture. The provenance records the original archive/capture/license hashes, source line numbers, exact line hashes, and fixture hash. No request-authority labels were added. Tests gzip these exact bytes locally to exercise normal capture verification without copying or downloading the full archive.
