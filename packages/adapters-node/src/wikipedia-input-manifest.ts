@@ -136,12 +136,39 @@ export async function createWikipediaInputManifest(options: WikipediaInputManife
   });
 }
 
-/** Check source metadata only; this deliberately performs no content hashing. */
-export async function wikipediaInputSourcesStillMatch(manifest: WikipediaInputManifest): Promise<boolean> {
+const verifiedSourceStats = new WeakMap<WikipediaInputSourceFile, WikipediaInputFileStat>();
+const pendingSourceChecks = new WeakMap<WikipediaInputSourceFile, { before: WikipediaInputFileStat; result: Promise<boolean> }>();
+
+/** Unchanged metadata is fast; ctime-only drift requires a stable full-content proof against the pinned bytes. */
+export async function wikipediaInputSourcesStillMatch(manifest: WikipediaInputManifest,
+  options: { readonly chunkSize?: number; readonly hashFile?: WikipediaInputHasher } = {}): Promise<boolean> {
   const files = [manifest.inputs.dump, ...(manifest.inputs.index === undefined ? [] : [manifest.inputs.index])];
   for (const source of files) {
     try {
-      if (!sameStat(source.stat, await readFileStat(source.path))) return false;
+      const before = await readFileStat(source.path);
+      const verified = verifiedSourceStats.get(source) ?? source.stat;
+      if (sameStat(verified, before)) continue;
+      if (!samePhysicalStat(verified, before)) return false;
+      const pending = pendingSourceChecks.get(source);
+      if (pending) {
+        if (!sameStat(pending.before, before) || !await pending.result) return false;
+        continue;
+      }
+      const chunkSize = normalizeChunkSize(options.chunkSize);
+      const hashFile = options.hashFile ?? ((filePath, size) => hashWikipediaInputFile(filePath, { chunkSize: size }));
+      const check = { before, result: (async () => {
+        const hashed = await hashFile(source.path, chunkSize);
+        const after = await readFileStat(source.path);
+        if (!sameStat(before, after) || !HASH_PATTERN.test(hashed.sha256)
+          || hashed.byteLength !== source.byteLength || !Number.isSafeInteger(hashed.byteLength)
+          || hashed.byteLength < 0 || BigInt(hashed.byteLength) !== BigInt(before.size)
+          || `sha256:${hashed.sha256}` !== source.sha256) return false;
+        verifiedSourceStats.set(source, after);
+        return true;
+      })() };
+      pendingSourceChecks.set(source, check);
+      try { if (!await check.result) return false; }
+      finally { if (pendingSourceChecks.get(source) === check) pendingSourceChecks.delete(source); }
     } catch {
       return false;
     }
@@ -195,8 +222,12 @@ async function readFileStat(filePath: string): Promise<WikipediaInputFileStat> {
   };
 }
 
+function samePhysicalStat(left: WikipediaInputFileStat, right: WikipediaInputFileStat): boolean {
+  return left.size === right.size && left.mtimeNs === right.mtimeNs && left.dev === right.dev && left.ino === right.ino;
+}
+
 function sameStat(left: WikipediaInputFileStat, right: WikipediaInputFileStat): boolean {
-  return left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs && left.dev === right.dev && left.ino === right.ino;
+  return samePhysicalStat(left, right) && left.ctimeNs === right.ctimeNs;
 }
 
 async function readCachedFileHash(cachePath: string, filePath: string, sourceStat: WikipediaInputFileStat): Promise<CachedFileHash | undefined> {

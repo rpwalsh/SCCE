@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { mkdtemp, rename, rm, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rename, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -54,7 +54,8 @@ describe("Wikipedia input manifest", () => {
     expect(hashCalls).toBe(2);
     expect(second.identity).toBe(first.identity);
     expect(Object.isFrozen(second)).toBe(true);
-    expect(await wikipediaInputSourcesStillMatch(second)).toBe(true);
+    expect(await wikipediaInputSourcesStillMatch(second, { hashFile })).toBe(true);
+    expect(hashCalls).toBe(2);
   });
 
   it("rehashes same-size changed content", async () => {
@@ -133,4 +134,58 @@ describe("Wikipedia input manifest", () => {
     expect(serialized).not.toContain("also-do-not-write-me");
     expect(manifest.semantics.config).toEqual({ wikiCode: "enwiki", nested: { namespaces: [0] } });
   });
+});
+
+async function changeMetadataOnly(filePath: string) {
+  const before=await stat(filePath,{bigint:true});
+  await chmod(filePath,0o444);
+  const after=await stat(filePath,{bigint:true});
+  expect(after.ctimeNs).not.toBe(before.ctimeNs);
+  expect([after.size,after.mtimeNs,after.dev,after.ino]).toEqual([before.size,before.mtimeNs,before.dev,before.ino]);
+}
+it("accepts real ctime-only metadata changes only after hashing pinned bytes, then caches refreshed stats without changing provenance",async()=>{
+  const paths=await fixture(),manifest=await createWikipediaInputManifest(options(paths)),original=JSON.stringify(manifest);
+  await changeMetadataOnly(paths.dumpPath);await changeMetadataOnly(paths.indexPath);
+  let calls=0;
+  const hashFile=async(filePath:string,chunkSize:number)=>{calls++;return hashWikipediaInputFile(filePath,{chunkSize});};
+  expect(await wikipediaInputSourcesStillMatch(manifest,{chunkSize:2,hashFile})).toBe(true);
+  expect(calls).toBe(2);expect(JSON.stringify(manifest)).toBe(original);
+  expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile})).toBe(true);expect(calls).toBe(2);
+  await chmod(paths.dumpPath,0o666);await chmod(paths.indexPath,0o666);
+});
+it("rejects same-size changed bytes with restored mtime rather than treating ctime as harmless",async()=>{
+  const paths=await fixture("aaaa\n"),time=new Date(1700000000000);await utimes(paths.dumpPath,time,time);
+  const manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));
+  await writeFile(paths.dumpPath,"bbbb\n");await utimes(paths.dumpPath,time,time);
+  const actual=await stat(paths.dumpPath,{bigint:true});expect(actual.mtimeNs.toString()).toBe(manifest.inputs.dump.stat.mtimeNs);
+  let calls=0;const hashFile=async(filePath:string,chunkSize:number)=>{calls++;return hashWikipediaInputFile(filePath,{chunkSize});};
+  expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile})).toBe(false);expect(calls).toBe(1);
+  expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile})).toBe(false);expect(calls).toBe(2);
+});
+it("refuses a metadata race during rehash and never installs its unverified refreshed stat",async()=>{
+  const paths=await fixture(),manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));
+  await changeMetadataOnly(paths.dumpPath);let calls=0;
+  const raced=await wikipediaInputSourcesStillMatch(manifest,{hashFile:async(filePath,chunkSize)=>{
+    calls++;const result=await hashWikipediaInputFile(filePath,{chunkSize});await chmod(filePath,0o666);return result;
+  }});
+  expect(raced).toBe(false);expect(calls).toBe(1);
+  expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile:async(filePath,chunkSize)=>{calls++;return hashWikipediaInputFile(filePath,{chunkSize});}})).toBe(true);
+  expect(calls).toBe(2);
+});
+
+it("shares one ctime-only full-file verification across concurrent source guards",async()=>{
+  const paths=await fixture(),manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));
+  await changeMetadataOnly(paths.dumpPath);let calls=0,release!:()=>void,started!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve;}),start=new Promise<void>(resolve=>{started=resolve;});
+  const hashFile=async(filePath:string,chunkSize:number)=>{calls++;started();await gate;return hashWikipediaInputFile(filePath,{chunkSize});};
+  const first=wikipediaInputSourcesStillMatch(manifest,{hashFile});await start;
+  const second=wikipediaInputSourcesStillMatch(manifest,{hashFile});release();
+  expect(await Promise.all([first,second])).toEqual([true,true]);expect(calls).toBe(1);
+  await chmod(paths.dumpPath,0o666);
+});
+it("refuses changed physical metadata without spending a content hash",async()=>{
+  const paths=await fixture(),manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));let calls=0;
+  const hashFile=async(filePath:string,chunkSize:number)=>{calls++;return hashWikipediaInputFile(filePath,{chunkSize});};
+  await writeFile(paths.dumpPath,"longer replacement bytes");
+  expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile})).toBe(false);expect(calls).toBe(0);
 });
