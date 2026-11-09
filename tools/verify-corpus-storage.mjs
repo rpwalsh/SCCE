@@ -9,7 +9,8 @@ import { createCorpusSegmentationRun, corpusSegmentationScopeId } from '../packa
 import { corpusSegmentationInputRecipe } from '../packages/adapters-node/dist/corpus-segmentation-producer.js';
 import { writeCorpusMembershipPages, prepareCorpusMembershipCounts, readCorpusMembershipCounts } from '../packages/adapters-node/dist/corpus-segmentation-membership.js';
 import { writeCorpusStatisticsPages, readCorpusStatisticsPages } from '../packages/adapters-node/dist/corpus-segmentation-statistics-pages.js';
-import { canonicalNormalizationContract, createHasher } from '../packages/kernel/dist/index.js';
+import { withPackedBoundaryMerges } from '../packages/adapters-node/dist/corpus-segmentation-merge-scratch.js';
+import { canonicalNormalizationContract, canonicalStringify, collectBoundaryTrainingObservations, compileBoundaryStatistics, createHasher, measureSurfaceBoundaries, mergePagedBoundaryStatistics } from '../packages/kernel/dist/index.js';
 
 const args=process.argv.slice(2),value=flag=>args[args.indexOf(flag)+1];
 if(!args.includes('--config')||!value('--config'))throw Error('Usage: node tools/verify-corpus-storage.mjs --config <local-config.json> [--output <receipt.json>]');
@@ -62,6 +63,21 @@ try{
   const lookupStarted=performance.now(),localizedCounts=await readCorpusMembershipCounts(storage,localized,'class',localizedKeys);
   report.localizedLookup={keys:localizedKeys.length,elapsedMs:performance.now()-lookupStarted,leaves:leaves.count,maxDecodedBytes:leaves.max_decoded_bytes,blockBytes:leaves.block_bytes};
   check('localized-multilingual-point-lookups',()=>{assert.equal(Object.keys(localizedCounts).length,localizedKeys.length);for(const key of localizedKeys)assert.equal(localizedCounts[key],2);});
+  const hasher=createHasher(),statistics=['oma vela. oma neri.','\u96ea\u306e\u9053\u3002\u8a9e\u306e\u5f62\u3002'].map((text,index)=>compileBoundaryStatistics({populationId:'native.source',hasher,
+   observations:collectBoundaryTrainingObservations({lattices:[measureSurfaceBoundaries({documentId:'native.document.'+index,text,maxUnits:Number.MAX_SAFE_INTEGER})]})}));
+  const sources=async function*(){for(const source of statistics){const {rows,sourceDocumentIds,...header}=source;yield{header:{...header,rowCount:rows.length,sourceInventory:{id:hasher.digestHex(JSON.stringify(sourceDocumentIds)),count:sourceDocumentIds.length}},
+   rows:async function*(){for(const row of rows)yield[row];},sourceDocuments:async function*(){yield sourceDocumentIds;}};}};
+  const baseline=await mergePagedBoundaryStatistics({sources,scratch:localized.scratch,populationId:'native.merged',collectionPrefix:'native-unpacked',hasher});
+  const packedMerge=await mergePagedBoundaryStatistics({sources,scratch:withPackedBoundaryMerges(localized.scratch),populationId:'native.merged',collectionPrefix:'native-packed',hasher});
+  async function materialize(cursor){const rows=[],documents=[];for await(const page of cursor.rows())rows.push(...page);for await(const page of cursor.sourceDocuments())documents.push(...page);return{header:cursor.header,rows,documents};}
+  const expectedMerge=await materialize(baseline),actualMerge=await materialize(packedMerge);
+  check('native-packed-merge-retains-all-logical-statistics',()=>assert.equal(canonicalStringify(actualMerge),canonicalStringify(expectedMerge)));
+  const beforeRows=await localized.scratch.count('native-unpacked.rows'),afterRows=await localized.scratch.count('native-packed.rows');
+  report.mergeScratch={logicalRows:actualMerge.rows.length,unpackedPhysicalRows:beforeRows,packedPhysicalRows:afterRows};
+  check('native-packed-merge-reduces-temporary-tuples',()=>{assert.ok(beforeRows>afterRows);assert.equal(beforeRows,actualMerge.rows.length);});
+  await packedMerge.dispose();await baseline.dispose();
+  const [scratchRemaining]=await storage.query(`SELECT count(*)::int AS count FROM ${storage.table('segmentation_consolidation_rows')} WHERE run_id=$1 AND (starts_with(collection,'scratch/native-packed.') OR starts_with(collection,'scratch/native-unpacked.'))`,[localized.run.runId]);
+  check('native-merge-disposal-cleans-temporary-pages',()=>assert.equal(scratchRemaining.count,0));
   throw rollback;
  });}catch(error){if(error!==rollback)failure=error;report.fixtureRolledBack=true;}
  const [remaining]=await storage.query(`SELECT count(*)::int AS count FROM ${storage.table('segmentation_consolidation_runs')} WHERE run_id=ANY($1::text[])`,[[runId,runId+'.localized']]);check('fixture-records-rolled-back',()=>assert.equal(remaining.count,0));
