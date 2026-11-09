@@ -8,6 +8,7 @@ import { activateCorpusSegmentationRun, readActiveCorpusSegmentationRun, createC
 import { consolidateCorpusSegmentation, loadCorpusSegmentationContextSlice, corpusSegmentationInputRecipe, prepareCorpusSegmentationInput } from "../corpus-segmentation-producer.js";
 import type { PostgresStorageAdapter } from "../postgres.js";
 import { corpusMembershipSqlFixture } from "./fixtures/corpus-membership-sql.js";
+import { BOUNDARY_MERGE_PAGE_SCHEMA } from "../corpus-segmentation-merge-scratch.js";
 
 async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFamily=true, initialize=true) {
   const memory=fixtureSegmentationScratch(pageRows,12000), calls:Array<{sql:string;params:unknown[]}>=[];
@@ -128,6 +129,9 @@ it("fits real source observations then publishes one matched snapshot atomically
 it("exposes one ordinary consolidation workflow with idempotent resume and declared fit-policy binding",async()=>{
   const f=await fixture(3,false,8,false,false),options={storage:f.storage,scope:f.declaration.scope,runId:"owned-run",createdAt:1,bounds:f.bounds,windowUtf16:28,maxPopulations:1};
   const created=await consolidateCorpusSegmentation(options);expect(created.alreadyComplete).toBe(false);
+  const fitMerges=f.calls.filter(call=>call.sql.includes("RETURNING order_key")&&String(call.params[1]).startsWith("scratch/fit.")&&/\.rows$|\.rawRows|\.sortedRows/u.test(String(call.params[1])));
+  expect(fitMerges.length).toBeGreaterThan(0);
+  for(const call of fitMerges)for(const row of JSON.parse(String(call.params[2])) as Array<{value:{schema?:string}}>)expect(row.value.schema).toBe(BOUNDARY_MERGE_PAGE_SCHEMA);
   const reads=f.calls.filter(call=>call.sql.includes("SELECT substring")).length,writes=f.calls.filter(call=>call.sql.includes("INSERT INTO")).length;
   const resumed=await consolidateCorpusSegmentation({...options,resume:true});
   expect(resumed).toMatchObject({alreadyComplete:true,runId:created.runId});expect(resumed.model).toEqual(created.model);
@@ -170,4 +174,7 @@ it("stores completed count pages while reclaiming pair memberships before fittin
     expect(logical).toHaveLength(document.statistics.rowCount);
     expect(physical).toBeLessThan(document.statistics.rowCount);
   }
+  const mergeWrites=f.calls.filter(call=>call.sql.includes("RETURNING order_key")&&String(call.params[1]).startsWith("scratch/producer/document."));
+  expect(mergeWrites.length).toBeGreaterThan(0);
+  for(const call of mergeWrites)for(const row of JSON.parse(String(call.params[2])) as Array<{value:{schema?:string}}>)expect(row.value.schema).toBe(BOUNDARY_MERGE_PAGE_SCHEMA);
 });

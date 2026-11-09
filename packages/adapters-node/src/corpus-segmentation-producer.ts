@@ -12,6 +12,7 @@ import { resolveCorpusSegmentationOwner } from "./corpus-segmentation-owner.js";
 import { corpusSegmentationWindows } from "./corpus-segmentation-windows.js";
 import { prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages } from "./corpus-segmentation-membership.js";
 import { readCorpusStatisticsPages, writeCorpusStatisticsPages } from "./corpus-segmentation-statistics-pages.js";
+import { withPackedBoundaryMerges } from "./corpus-segmentation-merge-scratch.js";
 
 interface Owner {
   evidenceId: string; sourceId: string; sourceVersionId: string; textSha256: string; codePoints: number;
@@ -136,7 +137,7 @@ export async function prepareCorpusSegmentationInput(input: { storage: PostgresS
         yield {header:{...header,rowCount:0,sourceInventory:{id:hash(sourceDocumentIds),count:1}}, rows:async function*(){yield rows;},sourceDocuments:async function*(){yield sourceDocumentIds;}};
       }
     };
-    const merged = await mergePagedBoundaryStatistics({ sources, scratch: run.scratch, populationId, collectionPrefix: "producer/document", hasher });
+    const merged = await mergePagedBoundaryStatistics({ sources, scratch: withPackedBoundaryMerges(run.scratch), populationId, collectionPrefix: "producer/document", hasher });
     await writeCorpusStatisticsPages(run, docKey, merged.rows(), merged.header.rowCount);
     const document: CorpusSegmentationDocument = {ordinal,documentId: source.evidenceId,sourceFamilyId: source.sourceFamilyId,statistics: merged.header};
     await run.putInput("documents", [{orderKey: docKey,value: toJsonValue(document)}]);
@@ -149,7 +150,7 @@ export async function prepareCorpusSegmentationInput(input: { storage: PostgresS
 }
 
 export function corpusSegmentationDocumentCursor(run: PostgresCorpusSegmentationRun, snapshot: {documentCount: number; sourceInventory: {id: string;count: number};featureContextId: string}): CorpusSegmentationDocumentCursor & {featureContextId: string} {
-  return { ...snapshot, scratch: run.scratch,
+  return { ...snapshot, scratch: withPackedBoundaryMerges(run.scratch),
     documents: async function* () { for await (const page of run.pages("input/documents")) yield page.map(row => row.value as unknown as CorpusSegmentationDocument); },
     statistics: document => ({ header: document.statistics,
       rows: () => readCorpusStatisticsPages(run, segmentationOrdinalKey(document.ordinal), document.statistics.rowCount),
