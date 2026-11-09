@@ -1032,10 +1032,17 @@ function createConversationStore(storage: PostgresStorageAdapter): ConversationS
 function createIngestionCheckpointStore(storage: PostgresStorageAdapter): IngestionCheckpointStore {
   return {
     async put(checkpoint) {
-      await storage.query(
+      // Snapshot heads govern eligibility of every root, including roots outside the
+      // current bounded publication window. Their changes must invalidate warm readers.
+      const projectSnapshot = /^oss\.contract\.snapshot\.[a-f0-9]{64}$/u.test(checkpoint.id);
+      if (projectSnapshot && (checkpoint.metadata as { schema?: unknown }).schema !== "scce.oss_owned_contract_snapshot.v1") throw new Error("Malformed OSS contract snapshot checkpoint");
+      const write = projectSnapshot ? storage.mutateLanguageMemory.bind(storage) : storage.query.bind(storage);
+      await write(
         `INSERT INTO ${storage.table("ingestion_checkpoints")}(id,root_uri,item_uri,phase,status,offset_bytes,content_hash,byte_length,reason,metadata_json,updated_at)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,TO_TIMESTAMP($11/1000.0))
-         ON CONFLICT(id) DO UPDATE SET phase=EXCLUDED.phase,status=EXCLUDED.status,offset_bytes=EXCLUDED.offset_bytes,content_hash=EXCLUDED.content_hash,byte_length=EXCLUDED.byte_length,reason=EXCLUDED.reason,metadata_json=EXCLUDED.metadata_json,updated_at=EXCLUDED.updated_at`,
+         ON CONFLICT(id) DO UPDATE SET phase=EXCLUDED.phase,status=EXCLUDED.status,offset_bytes=EXCLUDED.offset_bytes,content_hash=EXCLUDED.content_hash,byte_length=EXCLUDED.byte_length,reason=EXCLUDED.reason,metadata_json=EXCLUDED.metadata_json,updated_at=EXCLUDED.updated_at${projectSnapshot ? `
+         WHERE (ingestion_checkpoints.phase,ingestion_checkpoints.status,ingestion_checkpoints.offset_bytes,ingestion_checkpoints.content_hash,ingestion_checkpoints.byte_length,ingestion_checkpoints.reason,ingestion_checkpoints.metadata_json)
+           IS DISTINCT FROM (EXCLUDED.phase,EXCLUDED.status,EXCLUDED.offset_bytes,EXCLUDED.content_hash,EXCLUDED.byte_length,EXCLUDED.reason,EXCLUDED.metadata_json)` : ""}`,
         [checkpoint.id, checkpoint.rootUri, checkpoint.itemUri, checkpoint.phase, checkpoint.status, checkpoint.offsetBytes, checkpoint.contentHash ?? null, checkpoint.byteLength ?? null, checkpoint.reason ?? null, JSON.stringify(checkpoint.metadata), checkpoint.updatedAt]
       );
     },
