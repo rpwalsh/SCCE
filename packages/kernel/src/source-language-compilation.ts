@@ -64,6 +64,7 @@ function modelMaterial(record: NgramModelRecord): JsonValue {
 
 export function stampSourceLanguageCompilation(input: {
   owner: SourceCompilationOwner; profileId: string; sourceSystem: string; streamId: string; text: string; chunks: readonly string[];
+  inheritedMetadata?: JsonValue;
   models: readonly NgramModelRecord[]; options: { maxOrder: number; maxCountersPerOrder: number; vocabularyLimit: number; languageOnly: boolean; retainNgramObservations: boolean; segmentationIdentity?: JsonValue };
   artifacts: { units: readonly LanguageUnitRecord[]; patterns: readonly LanguagePatternRecord[]; semanticFrames: readonly SemanticFrameRecord[] }; hasher: Hasher;
 }): { models: NgramModelRecord[]; units: LanguageUnitRecord[]; patterns: LanguagePatternRecord[]; semanticFrames: SemanticFrameRecord[] } {
@@ -75,7 +76,8 @@ export function stampSourceLanguageCompilation(input: {
     { count: rows.length, identityDigest: canonicalDigestHex(rows.map(row => row.id).sort(), input.hasher) }]));
   const common = { schema: "scce.source_language_compilation.v1", compilerRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID, ...input.owner,
     profileId: input.profileId, sourceSystem: corpusSourceAlias(input.sourceSystem), parentStreamId: input.streamId,
-    sourceTextHash: input.hasher.digestHex(input.text), sourceUtf16Length: input.text.length, options: input.options, artifacts, chunkCount: input.chunks.length };
+    sourceTextHash: input.hasher.digestHex(input.text), sourceUtf16Length: input.text.length, options: { ...input.options,
+      ...(input.inheritedMetadata === undefined ? {} : { artifactMetadataDigest: canonicalDigestHex(input.inheritedMetadata, input.hasher) }) }, artifacts, chunkCount: input.chunks.length };
   const compilationId = canonicalDigestHex(common, input.hasher);
   let offset = 0;
   const chunks = input.chunks.map((text, index) => { const start = offset; offset += text.length; return { index, start, end: offset, textHash: input.hasher.digestHex(text) }; });
@@ -85,6 +87,7 @@ export function stampSourceLanguageCompilation(input: {
     patterns: [...sourceArtifacts.patterns.map(record => ({ ...record, patternJson: toJsonValue({ ...jsonRecord(record.patternJson), sourceCompilationId: compilationId }) })), ...componentReceipts,
       { id: sourceLanguageCompilationReceiptId(compilationId), profileId: input.profileId, patternKind: "source_compilation", support: 1, entropy: 0,
         evidenceIds: [], updatedAt: input.models[0]!.updatedAt, patternJson: toJsonValue({ schema: "scce.source_language_compilation_receipt.v1", sourceSystem: common.sourceSystem,
+          ...(input.inheritedMetadata === undefined ? {} : { inheritedMetadata: { schema: "scce.source_artifact_metadata.v1", digest: canonicalDigestHex(input.inheritedMetadata, input.hasher), value: input.inheritedMetadata } }),
           compilation: { ...common, compilationId, modelInventory: input.models.map((record, index) => ({ id: record.id, streamId: record.streamId,
             chunk: chunks[index], modelDigest: canonicalDigestHex(modelMaterial(record), input.hasher) })) } }) }],
     semanticFrames: input.artifacts.semanticFrames.map(record => ({ ...record, frameJson: toJsonValue({ ...jsonRecord(record.frameJson), sourceCompilationId: compilationId }) })) };

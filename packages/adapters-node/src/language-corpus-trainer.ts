@@ -307,8 +307,8 @@ const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
 }>();
 
 const CORPUS_CHECKPOINT_SCHEMA = "scce.corpusTrainingCheckpoint.v1";
-export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v3" as const;
-export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v5" as const;
+export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v4" as const;
+export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v6" as const;
 const LANGUAGE_CORPUS_SOURCE_EVIDENCE_RECIPE_ID = "scce.language_corpus_source_evidence.v1" as const;
 
 export function languageCorpusTrainingRecipeId(sourceSystem: string): string {
@@ -1149,14 +1149,16 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       .map(chunk => text.slice(Number(chunk.start), Number(chunk.end)));
     const stamped = stampSourceLanguageCompilation({ owner: { sourceId: canonicalSource.sourceId, sourceVersionId, contentHash: canonicalSource.contentHash },
       profileId: profile.id, sourceSystem, streamId: sourceLanguageTrainingStreamId({ sourceId: canonicalSource.sourceId, sourceVersionId, sourceSystem, hasher }),
-      text, chunks, models, options: receipts[0]!.options as unknown as Parameters<typeof stampSourceLanguageCompilation>[0]["options"],
+      text, chunks, models, inheritedMetadata: rowMetadata, options: receipts[0]!.options as unknown as Parameters<typeof stampSourceLanguageCompilation>[0]["options"],
       artifacts: { units, patterns, semanticFrames: frames }, hasher });
     models = stamped.models.map(row => ({ ...row, informationLabel }));
     units = stamped.units.map(row => ({ ...row, informationLabel }));
     patterns = stamped.patterns.map(row => ({ ...row, informationLabel }));
     frames = stamped.semanticFrames.map(row => ({ ...row, informationLabel }));
   }
-  if (source && units.length) {
+  if (source && units.length && !patterns.some(pattern => pattern.patternKind === "source_compilation"
+    && jsonRecord(pattern.patternJson).schema === "scce.source_language_compilation_receipt.v1"
+    && jsonRecord(pattern.patternJson).inheritedMetadata !== undefined)) {
     const owner = sourceMetadataBoundOwner(source, hasher);
     const normalize = unitSourceMetadataNormalizer(owner, hasher);
     if (units.some(unit => normalize(unit) !== unit)) source = owner;
@@ -1353,11 +1355,18 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
   segmentationSpan.end();
 
   const persistSpan = trainTrace.span("train.persist");
+  const metadataReceipts = prepared.patterns.filter(pattern => pattern.patternKind === "source_compilation"
+    && jsonRecord(pattern.patternJson).schema === "scce.source_language_compilation_receipt.v1"
+    && jsonRecord(pattern.patternJson).inheritedMetadata !== undefined);
+  if (metadataReceipts.length) {
+    if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(metadataReceipts);
+    else for (const receipt of metadataReceipts) await input.storage.languageMemory.putLanguagePattern(receipt);
+  }
   await input.storage.languageMemory.putNgramObservationsBatch(prepared.observations);
   if (input.storage.languageMemory.putNgramModels) await input.storage.languageMemory.putNgramModels(prepared.models);
   else for (const model of prepared.models) await input.storage.languageMemory.putNgramModel(model);
   let units = prepared.units;
-  if (prepared.source && prepared.evidence.length && jsonRecord(prepared.source.metadata).sourceMetadataBinding) {
+  if (!metadataReceipts.length && prepared.source && prepared.evidence.length && jsonRecord(prepared.source.metadata).sourceMetadataBinding) {
     const owners = await input.storage.evidence.sourceVersionsForEvidence([prepared.evidence[0]!.id]);
     const owner = owners.length === 1 ? owners[0] : undefined;
     if (owner?.sourceVersionId === prepared.source.sourceVersionId && owner.sourceId === prepared.source.sourceId
