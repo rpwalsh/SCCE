@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Worker } from "node:worker_threads";
 import { availableParallelism, freemem } from "node:os";
+import { getHeapStatistics } from "node:v8";
 import { canonicalJsonByteLength, type CorpusSegmentationWorkerExecution, type SourceInductionBatchExecution,
   type SourceInductionBatchJob, type SourceInductionBatchSession, type SourceInductionBatchIdentity,
   type SourceInductionBatchProduct, type PreparedCorpusSegmentationMeasurement, type VerifiedCorpusSegmentation } from "@scce/kernel";
@@ -32,7 +33,8 @@ type SourceWorkerRecord = WorkerExecutionRecord & { ready: boolean; leased: bool
 export function createSourceInductionExecution(input: { policy: SourceInductionWorkerExecution; signal?: AbortSignal }, dependencies: Dependencies = {}): {
   execution: SourceInductionBatchExecution; close(reason?: unknown): Promise<void>; receipt(): SourceInductionExecutionReceipt | undefined;
 } {
-  const policy = validateSourceInductionWorkerExecution(input.policy), records: SourceWorkerRecord[] = [];
+  const coordinatorHeapLimitBytes = dependencies.coordinatorHeapLimitBytes ?? getHeapStatistics().heap_size_limit;
+  const policy = validateWorkerExecutionResources(validateSourceInductionWorkerExecution(input.policy), coordinatorHeapLimitBytes), records: SourceWorkerRecord[] = [];
   let lifecycle: ReturnType<typeof createWorkerExecutionLifecycle> | undefined, startup: Promise<void> | undefined, closing: Promise<void> | undefined;
   let closed = false, readyComplete = false, bundleDigest = "", preparedBatches = 0, inducedBatches = 0, receipt: SourceInductionExecutionReceipt | undefined;
   const failure = (error: unknown) => { for (const record of records) { record.readyReject(error); record.pending?.reject(error); record.pending = undefined; } };
@@ -62,7 +64,7 @@ export function createSourceInductionExecution(input: { policy: SourceInductionW
     bundleDigest = await (dependencies.bundleDigest ?? populationWorkerBundleDigest)();
     input.signal?.throwIfAborted(); if (closed) throw Error("source induction execution is closed");
     lifecycle = createWorkerExecutionLifecycle({ declaration: policy, signal: input.signal,
-      coordinatorHeapLimitBytes: dependencies.coordinatorHeapLimitBytes, rss: dependencies.rss, onFailure: failure });
+      coordinatorHeapLimitBytes, rss: dependencies.rss, onFailure: failure });
     const ready: Promise<void>[] = [];
     try {
       lifecycle.start(); if (lifecycle.failed) throw lifecycle.error;

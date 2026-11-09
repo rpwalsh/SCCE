@@ -39,6 +39,7 @@ export const DEFAULT_OSS_FILES_PER_REPOSITORY = 100000;
 export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
   beforeSourceTraining?: (source: SourceBrainFileAdmission) => void | Promise<void>;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
+  sourceInductionExecution?: import("./source-induction-execution.js").SourceInductionWorkerExecution;
   storage: ScceStorage;
   rootPath: string;
   /** Provenance of a fetched repository snapshot, retained on every trained projection. */
@@ -302,6 +303,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       const transformId = projected.transformId;
       const trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
+        sourceInductionExecution: input.sourceInductionExecution,
         storage: input.storage,
         sourceSystem: projected.sourceSystem,
         streamUri: `${projected.sourceSystem}:${relativePath}`,

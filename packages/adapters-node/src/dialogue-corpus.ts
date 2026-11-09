@@ -60,6 +60,7 @@ export type DialogueCorpusAuthorship = "human_authored" | "system_generated";
 export interface DialogueCorpusTrainOptions {
   beforeSourceTraining?: (source: SourceBrainFileAdmission) => void | Promise<void>;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
+  sourceInductionExecution?: import("./source-induction-execution.js").SourceInductionWorkerExecution;
   storage: ScceStorage;
   rootPath: string;
   /** Dialogue is owner-private. The trainer refuses a public label so a transcript cannot be exported as corpus. */
@@ -223,6 +224,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     try {
       const trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
+        sourceInductionExecution: input.sourceInductionExecution,
         storage: input.storage,
         sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue,
         streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.dialogue}:${normalizeRelative(file.relativePath)}`,

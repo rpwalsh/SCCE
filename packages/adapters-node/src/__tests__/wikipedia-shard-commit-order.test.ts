@@ -5,16 +5,19 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { canonicalTemporalCoordinates, createHasher, validatePooledLanguageProfileOwnership, type LanguageProfile } from "@scce/kernel";
+import { canonicalTemporalCoordinates, createHasher, createIngestStageTracer, validatePooledLanguageProfileOwnership, type LanguageProfile, type SourceInductionBatchExecution } from "@scce/kernel";
 import { createWikipediaInputManifest } from "../wikipedia-input-manifest.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import { corpusSegmentationInputRecipe } from "../corpus-segmentation-producer.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
 import * as boundary from "../../../kernel/src/boundary-estimator.js";
 import * as population from "../../../kernel/src/segmentation-population.js";
+import * as sourceExecution from "../source-induction-execution.js";
+import { createSourceInductionWorkerSession } from "../source-induction-worker-session.js";
+import * as stageTrace from "../ingest-stage-trace-sink.js";
 
 describe("Wikipedia shard graph dependency validation", () => {
-  it.each([false, true])("commits prepared training before persisting its projected graph additions (global=%s)", async global => {
+  it.each([{ global: false, workers: false }, { global: true, workers: false }, { global: false, workers: true }])("commits prepared training before persisting its projected graph additions (%j)", async ({ global, workers }) => {
     const root = await mkdtemp(path.join(tmpdir(), "scce-wiki-shard-commit-order-"));
     const dumpPath = path.join(root, "dump.bz2");
     const indexPath = path.join(root, "index.txt");
@@ -25,6 +28,30 @@ describe("Wikipedia shard graph dependency validation", () => {
         cacheDir: path.join(root, "cache"), normalizationIdentity: "fixture-normalizer",
         compilerIdentity: "fixture-compiler", semanticConfig: { purpose: "shard-commit-order" } });
       const order: string[] = [];
+      const trace = createIngestStageTracer({ record: () => {} });
+      vi.spyOn(stageTrace, "ingestStageTracer").mockReturnValue(trace);
+      const executionReceipts: sourceExecution.SourceInductionExecutionReceipt[] = [];
+      const executionPolicy: sourceExecution.SourceInductionWorkerExecution = { backend: "node_workers.v1", workers: 1,
+        workerHeapMb: 32, maxNodeRssBytes: 16 * 1024 ** 3, abortGraceMs: 1000 };
+      if (workers) vi.spyOn(sourceExecution, "runSourceInductionExecution").mockImplementation(async <T>(input: {
+        policy: sourceExecution.SourceInductionWorkerExecution; run(execution: SourceInductionBatchExecution): Promise<T>;
+      }) => {
+        let preparedBatches = 0, inducedBatches = 0;
+        const execution: SourceInductionBatchExecution = { concurrency: 1, close: async () => {}, async open(job) {
+          preparedBatches++;
+          const session = createSourceInductionWorkerSession(structuredClone(job));
+          return { jobDigest: job.jobDigest, preparations: session.preparations,
+            verify: async corpus => session.verify(corpus), induce: async () => { inducedBatches++; return session.induce(); },
+            close: async () => session.close() };
+        } };
+        const result = await input.run(execution);
+        if (!preparedBatches) return { result };
+        const receipt: sourceExecution.SourceInductionExecutionReceipt = { schema: "scce.source_induction_execution.v1",
+          declaration: input.policy, bundleDigest: `fixture.phase.${executionReceipts.length}`, workersStarted: 1,
+          preparedBatches, inducedBatches, peakNodeRssBytes: 123456, rssSamplingIntervalMs: 100 };
+        executionReceipts.push(receipt);
+        return { result, receipt };
+      });
       let transactionDepth = 0;
       const transactionDepthAt: number[] = [];
       const graphRows = { nodes: new Map<string, any>(), edges: new Map<string, any>(), hyperedges: new Map<string, any>() };
@@ -60,7 +87,8 @@ describe("Wikipedia shard graph dependency validation", () => {
         }
       } as any;
       const ingestor = createWikipediaV3Ingestor({ storage,
-        config: { runtime: { tempRoot: root, corpusSegmentation: declaration, corpora: { wikipedia: { ngramShardChars: 100_000, ngramMaxOrder: 2, ngramVocabularyLimit: 32 } } } } as any });
+        config: { runtime: { tempRoot: root, corpusSegmentation: declaration, ...(workers ? { sourceInductionExecution: executionPolicy } : {}),
+          corpora: { wikipedia: { ngramShardChars: 100_000, ngramMaxOrder: 2, ngramVocabularyLimit: 32 } } } } as any });
       const samples = Array.from({ length: 80 }, (_, index) => {
         const first = index % 2 === 0;
         const evidenceId = `evidence.${index}`;
@@ -74,7 +102,7 @@ describe("Wikipedia shard graph dependency validation", () => {
           mediaType: "text/plain", byteStart: 0, byteEnd: byteLength, charStart: 0, charEnd: codePointLength,
           text, textPreview: text,
           status: "promoted", alpha: 1, observedAt: index,
-          provenance: { sourceFamilyId: "wikimedia:wikipedia", sourceVersionId, byteRange: [0, byteLength], charRange: [0, codePointLength] },
+          provenance: { sourceFamilyId: workers ? sourceId : "wikimedia:wikipedia", sourceVersionId, byteRange: [0, byteLength], charRange: [0, codePointLength] },
           informationLabel: { tenantId: "scce.public.corpus", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" }
         } as any;
         const valueKinds = first ? ["anchor_surface", "target_ref"] : ["date_surface", "time_context"];
@@ -98,8 +126,9 @@ describe("Wikipedia shard graph dependency validation", () => {
         temporalScope: {}, provenanceRefs: [], createdAt: 0, updatedAt: index,
         informationLabel: { tenantId: "scce.public.corpus", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" }
       });
+      let committedExecutions: unknown;
       const result = await (ingestor as any).ingestLanguageShard(samples, "wikipedia://fixture/shard", "episode.fixture", inputManifest,
-        async () => { order.push("checkpoint.commit"); transactionDepthAt.push(transactionDepth); });
+        async (trained: any) => { committedExecutions = trained.sourceInductionExecutions; order.push("checkpoint.commit"); transactionDepthAt.push(transactionDepth); });
 
       expect(result.promotedRelations).toBeGreaterThan(0);
       expect(result.graphHyperedges).toBeGreaterThan(0);
@@ -113,6 +142,16 @@ describe("Wikipedia shard graph dependency validation", () => {
       expect(order.indexOf("checkpoint.commit")).toBeGreaterThan(order.indexOf("graph.hyperedges"));
       expect(transactionDepthAt.every(depth => depth > 0)).toBe(true);
       expect(transactionDepth).toBe(0);
+      if (workers) {
+        expect(executionReceipts).toHaveLength(2);
+        expect(result.sourceInductionExecutions).toEqual({ shardUri: "wikipedia://fixture/shard",
+          prewarm: executionReceipts[0], training: executionReceipts[1] });
+        expect(committedExecutions).toEqual(result.sourceInductionExecutions);
+        for (const [index, phase] of ["prewarm", "training"].entries()) expect(trace.drain()).toContainEqual(expect.objectContaining({
+          stage: `language.source-induction-execution.${phase}`, counters: { workersStarted: 1,
+            preparedBatches: executionReceipts[index]!.preparedBatches, inducedBatches: executionReceipts[index]!.inducedBatches, peakNodeRssBytes: 123456 }
+        }));
+      } else expect(result.sourceInductionExecutions).toBeUndefined();
       if (global) { expect(active).toHaveBeenCalled(); expect(fit).not.toHaveBeenCalled(); expect(learn).not.toHaveBeenCalled(); }
       else expect(active).not.toHaveBeenCalled();
     } finally {

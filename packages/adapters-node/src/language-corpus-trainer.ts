@@ -10,6 +10,7 @@ import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationL
   type LanguageTrainingSegmentationDeclaration, type PreparedLanguageTrainingSegmentation as PreparedCorpusSegmentationSelection } from "./language-training-segmentation.js";
 import { prepareSourceTranscriptArchive, type SourceTranscriptArchiveDescriptor } from "./source-transcript-archive.js";
 import { SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID } from "./source-code-function-learning.js";
+import { runSourceInductionExecution, type SourceInductionWorkerExecution, type SourceInductionExecutionReceipt } from "./source-induction-execution.js";
 import {
   createClock,
   attachPooledLanguageProfileOwnership,
@@ -41,6 +42,7 @@ import {
   publishCompiledLanguagePatterns,
   prepareLanguageTrainingInduction,
   prepareLanguageTrainingInductionFromCorpus,
+  prepareLanguageTrainingInductionAsync,
   SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID,
   preparedLanguageInductionProducts,
   sourceLanguageInductionDocuments,
@@ -96,6 +98,7 @@ import type { TranscriptTurn } from "@scce/kernel";
 
 export interface LanguageCorpusTrainingInput {
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
+  sourceInductionExecution?: SourceInductionWorkerExecution;
   preparedCorpusSegmentation?: PreparedCorpusSegmentationSelection;
   storage: ScceStorage;
   sourceSystem: string;
@@ -210,6 +213,7 @@ export class CorpusCheckpointConflictError extends Error {
 }
 
 export interface LanguageCorpusTrainingReport {
+  sourceInductionExecution?: SourceInductionExecutionReceipt;
   segmentation?: PreparedCorpusSegmentationSelection["identity"];
   schema: "scce.languageCorpusTrainingReport.v1";
   /** Source-derived provenance label retained for storage/query compatibility. */
@@ -259,6 +263,7 @@ export interface PreparedLanguageCorpusTraining {
 }
 
 interface PreparedLanguageCorpusPayload {
+  sourceInductionExecution?: SourceInductionExecutionReceipt;
   projectedGraph?: GraphSnapshot;
   relationObservations?: Awaited<ReturnType<NonNullable<ScceStorage["relationObservations"]>["list"]>>;
   sourceSystem: string;
@@ -551,7 +556,7 @@ function checkpointBinding(input: LanguageCorpusTrainingInput, batchRecipe: stri
 
 function trainingInputBinding(input: LanguageCorpusTrainingInput, batchRecipe: string = LANGUAGE_TRAINING_BATCH_RECIPE_ID): string {
   // These service objects are used only in preparation; actual output IDs/times are captured in the payload.
-  const { storage: _storage, clock: _clock, idFactory: _ids, creativeEventCompiler: _compiler, ...semantic } = input;
+  const { storage: _storage, clock: _clock, idFactory: _ids, creativeEventCompiler: _compiler, sourceInductionExecution: _execution, ...semantic } = input;
   // Bind the exact raw source without copying the bytes into checkpoint metadata. The transform and digest are
   // durable semantic inputs, while the bytes themselves remain in the canonical blob store.
   if (input.originalSource) {
@@ -1060,9 +1065,19 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const segmentationLoader = await languageTrainingSegmentationLoader(input.storage, trainingSegmentationDeclaration(input), input.preparedCorpusSegmentation!);
   const inductionInput = { evidence, constructionEvidence: [...evidence, ...constructionPoolEvidence], constructionContextDocuments: constructionPool.documents,
     hasher, prepared: input.preparedInduction };
-  const preparedInduction = naturalInduction ? (segmentationLoader
-    ? await prepareLanguageTrainingInductionFromCorpus({ ...inductionInput, corpusLoader: segmentationLoader })
-    : prepareLanguageTrainingInduction(inductionInput)).prepared : undefined;
+  let preparedInduction: PreparedConstructionInduction | undefined;
+  let sourceInductionExecution: SourceInductionExecutionReceipt | undefined;
+  if (naturalInduction && input.sourceInductionExecution) {
+    const result = await runSourceInductionExecution({ policy: input.sourceInductionExecution,
+      run: execution => prepareLanguageTrainingInductionAsync({ ...inductionInput, execution,
+        ...(segmentationLoader ? { corpusLoader: segmentationLoader } : {}) }) });
+    preparedInduction = result.result.prepared;
+    sourceInductionExecution = result.receipt;
+  } else if (naturalInduction) {
+    preparedInduction = (segmentationLoader
+      ? await prepareLanguageTrainingInductionFromCorpus({ ...inductionInput, corpusLoader: segmentationLoader })
+      : prepareLanguageTrainingInduction(inductionInput)).prepared;
+  }
   const inducedProducts = preparedInduction ? preparedLanguageInductionProducts({ documents: inductionDocuments, hasher, prepared: preparedInduction }) : undefined;
   const graphEligible = createCorpusRegistry(input.corpusRegistry ?? []).some(row => row.sourceSystemId === sourceSystemId && row.enabled && row.graphEvidenceEligible);
   const sourceProjection = source && input.persistSource !== false && graphEligible && naturalInduction
@@ -1251,6 +1266,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     graphSnapshotDigest: graphSnapshotDigest(batchGraphSnapshot),
     constructionPoolEvidence,
     constructionPoolProfiles: constructionPool.profiles,
+    ...(sourceInductionExecution ? { sourceInductionExecution } : {}),
     ...(!input.languageOnly && needsConstructionContext(input)
       && (input.constructionPoolUriPrefix ?? input.corpusCheckpoint?.rootUri)
       && input.storage.evidence.listEvidenceBackedSourceVersions
@@ -1418,6 +1434,7 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
 
   return {
     schema: "scce.languageCorpusTrainingReport.v1",
+    ...(prepared.sourceInductionExecution ? { sourceInductionExecution: prepared.sourceInductionExecution } : {}),
     sourceSystem: prepared.sourceSystem,
     sourceSystemId: prepared.sourceSystemId,
     streamUri: input.streamUri,

@@ -18,6 +18,7 @@ import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrain
 export interface GutenbergCorpusTrainOptions {
   beforeSourceTraining?: (source: SourceBrainFileAdmission) => void | Promise<void>;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
+  sourceInductionExecution?: import("./source-induction-execution.js").SourceInductionWorkerExecution;
   storage: ScceStorage;
   rootPath: string;
   startFileIndex?: number;
@@ -137,6 +138,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     // that is what the heap checkpoint above is for.
     const trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
+        sourceInductionExecution: input.sourceInductionExecution,
         storage: input.storage,
         sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
         streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}:${relativePath}`,

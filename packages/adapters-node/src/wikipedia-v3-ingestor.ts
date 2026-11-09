@@ -19,6 +19,7 @@ import {
   createTypedIngestProjector,
   prepareConstructionInduction,
   prepareConstructionInductionFromCorpus,
+  prepareConstructionInductionAsync,
   preparedLanguageInductionProducts,
   sourceLanguageInductionDocuments,
   observedEntitySurfacesFromInducedLanguageModel,
@@ -61,6 +62,7 @@ import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, spanProvenanceM
 import { createWikipediaInputManifest, wikipediaInputSourcesStillMatch, type WikipediaInputManifest } from "./wikipedia-input-manifest.js";
 import { WIKIPEDIA_SURFACE_TRANSFORM } from "./wikipedia-markup.js";
 import { ingestionCodeIdentity } from "./ingestion-code-identity.js";
+import { runSourceInductionExecution, type SourceInductionExecutionReceipt } from "./source-induction-execution.js";
 import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationLoader, type PreparedLanguageTrainingSegmentation } from "./language-training-segmentation.js";
 
 /** The compact Kneser-Ney summary's most-continued symbols, narrowed out of the profile's JSON shape. */
@@ -99,6 +101,7 @@ export interface WikipediaV3IngestOptions {
 }
 
 export interface WikipediaV3IngestResult {
+  lastSourceInductionExecutions?: WikipediaSourceInductionExecutions;
   languageMode?: "acquisition_only" | "local_bootstrap" | "corpus_snapshot";
   episodeId: string;
   inputManifestId?: string;
@@ -200,7 +203,14 @@ interface WikipediaPageImport {
   warnings: string[];
 }
 
+export interface WikipediaSourceInductionExecutions {
+  shardUri: string;
+  prewarm?: SourceInductionExecutionReceipt;
+  training?: SourceInductionExecutionReceipt;
+}
+
 interface WikipediaLanguageShardImport {
+  sourceInductionExecutions?: WikipediaSourceInductionExecutions;
   languageProfiles: number;
   ngramObservations: number;
   ngramModels: number;
@@ -475,6 +485,7 @@ export class WikipediaV3Ingestor {
       });
     };
     const applyLanguageShardImport = (imported: WikipediaLanguageShardImport): void => {
+      if (imported.sourceInductionExecutions) result.lastSourceInductionExecutions = imported.sourceInductionExecutions;
       result.languageProfiles += imported.languageProfiles;
       result.ngramObservations += imported.ngramObservations;
       result.ngramModels += imported.ngramModels;
@@ -1389,7 +1400,11 @@ export class WikipediaV3Ingestor {
     await control.onPhase?.("language-induction");
     const inductionSpan = trace.span("language.induction");
     const documents = sourceLanguageInductionDocuments(evidence);
-    const preparedInduction = corpusLoader
+    const workerInduction = this.config.runtime.sourceInductionExecution
+      ? await runSourceInductionExecution({ policy: this.config.runtime.sourceInductionExecution,
+        run: execution => prepareConstructionInductionAsync({ documents, hasher: this.hasher, execution,
+          ...(corpusLoader ? { corpusLoader } : {}) }) }) : undefined;
+    const preparedInduction = workerInduction ? workerInduction.result : corpusLoader
       ? await prepareConstructionInductionFromCorpus({ documents, hasher: this.hasher, corpusLoader })
       : prepareConstructionInduction({ documents, hasher: this.hasher });
     const inducedProducts = preparedLanguageInductionProducts({ documents, hasher: this.hasher, prepared: preparedInduction });
@@ -1405,6 +1420,7 @@ export class WikipediaV3Ingestor {
     const trainSpan = trace.span("language.train");
     const trainingInput: LanguageCorpusTrainingInput = {
       corpusSegmentation: this.config.runtime.corpusSegmentation,
+      sourceInductionExecution: this.config.runtime.sourceInductionExecution,
       preparedCorpusSegmentation: segmentation,
       storage: this.storage,
       sourceSystem: "wikipedia",
@@ -1556,6 +1572,11 @@ export class WikipediaV3Ingestor {
       });
     }
     const importedLanguageShard: WikipediaLanguageShardImport = {
+      ...(workerInduction?.receipt || trained.sourceInductionExecution ? { sourceInductionExecutions: {
+        shardUri,
+        ...(workerInduction?.receipt ? { prewarm: workerInduction.receipt } : {}),
+        ...(trained.sourceInductionExecution ? { training: trained.sourceInductionExecution } : {})
+      } } : {}),
       languageProfiles: trained.languageProfiles,
       ngramObservations: trained.ngramObservations,
       ngramModels: trained.ngramModels,
@@ -1571,6 +1592,11 @@ export class WikipediaV3Ingestor {
         : 0,
       warnings: [...shardWarnings, ...trained.warnings]
     };
+    for (const phase of ["prewarm", "training"] as const) {
+      const receipt = importedLanguageShard.sourceInductionExecutions?.[phase];
+      if (receipt) trace.mark(`language.source-induction-execution.${phase}`, { workersStarted: receipt.workersStarted,
+        preparedBatches: receipt.preparedBatches, inducedBatches: receipt.inducedBatches, peakNodeRssBytes: receipt.peakNodeRssBytes });
+    }
     await commitProgress(importedLanguageShard);
     return importedLanguageShard;
     });

@@ -29,6 +29,7 @@ export interface StoredCorpusConstructionTrainingOptions {
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
+  sourceInductionExecution?: import("./source-induction-execution.js").SourceInductionWorkerExecution;
   storage: ScceStorage;
   sourceSystem?: string;
   maxTotalBytes?: number;
@@ -169,6 +170,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
       const prefix = input.includeUriPrefixes?.find(value => item.source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(item.source.canonicalUri);
       let trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
+        sourceInductionExecution: input.sourceInductionExecution,
         ...(segmentationBatch ? { preparedCorpusSegmentation: segmentationBatch.selection } : {}),
         storage: input.storage,
         sourceSystem,

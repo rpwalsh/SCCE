@@ -735,6 +735,7 @@ export async function corpus(
       printCorpusTrainingReport(await trainStoredCorpusConstructions({
         storage: runtime.storage,
         corpusSegmentation: config?.runtime.corpusSegmentation,
+        sourceInductionExecution: config?.runtime.sourceInductionExecution,
         ...(canonicalCorpusSourceSystemId(options.sourceSystem ?? "wikipedia") === CORPUS_SOURCE_SYSTEM_IDS.wikipedia ? {
           ngramMaxOrder: config?.runtime.corpora?.wikipedia?.ngramMaxOrder,
           ngramMaxCountersPerOrder: config?.runtime.corpora?.wikipedia?.ngramMaxCountersPerOrder,
@@ -761,6 +762,7 @@ export async function corpus(
       // The transcript is labelled with the operator's own access context, never the public corpus label.
       printCorpusTrainingReport(await trainDialogueCorpus({
         corpusSegmentation: config?.runtime.corpusSegmentation,
+        sourceInductionExecution: config?.runtime.sourceInductionExecution,
         storage: runtime.storage,
         rootPath: path.resolve(target),
         beforeSourceTraining,
@@ -798,6 +800,7 @@ export async function corpus(
         training: {
           beforeSourceTraining,
           corpusSegmentation: config?.runtime.corpusSegmentation,
+          sourceInductionExecution: config?.runtime.sourceInductionExecution,
           includeDocs: options.includeDocs,
           includeSource: options.includeSource,
           ngramMaxOrder: options.ngramMaxOrder,
@@ -837,6 +840,7 @@ export async function corpus(
     if (kind === "gutenberg") {
       printJson(await trainGutenbergCorpus({
         corpusSegmentation: config?.runtime.corpusSegmentation,
+        sourceInductionExecution: config?.runtime.sourceInductionExecution,
         storage: runtime.storage,
         rootPath: path.resolve(target),
         beforeSourceTraining,
@@ -874,7 +878,8 @@ export async function corpus(
     }
     const trainingOptions = ossCorpusTrainOptionsFrom(options);
     printJson(await trainOssCorpus({
-        corpusSegmentation: config?.runtime.corpusSegmentation,
+      corpusSegmentation: config?.runtime.corpusSegmentation,
+      sourceInductionExecution: config?.runtime.sourceInductionExecution,
       storage: runtime.storage,
       rootPath: path.resolve(target),
       ...trainingOptions,

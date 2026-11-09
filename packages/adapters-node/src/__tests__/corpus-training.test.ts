@@ -1365,6 +1365,20 @@ describe("multi-corpus training", () => {
     expect(fixture.state.patterns).toHaveLength(patternsBefore);
   });
 
+  it("does not publish source learning when the declared worker budget cannot be reserved", async () => {
+    const fixture = memoryStorage();
+    await expect(trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "oss_docs", streamUri: "oss_docs:worker-budget",
+      sourceUri: "scce://worker-budget/current.md", text: "cat chased mouse. dog chased mouse.", informationLabel: publicCorpusInformationLabel,
+      skipNgramObservationPersistence: true, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
+      sourceInductionExecution: { backend: "node_workers.v1", workers: 1, workerHeapMb: 32, maxNodeRssBytes: 1, abortGraceMs: 1000 }
+    })).rejects.toThrow("cannot reserve coordinator heap");
+    expect(fixture.state.sourceVersions).toHaveLength(0);
+    expect(fixture.state.profiles).toHaveLength(0);
+    expect(fixture.state.patterns).toHaveLength(0);
+    expect(fixture.state.models).toHaveLength(0);
+    expect(fixture.state.events).toHaveLength(0);
+  });
+
   it.each([false, true])("rejects a newly available construction owner after preparation (existing owner: %s)", async existingOwner => {
     const fixture = memoryStorage();
     installDurableConstructionPool(fixture);
