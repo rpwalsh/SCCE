@@ -42,7 +42,9 @@ it("publishes only exact current accessible pooled ownership and admits eight Wi
   const { adapter, owner, state, calls } = fixture();
   await adapter.model.putLanguageProfile(state.profile);
   expect(calls.some(call => call.sql.endsWith(" AS accepted"))).toBe(true);
-  expect((await adapter.languageIdentities.listPooledProfileSignatures!()).map(row => row.id)).toEqual([owner.profile.id]);
+  expect((await adapter.languageIdentities.listPooledProfileSignatures!({ limit: 1 })).map(row => row.id)).toEqual([owner.profile.id]);
+  const pooledRead = calls.find(call => call.sql.includes("SELECT lp.profile_json FROM"))!;
+  expect(pooledRead.sql).toContain("lp.id>$1"); expect(pooledRead.sql).toContain("LIMIT $2"); expect(pooledRead.params.slice(0, 2)).toEqual(["", 1]);
   expect(await adapter.languageIdentities.listProfileLanguages({ profileIds: [owner.profile.id] })).toEqual([{ profileId: owner.profile.id, languageId: "language.measured" }]);
   expect((await adapter.languageMemory.continuationPopulation!({ languageId: "language.measured" }))?.modelCount).toBe(9);
   const discovery = calls.length;
@@ -59,7 +61,7 @@ it("loads an exact pooled owner assignment and includes its eight-model populati
 it.each(["current", "accessible", "complete", "promoted"] as const)("refuses pooled publication and continuation ownership when %s parent proof is missing", async field => {
   const { adapter, state } = fixture(); state[field] = false;
   await expect(adapter.model.putLanguageProfile(state.profile)).rejects.toThrow("parents are not current accessible promoted evidence");
-  expect(await adapter.languageIdentities.listPooledProfileSignatures!()).toEqual([]);
+  expect(await adapter.languageIdentities.listPooledProfileSignatures!({ limit: 1 })).toEqual([]);
   expect(await adapter.languageIdentities.listProfileLanguages({ profileIds: [state.profile.id] })).toEqual([]);
   expect((await adapter.languageMemory.continuationPopulation!({ languageId: "language.measured" }))?.modelCount).toBe(1);
 });

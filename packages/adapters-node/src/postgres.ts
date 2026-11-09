@@ -3104,17 +3104,18 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
          ORDER BY lp.id`, params);
       return rows.map(row => ({ profileId: row.id, languageId: row.language_id }));
     },
-    async listPooledProfileSignatures() {
-      const params: unknown[] = [];
-      const profileAccess = storage.informationAccessPredicate("lp", 1); params.push(...profileAccess.params);
+    async listPooledProfileSignatures(query) {
+      const params: unknown[] = [query.afterId ?? "", Math.max(1, Math.min(4000, Math.floor(query.limit)))];
+      const profileAccess = storage.informationAccessPredicate("lp", params.length + 1); params.push(...profileAccess.params);
       const ownerSql = pooledProfileOwnershipSql(storage, params, "lp.id", "lp.source_version_id", "(lp.profile_json->'pooledSourceBinding')");
       const rows = await storage.query<{ profile_json: LanguageProfile }>(`SELECT lp.profile_json FROM ${storage.table("language_profiles")} lp
-        WHERE ${profileAccess.sql} AND ${ownerSql} ORDER BY lp.id`, params);
+        WHERE lp.id>$1 AND ${profileAccess.sql} AND ${ownerSql} ORDER BY lp.id LIMIT $2`, params);
       return rows.flatMap(row => {
         validatePooledLanguageProfileOwnership(row.profile_json, createHasher());
         const signature = languageProfileSignature(row.profile_json, "");
-        return signature ? [{ id: signature.id, sourceVersionId: row.profile_json.sourceVersionId, sourceSystem: "", sourceUri: "",
-          scripts: [...signature.scripts], direction: signature.direction, topContinuation: signature.topContinuation.map(([word, count]) => [word, count] as [string, number]) }] : [];
+        return [{ id: row.profile_json.id, sourceVersionId: row.profile_json.sourceVersionId, sourceSystem: "", sourceUri: "",
+          scripts: [...row.profile_json.scripts], direction: row.profile_json.direction,
+          topContinuation: (signature?.topContinuation ?? []).map(([word, count]) => [word, count] as [string, number]) }];
       });
     },
     async profileAssignments() {

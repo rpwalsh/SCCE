@@ -43,7 +43,8 @@ it("assigns English and non-English aggregates from their own measurements witho
     async assignProfileLanguages(values) { for (const item of values) assignments.set(item.profileId, item.languageId); },
     async listProfileLanguages(query) { return [...assignments].filter(([id]) => !query || query.profileIds.includes(id)).map(([profileId, languageId]) => ({ profileId, languageId })); },
     async listProfileSignatures(query) { return rows.filter(item => item.id > (query.afterId ?? "")).sort((a, b) => a.id.localeCompare(b.id)).slice(0, query.limit); },
-    async listPooledProfileSignatures() { return [row(en.owned), row(ru.owned)]; }
+    async listPooledProfileSignatures(query) { return [row(en.owned), row(ru.owned)].filter(value => value.id > (query.afterId ?? ""))
+      .sort((a, b) => a.id.localeCompare(b.id)).slice(0, query.limit); }
   };
   const runtime = createLanguageIdentityRuntime({ store, hasher: en.hasher, now: () => 1 });
   const result = await runtime.ensure({ rebuild: true });

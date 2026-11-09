@@ -1290,7 +1290,7 @@ export interface LanguageProfileSignatureRow {
 
 export interface LanguageIdentityStore {
   /** Validated aggregate owners are assigned, but never counted as additional discovery documents. */
-  listPooledProfileSignatures?(): Promise<LanguageProfileSignatureRow[]>;
+  listPooledProfileSignatures?(query: { afterId?: string; limit: number }): Promise<LanguageProfileSignatureRow[]>;
   putIdentities(records: readonly import("./language-identity.js").LanguageIdentityRecord[]): Promise<void>;
   /** Replace the discovered identity index after a schema/metadata reindex, removing stale identity rows. */
   replaceIdentities?(records: readonly import("./language-identity.js").LanguageIdentityRecord[]): Promise<void>;

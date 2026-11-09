@@ -177,13 +177,19 @@ export function createLanguageIdentityRuntime(options: {
     .sort((a, b) => a.id.localeCompare(b.id) || canonicalStringify(a).localeCompare(canonicalStringify(b)))));
   async function assignPooled(identities: readonly LanguageIdentityRecord[]): Promise<number> {
     const store = options.store!;
-    const pooled = store.listPooledProfileSignatures ? await store.listPooledProfileSignatures() : [];
-    const assignments = pooled.flatMap(row => {
-      const languageId = classifyPooledLanguageSignature(identities, signatureFromRow(row, corpusRegistry));
-      return languageId ? [{ profileId: row.id, languageId }] : [];
-    });
-    if (assignments.length) await store.assignProfileLanguages(assignments);
-    return assignments.length;
+    if (!store.listPooledProfileSignatures) return 0;
+    let afterId: string | undefined; let count = 0;
+    for (;;) {
+      const pooled = await store.listPooledProfileSignatures({ afterId, limit: 1 });
+      if (!pooled.length) return count;
+      const assignments = pooled.flatMap(row => {
+        if (afterId !== undefined && row.id <= afterId) throw new Error("pooled profile signature cursor did not advance");
+        const languageId = classifyPooledLanguageSignature(identities, signatureFromRow(row, corpusRegistry));
+        return languageId ? [{ profileId: row.id, languageId }] : [];
+      });
+      if (assignments.length) await store.assignProfileLanguages(assignments);
+      count += assignments.length; afterId = pooled[pooled.length - 1]!.id;
+    }
   }
   async function discover(signatures: LanguageProfileSignature[]): Promise<{ identities: LanguageIdentityRecord[]; assigned: number }> {
     const store = options.store!;
