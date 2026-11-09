@@ -241,6 +241,11 @@ export async function openCorpusSegmentationRun(storage: PostgresStorageAdapter,
   return new PostgresCorpusSegmentationRun(storage, rows[0].run_json, bounds);
 }
 
+async function lockCorpusSegmentationDependencies(storage: PostgresStorageAdapter): Promise<void> {
+  storage.requireActiveTransaction("Corpus segmentation commit read");
+  await storage.query(`LOCK TABLE ${storage.table("evidence_spans")},${storage.table("source_versions")} IN SHARE MODE`);
+}
+
 /** Publish only one complete matched immutable inference/context snapshot, never an unscoped latest row. */
 export async function activateCorpusSegmentationRun(storage: PostgresStorageAdapter, run: PostgresCorpusSegmentationRun, inference: SegmentationPopulationInferenceModel): Promise<void> {
   const model=validatePagedSegmentationInference(structuredClone(inference));
@@ -254,7 +259,7 @@ export async function activateCorpusSegmentationRun(storage: PostgresStorageAdap
       || model.featureContextId !== snapshot.snapshot.featureContextId
       || canonicalStringify(model.sourceInventory) !== canonicalStringify(snapshot.dependency)) throw new Error("Corpus segmentation inference does not match its complete owned snapshot");
     // All dependency reads and the pointer publication share a stable membership boundary.
-    await storage.query(`LOCK TABLE ${storage.table("evidence_spans")},${storage.table("source_versions")} IN SHARE MODE`);
+    await lockCorpusSegmentationDependencies(storage);
     const current = await currentCorpusSegmentationDependency(storage, run);
     if (canonicalStringify(current) !== canonicalStringify(snapshot.dependency)) throw new Error("Corpus segmentation dependency changed before activation");
     const publicationAccess=storage.informationAccessPredicate("r",4);
@@ -271,14 +276,15 @@ export async function activateCorpusSegmentationRun(storage: PostgresStorageAdap
 }
 
 
-export async function readActiveCorpusSegmentationRun(storage: PostgresStorageAdapter, scope: CorpusSegmentationScope, required: {recipeId:string;normalizationContractId:string}, bounds: SegmentationPageBounds): Promise<{run: PostgresCorpusSegmentationRun; inference: SegmentationPopulationInferenceModel} | null> {
+export async function readActiveCorpusSegmentationRun(storage: PostgresStorageAdapter, scope: CorpusSegmentationScope, required: {recipeId:string;normalizationContractId:string}, bounds: SegmentationPageBounds, consistency?: {lockForCommit?:boolean}): Promise<{run: PostgresCorpusSegmentationRun; inference: SegmentationPopulationInferenceModel} | null> {
   positive(bounds.pageRows,"pageRows");positive(bounds.maxPageBytes,"maxPageBytes");
+  if (consistency?.lockForCommit) await lockCorpusSegmentationDependencies(storage);
   const scopeId = corpusSegmentationScopeId(scope), access = storage.informationAccessPredicate("r", 2);
   const rows = await storage.query<{run_json: CorpusSegmentationRun; snapshot_json: {dependency: {id: string;count: number}}; inference_json: JsonValue;fits:boolean}>(`
     WITH selected AS (SELECT r.run_json,r.snapshot_json,r.inference_json,
       octet_length(convert_to(jsonb_build_object('run_json',r.run_json,'snapshot_json',r.snapshot_json,'inference_json',r.inference_json)::text,'UTF8')) <= $${2+access.params.length} AS fits
       FROM ${storage.table("segmentation_consolidation_active")} a JOIN ${storage.table("segmentation_consolidation_runs")} r ON r.run_id=a.run_id AND r.scope_id=a.scope_id
-      WHERE a.scope_id=$1 AND r.state='complete' AND a.header_json=r.inference_json AND ${access.sql})
+      WHERE a.scope_id=$1 AND r.state='complete' AND a.header_json=r.inference_json AND ${access.sql}${consistency?.lockForCommit ? ' FOR SHARE OF a' : ''})
     SELECT fits,CASE WHEN fits THEN run_json ELSE NULL END AS run_json,CASE WHEN fits THEN snapshot_json ELSE NULL END AS snapshot_json,
       CASE WHEN fits THEN inference_json ELSE NULL END AS inference_json FROM selected`, [scopeId,...access.params,bounds.maxPageBytes]);
   if (!rows.length) return null;

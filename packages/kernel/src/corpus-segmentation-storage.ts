@@ -18,7 +18,7 @@ export interface CorpusSegmentationConsolidationOptions {
 }
 export interface CorpusSegmentationStore {
   consolidate(input:CorpusSegmentationConsolidationOptions):Promise<{runId:string;alreadyComplete:boolean;minimumPoolConnections:2;model:SegmentationPopulationInferenceModel}>;
-  readActive(scope:CorpusSegmentationScope,required:{recipeId:string;normalizationContractId:string},bounds:SegmentationPageBounds):Promise<{
+  readActive(scope:CorpusSegmentationScope,required:{recipeId:string;normalizationContractId:string},bounds:SegmentationPageBounds,consistency?:{lockForCommit?:boolean}):Promise<{
     inference:SegmentationPopulationInferenceModel;loader:CorpusSegmentationBatchLoader;
   }|null>;
 }

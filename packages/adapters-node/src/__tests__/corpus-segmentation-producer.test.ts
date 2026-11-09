@@ -21,7 +21,7 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
   const pool={options:{max:2},connect:async()=>({query:async(sql:string)=>{
     if(sql.includes("pg_try_advisory_lock")){const acquired=!leased;if(acquired)leased=true;return {rows:[{acquired}]};}
     const released=leased;leased=false;return {rows:[{released}]};},release:(destroy?:boolean)=>{if(destroy)leased=false;}})};
-  const storage={pool,schema:"fixture",table:(name:string)=>`"fixture"."${name}"`,requireWritableInformationLabel:()=>label,
+  const storage={pool,schema:"fixture",table:(name:string)=>`"fixture"."${name}"`,requireWritableInformationLabel:()=>label,requireActiveTransaction:()=>{},
     informationAccessPredicate:(alias:string,index:number)=>({sql:`${alias}.information_label->>'tenantId'=$${index}`,params:["owner"]}),
     transaction:async<T>(operation:()=>Promise<T>)=>{const previousState=state,previousActive=active;try{return await operation();}catch(error){state=previousState;active=previousActive;throw error;}},
     mutateLanguageMemory:async(sql:string,params:unknown[])=>{calls.push({sql,params});state="complete";active=JSON.parse(String(params[2]));if(failPublication)throw new Error("publication failed");return true;},

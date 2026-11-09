@@ -283,8 +283,8 @@ export class PostgresStorageAdapter implements ScceStorage {
     createRun: (input: Parameters<typeof createCorpusSegmentationRun>[1], bounds: Parameters<typeof createCorpusSegmentationRun>[2]) => createCorpusSegmentationRun(this,input,bounds),
     openRun: (id: string,bounds: Parameters<typeof openCorpusSegmentationRun>[2]) => openCorpusSegmentationRun(this,id,bounds),
     activate: (run: Parameters<typeof activateCorpusSegmentationRun>[1],inference: Parameters<typeof activateCorpusSegmentationRun>[2]) => activateCorpusSegmentationRun(this,run,inference),
-    readActive: async (scope: Parameters<typeof readActiveCorpusSegmentationRun>[1],required: Parameters<typeof readActiveCorpusSegmentationRun>[2],bounds: Parameters<typeof readActiveCorpusSegmentationRun>[3]) => {
-      const active=await readActiveCorpusSegmentationRun(this,scope,required,bounds);
+    readActive: async (scope: Parameters<typeof readActiveCorpusSegmentationRun>[1],required: Parameters<typeof readActiveCorpusSegmentationRun>[2],bounds: Parameters<typeof readActiveCorpusSegmentationRun>[3],consistency?: Parameters<typeof readActiveCorpusSegmentationRun>[4]) => {
+      const active=await readActiveCorpusSegmentationRun(this,scope,required,bounds,consistency);
       if(!active)return null;
       const inference=active.inference;
       return {...active,loader:{identity:{id:inference.id,sourceInventory:inference.sourceInventory,featureContextId:inference.featureContextId,normalizationContractId:inference.normalizationContractId},
@@ -631,6 +631,10 @@ export class PostgresStorageAdapter implements ScceStorage {
   async query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     const result = await (this.transactionContext.getStore() ?? this.pool).query(sql, params);
     return result.rows as T[];
+  }
+
+  requireActiveTransaction(operation: string): void {
+    if (!this.transactionContext.getStore()) throw new Error(`${operation} requires an active transaction`);
   }
 
   async transaction<T>(operation: () => Promise<T>): Promise<T> {
