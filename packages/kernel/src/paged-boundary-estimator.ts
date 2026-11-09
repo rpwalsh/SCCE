@@ -6,6 +6,7 @@ import { BoundaryGradientPass, BoundaryCalibrationPass, BoundaryMetricsPass, bou
 import type { BoundaryStatisticsCursor } from "./corpus-segmentation-cursor.js";
 import { createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher } from "./types.js";
+import { canonicalDigestHex } from "./canonical-json-digest.js";
 
 async function* documents(source: BoundaryStatisticsCursor): AsyncGenerator<string> {
   let previous: string | undefined;
@@ -129,7 +130,7 @@ export async function fitPagedBoundaryEstimator(input: {
       ...(hasHeldout ? { heldoutStatisticsId: heldout.header.id, heldoutSourceInventory: heldout.header.sourceInventory } : {}),
       examples: hasHeldout ? heldout.header.rowCount : 0, ...calibrationMetrics,
       shardCount, shardLogLossStdDev: shardCount ? boundaryFitQuantize(Math.sqrt(shardSquaredError / shardCount)) : null } };
-  return { ...canonical, id: `boundary_estimator_inference.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`,
+  return { ...canonical, id: `boundary_estimator_inference.${canonicalDigestHex(canonical, hasher).slice(0, 40)}`,
     audit: toJsonValue({ trainer: "kernel.boundary_estimator.logistic_platt.v2", deterministicCanonicalRows: true,
       quantizedParameters: true, learnedFinalCoefficientsOnly: true, latentMarginalsAccepted: header.latentMass > 0,
       heldoutCalibration: hasHeldout, sourceDisjointCalibration: true, learningRate, storage: "replayable_canonical_rows" }) };

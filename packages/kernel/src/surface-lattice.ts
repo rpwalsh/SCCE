@@ -18,6 +18,8 @@ import {
 } from "./segmentation-forest.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
+import type { PreparedCorpusSegmentationMeasurement, CorpusSegmentationContextSlice } from "./corpus-segmentation-cursor.js";
+import { canonicalDigestHex } from "./canonical-json-digest.js";
 import {
   canonicalGraphemeSegmenter,
   canonicalNormalizationContract,
@@ -302,6 +304,37 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
 export function measureSurfaceBoundaries(options: Omit<SurfaceLatticeBuildOptions,
   "maxEdges" | "segmentationPathLimit" | "segmentationResumeToken" | "segmentationForestLimits">): SurfaceBoundaryMeasurement {
   return buildSurfaceLatticeInternal(options, false, true);
+}
+
+type CorpusMeasurementOptions = Omit<Parameters<typeof measureSurfaceBoundaries>[0], "boundaryEstimator" | "boundaryFeatureContext">;
+const corpusMeasurements = new WeakMap<PreparedCorpusSegmentationMeasurement, { measurement: SurfaceBoundaryMeasurement; sourceDigest: string }>();
+function corpusMeasurementSourceDigest(options: CorpusMeasurementOptions, hasher: Hasher): string {
+  return canonicalDigestHex({ latticeId: canonicalSurfaceLatticeId({ ...options, hasher }),
+    maxUnits: Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS)) }, hasher);
+}
+
+export function prepareCorpusSegmentationMeasurement(options: CorpusMeasurementOptions): PreparedCorpusSegmentationMeasurement {
+  if ("boundaryEstimator" in options || "boundaryFeatureContext" in options) throw new Error("corpus bootstrap measurement must be untrained");
+  const hasher = options.hasher ?? createHasher();
+  const measurement = measureSurfaceBoundaries(options);
+  const hypotheses = measurement.units.filter(unit => unit.overlapClass !== "base_partition");
+  const preparation = { id: measurement.boundaryMeasurement.id, documentId: options.documentId,
+    requiredClassIds: [...new Set(hypotheses.map(unit => unit.surfaceFormClassId))].sort(),
+    requiredContextKeys: [...new Set(hypotheses.map(boundaryContextKey))].sort() };
+  corpusMeasurements.set(preparation, { measurement, sourceDigest: corpusMeasurementSourceDigest(options, hasher) });
+  return preparation;
+}
+
+export function readPreparedCorpusSegmentationMeasurement(preparation: PreparedCorpusSegmentationMeasurement, options: CorpusMeasurementOptions): SurfaceBoundaryMeasurement {
+  const stored = corpusMeasurements.get(preparation);
+  if (!stored || preparation.id !== stored.measurement.boundaryMeasurement.id || preparation.documentId !== options.documentId
+    || stored.sourceDigest !== corpusMeasurementSourceDigest(options, options.hasher ?? createHasher())) throw new Error("corpus boundary measurement inputs changed");
+  return stored.measurement;
+}
+
+export function corpusSegmentationContextSliceDigest(input: { featureContext: CompiledBoundaryFeatureContext;
+  binding: Omit<CorpusSegmentationContextSlice["binding"], "valueDigest"> }, hasher: Hasher = createHasher()): string {
+  return canonicalDigestHex(input, hasher);
 }
 
 export function buildSourceAlignmentSurfaceLattice(options: SurfaceLatticeBuildOptions): SourceAlignmentSurfaceLattice {

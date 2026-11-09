@@ -51,6 +51,7 @@ export * from "./boundary-estimator.js";
 export * from "./corpus-segmentation-cursor.js";
 export * from "./paged-boundary-estimator.js";
 export * from "./paged-boundary-statistics.js";
+export * from "./paged-segmentation-population.js";
 export * from "./segmentation-forest.js";
 export * from "./segmentation-population.js";
 export * from "./segmentation-population-persistence.js";

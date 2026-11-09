@@ -31,6 +31,7 @@ export interface PopulationCollapseGuardResult {
 }
 
 const DEFAULT_MINIMUM_DIVERGENCE = 0.05;
+export const POPULATION_COLLAPSE_DEFAULT_MINIMUM_DIVERGENCE = DEFAULT_MINIMUM_DIVERGENCE;
 
 export function jensenShannonDivergence(left: readonly number[], right: readonly number[]): number {
   const width = Math.max(left.length, right.length);

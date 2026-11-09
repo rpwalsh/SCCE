@@ -6,6 +6,8 @@ import {
   mergeBoundaryStatistics,
   type BoundaryEstimatorMixture,
   type BoundaryEstimatorModel,
+  type BoundaryEstimatorScoringModel,
+  type BoundaryEstimatorInferenceModel,
   type BoundarySufficientStatistics
 } from "./boundary-estimator.js";
 import { createBoundaryEstimatorFitter, type BoundaryEstimatorFitter } from "./boundary-fit-reuse.js";
@@ -90,6 +92,27 @@ export interface SegmentationPopulationModel {
   audit: JsonValue;
 }
 
+export const SEGMENTATION_POPULATION_INFERENCE_SCHEMA = "scce.segmentation_population_inference.v1" as const;
+export interface SegmentationPopulationInferenceComponent {
+  id: string;
+  prior: number;
+  estimator: BoundaryEstimatorScoringModel;
+}
+export interface SegmentationPopulationInferenceModel {
+  schema: typeof SEGMENTATION_POPULATION_INFERENCE_SCHEMA;
+  id: string;
+  rootPopulationId: string;
+  sourceInventory: { id: string; count: number };
+  normalizationContractId: string;
+  featureContextId: string;
+  populations: Array<SegmentationPopulationInferenceComponent & { estimator: BoundaryEstimatorInferenceModel; statisticsId: string; trainingMass: number }>;
+  selection: Pick<SegmentationPopulationModel["selection"], "sourceFamilyDisjoint" | "selectedPopulationCount" | "baselineDescriptionNats" |
+    "selectedDescriptionNats" | "mdlGainNats" | "finalEvaluationNats" | "candidates">;
+  partitionInventories: Record<"fit" | "modelSelection" | "mergeGuard" | "finalEvaluation", { id: string; count: number }>;
+  assignmentInventory: { id: string; count: number };
+  collapseGuard: SegmentationPopulationModel["collapseGuard"];
+}
+
 interface CandidateFit {
   populationCount: number;
   assignments: number[];
@@ -105,6 +128,15 @@ interface CandidateFit {
 }
 
 const MIN_DOCUMENTS_PER_POPULATION = 2;
+export const SEGMENTATION_MIN_DOCUMENTS_PER_POPULATION = MIN_DOCUMENTS_PER_POPULATION;
+export function segmentationMaximumPopulationCount(fitDocuments: number, maximum = 8): number {
+  return Math.max(1, Math.min(Math.floor(maximum), Math.max(1, Math.floor(fitDocuments / MIN_DOCUMENTS_PER_POPULATION))));
+}
+export function segmentationSourcePartitionCounts(documents: number, families: number) {
+  return documents < 8 || families < 4 ? { finalCount: 0, guardCount: 0, selectionCount: 0 }
+    : { finalCount: Math.max(1, Math.floor(families * 0.15)), guardCount: Math.max(1, Math.floor(families * 0.15)),
+      selectionCount: Math.max(1, Math.floor(families * 0.2)) };
+}
 
 export function learnSegmentationPopulations(input: {
   rootPopulationId: string;
@@ -123,10 +155,7 @@ export function learnSegmentationPopulations(input: {
   const fit = partitions.fit;
   const selection = partitions.modelSelection;
   const mergeGuard = [...partitions.modelSelection, ...partitions.mergeGuard];
-  const maximum = Math.max(1, Math.min(
-    Math.floor(input.maxPopulations ?? 8),
-    Math.max(1, Math.floor(fit.length / MIN_DOCUMENTS_PER_POPULATION))
-  ));
+  const maximum = segmentationMaximumPopulationCount(fit.length, input.maxPopulations);
   const candidateFits: CandidateFit[] = [];
   for (let populationCount = 1; populationCount <= maximum; populationCount += 1) {
     candidateFits.push(fitPopulationCandidate({
@@ -324,7 +353,7 @@ export function boundaryMixtureForDocument(
 }
 
 export function boundaryMixtureForStatistics(
-  model: SegmentationPopulationModel,
+  model: SegmentationPopulationModel | SegmentationPopulationInferenceModel,
   documentId: string,
   statistics: BoundarySufficientStatistics,
   hasher: Hasher = createHasher()
@@ -335,7 +364,7 @@ export function boundaryMixtureForStatistics(
 }
 
 function boundaryMixtureFromAssignment(
-  model: SegmentationPopulationModel,
+  model: { id: string; populations: readonly SegmentationPopulationInferenceComponent[] },
   assignment: SegmentationPopulationAssignment,
   documentId: string,
   hasher: Hasher
@@ -513,7 +542,7 @@ function estimatorDistance(
 
 function assignmentForDocument(
   document: SegmentationPopulationTrainingDocument,
-  populations: readonly SegmentationPopulation[]
+  populations: readonly SegmentationPopulationInferenceComponent[]
 ): SegmentationPopulationAssignment {
   const rows = populations.map(population => {
     const score = boundaryNegativeLogLikelihood(population.estimator, document.statistics);
@@ -525,7 +554,7 @@ function assignmentForDocument(
       logWeight: Math.log(Math.max(1e-12, population.prior)) - score.negativeLogLikelihood
     };
   });
-  const logZ = logSumExp(rows.map(row => row.logWeight));
+  const logZ = segmentationLogSumExp(rows.map(row => row.logWeight));
   const posterior = rows.map(row => ({
     populationId: row.populationId,
     probability: quantize(clamp01(Math.exp(row.logWeight - logZ))),
@@ -547,7 +576,7 @@ function mixtureNegativeLogLikelihood(
   estimators: readonly BoundaryEstimatorModel[],
   priors: readonly number[]
 ): number {
-  return -logSumExp(estimators.map((estimator, index) =>
+  return -segmentationLogSumExp(estimators.map((estimator, index) =>
     Math.log(Math.max(1e-12, priors[index] ?? 0))
     - boundaryNegativeLogLikelihood(estimator, statistics).negativeLogLikelihood));
 }
@@ -605,9 +634,7 @@ function sourceFamilyDisjointPartitions(
   if (familyCount < 4) {
     return { fit: [...documents], modelSelection: [], mergeGuard: [], finalEvaluation: [] };
   }
-  const finalCount = Math.max(1, Math.floor(familyCount * 0.15));
-  const guardCount = Math.max(1, Math.floor(familyCount * 0.15));
-  const selectionCount = Math.max(1, Math.floor(familyCount * 0.2));
+  const { finalCount, guardCount, selectionCount } = segmentationSourcePartitionCounts(documents.length, familyCount);
   const finalFamilies = new Set(rankedFamilies.slice(0, finalCount));
   const guardFamilies = new Set(rankedFamilies.slice(finalCount, finalCount + guardCount));
   const selectionFamilies = new Set(rankedFamilies.slice(
@@ -662,7 +689,7 @@ function initialAssignments(
 ): number[] {
   const ranked = documents.map((document, index) => ({
     index,
-    signature: documentSignature(document.statistics)
+    signature: segmentationDocumentSignature(document.statistics)
   })).sort((left, right) =>
     left.signature - right.signature
     || documents[left.index]!.documentId.localeCompare(documents[right.index]!.documentId));
@@ -676,17 +703,30 @@ function initialAssignments(
   return assignments;
 }
 
-function documentSignature(statistics: BoundarySufficientStatistics): number {
-  const mass = Math.max(1, statistics.positiveMass + statistics.negativeMass);
-  let signature = statistics.positiveMass / mass;
-  for (const row of statistics.rows) {
+export function segmentationDocumentSignature(statistics: BoundarySufficientStatistics): number {
+  const pass = new SegmentationSignaturePass(statistics);
+  for (const row of statistics.rows) pass.add(row);
+  return pass.signature;
+}
+
+export class SegmentationSignaturePass {
+  readonly mass: number;
+  signature: number;
+  constructor(readonly statistics: Pick<BoundarySufficientStatistics, "positiveMass" | "negativeMass" | "scale">) {
+    this.mass = Math.max(1, statistics.positiveMass + statistics.negativeMass);
+    this.signature = statistics.positiveMass / this.mass;
+  }
+  add(row: BoundarySufficientStatistics["rows"][number]): void {
     const rowMass = row.positiveMass + row.negativeMass;
     for (let index = 0; index < row.featuresFixed.length; index += 1) {
-      signature += (index + 1) * (row.featuresFixed[index] ?? 0)
-        / statistics.scale * rowMass / mass / 64;
+      this.signature += (index + 1) * (row.featuresFixed[index] ?? 0)
+        / this.statistics.scale * rowMass / this.mass / 64;
     }
   }
-  return signature;
+}
+
+export function preferSegmentationCollapseMove(candidate: { index: number; penalty: number }, prior?: { index: number; penalty: number }): boolean {
+  return !prior || candidate.penalty < prior.penalty || candidate.penalty === prior.penalty && candidate.index < prior.index;
 }
 
 function repairCollapsedAssignments(
@@ -705,7 +745,7 @@ function repairCollapsedAssignments(
         if (counts[donor]! <= minimum) continue;
         const penalty = (costs[index]?.[target] ?? Number.POSITIVE_INFINITY)
           - (costs[index]?.[donor] ?? Number.POSITIVE_INFINITY);
-        if (!best || penalty < best.penalty || (penalty === best.penalty && index < best.index)) {
+        if (preferSegmentationCollapseMove({ index, penalty }, best)) {
           best = { index, donor, penalty };
         }
       }
@@ -744,7 +784,7 @@ function indexOfMinimum(values: readonly number[]): number {
   return selected;
 }
 
-function logSumExp(values: readonly number[]): number {
+export function segmentationLogSumExp(values: readonly number[]): number {
   if (!values.length) return 0;
   const maximum = Math.max(...values);
   return maximum + Math.log(values.reduce((sum, value) => sum + Math.exp(value - maximum), 0));

@@ -2,6 +2,8 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { BoundaryStatisticsRow, BoundarySufficientStatistics } from "./boundary-estimator.js";
 import type { JsonValue } from "./types.js";
+import type { CompiledBoundaryFeatureContext } from "./surface-lattice.js";
+import type { SegmentationPopulationInferenceModel } from "./segmentation-population.js";
 
 export interface SegmentationSourceInventory {
   id: string;
@@ -16,8 +18,10 @@ export interface BoundaryStatisticsCursorHeader extends Omit<BoundarySufficientS
 /** Each opening replays the same complete canonical order from the frozen run. */
 export interface BoundaryStatisticsCursor {
   header: BoundaryStatisticsCursorHeader;
+  storage?: { rowsCollection: string; sourceDocumentsCollection: string };
   rows(): AsyncIterable<readonly BoundaryStatisticsRow[]>;
   sourceDocuments(): AsyncIterable<readonly string[]>;
+  dispose?(): Promise<void>;
 }
 
 export interface CorpusSegmentationDocument {
@@ -49,4 +53,28 @@ export interface CorpusSegmentationDocumentCursor {
   documents(): AsyncIterable<readonly CorpusSegmentationDocument[]>;
   statistics(document: CorpusSegmentationDocument): BoundaryStatisticsCursor;
   readonly scratch: CorpusSegmentationScratch;
+}
+
+export interface PreparedCorpusSegmentationMeasurement {
+  readonly id: string;
+  readonly documentId: string;
+  readonly requiredClassIds: readonly string[];
+  readonly requiredContextKeys: readonly string[];
+}
+
+export interface CorpusSegmentationContextSlice {
+  featureContext: CompiledBoundaryFeatureContext;
+  binding: {
+    measurementId: string;
+    snapshotId: string;
+    sourceInventory: SegmentationSourceInventory;
+    contextId: string;
+    normalizationContractId: string;
+    valueDigest: string;
+  };
+}
+
+export interface VerifiedCorpusSegmentation {
+  populationInference: SegmentationPopulationInferenceModel;
+  slices: readonly { preparation: PreparedCorpusSegmentationMeasurement; contextSlice: CorpusSegmentationContextSlice }[];
 }

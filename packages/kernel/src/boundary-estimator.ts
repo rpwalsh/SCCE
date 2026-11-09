@@ -501,7 +501,7 @@ export function scoreBoundaryState(
 }
 
 export function boundaryNegativeLogLikelihood(
-  model: BoundaryEstimatorModel,
+  model: BoundaryEstimatorScoringModel,
   statistics: BoundarySufficientStatistics
 ): { negativeLogLikelihood: number; mass: number; averageLogLoss: number } {
   validateModel(model);

@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { BOUNDARY_FEATURE_ORDER, BOUNDARY_STATISTICS_SCHEMA, compileBoundaryStatistics, type BoundaryStatisticsRow } from "./boundary-estimator.js";
-import type { BoundaryStatisticsCursor, CorpusSegmentationScratch, CorpusSegmentationScratchRow } from "./corpus-segmentation-cursor.js";
+import type { BoundaryStatisticsCursor, BoundaryStatisticsCursorHeader, CorpusSegmentationScratch, CorpusSegmentationScratchRow } from "./corpus-segmentation-cursor.js";
 import { segmentationOrdinalKey, segmentationScratchRows, sortSegmentationScratch } from "./corpus-segmentation-sort.js";
 import { createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
@@ -23,6 +23,15 @@ function decode(value: JsonValue): BoundaryStatisticsRow {
     positiveMass: integer(row.positiveMass), negativeMass: integer(row.negativeMass) };
 }
 function add(left: number, right: number): number { const sum = left + right; if (!Number.isSafeInteger(sum)) throw new Error("boundary sufficient statistics exceed exact integer range"); return sum; }
+
+export function openPagedBoundaryStatistics(input: { header: BoundaryStatisticsCursorHeader; scratch: CorpusSegmentationScratch;
+  storage: { rowsCollection: string; sourceDocumentsCollection: string } }): BoundaryStatisticsCursor {
+  const { scratch, storage, header } = input;
+  return { header, storage,
+    async *rows() { for await (const page of scratch.pages({ collection: storage.rowsCollection, pageRows: scratch.pageRows, maxPageBytes: scratch.maxPageBytes })) yield page.map(item => decode(item.value)); },
+    async *sourceDocuments() { for await (const page of scratch.pages({ collection: storage.sourceDocumentsCollection, pageRows: scratch.pageRows, maxPageBytes: scratch.maxPageBytes })) yield page.map(item => string(record(item.value).id)); },
+    async dispose() { await scratch.deleteCollection(storage.rowsCollection); await scratch.deleteCollection(storage.sourceDocumentsCollection); } };
+}
 
 export async function mergePagedBoundaryStatistics(input: { sources: () => AsyncIterable<BoundaryStatisticsCursor>; scratch: CorpusSegmentationScratch;
   populationId: string; collectionPrefix: string; hasher?: Hasher }): Promise<BoundaryStatisticsCursor> {
@@ -113,10 +122,8 @@ export async function mergePagedBoundaryStatistics(input: { sources: () => Async
   }
   const id = `boundary_statistics.${(await store.digestChunks(canonicalBytes())).slice(0, 40)}`;
   for (const collection of [rawRows, rawDocuments, sortedRows, documentsById]) await store.deleteCollection(collection);
-  return { header: { schema: BOUNDARY_STATISTICS_SCHEMA, populationId: input.populationId, normalizationContractId, featureOrder: BOUNDARY_FEATURE_ORDER,
+  return openPagedBoundaryStatistics({ scratch: store, storage: { rowsCollection, sourceDocumentsCollection: documentsCollection }, header: { schema: BOUNDARY_STATISTICS_SCHEMA, populationId: input.populationId, normalizationContractId, featureOrder: BOUNDARY_FEATURE_ORDER,
     scale: 1_000_000, rowCount, sourceInventory, id, positiveMass, negativeMass, anchoredMass, latentMass,
     audit: toJsonValue({ compiler: "kernel.boundary_statistics.v2", normalizationContractId, exactIntegerMass: true, canonicalRowOrder: true,
-      detectorDecisionsAcceptedAsLabels: false, rows: rowCount, signals, signalKinds: [...signalKinds].sort(), anchoredMass, latentMass, sourceDocuments: documentCount }) },
-    async *rows() { for await (const page of store.pages({ collection: rowsCollection, pageRows: store.pageRows, maxPageBytes: store.maxPageBytes })) yield page.map(item => decode(item.value)); },
-    async *sourceDocuments() { for await (const page of store.pages({ collection: documentsCollection, pageRows: store.pageRows, maxPageBytes: store.maxPageBytes })) yield page.map(item => string(record(item.value).id)); } };
+      detectorDecisionsAcceptedAsLabels: false, rows: rowCount, signals, signalKinds: [...signalKinds].sort(), anchoredMass, latentMass, sourceDocuments: documentCount }) } });
 }
