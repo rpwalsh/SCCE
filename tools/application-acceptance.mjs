@@ -56,6 +56,13 @@ export function validatePlan(plan) {
     if (typeof testCase.spec !== "string" || !testCase.spec.trim()) errors.push(`${label}.spec must be nonempty text`);
     if (typeof testCase.expectedLanguage !== "string" || !testCase.expectedLanguage.trim()) errors.push(`${label}.expectedLanguage is required`);
     else if (CATEGORY_LANGUAGES[testCase.category] && testCase.expectedLanguage !== CATEGORY_LANGUAGES[testCase.category]) errors.push(`${label}.expectedLanguage must be ${CATEGORY_LANGUAGES[testCase.category]} for ${testCase.category}`);
+    if (testCase.coverageBlocker !== undefined) {
+      const blocker = testCase.coverageBlocker;
+      if (!asRecord(blocker) || blocker.schema !== 'scce.application_coverage_blocker.v1' || blocker.languageId !== testCase.expectedLanguage
+        || typeof blocker.reasonId !== 'string' || !blocker.reasonId.trim() || typeof blocker.detail !== 'string' || !blocker.detail.trim()) errors.push(`${label}.coverageBlocker requires exact language and explicit unavailable reason`);
+      if (testCase.publicValidation !== undefined || testCase.heldOut !== undefined) errors.push(`${label}.blocked cells cannot fabricate validation permissions or private checks`);
+      continue;
+    }
     if (testCase.publicValidation === undefined) errors.push(`${label}.publicValidation is required`);
     else {
       const value = testCase.publicValidation;
@@ -188,6 +195,9 @@ async function boundedFile(file, budget) {
 }
 
 export async function executeCase(testCase, options) {
+  if (testCase.coverageBlocker) return { id: testCase.id, category: testCase.category, expectedLanguage: testCase.expectedLanguage,
+    status: 'failed', coverageBlocker: structuredClone(testCase.coverageBlocker), elapsedMs: 0, calls: [], nativeChecks: 'not_attempted',
+    failures: [`coverage blocked: ${testCase.coverageBlocker.reasonId}: ${testCase.coverageBlocker.detail}`] };
   const started = performance.now(), remainingMs = () => Math.max(0, ACCEPTANCE_BUDGETS.timeMs - (performance.now() - started));
   const caseReport = { id: testCase.id, category: testCase.category, expectedLanguage: testCase.expectedLanguage, specSha256: digest(Buffer.from(testCase.spec, "utf8")), failures: [] };
   caseReport.publicValidationSha256 = testCase.publicValidation?.sha256 ?? null;
@@ -385,6 +395,10 @@ export function validateExecutionReceipt(receipt, input) {
   return errors;
 }
 
+export function applicationReportStatus(cases, expectedCount, failures = []) {
+  return !failures.length && cases.length === expectedCount && cases.every(row => row.status === 'passed' && !row.coverageBlocker) ? 'passed' : 'failed';
+}
+
 async function main() {
   const planPath = process.argv[2];
   if (!planPath) throw new Error("usage: node tools/application-acceptance.mjs <plan.json> [--out=report.json]");
@@ -430,7 +444,7 @@ async function main() {
     report.failures = [`acceptance runner failed: ${error instanceof Error ? error.message : String(error)}`];
     for (const testCase of plan.cases.slice(report.cases.length)) report.cases.push({ id: testCase.id, category: testCase.category, status: "failed", failures: [report.failures[0]] });
   }
-  report.status = !report.failures?.length && report.cases.length === plan.cases.length && report.cases.every(row => row.status === "passed") ? "passed" : "failed";
+  report.status = applicationReportStatus(report.cases, plan.cases.length, report.failures);
   const outArg = process.argv.find(arg => arg.startsWith("--out="));
   const outPath = path.resolve(process.cwd(), outArg ? outArg.slice("--out=".length) : path.join(outputRoot, "report.json"));
   await mkdir(path.dirname(outPath), { recursive: true });

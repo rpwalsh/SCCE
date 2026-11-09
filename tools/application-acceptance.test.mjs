@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as acceptance from "./application-acceptance.mjs";
-const { CATEGORY_LANGUAGES, PLAN_SCHEMA, REQUIRED_CATEGORIES, ACCEPTANCE_BUDGETS, executeCase, requestApplication, validateExecutionReceipt, validatePlan } = acceptance;
+const { CATEGORY_LANGUAGES, PLAN_SCHEMA, REQUIRED_CATEGORIES, ACCEPTANCE_BUDGETS, applicationReportStatus, executeCase, requestApplication, validateExecutionReceipt, validatePlan } = acceptance;
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -61,6 +61,20 @@ test("acceptance plan can add a new language/category without treating it as imp
   const plan = completePlan();
   plan.cases.push({ ...plan.cases[0], id: "future-rust-case", category: "rust_service", expectedLanguage: "rust", publicValidation: validation('rust') });
   assert.deepEqual(validatePlan(plan), []);
+});
+
+test('an explicit unavailable required cell performs no API/native action and prevents aggregate PASS', async t => {
+  const plan=completePlan(), cell=plan.cases.find(row=>row.category==='kotlin_android_phonebook');
+  delete cell.publicValidation; delete cell.heldOut; delete cell.requiredGeneratedPaths;
+  cell.coverageBlocker={schema:'scce.application_coverage_blocker.v1',languageId:'kotlin',reasonId:'program.emission.native_backend_unavailable',detail:'The installed product has no Kotlin backend descriptor.'};
+  assert.deepEqual(validatePlan(plan),[]);
+  t.mock.method(globalThis,'fetch',()=>{throw Error('blocked case must not contact API');});
+  const result=await executeCase(cell,{});
+  assert.equal(result.status,'failed');assert.equal(result.nativeChecks,'not_attempted');assert.deepEqual(result.calls,[]);
+  assert.equal(applicationReportStatus(plan.cases.map(row=>row===cell?result:{status:'passed'}),4),'failed');
+  assert.equal(applicationReportStatus([{status:'passed',coverageBlocker:cell.coverageBlocker}],1),'failed');
+  delete cell.coverageBlocker;
+  assert.ok(validatePlan(plan).some(error=>error.includes('publicValidation is required')));
 });
 
 const artifact = (name, content) => ({ artifactId: `artifact:${name}`, path: name, mediaType: 'text/javascript', role: 'source', content, contentHash: `sha256_${hash(content)}` });
