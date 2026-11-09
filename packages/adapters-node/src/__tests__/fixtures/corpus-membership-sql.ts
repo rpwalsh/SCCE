@@ -35,7 +35,8 @@ export async function corpusMembershipSqlFixture(sql: string, params: unknown[],
     let packed: Record<string, JsonValue> = {};
     const row = (entries: Record<string, JsonValue>): CorpusSegmentationScratchRow => {
       const hashes = Object.keys(entries).sort();
-      return { orderKey: hashes[0]!, value: { schema: CORPUS_COUNT_PAGE_SCHEMA, endHash: hashes.at(-1)!, entries } };
+      const members = Object.fromEntries(Object.values(entries).flatMap(group => Object.entries(group as Record<string, JsonValue>)));
+      return { orderKey: hashes[0]!, value: { schema: CORPUS_COUNT_PAGE_SCHEMA, endHash: hashes.at(-1)!, entries: members } };
     };
     for (const [hash, members] of entries) {
       const atomic = { [hash]: Object.fromEntries(members) }, candidate = { ...packed, ...atomic };
@@ -54,8 +55,8 @@ export async function corpusMembershipSqlFixture(sql: string, params: unknown[],
     const pages = await all(String(params[1]));
     return requested.map(request => {
       const page = pages.filter(page => page.orderKey <= request.hash).at(-1), value = page?.value as Record<string, JsonValue> | undefined;
-      const groups = value?.entries as Record<string, JsonValue> | undefined, group = groups?.[request.hash];
-      const found = group && typeof group === "object" && !Array.isArray(group) && Object.hasOwn(group, request.key) ? group[request.key] : 0;
+      const entries = value?.entries as Record<string, JsonValue> | undefined;
+      const found = entries && Object.hasOwn(entries, request.key) ? entries[request.key] : 0;
       return { key: request.key, count: String(found ?? 0), valid: !page || value?.schema === CORPUS_COUNT_PAGE_SCHEMA && String(value.endHash) >= page.orderKey };
     });
   }

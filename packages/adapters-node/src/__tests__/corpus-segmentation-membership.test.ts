@@ -6,7 +6,7 @@ import { expect, it, vi } from "vitest";
 import { boundaryContextKey, canonicalStringify, createHasher, measureSurfaceBoundaries, type JsonValue } from "@scce/kernel";
 import { fixtureSegmentationScratch } from "../../../kernel/src/__tests__/fixtures/corpus-segmentation-scratch.js";
 import { corpusSegmentationWindows } from "../corpus-segmentation-windows.js";
-import { corpusCountPageEntries, corpusMembershipHash, prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages,
+import { CORPUS_COUNT_PAGE_SCHEMA, corpusCountPageEntries, corpusMembershipHash, prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages,
   type CorpusMembershipRun, type CorpusMembershipStorage } from "../corpus-segmentation-membership.js";
 import { durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
 import * as durableJson from "../durable-join-program-storage.js";
@@ -170,21 +170,36 @@ it("materializes page fields before member joins and collates complete text expr
   const lookup = f.calls.find(call => call.sql.includes("selected_pages AS MATERIALIZED"))!.sql;
   expect(lookup).toContain('jsonb_to_record(v.row_json) AS payload(schema text,"endHash" text,entries jsonb)');
   expect(lookup.split(") SELECT q.key")[1]).not.toContain("row_json");
-  expect(lookup).toContain("page.entries->q.hash->>q.key");
+  expect(lookup).toContain("page.entries->>q.key");
+  expect(lookup).not.toContain("page.entries->q.hash");
   expect(lookup).not.toContain("jsonb_array_elements");
   expect(lookup).not.toContain("page_members");
 });
 
 it("stores block-sized exact-key leaves and reuses their receipt capacity for bounded digest batches on another host", async () => {
-  const f = fixture(4096, 65536), keys = Array.from({ length: 1600 }, (_, index) => `class.雪🧭.${index}`);
+  const f = fixture(4096, 65536), keys = ["1", "10", "2", "__proto__", "constructor", "é", "e\u0301", ...Array.from({ length: 1600 }, (_, index) => `class.雪🧭.${index}`)];
   await f.memory.putMany("input/inventory", [{ orderKey: "owner", value: { evidenceId: "owner", sourceVersionId: "version" } }]);
   await writeCorpusMembershipPages(f.run, { kind: "class", windowKey: "0", documentId: "owner", sourceVersionId: "version", entries: keys });
   const first = await prepareCorpusMembershipCounts(f.storage, f.run, { id: "inventory", count: 1 });
-  let leaves = 0;
+  const fullKeys = new Set(keys);
+  let leaves = 0, denser = false, beforeBytes = 0, afterBytes = 0, hashGroups = 0;
   for await (const page of f.memory.pages({ collection: "input/class-counts", ...f.run.bounds })) for (const row of page) {
-    expect(durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(8192); leaves++;
+    const value = row.value as Record<string, JsonValue>, entries = value.entries as Record<string, JsonValue>;
+    expect(Object.values(entries).every(Number.isSafeInteger)).toBe(true);
+    expect(Object.keys(entries).every(key => fullKeys.has(key))).toBe(true);
+    const nested = new Map<string, Array<[string, JsonValue]>>();
+    for (const [key, count] of Object.entries(entries)) {
+      const hash = corpusMembershipHash(key), group = nested.get(hash) ?? []; group.push([key, count]); nested.set(hash, group);
+    }
+    const legacy = { ...row, value: { ...value, schema: "scce.corpus_segmentation_count_page.v2", entries: Object.fromEntries([...nested].map(([hash, members]) => [hash, Object.fromEntries(members)])) } };
+    const currentBytes = durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2, previousBytes = durableJoinProgramJsonByteLengths(legacy).decodedJsonbBytes + 2;
+    expect(currentBytes).toBeLessThanOrEqual(8192); leaves++;
+    beforeBytes += previousBytes; afterBytes += currentBytes; hashGroups += nested.size; denser ||= previousBytes > 8192;
   }
   expect(leaves).toBeGreaterThan(1);
+  expect(denser).toBe(true);
+  const hashFieldBytes = durableJoinProgramJsonByteLengths({ ["0".repeat(64)]: { key: 1 } }).decodedJsonbBytes - durableJoinProgramJsonByteLengths({ key: 1 }).decodedJsonbBytes;
+  expect(beforeBytes - afterBytes).toBe(hashGroups * hashFieldBytes);
   expect(f.reads.filter(read => read.collection === "input/class-counts").every(read => read.pageRows === 8)).toBe(true);
   for await (const page of f.run.pages("input/class-counts", { pageRows: 8 }))
     expect(page.reduce((sum, row) => sum + durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2, 0)).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
@@ -195,7 +210,9 @@ it("stores block-sized exact-key leaves and reuses their receipt capacity for bo
   expect(await readCorpusMembershipCounts(f.storage, f.run, "class", keys)).toEqual(Object.fromEntries(keys.map(key => [key, 1])));
   const aggregate = f.calls.find(call => call.sql.includes("exact_counts AS MATERIALIZED"))!.sql;
   expect(aggregate).toContain("LEAST($3,current_setting('block_size')::int)");
-  expect(aggregate).toContain("jsonb_object_agg(hash,members");
+  expect(aggregate).toContain("jsonb_each(numbered.members)");
+  expect(aggregate).toContain("jsonb_object_agg(member.key,member.value");
+  expect(aggregate).toContain("FROM numbered CROSS JOIN LATERAL jsonb_each(numbered.members)");
 });
 
 it("retains an oversized atomic full key within the declared run budget as one variable-size leaf", async () => {
@@ -236,4 +253,20 @@ it.each(["duplicate", "foreign", "invalid_schema", "missing", "negative", "fract
     return rows as T[];
   } };
   await expect(readCorpusMembershipCounts(storage, f.run, "context", ["owned.a", "owned.b"])).rejects.toThrow(/membership pages/);
+});
+
+it("requires the exact Unicode full key even when another key occupies the same indexed range", async () => {
+  const f = fixture(), requested = "雪🧭é", hash = corpusMembershipHash(requested);
+  await f.memory.putMany("input/class-counts", [{ orderKey: hash, value: { schema: CORPUS_COUNT_PAGE_SCHEMA, endHash: hash, entries: { "another.雪": 99 } } }]);
+  expect(await readCorpusMembershipCounts(f.storage, f.run, "class", [requested])).toEqual({ [requested]: 0 });
+  await f.memory.putMany("input/class-counts", [{ orderKey: hash, value: { schema: CORPUS_COUNT_PAGE_SCHEMA, endHash: hash, entries: { [requested]: 3, "another.雪": 99 } } }]);
+  expect(await readCorpusMembershipCounts(f.storage, f.run, "class", [requested])).toEqual({ [requested]: 3 });
+});
+
+it("retains empty and absent exact lookups and rejects the removed nested-hash representation", async () => {
+  const f = fixture();
+  expect(await readCorpusMembershipCounts(f.storage, f.run, "context", [])).toEqual({}); expect(f.calls).toEqual([]);
+  expect(await readCorpusMembershipCounts(f.storage, f.run, "context", ["absent.雪"])).toEqual({ "absent.雪": 0 });
+  const key = "key", hash = corpusMembershipHash(key);
+  expect(() => corpusCountPageEntries({ schema: CORPUS_COUNT_PAGE_SCHEMA, endHash: hash, entries: { [hash]: { [key]: 1 } } })).toThrow(/membership pages/);
 });

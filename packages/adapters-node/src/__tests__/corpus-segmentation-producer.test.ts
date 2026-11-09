@@ -167,7 +167,7 @@ it("stores completed count pages while reclaiming pair memberships before fittin
   expect(f.calls.filter(call=>call.sql.includes("exact_counts AS MATERIALIZED"))).toHaveLength(2);
   const lookups=f.calls.filter(call=>call.sql.includes("selected_pages AS MATERIALIZED")&&call.sql.includes("SELECT q.key"));
   expect(lookups.length).toBeGreaterThan(0);
-  expect(lookups.every(call=>call.sql.includes("SELECT DISTINCT order_key FROM located")&&call.sql.includes('ORDER BY v.order_key COLLATE "C" DESC LIMIT 1')&&call.sql.includes("page.entries->q.hash->>q.key")&&!call.sql.includes("page_members"))).toBe(true);
+  expect(lookups.every(call=>call.sql.includes("SELECT DISTINCT order_key FROM located")&&call.sql.includes('ORDER BY v.order_key COLLATE "C" DESC LIMIT 1')&&call.sql.includes("page.entries->>q.key")&&!call.sql.includes("page_members"))).toBe(true);
   for await(const page of cursor.documents())for(const document of page){
     const physical=await f.memory.count(`input/statistics/${segmentationOrdinalKey(document.ordinal)}`),logical=[];
     for await(const rows of cursor.statistics(document).rows())logical.push(...rows);
