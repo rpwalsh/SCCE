@@ -23,7 +23,7 @@ function positive(value: number, name: string): number {
   return value;
 }
 function ascii(value: string, name: string): string {
-  if (!value || !/^[\x20-\x7e]+$/u.test(value)) throw new Error(`Invalid segmentation ${name}: ASCII order key required`);
+  if (typeof value !== "string" || !value || !/^[\x20-\x7e]+$/u.test(value)) throw new Error(`Invalid segmentation ${name}: ASCII order key required`);
   return value;
 }
 export function segmentationOrdinalKey(value: number): string {
@@ -67,12 +67,26 @@ export class PostgresCorpusSegmentationRun {
     const flush = async () => {
       if (!batch.length) return;
       const access = this.access(4);
-      const written = await this.storage.query<{order_key: string}>(`INSERT INTO ${this.storage.table("segmentation_consolidation_rows")} AS existing(run_id,collection,order_key,row_json)
+      const sql = state === "building" ? `WITH requested AS MATERIALIZED (
+        SELECT v."orderKey",v.value FROM jsonb_to_recordset($3::jsonb) AS v("orderKey" text,value jsonb)
+      ), owned AS MATERIALIZED (
+        SELECT r.run_id FROM ${this.storage.table("segmentation_consolidation_runs")} r
+        WHERE r.run_id=$1 AND r.state='building' AND ${access.sql} FOR SHARE
+      ), inserted AS (
+        INSERT INTO ${this.storage.table("segmentation_consolidation_rows")}(run_id,collection,order_key,row_json)
+        SELECT r.run_id,$2::text,v."orderKey",v.value FROM owned r CROSS JOIN requested v
+        ON CONFLICT(run_id,collection,order_key) DO NOTHING RETURNING order_key
+      ) SELECT order_key FROM inserted
+      UNION ALL SELECT v."orderKey" AS order_key FROM requested v CROSS JOIN owned r
+        JOIN ${this.storage.table("segmentation_consolidation_rows")} existing
+          ON existing.run_id=r.run_id AND existing.collection=$2::text AND existing.order_key=v."orderKey"
+        WHERE existing.row_json=v.value AND NOT EXISTS(SELECT 1 FROM inserted i WHERE i.order_key=v."orderKey")`
+        : `INSERT INTO ${this.storage.table("segmentation_consolidation_rows")} AS existing(run_id,collection,order_key,row_json)
         SELECT r.run_id,$2,v."orderKey",v.value FROM ${this.storage.table("segmentation_consolidation_runs")} r
         CROSS JOIN LATERAL jsonb_to_recordset($3::jsonb) AS v("orderKey" text,value jsonb)
-        WHERE r.run_id=$1 AND r.state IN (${state === "scratch" ? "'building','fitting'" : "'building'"}) AND ${access.sql}
-        ON CONFLICT(run_id,collection,order_key) DO UPDATE SET row_json=EXCLUDED.row_json
-          ${state === "building" ? "WHERE existing.row_json=EXCLUDED.row_json" : ""} RETURNING order_key`, [this.run.runId, collection, JSON.stringify(batch), ...access.params]);
+        WHERE r.run_id=$1 AND r.state IN ('building','fitting') AND ${access.sql}
+        ON CONFLICT(run_id,collection,order_key) DO UPDATE SET row_json=EXCLUDED.row_json RETURNING order_key`;
+      const written = await this.storage.query<{order_key: string}>(sql, [this.run.runId, collection, JSON.stringify(batch), ...access.params]);
       if (written.length !== batch.length) throw new Error("Segmentation row write conflicts with immutable input or run state");
       batch = []; bytes = 2;
     };
@@ -90,6 +104,8 @@ export class PostgresCorpusSegmentationRun {
     const pageRows = positive(query.pageRows ?? this.bounds.pageRows, "pageRows"), maxBytes = positive(query.maxPageBytes ?? this.bounds.maxPageBytes, "maxPageBytes");
     if (pageRows > this.bounds.pageRows || maxBytes > this.bounds.maxPageBytes) throw new Error("Segmentation page exceeds declared run bounds");
     let after = query.afterKey ?? "";
+    const prefix = query.prefix === undefined ? "" : query.prefix;
+    if (prefix !== "") ascii(prefix, "prefix");
     for (;;) {
       const access = this.access(6);
       const rows = await this.storage.query<{order_key: string; row_json: JsonValue | null; decoded_bytes: number; admitted: boolean}>(`
@@ -97,11 +113,13 @@ export class PostgresCorpusSegmentationRun {
           SELECT v.order_key,v.row_json,octet_length(convert_to(json_build_object('orderKey',v.order_key,'value',v.row_json)::text,'UTF8')) AS decoded_bytes
           FROM ${this.storage.table("segmentation_consolidation_rows")} v JOIN ${this.storage.table("segmentation_consolidation_runs")} r ON r.run_id=v.run_id
           WHERE v.run_id=$1 AND v.collection=$2 AND v.order_key COLLATE "C" > $3::text COLLATE "C"
+            AND v.order_key COLLATE "C" >= $4::text COLLATE "C"
+            AND v.order_key COLLATE "C" < ($4::text || chr(127)) COLLATE "C"
             AND starts_with(v.order_key,$4) AND ${access.sql} ORDER BY v.order_key COLLATE "C" LIMIT $5
         ), measured AS (SELECT *,SUM(decoded_bytes) OVER(ORDER BY order_key COLLATE "C") AS running_bytes FROM candidate)
         SELECT order_key,decoded_bytes,running_bytes <= $${6 + access.params.length} AS admitted,
           CASE WHEN running_bytes <= $${6 + access.params.length} THEN row_json ELSE NULL END AS row_json
-        FROM measured ORDER BY order_key COLLATE "C"`, [this.run.runId, collection, after, query.prefix ?? "", pageRows, ...access.params, maxBytes]);
+        FROM measured ORDER BY order_key COLLATE "C"`, [this.run.runId, collection, after, prefix, pageRows, ...access.params, maxBytes]);
       if (!rows.length) { await this.assertState(); return; }
       const admitted = rows.filter(row => row.admitted);
       if (!admitted.length) throw new Error("Segmentation row exceeds decoded JSON byte budget");

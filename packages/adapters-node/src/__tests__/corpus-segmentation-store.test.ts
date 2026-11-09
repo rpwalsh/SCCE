@@ -64,3 +64,60 @@ it("owns immutable copies of its scope and configured bounds",()=>{
   declaration.scope.informationLabel.principals.push("foreign");bounds.pageRows=10000;
   expect(run.run.scope.informationLabel.principals).toEqual(["owner"]);expect(run.bounds.pageRows).toBe(2);expect(run.scratch.pageRows).toBe(2);
 });
+
+it("uses indexed ASCII prefix bounds before decoded-byte measurement and preserves exact prefix and deferred cursors",async()=>{
+  const {run,storage,calls}=fixture(),all=["a~0","a~1","a~2","a}0","b0"].map((orderKey,index)=>({orderKey,value:{index}}));
+  const original=storage.query.bind(storage);
+  storage.query=async<T>(sql:string,params:unknown[]=[]):Promise<T[]>=>{
+    if(!sql.includes("WITH candidate"))return original<T>(sql,params);
+    calls.push({sql,params});const after=String(params[2]),prefix=String(params[3]);
+    return all.filter(row=>row.orderKey>after&&row.orderKey.startsWith(prefix)).slice(0,2).map((row,index)=>({order_key:row.orderKey,row_json:index===0?row.value:null,decoded_bytes:200,admitted:index===0})) as T[];
+  };
+  const rows=[];for await(const page of run.scratch.pages({collection:"rows",prefix:"a~"}))rows.push(...page);
+  expect(rows).toEqual(all.slice(0,3));
+  const queries=calls.filter(call=>call.sql.includes("WITH candidate"));
+  expect(queries.map(call=>call.params[2])).toEqual(["","a~0","a~1","a~2"]);
+  expect(queries[0]!.sql).toContain('v.order_key COLLATE "C" >= $4::text COLLATE "C"');
+  expect(queries[0]!.sql).toContain('v.order_key COLLATE "C" < ($4::text || chr(127)) COLLATE "C"');
+  expect(queries[0]!.sql).toContain('starts_with(v.order_key,$4)');
+  expect(queries[0]!.sql.indexOf('chr(127)')).toBeLessThan(queries[0]!.sql.indexOf('), measured AS'));
+  for(const prefix of ["opaque\u03bb","bad\u007f","bad\n",null as unknown as string,123 as unknown as string]){
+    await expect(async()=>{for await(const _page of run.scratch.pages({collection:"rows",prefix})){} }).rejects.toThrow(/ASCII/);
+  }
+});
+
+it("replays immutable inputs without rewriting their stored rows and refuses changed or snapshot-invisible conflicts",async()=>{
+  const {run,storage,calls}=fixture("building"),values=new Map<string,unknown>();let identicalUpdates=0,invisible=false;
+  const original=storage.query.bind(storage);
+  storage.query=async<T>(sql:string,params:unknown[]=[]):Promise<T[]>=>{
+    if(sql.includes("WITH candidate")){
+      calls.push({sql,params});const collection=String(params[1])+":";
+      return [...values].filter(([key])=>key.startsWith(collection)).map(([key,value])=>({order_key:key.slice(collection.length),row_json:value,decoded_bytes:100,admitted:true}))
+        .filter(row=>row.order_key>String(params[2])&&row.order_key.startsWith(String(params[3]))).sort((a,b)=>a.order_key<b.order_key?-1:a.order_key>b.order_key?1:0).slice(0,Number(params[4])) as T[];
+    }
+    if(!sql.includes("INSERT INTO"))return original<T>(sql,params);
+    calls.push({sql,params});const rows=JSON.parse(String(params[2])) as Array<{orderKey:string;value:unknown}>;
+    const written=[];
+    for(const row of rows){const key=String(params[1])+":"+row.orderKey;
+      if(!values.has(key)){values.set(key,structuredClone(row.value));written.push({order_key:row.orderKey});}
+      else if(!invisible&&JSON.stringify(values.get(key))===JSON.stringify(row.value)){
+        if(sql.includes("DO UPDATE"))identicalUpdates++;written.push({order_key:row.orderKey});
+      }
+    }return written as T[];
+  };
+  const rows=[{orderKey:"1",value:{opaque:[1,"\u03bb",null]}},{orderKey:"2",value:{other:true}}];
+  await run.putInput("inventory",rows);const before=JSON.stringify([...values]),digest=await run.digest("input/inventory");
+  await run.putInput("inventory",rows);expect(JSON.stringify([...values])).toBe(before);expect(identicalUpdates).toBe(0);
+  expect(digest.count).toBe(rows.length);expect(await run.digest("input/inventory")).toEqual(digest);
+  const inputWrites=calls.filter(call=>call.sql.includes("INSERT INTO"));
+  expect(inputWrites.every(call=>call.sql.includes("DO NOTHING")&&!call.sql.includes("DO UPDATE"))).toBe(true);
+  expect(inputWrites[0]!.sql).toContain('existing.row_json=v.value');
+  expect(inputWrites[0]!.sql).toContain("r.state='building'");
+  expect(inputWrites[0]!.sql).toContain("r.information_label->>'tenantId'=$4");
+  expect(inputWrites[0]!.sql).toContain("FOR SHARE");
+  await expect(run.putInput("inventory",[{orderKey:"1",value:{changed:true}}])).rejects.toThrow(/immutable input/);
+  invisible=true;await expect(run.putInput("inventory",rows)).rejects.toThrow(/immutable input/);
+  expect(JSON.stringify([...values])).toBe(before);
+  invisible=false;await run.scratch.putMany("rows",[{orderKey:"1",value:1}]);
+  expect(calls.at(-1)!.sql).toContain("DO UPDATE SET row_json=EXCLUDED.row_json");
+});
