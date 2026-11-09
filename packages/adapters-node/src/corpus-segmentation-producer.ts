@@ -10,6 +10,7 @@ import { PostgresCorpusSegmentationRun, createCorpusSegmentationRun, openCorpusS
 import { CORPUS_SEGMENTATION_MIN_POOL_CONNECTIONS, withCorpusSegmentationLease } from "./corpus-segmentation-lease.js";
 import { resolveCorpusSegmentationOwner } from "./corpus-segmentation-owner.js";
 import { corpusSegmentationWindows } from "./corpus-segmentation-windows.js";
+import { prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages } from "./corpus-segmentation-membership.js";
 
 interface Owner {
   evidenceId: string; sourceId: string; sourceVersionId: string; textSha256: string; codePoints: number;
@@ -17,7 +18,7 @@ interface Owner {
 }
 interface Window { documentId: string; sourceVersionId: string; ordinal: number; windowOrdinal: number; startUtf16: number; endUtf16: number; ownedStartUtf16: number; text: string }
 const hash = (value: unknown) => createHash("sha256").update(canonicalStringify(value)).digest("hex");
-export const CORPUS_SEGMENTATION_INPUT_RECIPE = "scce.corpus_segmentation_input.v1";
+export const CORPUS_SEGMENTATION_INPUT_RECIPE = "scce.corpus_segmentation_input.v2";
 export function corpusSegmentationInputRecipe(windowUtf16: number): string {
   if (!Number.isSafeInteger(windowUtf16) || windowUtf16 < 2) throw new Error("Invalid segmentation Unicode window budget");
   return `${CORPUS_SEGMENTATION_INPUT_RECIPE}:${windowUtf16}`;
@@ -49,30 +50,6 @@ async function* textChunks(storage: PostgresStorageAdapter, run: PostgresCorpusS
 function windowValue(value: JsonValue): Window { return value as unknown as Window; }
 function measured(window: Window) {
   return measureSurfaceBoundaries({ documentId: `corpus_window.${hash([window.documentId,window.sourceVersionId,window.startUtf16,window.endUtf16,window.text])}`, sourceVersionId: window.sourceVersionId as import("@scce/kernel").SourceVersionId, text: window.text, maxUnits: Number.MAX_SAFE_INTEGER });
-}
-async function counts(storage: PostgresStorageAdapter, run: PostgresCorpusSegmentationRun, collection: string, field: string, keys: readonly string[]): Promise<Record<string,number>> {
-  const result: Record<string,number> = Object.create(null);
-  let batch: Array<{key:string;prefix:string}>=[],bytes=2;
-  const flush=async()=>{
-    if(!batch.length)return;
-    const access=storage.informationAccessPredicate("r",4);
-    const rows=await storage.query<{key:string;count:string}>(`SELECT q.key,matched.count FROM jsonb_to_recordset($3::jsonb) q(key text,prefix text)
-    CROSS JOIN LATERAL (SELECT COUNT(*)::text AS count FROM ${storage.table("segmentation_consolidation_rows")} v
-      JOIN ${storage.table("segmentation_consolidation_runs")} r ON r.run_id=v.run_id
-      WHERE v.run_id=$1 AND v.collection=$2 AND v.order_key COLLATE "C" >= q.prefix COLLATE "C"
-        AND v.order_key COLLATE "C" < (q.prefix || '~') COLLATE "C" AND v.row_json->>'${field}'=q.key AND ${access.sql}) matched`,
-      [run.run.runId,`input/${collection}`,JSON.stringify(batch),...access.params]);
-    for(const row of rows){const count=Number(row.count);if(!Number.isSafeInteger(count)||count<0)throw new Error("Incomplete owned corpus boundary context");result[row.key]=count;}
-    if(rows.length!==batch.length||batch.some(row=>result[row.key]===undefined))throw new Error("Incomplete owned corpus boundary context");
-    batch=[];bytes=2;
-  };
-  for(const key of new Set(keys)){
-    const row={key,prefix:`${hash(key)}:`},size=Buffer.byteLength(JSON.stringify(row))+1;
-    if(size+2>run.bounds.maxPageBytes)throw new Error("Corpus boundary context key exceeds decoded JSON budget");
-    if(batch.length&&(batch.length>=run.bounds.pageRows||bytes+size>run.bounds.maxPageBytes))await flush();
-    batch.push(row);bytes+=size;
-  }
-  await flush();return result;
 }
 
 /** All promoted owned documents, every original Unicode position; only bounded windows enter the existing compiler. */
@@ -108,14 +85,15 @@ export async function prepareCorpusSegmentationInput(input: { storage: PostgresS
       await run.scratch.putMany("producer/windows", [{ orderKey: `${docKey}:${segmentationOrdinalKey(windowOrdinal)}`, value: toJsonValue(window) }]);
       const {text: windowText,...coverage} = window;
       await run.putInput("coverage", [{orderKey: `${docKey}:${segmentationOrdinalKey(windowOrdinal)}`, value: toJsonValue({...coverage,textSha256: createHash("sha256").update(windowText,"utf8").digest("hex")})}]);
-      const lattice = measured(window), pairs = new Map<string,JsonValue>(), contexts = new Map<string,JsonValue>();
+      const lattice = measured(window), classes = new Set<string>(), contexts = new Map<string,readonly [string,string]>();
       for (const unit of lattice.units) if (unit.overlapClass !== "base_partition") {
         const classId = unit.surfaceFormClassId, contextKey = boundaryContextKey(unit);
-        pairs.set(`${hash(classId)}:${hash(source.evidenceId)}`, toJsonValue({ surfaceFormClassId: classId, documentId: source.evidenceId }));
-        contexts.set(`${hash(contextKey)}:${hash(classId)}`, toJsonValue({ contextKey, surfaceFormClassId: classId }));
+        classes.add(classId);
+        contexts.set(JSON.stringify([contextKey,classId]), [contextKey,classId]);
       }
-      await run.putInput("class-documents", [...pairs].map(([orderKey,value]) => ({orderKey,value})));
-      await run.putInput("context-classes", [...contexts].map(([orderKey,value]) => ({orderKey,value})));
+      const membershipOwner = { windowKey: `${docKey}:${segmentationOrdinalKey(windowOrdinal)}`, documentId: source.evidenceId, sourceVersionId: source.sourceVersionId };
+      await writeCorpusMembershipPages(run, { ...membershipOwner, kind: "class", entries: classes });
+      await writeCorpusMembershipPages(run, { ...membershipOwner, kind: "context", entries: contexts.values() });
       coveredUtf16 += part.endUtf16 - previousEnd; previousEnd = part.endUtf16; windowCount++;
     }
     await run.putInput("owners", [{orderKey: docKey, value: toJsonValue({ ...source, ordinal, completeUnicodeCoverage:true, windowCount: windowOrdinal, utf16Length: previousEnd })}]);
@@ -125,7 +103,7 @@ export async function prepareCorpusSegmentationInput(input: { storage: PostgresS
   if (documentCount !== inventory.count) throw new Error("Corpus segmentation owner inventory is incomplete");
   const dependency=await snapshotCorpusSegmentationDependency(run);
   const populationId = `surface_population.${hash([dependency,run.run.recipeId,run.run.normalizationContractId]).slice(0,32)}`;
-  const classDigest = await run.digest("input/class-documents"), contextDigest = await run.digest("input/context-classes");
+  const { classDigest, contextDigest } = await prepareCorpusMembershipCounts(storage, run, dependency);
   const featureContextId = `boundary_feature_context.${hash([dependency,classDigest,contextDigest]).slice(0,40)}`;
   // Second pass: compile each window with exact whole-snapshot counts, then merge into one owned document.
   for await (const page of run.pages("input/owners")) for (const row of page) {
@@ -143,8 +121,8 @@ export async function prepareCorpusSegmentationInput(input: { storage: PostgresS
         windowsObserved++;
         const window = windowValue(windowRow.value), lattice = measured(window), hypotheses = lattice.units.filter(unit => unit.overlapClass !== "base_partition");
         const context: CompiledBoundaryFeatureContext = { schema: "scce.boundary_feature_context.v1", id: featureContextId, sourceDocumentCount: documentCount,
-          documentCountBySurfaceFormClass: await counts(storage, run, "class-documents", "surfaceFormClassId", hypotheses.map(unit => unit.surfaceFormClassId)),
-          classCountByBoundaryContext: await counts(storage, run, "context-classes", "contextKey", hypotheses.map(boundaryContextKey)) };
+          documentCountBySurfaceFormClass: await readCorpusMembershipCounts(storage, run, "class", hypotheses.map(unit => unit.surfaceFormClassId)),
+          classCountByBoundaryContext: await readCorpusMembershipCounts(storage, run, "context", hypotheses.map(boundaryContextKey)) };
         const statistics = compileBoundaryStatistics({ populationId, normalizationContractId: run.run.normalizationContractId,
           observations: collectBoundaryTrainingObservations({ lattices: [lattice], featureContext: context }).map(observation => ({...observation,sourceDocumentId:source.evidenceId})), sourceDocumentIds: [source.evidenceId], hasher });
         const { rows, sourceDocumentIds, ...header } = statistics;
@@ -205,8 +183,8 @@ export async function loadCorpusSegmentationContextSlice(input:{storage:Postgres
   if(!snapshot?.snapshot.completeUnicodeCoverage||snapshot.snapshot.featureContextId!==expected.featureContextId
     ||expected.normalizationContractId!==run.run.normalizationContractId||canonicalStringify(snapshot.dependency)!==canonicalStringify(expected.sourceInventory))throw new Error("Corpus segmentation context slice snapshot does not match inference");
   const featureContext:CompiledBoundaryFeatureContext={schema:"scce.boundary_feature_context.v1",id:expected.featureContextId,sourceDocumentCount:expected.sourceInventory.count,
-    documentCountBySurfaceFormClass:await counts(storage,run,"class-documents","surfaceFormClassId",measurement.requiredClassIds),
-    classCountByBoundaryContext:await counts(storage,run,"context-classes","contextKey",measurement.requiredContextKeys)};
+    documentCountBySurfaceFormClass:await readCorpusMembershipCounts(storage,run,"class",measurement.requiredClassIds),
+    classCountByBoundaryContext:await readCorpusMembershipCounts(storage,run,"context",measurement.requiredContextKeys)};
   const binding={measurementId:measurement.id,snapshotId:expected.sourceInventory.id,sourceInventory:expected.sourceInventory,
     contextId:expected.featureContextId,normalizationContractId:expected.normalizationContractId};
   return {featureContext,binding:{...binding,valueDigest:corpusSegmentationContextSliceDigest({featureContext,binding})}};

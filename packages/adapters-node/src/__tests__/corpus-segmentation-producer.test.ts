@@ -7,6 +7,7 @@ import { fixtureSegmentationScratch } from "../../../kernel/src/__tests__/fixtur
 import { activateCorpusSegmentationRun, readActiveCorpusSegmentationRun, createCorpusSegmentationRun, corpusSegmentationScopeId, segmentationOrdinalKey } from "../corpus-segmentation-store.js";
 import { consolidateCorpusSegmentation, loadCorpusSegmentationContextSlice, corpusSegmentationInputRecipe, prepareCorpusSegmentationInput } from "../corpus-segmentation-producer.js";
 import type { PostgresStorageAdapter } from "../postgres.js";
+import { corpusMembershipSqlFixture } from "./fixtures/corpus-membership-sql.js";
 
 async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFamily=true, initialize=true) {
   const memory=fixtureSegmentationScratch(pageRows,12000), calls:Array<{sql:string;params:unknown[]}>=[];
@@ -26,6 +27,7 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
     transaction:async<T>(operation:()=>Promise<T>)=>{const previousState=state,previousActive=active;try{return await operation();}catch(error){state=previousState;active=previousActive;throw error;}},
     mutateLanguageMemory:async(sql:string,params:unknown[])=>{calls.push({sql,params});state="complete";active=JSON.parse(String(params[2]));if(failPublication)throw new Error("publication failed");return true;},
     query:async<T>(sql:string,params:unknown[]=[]):Promise<T[]>=>{ calls.push({sql,params});
+      const membership = await corpusMembershipSqlFixture(sql,params,memory); if(membership) return membership as T[];
       if(sql.includes("pg_catalog.pg_trigger"))return [{valid:true}] as T[];
       if(sql.includes("INSERT INTO")&&sql.includes("(run_id,scope_id,state,run_json")){runJson=JSON.parse(String(params[2]));return [{run_id:"owned-run"}] as T[];}
       if(sql.includes("segmentation_consolidation_active")&&sql.includes("SELECT r.run_json"))return active&&params[0]===(runJson as Record<string,JsonValue>).scopeId?[{run_json:runJson,snapshot_json:snapshot,inference_json:active,fits:true}] as T[]:[];
@@ -39,9 +41,6 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
       if(sql.includes("WITH selected AS"))return (params[0] as string[]).flatMap(id=>{const source=owners.find(owner=>owner.sourceVersionId===id);return source?[{fits:true,value:{sourceVersionId:source.sourceVersionId,sourceId:source.sourceId,parentSourceVersionId:null,sourceRole:"original",informationLabel:label}}]:[];}) as T[];
       if(sql.includes("SELECT substring")){const index=owners.findIndex(owner=>owner.evidenceId===params[0]);const text=texts[index]!;
         return [{text:corrupt?"changed":[...text].slice(Number(params[2])-1,Number(params[2])-1+Number(params[3])).join("")}] as T[];}
-      if(sql.includes("SELECT q.key")){const requested=JSON.parse(String(params[2])) as Array<{key:string}>;const field=sql.includes("'surfaceFormClassId'=q.key")?"surfaceFormClassId":"contextKey";const pairs:Array<{orderKey:string;value:JsonValue}>=[];
-        for await(const page of memory.pages({collection:String(params[1]),pageRows,maxPageBytes:12000}))pairs.push(...page);
-        return requested.map(row=>({key:row.key,count:String(pairs.filter(pair=>(pair.value as Record<string,JsonValue>)[field]===row.key).length)})) as T[];}
       if(sql.includes("WITH candidate")&&sql.includes("evidence_id"))return owners.filter(owner=>owner.evidenceId>String(params[0])).slice(0,pageRows).map(row_json=>({evidence_id:row_json.evidenceId,row_json,admitted:true})) as T[];
       if(sql.includes("WITH candidate")){const rows=[];for await(const page of memory.pages({collection:String(params[1]),afterKey:String(params[2]),prefix:String(params[3]),pageRows:Number(params[4]),maxPageBytes:12000})){rows.push(...page);break;}
         return rows.map(row=>({order_key:row.orderKey,row_json:row.value,admitted:true,decoded_bytes:Buffer.byteLength(JSON.stringify(row))})) as T[];}
@@ -150,4 +149,17 @@ it("rejects disagreement between the declared span hash and the actual maintaine
   await f.memory.putMany("input/inventory",f.owners.map((value,index)=>({orderKey:segmentationOrdinalKey(index+1),value})));
   await expect(prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28})).rejects.toThrow(/source ownership/);
   expect(f.getState()).toBe("building");expect(f.getSnapshot()).toBeUndefined();
+});
+
+it("stores completed count pages while reclaiming pair memberships before fitting",async()=>{
+  const f=await fixture(3);await prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28});
+  expect(await f.memory.count("input/class-documents")).toBe(0);
+  expect(await f.memory.count("input/context-classes")).toBe(0);
+  expect(await f.memory.count("input/class-counts")).toBeGreaterThan(0);
+  expect(await f.memory.count("input/context-counts")).toBeGreaterThan(0);
+  expect(await f.memory.count("input/context-count-receipt")).toBe(1);
+  expect(await f.memory.count("scratch/producer/class-membership")).toBe(0);
+  expect(await f.memory.count("scratch/producer/context-membership")).toBe(0);
+  expect(f.calls.filter(call=>call.sql.includes("exact_counts AS MATERIALIZED"))).toHaveLength(2);
+  expect(f.calls.filter(call=>call.sql.includes("page_members AS MATERIALIZED")).every(call=>call.sql.includes("SELECT DISTINCT order_key FROM located")&&call.sql.includes('ORDER BY v.order_key COLLATE "C" DESC LIMIT 1'))).toBe(true);
 });
