@@ -10,7 +10,8 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 it("joins only matching evidence windows while retaining their original order and physical multiplicity", () => {
   const hasher = createHasher();
-  const base = induction.createLanguageInductionEngine({ hasher }).induce({ documents: [{ id: "bootstrap", text: "oma vela. oma neri." }] });
+  const engine = induction.createLanguageInductionEngine({ hasher });
+  const base = engine.induce({ documents: [{ id: "bootstrap", text: "oma vela. oma neri." }] });
   vi.stubEnv("SCCE_INDUCTION_CHAR_BUDGET", "8192");
   vi.stubEnv("SCCE_INDUCTION_DOC_CHAR_CAP", "16");
   const documents = Array.from({ length: 128 }, (_, index) => ({ id: `owner.${index}`, text: "\u732b e\u0301 \ud83d\udc69\u200d\ud83d\udd2c. tail.",
@@ -24,7 +25,7 @@ it("joins only matching evidence windows while retaining their original order an
     id: `construction.${index}`, frameId: `frame.${index}`, predicate: "opaque", predicateSemanticRole: "predicate", slots: [], support: 1,
     get evidenceIds() { evidenceReads++; return evidenceIds; }
   }));
-  vi.spyOn(induction, "createLanguageInductionEngine").mockReturnValue({ induce: () => ({ ...base, graphBoundConstructions: constructions }) });
+  vi.spyOn(induction, "createLanguageInductionEngine").mockReturnValue({ ...engine, induce: () => ({ ...base, graphBoundConstructions: constructions }) });
   const first = compileSourceInductionWindows({ documents, hasher });
   expect(first.models).toHaveLength(1);
   expect(first.models[0]!.graphBoundConstructions.map(construction => construction.sourceWindows)).toEqual(ownership.map(evidenceIds =>
