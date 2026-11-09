@@ -77,10 +77,37 @@ const fixtures: Array<{ q: string; access?: InformationAccessContext; statementC
   }
 ];
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const schema32HydrationColumns = {
+  segmentation_consolidation_runs: ["run_id", "scope_id", "state", "run_json", "snapshot_json", "inference_json", "information_label", "created_at"],
+  segmentation_consolidation_rows: ["run_id", "collection", "order_key", "row_json"],
+  segmentation_consolidation_active: ["scope_id", "run_id", "header_json", "activated_at"],
+  creative_event_templates: ["id", "kind", "value_json"],
+  creative_event_lexemes: ["id", "kind", "value_json"],
+  creative_event_witnesses: ["id", "kind", "value_json", "information_label"],
+  creative_event_occurrences: ["id", "kind", "value_json", "information_label"]
+};
+function schema32Additions(statements: readonly string[], q: string): string[] {
+  const digestStatements = new Set([
+    `DROP TRIGGER IF EXISTS scce_evidence_text_sha256 ON ${q}.evidence_spans`,
+    `CREATE TRIGGER scce_evidence_text_sha256 BEFORE INSERT OR UPDATE OF text_content,text_sha256 ON ${q}.evidence_spans FOR EACH ROW EXECUTE FUNCTION ${q}.scce_sync_evidence_text_sha256()`,
+    `ALTER TABLE ${q}.evidence_spans ENABLE ALWAYS TRIGGER scce_evidence_text_sha256`,
+    `UPDATE ${q}.evidence_spans SET text_sha256=NULL WHERE text_sha256 IS NULL`,
+    `ALTER TABLE ${q}.evidence_spans ALTER COLUMN text_sha256 SET NOT NULL`
+  ]);
+  const additions = statements.filter(sql => Object.keys(schema32HydrationColumns).some(name => sql.startsWith(`CREATE TABLE IF NOT EXISTS ${q}.${name} (`))
+    || sql.startsWith("DO $scce_evidence_digest_column$ BEGIN\n")
+    || sql.startsWith(`CREATE OR REPLACE FUNCTION ${q}.scce_sync_evidence_text_sha256() RETURNS trigger `)
+    || digestStatements.has(sql));
+  expect(additions).toHaveLength(14);
+  // Pin only schema32 additions; all prior SQL keeps its original ordered byte goldens.
+  expect(digest(additions.map(sql => sql.replaceAll(q, "SCHEMA")))).toBe("f59a433f31992cfd640e220564ba62ced6a22fb96dc13356250c70d91a91a4ae");
+  return additions;
+}
 
 describe("Postgres schema contract extraction", () => {
-  it.each(fixtures)("preserves exact ordered prior DDL apart from explicit surface-key, source-history and source-binding lookup upgrades for $q with access $access", fixture => {
+  it.each(fixtures)("preserves exact ordered prior DDL apart from explicit lookup upgrades and schema32 additions for $q with access $access", fixture => {
     const statements = schema.schemaStatements(fixture.q, fixture.access);
+    const schema32 = schema32Additions(statements, fixture.q);
     const key = fixture.q.replaceAll('"', "");
     const addedColumn = `ALTER TABLE ${fixture.q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`;
     const retiredIndex = `DROP INDEX IF EXISTS ${fixture.q}.idx_${key}_semantic_frames_surface_rank`;
@@ -98,8 +125,8 @@ describe("Postgres schema contract extraction", () => {
     expect(statements).toContain(historyIndex);
     expect(statements).toContain(computationIndex);
     expect(statements).toContain(contextualQaIndex);
-    expect(statements).toHaveLength(fixture.statementCount + 6);
-    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql)).map(sql => sql === hashIndex ? oldIndex : sql);
+    expect(statements).toHaveLength(fixture.statementCount + 6 + schema32.length);
+    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql)).map(sql => sql === hashIndex ? oldIndex : sql);
     expect(digest(prior)).toBe(fixture.sha256);
     expect(postgres.schemaStatements(fixture.q, fixture.access)).toEqual(statements);
   });
@@ -107,8 +134,15 @@ describe("Postgres schema contract extraction", () => {
   it("preserves the fresh-schema indexes and required hydration column contract", () => {
     const columns = schema.requiredHydrationColumns();
     expect(columns.semantic_frames).toContain("normalized_surface_hash");
+    expect(columns.evidence_spans).toContain("text_sha256");
+    const priorColumns = { ...columns };
+    for (const [name, expected] of Object.entries(schema32HydrationColumns)) {
+      expect(columns[name]).toEqual(expected);
+      delete priorColumns[name];
+    }
     const headers = ["pattern_schema", "component_recipe", "source_compilation_id", "owned_source_version_id", "pattern_language", "has_source_compilation", "has_source_version", "decoded_jsonb_bytes"];
-    expect(digest({ ...columns, semantic_frames: columns.semantic_frames!.filter(column => column !== "normalized_surface_hash"),
+    expect(digest({ ...priorColumns, evidence_spans: columns.evidence_spans!.filter(column => column !== "text_sha256"),
+      semantic_frames: columns.semantic_frames!.filter(column => column !== "normalized_surface_hash"),
       language_patterns: columns.language_patterns!.filter(column => !headers.includes(column)) })).toBe("6cb43753bb07de0a5bdb96e1b27459d8861bf292b5f9ba6f9b31b50770df0f22");
     expect(digest(schema.freshSchemaIndexStatements("fixture"))).toBe("b9869ea350648b3a938f9f7e210ce2f01c038626a72cdf7f663dd276fb4f4ffd");
     expect(digest(schema.freshSchemaIndexStatements("\"fixture\""))).toBe("99d5d211dbddc3ac3eb50d88e2d08a178e1115a04b7068a75cf9c78ca2f5b8f5");
