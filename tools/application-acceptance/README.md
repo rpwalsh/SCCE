@@ -6,7 +6,7 @@ Run an owner-published, hash-pinned application plan against the ordinary local 
 node tools/application-acceptance.mjs OWNER_PLAN.json --plan-sha256=LOWERCASE_SHA256 --config=scce.config.json --out=.scce/verification/application-acceptance.json
 ```
 
-The runner reads the configured bearer token (or `SCCE_API_BEARER_TOKEN`) and server URL (`SCCE_SERVER_URL` may override it). Only credential-free loopback URLs are accepted. It uses ordinary compact `/api/turn`, verifies artifact-wire references, and performs exact `/api/session/approve` / unchanged-request retries. It never grants operator authority or requests full diagnostics.
+The runner reads the configured bearer token (or `SCCE_API_BEARER_TOKEN`) and server URL (`SCCE_SERVER_URL` may override it). Only credential-free loopback URLs are accepted. When no token is configured it follows the server's existing local-request contract without an Authorization header; configured tokens are sent exactly, secret-resolution errors propagate, and HTTP 401 never triggers an anonymous retry. It uses ordinary compact `/api/turn`, verifies artifact-wire references, and performs exact `/api/session/approve` / unchanged-request retries. It never grants operator authority or requests full diagnostics.
 
 The plan schema remains `scce.application_acceptance_plan.v1`. Required categories are `typescript_web_crud`, `python_service_cli`, `kotlin_android_phonebook`, and `semantic_debug_repair`; additional categories/languages are allowed. These are required qualification cells, not a claim that every backend exists. Missing toolchains, unsupported output languages, absent applications, or failed checks remain failures. The original semantic-repair cell retains its ordered failing/passing build and test requirements.
 

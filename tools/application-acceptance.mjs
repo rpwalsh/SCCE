@@ -147,7 +147,6 @@ async function runCommand(command, args, cwd, env, timeoutMs, outputBytes) {
 export async function requestApplication(testCase, options) {
   const validation = testCase.publicValidation && structuredClone(testCase.publicValidation), trace = [], seen = new Set();
   let approvedInput;
-  if (!options.token) throw Error("application acceptance requires API authentication");
   if (!validation || validation.sha256 !== digest(canonical({ permission: validation.permission, toolInventory: validation.toolInventory }))) throw Error("application approval scope is not owner-pinned");
   const body = { text: testCase.spec, requestedAuthority: "program", sessionId: `acceptance-${options.runId}-${testCase.id}` };
   const request = async (route, payload) => {
@@ -415,7 +414,6 @@ async function main() {
   const config = await adapter.readScceRuntimeConfig(configPath);
   const configuredToken = config.security?.apiBearerToken;
   const token = process.env.SCCE_API_BEARER_TOKEN?.trim() || (configuredToken?.startsWith('enc:v1:') ? adapter.resolveSecret(configuredToken, config, 'SCCE API bearer token') : configuredToken);
-  if (!token) throw Error("application acceptance requires configured API authentication");
   const server = new URL(process.env.SCCE_SERVER_URL ?? config.server.url);
   if (!['http:','https:'].includes(server.protocol) || !['127.0.0.1','localhost','[::1]'].includes(server.hostname) || server.username || server.password) throw Error("Application acceptance requires a credential-free loopback URL");
   const outputRoot = await mkdtemp(path.join(tmpdir(), "scce-application-acceptance-"));

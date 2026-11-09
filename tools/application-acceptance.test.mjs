@@ -131,9 +131,25 @@ test('rejects corrupt wire identities and unchanged response-size ceiling', asyn
   await assert.rejects(requestApplication(caseInput(), options()), /byte budget/);
 });
 
-test('rejects nonlocal, unauthenticated, unpinned and expired requests before network activity', async t => {
+test('default loopback requests follow the server contract without inventing bearer authentication', async t => {
+  let calls=0;
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    calls++;assert.equal(url.hostname,'127.0.0.1');assert.equal(Object.hasOwn(init.headers,'authorization'),false);
+    return new Response(JSON.stringify({answer:'local response'}));
+  });
+  const response=await requestApplication(caseInput(),{...options(),token:undefined});
+  assert.equal(response.status,200);assert.equal(response.body.answer,'local response');assert.equal(calls,1);
+});
+
+test('configured bearer failures never trigger an anonymous retry', async t => {
+  let calls=0;
+  t.mock.method(globalThis,'fetch',async(_url,init)=>{calls++;assert.equal(init.headers.authorization,'Bearer test-only-token');return new Response(JSON.stringify({error:'unauthorized'}),{status:401});});
+  const response=await requestApplication(caseInput(),options());
+  assert.equal(response.status,401);assert.equal(calls,1);
+});
+
+test('rejects nonlocal, unpinned and expired requests before network activity', async t => {
   t.mock.method(globalThis,'fetch',()=>{throw Error('unexpected network');});
-  await assert.rejects(requestApplication(caseInput(),{...options(),token:undefined}),/authentication/);
   await assert.rejects(requestApplication(caseInput(),{...options(),serverUrl:'https://example.invalid'}),/loopback/);
   const unpinned=caseInput();unpinned.publicValidation.permission.build.args=['changed.mjs'];
   await assert.rejects(requestApplication(unpinned,options()),/owner-pinned/);
