@@ -384,13 +384,21 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
       const lexicalClasses = induceLexicalClasses(lexicalClassDocuments, hasher, input.maxLexicalClasses ?? 1024);
       const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
+      const semanticFrameDocuments = documents.some(document => document.sourceWindow) ? new Map<string, Set<number>>() : undefined;
       const semanticFrames = induceSemanticFrames(
         documents,
         relationHypothesisModel,
         hasher,
-        input.maxFrames ?? 2048
+        input.maxFrames ?? 2048,
+        semanticFrameDocuments
       );
-      const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, lexicalClasses, hasher).slice(0, 2048);
+      const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, lexicalClasses, hasher).slice(0, 2048).map(construction => {
+        const observed = semanticFrameDocuments?.get(construction.predicate);
+        return observed ? { ...construction, sourceWindows: [...observed].map(index => {
+          const document = documents[index]!;
+          return { ...(document.sourceWindow ?? { ownerDocumentId: document.id, startUtf16: 0, endUtf16: document.text.length }) };
+        }) } : construction;
+      });
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
       const proseDiagnostics = proseDiagnostic(kn, symbolStrings, joinProgram);
       const id = `language_model_${hasher.digestHex(JSON.stringify({
@@ -1041,7 +1049,8 @@ function induceSemanticFrames(
   documents: readonly LanguageInductionDocument[],
   relationModel: RelationHypothesisModel,
   hasher: Hasher,
-  maxFrames: number
+  maxFrames: number,
+  observedDocuments?: Map<string, Set<number>>
 ): SemanticFrameCandidate[] {
   const frames = new Map<string, {
     predicate: string;
@@ -1054,7 +1063,7 @@ function induceSemanticFrames(
     hypothesisCount: number;
     alternatives: Map<string, { posteriorMass: number; energyMass: number }>;
   }>();
-  for (const doc of documents) {
+  for (const [documentIndex, doc] of documents.entries()) {
     const trust = clamp01(doc.trust ?? 0.5);
     for (const [sentenceIndex, sentence] of sentenceSegments(doc.text, hasher).entries()) {
       const symbols = lexicalSurfaceSymbols(sentence, `${doc.id}.frame.${sentenceIndex}`, hasher)
@@ -1069,6 +1078,11 @@ function induceSemanticFrames(
         const left = symbols.slice(Math.max(0, predicate.index - 6), predicate.index);
         const right = symbols.slice(predicate.index + 1, Math.min(symbols.length, predicate.index + 7));
         const key = predicate.surface;
+        if (observedDocuments) {
+          const indices = observedDocuments.get(key) ?? new Set<number>();
+          indices.add(documentIndex);
+          observedDocuments.set(key, indices);
+        }
         const bucket = frames.get(key) ?? {
           predicate: key,
           left: new Map<string, number>(),

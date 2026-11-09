@@ -8,7 +8,7 @@ import type { EvidenceId } from "../types.js";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
-it("joins only matching evidence windows while retaining their original order and physical multiplicity", () => {
+it("preserves observed construction windows independently of repeated evidence identities", () => {
   const hasher = createHasher();
   const engine = induction.createLanguageInductionEngine({ hasher });
   const base = engine.induce({ documents: [{ id: "bootstrap", text: "oma vela. oma neri." }] });
@@ -23,20 +23,22 @@ it("joins only matching evidence windows while retaining their original order an
   ownership.push(["unmatched" as EvidenceId]);
   const constructions = ownership.map((evidenceIds, index): induction.GraphBoundConstruction => ({
     id: `construction.${index}`, frameId: `frame.${index}`, predicate: "opaque", predicateSemanticRole: "predicate", slots: [], support: 1,
-    get evidenceIds() { evidenceReads++; return evidenceIds; }
+    get evidenceIds() { evidenceReads++; return evidenceIds; },
+    sourceWindows: index < 128 ? windows.filter((_, windowIndex) => windowIndex % 128 === index)
+      .map(({ ownerDocumentId, startUtf16, endUtf16 }) => ({ ownerDocumentId, startUtf16, endUtf16 })) : []
   }));
   vi.spyOn(induction, "createLanguageInductionEngine").mockReturnValue({ ...engine, induce: () => ({ ...base, graphBoundConstructions: constructions }) });
   const first = compileSourceInductionWindows({ documents, hasher });
   expect(first.models).toHaveLength(1);
-  expect(first.models[0]!.graphBoundConstructions.map(construction => construction.sourceWindows)).toEqual(ownership.map(evidenceIds =>
-    windows.filter(window => window.evidenceIds.some(id => evidenceIds.includes(id as EvidenceId)))
-      .map(({ ownerDocumentId, startUtf16, endUtf16 }) => ({ ownerDocumentId, startUtf16, endUtf16 }))));
+  expect(first.models[0]!.graphBoundConstructions.map(construction => construction.sourceWindows))
+    .toEqual(constructions.map(construction => construction.sourceWindows));
   expect(evidenceReads).toBeLessThanOrEqual(constructions.length * 3);
   expect(first.models[0]!.graphBoundConstructions.at(-1)!.sourceWindows).toEqual([]);
   const firstRanges = first.models[0]!.graphBoundConstructions[0]!.sourceWindows!;
   expect(firstRanges.some(window => window.ownerDocumentId === "owner.64")).toBe(true);
   expect(() => { firstRanges[0]!.startUtf16++; }).toThrow();
   const changed = compileSourceInductionWindows({ documents: documents.map(document => ({ ...document, evidenceIds: ["other" as EvidenceId] })), hasher });
-  expect(changed.models[0]!.graphBoundConstructions.every(construction => construction.sourceWindows?.length === 0)).toBe(true);
+  expect(changed.models[0]!.graphBoundConstructions.map(construction => construction.sourceWindows))
+    .toEqual(constructions.map(construction => construction.sourceWindows));
   expect(first.models[0]!.graphBoundConstructions[0]!.sourceWindows).toEqual(firstRanges);
 });
