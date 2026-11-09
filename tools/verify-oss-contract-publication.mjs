@@ -34,10 +34,20 @@ const files = {
   'spec/first.spec.ts': "import {test} from 'node:test';import {strictEqual} from 'node:assert';import {f0 as observed} from '@owned/index.js';test('first',()=>{strictEqual(observed(2),6);strictEqual(observed(4),20);});\n",
   'spec/second.spec.ts': "import {it,expect} from 'vitest';import {f0 as observed} from '@owned/index.js';it('second',()=>{expect(observed(1)).toBe(2);expect(observed(5)).toBe(30);});\n"
 };
-let physical, outerOpen = false, sequence = 0, tail = Promise.resolve(), initialRevision;
+let physical, outerOpen = false, sequence = 0, tail = Promise.resolve(), initialRevision, firstSqlError = true;
 const originalConnect = storage.pool.connect, originalQuery = storage.pool.query;
 const nativeQuery = (sql, params) => {
-  const result = tail.then(() => physical.query(sql, params)); tail = result.then(() => undefined, () => undefined); return result;
+  const result = tail.then(async () => {
+    try { return await physical.query(sql, params); }
+    catch (error) {
+      if (firstSqlError && process.env.SCCE_NATIVE_SQL_TRACE) {
+        firstSqlError = false;
+        await writeFile(process.env.SCCE_NATIVE_SQL_TRACE, JSON.stringify({ sql, position: error.position, code: error.code,
+          parameterTypes: (params ?? []).map(value => Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value) }, null, 2));
+      }
+      throw error;
+    }
+  }); tail = result.then(() => undefined, () => undefined); return result;
 };
 const patterns = () => storage.languageMemory.listLanguagePatterns({ patternKind: 'source_code_assertion_contract', patternSchemas: ['scce.source_owned_test_contract.v1'], limit: 32 });
 async function temporary(operation) {
@@ -156,7 +166,10 @@ finally {
     }
     check('outer-rollback-restores-empty-database-and-language-revision', () => {});
   } catch (error) { report.passed = false; report.cleanupError = String(error); process.exitCode = 1; }
-  await storage.close(); await rm(root, { recursive: true, force: true });
+  await storage.close();
+  const resolvedRoot = path.resolve(root);
+  if (path.dirname(resolvedRoot) !== path.resolve(tmpdir()) || !path.basename(resolvedRoot).startsWith('scce-native-oss-')) throw Error('Unexpected disposable OSS fixture directory');
+  await rm(resolvedRoot, { recursive: true, force: true });
   if (args.includes('--output')) await writeFile(value('--output'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
 }
