@@ -138,9 +138,15 @@ export async function prepareCorpusSegmentationInput(input: { storage: PostgresS
       }
     };
     const merged = await mergePagedBoundaryStatistics({ sources, scratch: withPackedBoundaryMerges(run.scratch), populationId, collectionPrefix: "producer/document", hasher });
-    await writeCorpusStatisticsPages(run, docKey, merged.rows(), merged.header.rowCount);
-    const document: CorpusSegmentationDocument = {ordinal,documentId: source.evidenceId,sourceFamilyId: source.sourceFamilyId,statistics: merged.header};
-    await run.putInput("documents", [{orderKey: docKey,value: toJsonValue(document)}]);
+    try {
+      await writeCorpusStatisticsPages(run, docKey, merged.rows(), merged.header.rowCount);
+      const document: CorpusSegmentationDocument = {ordinal,documentId: source.evidenceId,sourceFamilyId: source.sourceFamilyId,statistics: merged.header};
+      await run.putInput("documents", [{orderKey: docKey,value: toJsonValue(document)}]);
+    } catch (error) {
+      try { await merged.dispose?.(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "Corpus statistics persistence and temporary scratch cleanup failed"); }
+      throw error;
+    }
     await merged.dispose?.();
     await input.onProgress?.({phase:"compiling-statistics",completedOwners:ordinal,documentCount,windowCount,coveredUtf16});
   }

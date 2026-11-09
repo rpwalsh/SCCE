@@ -84,6 +84,43 @@ it("refuses changed canonical bytes before a fit snapshot can be sealed",async()
   expect(f.getState()).toBe("building");expect(f.getSnapshot()).toBeUndefined();
 });
 
+it.each(["statistics-page", "documents"] as const)("releases merged temporary pages after a durable %s failure while retaining canonical partial input",async failure=>{
+  const f=await fixture(2),put=f.run.putInput.bind(f.run),primary=new Error(`durable ${failure} failed`);
+  f.run.putInput=async(collection,rows)=>{
+    if(failure==="documents"&&collection==="documents")throw primary;
+    await put(collection,rows);
+    if(failure==="statistics-page"&&collection.startsWith("statistics/"))throw primary;
+  };
+  await expect(prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28})).rejects.toBe(primary);
+  expect(await f.memory.count("scratch/producer/document.rows")).toBe(0);
+  expect(await f.memory.count("scratch/producer/document.uniqueDocuments")).toBe(0);
+  expect(await f.memory.count(`input/statistics/${segmentationOrdinalKey(1)}`)).toBeGreaterThan(0);
+  expect(await f.memory.count("input/inventory")).toBe(f.owners.length);
+  expect(await f.memory.count("input/documents")).toBe(0);
+  expect(f.getState()).toBe("building");expect(f.getSnapshot()).toBeUndefined();
+  f.run.putInput=put;
+  const resumed=await prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28});
+  expect(resumed.documentCount).toBe(f.owners.length);
+  expect(await f.memory.count("scratch/producer/document.rows")).toBe(0);
+  expect(await f.memory.count("scratch/producer/document.uniqueDocuments")).toBe(0);
+});
+
+it("retains the primary durable-write error and an unknown cleanup failure while attempting the other temporary collection",async()=>{
+  const f=await fixture(2),put=f.run.putInput.bind(f.run),remove=f.run.scratch.deleteCollection;
+  const primary=new Error("durable document failed"),cleanup={opaque:"temporary removal failed"};let failing=false;
+  f.run.putInput=async(collection,rows)=>{if(collection==="documents"){failing=true;throw primary;}await put(collection,rows);};
+  f.run.scratch.deleteCollection=async collection=>{if(failing&&collection==="producer/document.rows")throw cleanup;await remove(collection);};
+  let received:unknown;
+  try{await prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28});}catch(error){received=error;}
+  expect(received).toBeInstanceOf(AggregateError);
+  expect((received as AggregateError).errors[0]).toBe(primary);
+  const flattened=(value:unknown):unknown[]=>value instanceof AggregateError?value.errors.flatMap(flattened):[value];
+  expect(flattened(received)).toContain(cleanup);
+  expect(await f.memory.count("scratch/producer/document.uniqueDocuments")).toBe(0);
+  expect(await f.memory.count(`input/statistics/${segmentationOrdinalKey(1)}`)).toBeGreaterThan(0);
+  expect(f.getState()).toBe("building");expect(f.getSnapshot()).toBeUndefined();
+});
+
 it("reuses complete owned preparation across an owner abort without rereading source bytes",async()=>{
   const f=await fixture(2),controller=new AbortController();
   await expect(prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28,signal:controller.signal,onProgress:progress=>{
