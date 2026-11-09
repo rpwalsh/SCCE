@@ -8,6 +8,7 @@ import path from "node:path";
 import { canonicalTemporalCoordinates, createHasher, validatePooledLanguageProfileOwnership, type LanguageProfile } from "@scce/kernel";
 import { createWikipediaInputManifest } from "../wikipedia-input-manifest.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
+import { corpusSegmentationInputRecipe } from "../corpus-segmentation-producer.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
 import * as boundary from "../../../kernel/src/boundary-estimator.js";
 import * as population from "../../../kernel/src/segmentation-population.js";
@@ -31,7 +32,7 @@ describe("Wikipedia shard graph dependency validation", () => {
       let persistedProfile: LanguageProfile | undefined;
       const corpus = global ? await rawCorpusSegmentationFixture() : undefined;
       const declaration = corpus ? { scope: { informationLabel: { tenantId: "scce.public.corpus", principals: [], compartments: [], exportClass: "public" as const, mergePolicy: "same_owner" as const },
-        sourceSystems: ["wikipedia"] }, recipeId: "scce.corpus_segmentation_input.v1:4096", normalizationContractId: corpus.model.normalizationContractId,
+        sourceSystems: ["wikipedia"] }, recipeId: corpusSegmentationInputRecipe(4096), normalizationContractId: corpus.model.normalizationContractId,
         bounds: { pageRows: 3, maxPageBytes: 65536 } } : undefined;
       const active = vi.fn(async () => corpus ? ({ inference: corpus.model, loader: corpus.loader }) : null);
       const fit = vi.spyOn(boundary, "fitBoundaryEstimator"), learn = vi.spyOn(population, "learnSegmentationPopulations");

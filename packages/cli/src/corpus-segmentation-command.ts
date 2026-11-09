@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { normalizeInformationLabel,type CorpusSegmentationConsolidationOptions,type CorpusSegmentationScope,type ScceStorage } from "@scce/kernel";
+import { corpusSegmentationInputRecipe } from "@scce/adapters-node";
 function record(value:unknown):Record<string,unknown>{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Corpus segmentation plan requires an object");return value as Record<string,unknown>;}
 function text(value:unknown):string{if(typeof value!=="string"||!value.trim())throw new Error("Corpus segmentation plan requires nonempty identities");return value;}
 function integer(value:unknown,minimum=1):number{if(typeof value!=="number"||!Number.isSafeInteger(value)||value<minimum)throw new Error("Corpus segmentation plan requires positive integer bounds");return value;}
@@ -23,8 +24,11 @@ export function parseCorpusSegmentationPlan(value:unknown,createdAt:number,resum
 }
 export async function runCorpusSegmentationCommand(storage:ScceStorage,plan:unknown,input:{createdAt:number;resume?:boolean;onProgress?:CorpusSegmentationConsolidationOptions["onProgress"]}){
   if(!storage.corpusSegmentation)throw new Error("Corpus segmentation storage capability is unavailable");
-  const result=await storage.corpusSegmentation.consolidate({...parseCorpusSegmentationPlan(plan,input.createdAt,input.resume),onProgress:input.onProgress});
+  const parsed=parseCorpusSegmentationPlan(plan,input.createdAt,input.resume);
+  const result=await storage.corpusSegmentation.consolidate({...parsed,onProgress:input.onProgress});
   return {schema:"scce.corpus_segmentation_receipt.v1",runId:result.runId,alreadyComplete:result.alreadyComplete,minimumPoolConnections:result.minimumPoolConnections,
     modelId:result.model.id,sourceInventory:result.model.sourceInventory,featureContextId:result.model.featureContextId,normalizationContractId:result.model.normalizationContractId,
-    selectedPopulationCount:result.model.populations.length,selection:result.model.selection};
+    selectedPopulationCount:result.model.populations.length,selection:result.model.selection,
+    trainingDeclaration:{scope:structuredClone(parsed.scope),recipeId:corpusSegmentationInputRecipe(parsed.windowUtf16),
+      normalizationContractId:result.model.normalizationContractId,bounds:{...parsed.bounds}}};
 }

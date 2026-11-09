@@ -2,13 +2,14 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { expect, it, vi } from "vitest";
 import type { ScceStorage } from "@scce/kernel";
+import { corpusSegmentationInputRecipe } from "../corpus-segmentation-producer.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
 import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationLoader, type LanguageTrainingSegmentationDeclaration } from "../language-training-segmentation.js";
 import { prepareLanguageCorpusTraining } from "../language-corpus-trainer.js";
 
 const declaration: LanguageTrainingSegmentationDeclaration = {
   scope: { informationLabel: { tenantId: "fixture", principals: [], compartments: [], exportClass: "public", mergePolicy: "isolated" }, sourceVersionIds: ["owned.a", "owned.b"] },
-  recipeId: "scce.corpus_segmentation_input.v1:4096", normalizationContractId: "declared.normalization", bounds: { pageRows: 3, maxPageBytes: 65536 }
+  recipeId: corpusSegmentationInputRecipe(4096), normalizationContractId: "declared.normalization", bounds: { pageRows: 3, maxPageBytes: 65536 }
 };
 
 it("declares bootstrap explicitly and refuses a configured missing snapshot before any source compiler runs", async () => {

@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { readFileSync } from "node:fs";
+import { corpusSegmentationInputRecipe } from "../corpus-segmentation-producer.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
 import type { TranscriptTurn } from "../../../kernel/src/dialogue-communicative-act-learning.js";
 const humanCreativePair = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
@@ -2363,7 +2364,7 @@ describe("multi-corpus training", () => {
     const report = await trainStoredCorpusConstructions({ storage: fixture.storage, sourceSystem: "wikipedia", minArticleBytes: 0, maxTotalBytes: 65536,
       ngramMaxOrder: 4, ngramMaxCountersPerOrder: 12000, ngramVocabularyLimit: 24000,
       corpusSegmentation: { scope: { informationLabel: corpusLabel, sourceVersionIds: fixture.state.sourceVersions.map(source => String(source.sourceVersionId)) },
-        recipeId: "scce.corpus_segmentation_input.v1:4096", normalizationContractId: corpus.model.normalizationContractId, bounds: { pageRows: 3, maxPageBytes: 65536 } } });
+        recipeId: corpusSegmentationInputRecipe(4096), normalizationContractId: corpus.model.normalizationContractId, bounds: { pageRows: 3, maxPageBytes: 65536 } } });
     expect(report.exhausted).toBe(true); expect(report.sourcesSkipped).toEqual([]); expect(report.batchesFailed).toEqual([]); expect(report.articlesTrained).toBe(2);
     expect(report.reports.every(item => item.ngramModels > 0 && item.segmentation?.mode === "corpus_snapshot")).toBe(true);
     expect(fixture.state.profiles.map(profile => ({ sourceVersionId: profile.sourceVersionId, kneserNey: profile.kneserNey }))
