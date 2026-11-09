@@ -78,6 +78,12 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
       return inputs.map(input => {
         const root = record(input.value); if (!root || root.schema === "scce.source_language_compilation_receipt.v1") return input.value;
         if (root[SOURCE_ARTIFACT_METADATA_KEY] !== undefined) return fail();
+        const id = compilationId(root); if (!id) return input.value;
+        const shared = validate(input, owners.get(`source.language.compilation.${id}`), id); if (!shared) return input.value;
+        const keys = Object.keys(shared.metadata).filter(key => !QUERY_ROOTS.has(key) && key !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY && key !== SOURCE_ARTIFACT_METADATA_KEY
+          && root[key] !== undefined && same(root[key], shared.metadata[key]) && root[key] !== null && typeof root[key] === "object"
+          && (!Array.isArray(root[key]) || (root[key] as unknown[]).some(value => value !== null && typeof value === "object")));
+        if (!keys.length) return input.value;
         const existingLedger = record(root[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
         if (Object.hasOwn(root, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) {
           if (input.logicalValue === undefined || Object.hasOwn(record(input.logicalValue) ?? {}, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) return fail();
@@ -85,12 +91,6 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
           if (existingLedger?.schema !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA || existingLedger.decodedJsonBytes !== sizes.decodedJsonBytes
             || existingLedger.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail();
         }
-        const id = compilationId(root); if (!id) return input.value;
-        const shared = validate(input, owners.get(`source.language.compilation.${id}`), id); if (!shared) return input.value;
-        const keys = Object.keys(shared.metadata).filter(key => !QUERY_ROOTS.has(key) && key !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY && key !== SOURCE_ARTIFACT_METADATA_KEY
-          && root[key] !== undefined && same(root[key], shared.metadata[key]) && root[key] !== null && typeof root[key] === "object"
-          && (!Array.isArray(root[key]) || (root[key] as unknown[]).some(value => value !== null && typeof value === "object")));
-        if (!keys.length) return input.value;
         const next = { ...root }; for (const key of keys) delete next[key];
         const introducedLedger = root[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] === undefined;
         if (introducedLedger) next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(root) };

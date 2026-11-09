@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { readFileSync } from "node:fs";
+import { createSourceArtifactMetadataCodec } from "../source-artifact-metadata.js";
 import { corpusSegmentationInputRecipe } from "../corpus-segmentation-producer.js";
 import { prepareLanguageTrainingSegmentationInput } from "../language-training-segmentation.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
@@ -91,7 +92,7 @@ afterEach(async () => {
 });
 
 describe("learned rows carry the shard's provenance once", () => {
-  it("stores large unit source metadata once on the exact canonical owner without changing learned units", async () => {
+  it("stores large unit source metadata once in the owned compilation while returning complete logical units", async () => {
     const fixture = memoryStorage();
     fixture.storage.evidence.sourceVersionsForEvidence = async ids => {
       const versions = new Set(fixture.state.evidence.filter(span => ids.includes(span.id)).map(span => span.sourceVersionId));
@@ -103,17 +104,33 @@ describe("learned rows carry the shard's provenance once", () => {
       text: "alpha links beta. alpha links gamma. delta links beta. delta links gamma.", createdAt: 1700000000000,
       corpusMetadata: { sourceMetadata }, informationLabel: publicCorpusInformationLabel, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
       skipNgramObservationPersistence: true };
+    const putModels = fixture.storage.languageMemory.putNgramModels!;
+    fixture.storage.languageMemory.putNgramModels = async models => {
+      expect(fixture.state.patterns.filter(pattern => pattern.patternKind === "source_compilation"
+        && recordOf(pattern.patternJson).schema === "scce.source_language_compilation_receipt.v1"
+        && recordOf(pattern.patternJson).inheritedMetadata !== undefined)).toHaveLength(1);
+      await putModels(models);
+    };
     const report = await trainLanguageCorpusText(input);
     expect(fixture.state.units.length).toBeGreaterThan(0);
-    expect(Math.max(...fixture.state.units.map(unit => Buffer.byteLength(JSON.stringify(unit.metadata))))).toBeLessThan(2048);
     const owner = fixture.state.sourceVersions.find(source => source.sourceVersionId === report.sourceVersionId)!;
     expect(recordOf(owner.metadata).sourceMetadata).toEqual(snapshot);
-    expect(recordOf(owner.metadata).sourceMetadataBinding).toEqual({ schema: "scce.source_metadata_binding.v1", sourceVersionId: report.sourceVersionId,
-      valueHash: `sha256_${createHasher().digestHex(kernel.canonicalStringify(snapshot))}` });
+    expect(recordOf(owner.metadata)).not.toHaveProperty("sourceMetadataBinding");
+    const receipts = fixture.state.patterns.filter(pattern => pattern.patternKind === "source_compilation"
+      && recordOf(pattern.patternJson).schema === "scce.source_language_compilation_receipt.v1");
+    expect(receipts).toHaveLength(1);
+    expect(recordOf(recordOf(recordOf(receipts[0]!.patternJson).inheritedMetadata).value).sourceMetadata).toEqual(snapshot);
+    const codec = createSourceArtifactMetadataCodec({ table: name => name, requireWritableInformationLabel: value => value ?? publicCorpusInformationLabel,
+      informationAccessPredicate: () => ({ sql: "TRUE", params: [] }), query: async <T>(_sql: string, params: unknown[] = []): Promise<T[]> =>
+        receipts.filter(receipt => (params[0] as string[]).includes(receipt.id)).map(receipt => ({ id: receipt.id, profile_id: receipt.profileId,
+          pattern_json: receipt.patternJson, information_label: receipt.informationLabel })) as T[] });
+    const encoded = await codec.encodeMany(fixture.state.units.map(unit => ({ value: unit.metadata, profileId: unit.profileId,
+      sourceVersionId: unit.sourceVersionId, informationLabel: unit.informationLabel })));
+    expect(Math.max(...encoded.map(metadata => Buffer.byteLength(JSON.stringify(metadata))))).toBeLessThan(2048);
+    expect(await codec.decodeMany(encoded.map(value => ({ value, informationLabel: publicCorpusInformationLabel })))).toEqual(fixture.state.units.map(unit => unit.metadata));
     for (const unit of fixture.state.units) {
-      expect(recordOf(unit.metadata)).not.toHaveProperty("sourceMetadata");
-      expect(recordOf(unit.metadata).sourceMetadataRef).toEqual({ schema: "scce.source_metadata_ref.v1", sourceVersionId: report.sourceVersionId,
-        valueHash: recordOf(recordOf(owner.metadata).sourceMetadataBinding).valueHash, sourceCompilationId: recordOf(unit.metadata).sourceCompilationId });
+      expect(recordOf(unit.metadata).sourceMetadata).toEqual(snapshot);
+      expect(recordOf(unit.metadata)).not.toHaveProperty("sourceMetadataRef");
     }
     const borrowed = memoryStorage();
     borrowed.storage.evidence.sourceVersionsForEvidence = async () => [owner];
@@ -127,6 +144,7 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(fixture.state.units.map(material)).toEqual(borrowed.state.units.map(material));
     sourceMetadata.transcript = "mutated caller value";
     expect(recordOf(owner.metadata).sourceMetadata).toEqual(snapshot);
+    expect(fixture.state.units.every(unit => kernel.canonicalStringify(recordOf(unit.metadata).sourceMetadata) === kernel.canonicalStringify(snapshot))).toBe(true);
   });
 
   it.each(["absent", "metadata_mismatch", "label_mismatch"])("retains inline unit provenance when the stored canonical owner is %s", async mismatch => {

@@ -112,5 +112,8 @@ describe("canonical source artifact metadata", () => {
     expect(f.calls).toHaveLength(0);
     const bare = { schema: "test.bare", arbitrary: { value: 2 } };
     expect(await f.codec.encodeMany([{ value: bare }])).toEqual([bare]); expect(f.calls).toHaveLength(0);
+    const collision = { ...bare, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: { schema: "caller.owned", arbitrary: 1 } };
+    const [untouched] = await f.codec.encodeMany([{ value: collision }]);
+    expect(untouched).toBe(collision); expect(f.calls).toHaveLength(0);
   });
 });
