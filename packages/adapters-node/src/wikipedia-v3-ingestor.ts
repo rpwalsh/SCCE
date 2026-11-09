@@ -79,6 +79,7 @@ const WIKIPEDIA_INFORMATION_LABEL: InformationLabel = {
 };
 
 export interface WikipediaV3IngestOptions {
+  acquireOnly?: boolean;
   signal?: AbortSignal;
   dumpPath: string;
   indexPath?: string;
@@ -96,6 +97,7 @@ export interface WikipediaV3IngestOptions {
 }
 
 export interface WikipediaV3IngestResult {
+  languageMode?: "acquisition_only" | "local_bootstrap" | "corpus_snapshot";
   episodeId: string;
   inputManifestId?: string;
   rootUri: string;
@@ -312,6 +314,7 @@ export class WikipediaV3Ingestor {
   }
 
   async ingest(input: WikipediaV3IngestOptions): Promise<WikipediaV3IngestResult> {
+    if (input.acquireOnly && input.finishPending) throw new Error("--acquire-only cannot finish a pending language-training journal; use stored corpus replay after consolidation");
     if (input.finishPending && (input.fresh || input.resume === false || input.startOffset !== undefined)) {
       throw new Error("Wikipedia --finish-pending requires stored resume; fresh, --no-resume, and --start-offset are incompatible");
     }
@@ -337,6 +340,7 @@ export class WikipediaV3Ingestor {
         skipRedirects: corpus.skipRedirects, maxArticleChars: corpus.maxArticleChars,
         maxChunkBytes: this.config.runtime.maxChunkBytes ?? null,
         languageTrainingRecipeId: languageCorpusTrainingRecipeId("wikipedia"),
+        ...(input.acquireOnly ? { segmentation: { mode: "acquisition_only" } } : {}),
         ngramShardChars: effectiveNgramShardChars(wikiConfig?.ngramShardChars),
         ngramMaxOrder: wikiConfig?.ngramMaxOrder ?? 4,
         ngramMaxCountersPerOrder: wikiConfig?.ngramMaxCountersPerOrder ?? 128,
@@ -381,6 +385,7 @@ export class WikipediaV3Ingestor {
     }));
 
     const result: WikipediaV3IngestResult = {
+      ...(input.acquireOnly ? { languageMode: "acquisition_only" as const } : {}),
       episodeId: String(episodeId),
       inputManifestId: inputManifest.identity,
       rootUri,
@@ -420,6 +425,7 @@ export class WikipediaV3Ingestor {
     let lastStatusAt = 0;
     let activeLanguageShardUri = languageBatchJournal?.shardUri ?? rootUri;
     let languageShardSamples: WikipediaLanguageShardSample[] = languageBatchJournal?.pendingSamples ?? [];
+    if (input.acquireOnly && languageShardSamples.length) throw new Error("Acquisition-only journal cannot contain pending language training");
     let languageShardChars = languageBatchJournal?.pendingChars ?? 0;
     const pendingBlockCheckpoints: IngestionCheckpoint[] = [];
     let currentBlockOffset = languageBatchJournal?.blockOffset ?? resumedFromOffset;
@@ -674,7 +680,7 @@ export class WikipediaV3Ingestor {
         result.semanticFrames += imported.semanticFrames;
         result.relationCandidates += imported.relationCandidates;
         result.promotedRelations += imported.promotedRelations;
-        if (imported.languageSample) {
+        if (imported.languageSample && !input.acquireOnly) {
           // Flushed BEFORE the page is added, not after the budget is passed. boundedLanguageShard is a
           // bounded prefix rather than a splitter, so a shard offered more than its budget loses the overflow:
           // flushing only at block boundaries offered 4,023,980 characters across 2 shards and lost 1,623,980
@@ -755,7 +761,7 @@ export class WikipediaV3Ingestor {
     // needs to publish the cumulative candidate manifest, otherwise the durable lifecycle stops
     // at the earlier partial run. Empty corpora with no prior checkpoint remain unregistered.
     const manifestResult = wikipediaResultWithProgress(result, committedProgressCounts);
-    if (manifestResult.sources > 0 || (streamReachedEnd && (resumeCheckpoint !== undefined || languageBatchJournalCheckpoint !== null))) {
+    if (!input.acquireOnly && (manifestResult.sources > 0 || (streamReachedEnd && (resumeCheckpoint !== undefined || languageBatchJournalCheckpoint !== null)))) {
       await this.registerActiveWikipediaImport({ result: manifestResult, rootUri, corpus, importedAt: nowMs(), fullTrainingComplete: fullTrainingRequested && streamReachedEnd && languageSkippedDocuments === 0 && (committedProgressCounts.truncatedPages ?? 0) === 0 && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner });
     }
     await this.storage.events.append(this.events.create({

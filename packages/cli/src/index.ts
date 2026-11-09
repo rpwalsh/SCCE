@@ -410,7 +410,7 @@ async function ingestWiki(configPath: string, config: Awaited<ReturnType<typeof 
   }
   const explicitTarget = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
   const target = explicitTarget ?? config.runtime.corpora?.wikipedia?.dumpPath;
-  if (!target) return usage("scce ingest wiki <dump-path> [--index=<path>] [--max-pages=<n>] [--max-blocks=<n>] [--start-offset=<bytes>] [--fresh] [--no-resume] [--finish-pending] [--memory-safety-bound-mb=<n>]");
+  if (!target) return usage("scce ingest wiki <dump-path> [--index=<path>] [--max-pages=<n>] [--max-blocks=<n>] [--start-offset=<bytes>] [--fresh] [--no-resume] [--acquire-only] [--finish-pending] [--memory-safety-bound-mb=<n>]");
   const options = parseWikiIngestOptions(args.slice(explicitTarget ? 1 : 0));
   const corpusTarget = resolveWikipediaCorpusTarget(config, path.resolve(target));
   process.stderr.write(`[scce wiki ingest] ${JSON.stringify({
@@ -1245,6 +1245,7 @@ function countBy(values: string[]): Record<string, number> {
 }
 
 interface WikiCliIngestOptions {
+  acquireOnly?: boolean;
   indexPath?: string;
   maxPages?: number;
   maxBlocks?: number;
@@ -1281,6 +1282,7 @@ function parseWikiIngestOptions(args: string[]): WikiCliIngestOptions {
     else if (flag === "--max-pages" && Number.isFinite(num)) out.maxPages = Math.max(1, num);
     else if (flag === "--max-blocks" && Number.isFinite(num)) out.maxBlocks = Math.max(0, num);
     else if (arg === "--finish-pending") out.finishPending = true;
+    else if (arg === "--acquire-only") out.acquireOnly = true;
     else if (flag === "--start-offset" && Number.isFinite(num)) out.startOffset = Math.max(0, Math.floor(num));
     else if (flag === "--memory-safety-bound-mb" && Number.isFinite(num)) out.memorySafetyBoundMb = Math.max(512, num);
     else if (flag === "--heap-checkpoint-mb" && Number.isFinite(num)) out.heapCheckpointMb = Math.max(128, num);
@@ -1330,6 +1332,7 @@ function wikiChildFlags(options: WikiFirehoseOptions, paths: { statusPath: strin
   if (options.indexPath) flags.push(`--index=${options.indexPath}`);
   if (options.maxPages !== undefined) flags.push(`--max-pages=${options.maxPages}`);
   if (options.maxBlocks !== undefined) flags.push(`--max-blocks=${options.maxBlocks}`);
+  if (options.acquireOnly) flags.push("--acquire-only");
   if (options.startOffset !== undefined) flags.push(`--start-offset=${options.startOffset}`);
   if (options.memorySafetyBoundMb !== undefined) flags.push(`--memory-safety-bound-mb=${options.memorySafetyBoundMb}`);
   if (options.fresh && firstSegment) flags.push("--fresh");
