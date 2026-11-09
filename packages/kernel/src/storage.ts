@@ -857,12 +857,28 @@ export interface BenchmarkStore {
   summarize(query?: { runId?: RunId; since?: number }): Promise<{ runs: number; cases: number; meanScore: number }>;
 }
 
+export interface LanguageProfileHeader {
+  id: string;
+  sourceVersionId: SourceVersionId;
+  /** Real evidence owners of a verified pooled profile, absent for direct profiles. */
+  parentSourceVersionIds?: readonly SourceVersionId[];
+  informationLabel?: InformationLabel;
+}
+
+export interface NgramModelHeader {
+  id: string;
+  profileId: string;
+  informationLabel?: InformationLabel;
+}
+
 export interface ModelStore {
   readModel(): Promise<ModelState>;
   writeModel(model: ModelState): Promise<void>;
   putLanguageProfile(profile: LanguageProfile): Promise<void>;
   putLanguageProfiles?(profiles: readonly LanguageProfile[]): Promise<void>;
   listLanguageProfiles(query?: number | LanguageProfileQuery): Promise<LanguageProfile[]>;
+  /** Exact owned metadata for bounded maintenance validation; no profile body is returned. */
+  listLanguageProfileHeaders?(query: { profileIds: readonly string[]; limit: number }): Promise<LanguageProfileHeader[]>;
 }
 
 export interface LanguageProfileQuery {
@@ -908,6 +924,8 @@ export interface LanguagePatternProjection {
 }
 
 export interface LanguageMemoryStore {
+  /** Exact owned metadata for bounded maintenance validation; no model body is returned. */
+  listNgramModelHeaders?(query: { modelIds: readonly string[]; profileIds?: readonly string[]; limit: number }): Promise<NgramModelHeader[]>;
   /** Opaque committed revision for language artifacts; external publications invalidate resident snapshots. */
   readRevision?(): Promise<string>;
   putNgramObservation(observation: NgramObservation): Promise<void>;

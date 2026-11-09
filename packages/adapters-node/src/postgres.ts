@@ -3390,6 +3390,23 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
     async putLanguageProfiles(profiles) {
       await putLanguageProfilesBatch(storage, profiles);
     },
+    async listLanguageProfileHeaders(query) {
+      if (!query.profileIds.length) return [];
+      if (!Number.isSafeInteger(query.limit) || query.limit <= 0) throw new Error("profile header limit must be a positive safe integer");
+      const params: unknown[] = [[...new Set(query.profileIds)]];
+      const where = ["lp.id=ANY($1::text[])"];
+      appendInformationAccess(storage, "lp", params, where);
+      where.push(profileSourceOwnershipSql(storage, params, "lp"));
+      params.push(query.limit);
+      return (await storage.query<{ id: string; source_version_id: SourceVersionId; parent_source_version_ids: SourceVersionId[] | null; information_label: InformationLabel }>(
+        `SELECT lp.id,lp.source_version_id,lp.information_label,
+           CASE WHEN NOT EXISTS (SELECT 1 FROM ${storage.table("source_versions")} direct_owner WHERE direct_owner.id=lp.source_version_id)
+             AND jsonb_typeof(lp.profile_json->'pooledSourceBinding'->'parents')='array'
+             THEN ARRAY(SELECT jsonb_array_elements_text(lp.profile_json->'pooledSourceBinding'->'parents')) ELSE NULL END AS parent_source_version_ids FROM ${storage.table("language_profiles")} lp
+         WHERE ${where.join(" AND ")} ORDER BY lp.id COLLATE "C" LIMIT $${params.length}`, params))
+        .map(row => ({ id: row.id, sourceVersionId: row.source_version_id, informationLabel: row.information_label,
+          ...(row.parent_source_version_ids ? { parentSourceVersionIds: row.parent_source_version_ids } : {}) }));
+    },
     async listLanguageProfiles(query) {
       const requestedLimit = typeof query === "number" ? query : query?.limit;
       const boundedLimit = Math.max(1, Math.min(8192, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit!) : 512));
@@ -4346,6 +4363,22 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       params.push(Math.max(1, Math.min(256, Math.floor(query.limit))));
       const rows = await storage.query<{ id: string }>(`SELECT artifact.id FROM ${storage.table(family.table)} artifact WHERE ${where.join(" AND ")} ORDER BY artifact.id COLLATE "C" LIMIT $${params.length}`, params);
       return rows.map(row => row.id);
+    },
+    async listNgramModelHeaders(query) {
+      if (!query.modelIds.length || query.profileIds?.length === 0) return [];
+      if (!Number.isSafeInteger(query.limit) || query.limit <= 0) throw new Error("model header limit must be a positive safe integer");
+      const params: unknown[] = [[...new Set(query.modelIds)]];
+      const where = ["model.id=ANY($1::text[])"];
+      if (query.profileIds) { params.push([...new Set(query.profileIds)]); where.push(`model.profile_id=ANY($${params.length}::text[])`); }
+      appendInformationAccess(storage, "model", params, where);
+      const access = storage.informationAccessPredicate("model_profile", params.length + 1); params.push(...access.params);
+      where.push(`EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} model_profile WHERE model_profile.id=model.profile_id
+        AND ${access.sql} AND ${profileSourceOwnershipSql(storage, params, "model_profile")})`);
+      params.push(query.limit);
+      return (await storage.query<{ id: string; profile_id: string; information_label: InformationLabel }>(
+        `SELECT model.id,model.profile_id,model.information_label FROM ${storage.table("ngram_models")} model
+         WHERE ${where.join(" AND ")} ORDER BY model.id COLLATE "C" LIMIT $${params.length}`, params))
+        .map(row => ({ id: row.id, profileId: row.profile_id, informationLabel: row.information_label }));
     },
     async listNgramModels(query = {}) {
       const params: unknown[] = [];

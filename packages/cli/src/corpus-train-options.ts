@@ -3,6 +3,7 @@
 import type { OssCorpusTrainOptions, StoredCorpusConstructionTrainingOptions } from "@scce/adapters-node";
 
 export interface CorpusTrainOptions {
+  brainManifestPath?: string;
   maxFiles?: number;
   maxFilesPerRun?: number;
   maxFilesPerRepo?: number;
@@ -38,7 +39,8 @@ export function parseCorpusTrainOptions(args: string[]): CorpusTrainOptions {
   for (const arg of args) {
     const [flag, raw] = arg.split("=", 2);
     const num = raw === undefined ? NaN : Number(raw);
-    if (flag === "--max-files" && Number.isFinite(num)) out.maxFiles = Math.max(1, Math.floor(num));
+    if (flag === "--brain-manifest" && raw?.trim()) out.brainManifestPath = raw.trim();
+    else if (flag === "--max-files" && Number.isFinite(num)) out.maxFiles = Math.max(1, Math.floor(num));
     else if (flag === "--max-files-per-run" && Number.isFinite(num)) out.maxFilesPerRun = Math.max(1, Math.floor(num));
     else if (flag === "--max-files-per-repo" && Number.isFinite(num)) out.maxFilesPerRepo = Math.max(1, Math.floor(num));
     else if (flag === "--expected-snapshot-hash" && raw?.trim()) out.expectedSnapshotHash = raw.trim();

@@ -21,7 +21,10 @@ import { prepareLanguageTrainingSegmentationInput, type LanguageTrainingSegmenta
 import { persistDialogueContextualQaComponent, type DialogueContextualQaReport } from "./dialogue-contextual-qa-component.js";
 import { canonicalStringify, createHasher, type InformationLabel, type TranscriptTurn } from "@scce/kernel";
 
+import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
+
 export interface StoredCorpusConstructionTrainingOptions {
+  onSourceBrainTrainingComplete?: (report: StoredCorpusConstructionTrainingReport) => Promise<SourceBrainBuildResult | SourceBrainBuildReceipt | void>;
   ngramMaxOrder?: number;
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
@@ -78,6 +81,13 @@ export interface StoredCorpusConstructionTrainingReport {
   batchesFailed: Array<{ batchIndex: number; sourceVersionId?: string; reason: string }>;
   sourcesSkipped: Array<{ sourceVersionId: string; reason: string }>;
   reports: LanguageCorpusTrainingReport[];
+  selection?: {
+    schema: "scce.storedCorpusSourceSelection.v1";
+    selectedSourceVersionIds: string[];
+    completedSourceVersionIds: string[];
+    languageTrainingComplete: boolean;
+  };
+  sourceBrainBuild?: SourceBrainBuildReceipt;
   contextualQa?: { reports: DialogueContextualQaReport[]; deferred: Array<{ sourceVersionId: string; reason: string }> };
 }
 
@@ -256,14 +266,26 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
       }
     }
   }
-  return { schema: "scce.storedCorpusConstructionTrainReport.v1", sourceSystem, recipeId: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
+  const selectedSourceVersionIds = [...new Set(input.sourceVersionIds ?? [])].sort();
+  const completedSourceVersionIds = reports.map(report => report.sourceVersionId).sort();
+  const languageTrainingComplete = selectedSourceVersionIds.length > 0 && input.afterSourceVersionId === undefined
+    && startBatchIndex === 0 && exhausted && !stoppedByHeapSafetyBound && !storageFailure && !stoppedByInterruption
+    && batchesFailed.length === 0 && sourcesSkipped.length === 0
+    && canonicalStringify(selectedSourceVersionIds) === canonicalStringify(completedSourceVersionIds)
+    && reports.every(report => report.languageProfiles > 0 && report.ngramModels > 0 && report.evidence > 0
+      && report.artifacts.languageProfileId && report.artifacts.ngramModelIds.length > 0 && report.artifacts.evidenceIds.length > 0);
+  const result: StoredCorpusConstructionTrainingReport = { schema: "scce.storedCorpusConstructionTrainReport.v1", sourceSystem, recipeId: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
     startBatchIndex, startSourceVersionId: input.afterSourceVersionId ?? null, nextSourceVersionId, exhausted, sourcePageSize,
     sourcesEnumerated, sourcesConsidered, sourcesAttempted, maxSourceAttempts, legacyBatchSourcesSkipped, bytesScheduled, inventory, inventoryScope: "after_start_cursor",
     eligibleSourcesRemaining: inventory ? Math.max(0, inventory.eligibleSources - sourcesConsidered) : null,
     articleBounds: { minBytes: minArticleBytes, maxBytes: maxArticleBytes },
     batchesTrained, articlesTrained, bytesTrained, nextBatchIndex, stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB(), stoppedByStorageFailure: storageFailure !== null, stoppedByInterruption, storageFailure, batchesFailed, sourcesSkipped, reports,
+    selection: { schema: "scce.storedCorpusSourceSelection.v1", selectedSourceVersionIds, completedSourceVersionIds, languageTrainingComplete },
     ...(qaEnabled ? { contextualQa } : {}) };
+  const sourceBrainBuild = languageTrainingComplete ? await input.onSourceBrainTrainingComplete?.(result) : undefined;
+  if (sourceBrainBuild) result.sourceBrainBuild = "lifecycle" in sourceBrainBuild ? sourceBrainBuildReceipt(sourceBrainBuild) : sourceBrainBuild;
+  return result;
 
   function qaPool(source: SourceVersion, informationLabel: InformationLabel) {
     const prefix = input.includeUriPrefixes?.find(value => source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(source.canonicalUri);

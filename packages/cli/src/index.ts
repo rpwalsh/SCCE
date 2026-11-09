@@ -5,7 +5,8 @@ import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { runCodeCommand } from "./code-command.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
-import { completeInitialSourceBrainFromDialogueReport } from "@scce/adapters-node";
+import { completeInitialSourceBrainFromStoredReport, completeInitialSourceBrainFromDialogueReport } from "@scce/adapters-node";
+import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, verifyPlannedDialogueFiles } from "./corpus-brain-manifest.js";
 import { runCorpusSegmentationCommand } from "./corpus-segmentation-command.js";
 import { canonicalCorpusSourceSystemId, CORPUS_SOURCE_SYSTEM_IDS } from "@scce/kernel";
 import { parseUnitMetadataMaintenanceOptions } from "./db-maintenance-options.js";
@@ -59,7 +60,7 @@ async function main(): Promise<void> {
     await hygiene(parsed.args);
     return;
   }
-  if (parsed.command === "corpus" && parsed.args[0] !== "train") {
+  if (parsed.command === "corpus" && parsed.args[0] !== "train" && parsed.args[0] !== "finalize-stored") {
     await corpus(undefined, parsed.args);
     return;
   }
@@ -705,6 +706,19 @@ async function corpus(
     printJson(await routeEngineeringCorpusFixture(path.resolve(target), parseCorpusOptions(optionArgs)));
     return;
   }
+  if (sub === "finalize-stored") {
+    if (!runtime) throw new Error("corpus finalization requires the canonical runtime");
+    const access = config?.security?.informationAccess;
+    if (!access) throw new Error("corpus finalization requires security.informationAccess");
+    const informationLabel = { tenantId: access.tenantId, principals: [access.principalId], compartments: [...access.compartments],
+      exportClass: "restricted" as const, mergePolicy: "isolated" as const };
+    if (args.slice(1).some(arg => !arg.startsWith("--manifest=") && !arg.startsWith("--max-total-bytes=")))
+      throw new Error("corpus finalize-stored accepts only --manifest and --max-total-bytes");
+    const options = parseCorpusTrainOptions(args.slice(1).map(arg => arg.startsWith("--manifest=") ? arg.replace("--manifest=", "--brain-manifest=") : arg));
+    if (!options.brainManifestPath || options.maxTotalBytes === undefined) throw new Error("scce corpus finalize-stored --manifest=<plan.json> --max-total-bytes=<manifest-and-report-budget>");
+    printJson(await finalizeCorpusBrainManifest({ storage: runtime.storage, informationLabel, manifestPath: options.brainManifestPath, maxTotalBytes: options.maxTotalBytes }));
+    return;
+  }
   if (sub === "train") {
     if (!runtime) return usage("scce corpus train <gutenberg|oss|oss-github|wikipedia-stored> <path-or-url> [limits]");
     const informationLabel = config?.security?.defaultSourceInformationLabel;
@@ -717,6 +731,7 @@ async function corpus(
       // database. Resumable via --start-batch; heap bound honored as
       // given, same contract as the file-based trainers.
       const options = parseCorpusTrainOptions(args.slice(2));
+      const manifest = options.brainManifestPath ? await readCorpusBrainManifest(options.brainManifestPath, options.maxTotalBytes ?? 64 * 1024 * 1024) : undefined;
       printJson(await trainStoredCorpusConstructions({
         storage: runtime.storage,
         corpusSegmentation: config?.runtime.corpusSegmentation,
@@ -726,6 +741,9 @@ async function corpus(
           ngramVocabularyLimit: config?.runtime.corpora?.wikipedia?.ngramVocabularyLimit
         } : {}),
         ...storedCorpusTrainOptionsFrom(options),
+        ...(manifest ? { sourceVersionIds: plannedStoredSourceIds(manifest, options.sourceVersionIds) } : {
+          onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromStoredReport({ storage: runtime.storage, informationLabel, report, configuration: options })
+        }),
         creativeEventCompiler: createUniversalCreativeEventConstructionCompiler()
       }));
       return;
@@ -733,11 +751,14 @@ async function corpus(
     const target = args[2];
     if (!target || (kind !== "gutenberg" && kind !== "oss" && kind !== "oss-github" && kind !== "dialogue")) return usage("scce corpus train <gutenberg|oss|oss-github|dialogue|wikipedia-stored> <path-or-url> [--commit=<sha>] [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-total-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>] [--acts-only]");
     const options = parseCorpusTrainOptions(args.slice(3));
+    if (options.brainManifestPath && kind !== "dialogue") throw new Error("--brain-manifest is supported by stored and dialogue training");
     if (kind === "dialogue") {
       const access = config?.security?.informationAccess;
       if (!access) return usage("scce corpus train dialogue requires security.informationAccess in the runtime config");
       const informationLabel = { tenantId: access.tenantId, principals: [access.principalId], compartments: [...access.compartments],
         exportClass: "restricted" as const, mergePolicy: "isolated" as const };
+      const manifest = options.brainManifestPath ? await readCorpusBrainManifest(options.brainManifestPath, options.maxTotalBytes ?? 64 * 1024 * 1024) : undefined;
+      if (manifest) await verifyPlannedDialogueFiles(manifest, target);
       // The transcript is labelled with the operator's own access context, never the public corpus label.
       printJson(await trainDialogueCorpus({
         corpusSegmentation: config?.runtime.corpusSegmentation,
@@ -755,9 +776,9 @@ async function corpus(
         languageAliases: options.languageAliases,
         heapCheckpointMb: options.heapCheckpointMb,
         ...(options.actsOnly ? { actsOnly: true } : {}),
-        onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromDialogueReport({
+        ...(manifest ? {} : { onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromDialogueReport({
           storage: runtime.storage, informationLabel, report, configuration: options
-        })
+        }) })
       }));
       return;
     }

@@ -14,11 +14,15 @@ import {
   type EvidenceId,
   type InformationLabel,
   type SourceVersionId,
+  type SourceVersion,
+  type LanguageProfileHeader,
+  type NgramModelHeader,
   type ScceStorage
 } from "@scce/kernel";
 import type { LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import type { OssCorpusTrainReport } from "./oss-corpus.js";
 import type { GutenbergCorpusTrainReport } from "./gutenberg-corpus.js";
+import type { StoredCorpusConstructionTrainingReport } from "./stored-corpus-construction-training.js";
 import type { DialogueCorpusTrainReport } from "./dialogue-corpus.js";
 
 export type DialogueSourceBrainReport = Pick<DialogueCorpusTrainReport, "rootPath" | "sourceSystem" | "authorship" | "startFileIndex"
@@ -262,6 +266,142 @@ export function sourceBrainInputManifestHash(input: {
   })));
 }
 
+export async function completeInitialSourceBrainFromStoredReport(input: {
+  storage: ScceStorage; informationLabel: InformationLabel; report: StoredCorpusConstructionTrainingReport; configuration?: unknown;
+}): Promise<SourceBrainBuildResult> {
+  const selection = input.report.selection;
+  if (!selection?.languageTrainingComplete || !input.report.exhausted || input.report.stoppedByHeapSafetyBound
+    || input.report.stoppedByStorageFailure || input.report.stoppedByInterruption || input.report.sourcesSkipped.length || input.report.batchesFailed.length
+    || input.report.startBatchIndex !== 0 || input.report.startSourceVersionId !== null
+    || !sameStrings([...selection.selectedSourceVersionIds].sort(compare), input.report.reports.map(report => report.sourceVersionId).sort(compare)))
+    throw new Error("initial stored source brain requires a complete explicit language-training selection");
+  const selectedItems = sourceBrainSelectedItemsFromReports(input.report.reports), sourceId = `stored:${input.report.sourceSystem}`;
+  const ids = selectedItems.map(item => item.sourceVersionId);
+  return completeInitialSourceBrainBuild({ storage: input.storage, informationLabel: input.informationLabel, sourceId,
+    sourceSchema: input.report.schema, rootPath: sourceId,
+    sourceManifestHash: sourceBrainInputManifestHash({ sourceId, sourceSchema: input.report.schema, selectedItems, configuration: input.configuration }),
+    selectedItems, reports: input.report.reports, configuration: input.configuration,
+    completion: { explicitSelection: true, selectedItemIds: ids, completedItemIds: ids, stoppedByHeapSafetyBound: false, interrupted: false, skippedRequiredItemIds: [] } });
+}
+
+export interface StoredSourceBrainPlan {
+  schema: "scce.storedSourceBrainPlan.v1";
+  sourceId: string;
+  rootPath: string;
+  selectedItems: Array<Omit<SourceBrainSelectedItem, "sourceVersionId"> & { sourceVersionId?: string; canonicalUri: string; sourceFileHash?: string }>;
+  reportFiles: Array<{ path: string; sha256?: string }>;
+}
+
+/** Validate the explicit cohort independently of any completed report subset. */
+export function validateStoredSourceBrainPlan(value: unknown, complete = false): StoredSourceBrainPlan {
+  const plan = objectRecord(value);
+  if (plan.schema !== "scce.storedSourceBrainPlan.v1" || typeof plan.sourceId !== "string" || !plan.sourceId.trim()
+    || typeof plan.rootPath !== "string" || !plan.rootPath.trim() || !Array.isArray(plan.selectedItems) || !plan.selectedItems.length
+    || !Array.isArray(plan.reportFiles) || !plan.reportFiles.length) throw new Error("invalid explicit stored source brain manifest");
+  const selectedItems = plan.selectedItems.map(value => {
+    const row = objectRecord(value);
+    if ((row.sourceVersionId !== undefined && (typeof row.sourceVersionId !== "string" || !row.sourceVersionId)) || (row.sourceVersionId === undefined && typeof row.sourceFileHash !== "string") || typeof row.canonicalUri !== "string" || !row.canonicalUri
+      || typeof row.contentHash !== "string" || !/^(?:sha256_)?[a-f0-9]{64}$/iu.test(row.contentHash)
+      || typeof row.byteLength !== "number" || !Number.isSafeInteger(row.byteLength) || row.byteLength <= 0
+      || (row.sourceFileHash !== undefined && (typeof row.sourceFileHash !== "string" || !/^[a-f0-9]{64}$/iu.test(row.sourceFileHash))))
+      throw new Error("invalid planned source file/owner binding");
+    return { ...(typeof row.sourceVersionId === "string" ? { sourceVersionId: row.sourceVersionId } : {}), canonicalUri: row.canonicalUri, contentHash: row.contentHash, byteLength: row.byteLength,
+      ...(typeof row.sourceFileHash === "string" ? { sourceFileHash: row.sourceFileHash.toLowerCase() } : {}) };
+  });
+  const reportFiles = plan.reportFiles.map(value => {
+    const row = objectRecord(value);
+    if (typeof row.path !== "string" || !row.path || ((complete || row.sha256 !== undefined)
+      && (typeof row.sha256 !== "string" || !/^[a-f0-9]{64}$/iu.test(row.sha256)))) throw new Error("invalid planned report file/hash binding");
+    return { path: row.path, ...(typeof row.sha256 === "string" ? { sha256: row.sha256.toLowerCase() } : {}) };
+  });
+  if (new Set(selectedItems.flatMap(item => item.sourceVersionId ? [item.sourceVersionId] : [])).size !== selectedItems.filter(item => item.sourceVersionId).length
+    || new Set(selectedItems.map(item => item.canonicalUri)).size !== selectedItems.length
+    || new Set(reportFiles.map(item => item.path)).size !== reportFiles.length) throw new Error("duplicate source owner/file or report in brain manifest");
+  return { schema: "scce.storedSourceBrainPlan.v1", sourceId: plan.sourceId, rootPath: plan.rootPath, selectedItems, reportFiles };
+}
+
+export async function completeInitialSourceBrainFromStoredReports(input: {
+  storage: ScceStorage; informationLabel: InformationLabel; plan: StoredSourceBrainPlan;
+  reports: readonly unknown[]; sourceManifestHash: string; now?: number; configuration?: unknown;
+}): Promise<SourceBrainBuildResult> {
+  const plan = validateStoredSourceBrainPlan(input.plan, true);
+  if (input.reports.length !== plan.reportFiles.length) throw new Error("brain manifest requires every planned report file");
+  const reports: LanguageCorpusTrainingReport[] = [];
+  const canonicalInputs = new Map<string, SourceVersion>();
+  for (const value of input.reports) {
+    const report = objectRecord(value), selection = objectRecord(report.selection);
+    if (!Array.isArray(report.reports) || !report.reports.every(isLanguageTrainingReport)) throw new Error("invalid completed source training report");
+    if (report.schema === "scce.dialogueCorpusTrainReport.v1") {
+      const selected = stringArray(selection.selectedSourceUris), completed = stringArray(selection.completedSourceUris);
+      if (report.authorship !== "human_authored" || selection.languageTrainingComplete !== true || !selected.length
+        || new Set(selected).size !== selected.length || new Set(completed).size !== completed.length
+        || !sameStrings([...selected].sort(compare), [...completed].sort(compare))
+        || report.stoppedByHeapSafetyBound !== false || !Array.isArray(report.filesSkipped) || report.filesSkipped.length
+        || report.filesTrained !== report.reports.length || completed.length !== report.reports.length
+        || report.reports.some(row => row.sourceSystemId !== report.sourceSystem))
+        throw new Error("brain manifest requires a complete human dialogue report");
+      if (!input.storage.evidence.sourceVersionById) throw new Error("brain finalization requires canonical source identity reads");
+      const actualUris: string[] = [];
+      for (const row of report.reports) {
+        const id = row.originalSourceVersionId || row.sourceVersionId;
+        const source = await input.storage.evidence.sourceVersionById(id as SourceVersionId);
+        if (!source) throw new Error("completed dialogue report has no accessible canonical source");
+        canonicalInputs.set(id, source); actualUris.push(source.canonicalUri);
+      }
+      if (!sameStrings(actualUris.sort(compare), [...completed].sort(compare))) throw new Error("completed dialogue file selection differs from canonical source owners");
+    } else if (report.schema === "scce.storedCorpusConstructionTrainReport.v1") {
+      const selected = stringArray(selection.selectedSourceVersionIds), completed = stringArray(selection.completedSourceVersionIds);
+      if (selection.schema !== "scce.storedCorpusSourceSelection.v1" || selection.languageTrainingComplete !== true || !selected.length
+        || new Set(selected).size !== selected.length || new Set(completed).size !== completed.length
+        || !sameStrings([...selected].sort(compare), [...completed].sort(compare))
+        || !sameStrings([...completed].sort(compare), report.reports.map(row => row.sourceVersionId).sort(compare))
+        || report.exhausted !== true || report.startBatchIndex !== 0 || report.startSourceVersionId !== null
+        || report.stoppedByHeapSafetyBound !== false || report.stoppedByStorageFailure !== false || report.stoppedByInterruption !== false
+        || !Array.isArray(report.sourcesSkipped) || report.sourcesSkipped.length || !Array.isArray(report.batchesFailed) || report.batchesFailed.length)
+        throw new Error("brain manifest requires a complete stored-source report");
+    } else throw new Error("unsupported source brain report schema");
+    reports.push(...report.reports);
+  }
+  const selected = sourceBrainSelectedItemsFromReports(reports);
+  if (selected.length !== plan.selectedItems.length) throw new Error("completed reports do not cover the entire planned brain cohort exactly");
+  if (!input.storage.evidence.sourceVersionById) throw new Error("brain finalization requires canonical source identity reads");
+  const plannedByUri = new Map(plan.selectedItems.map(item => [item.canonicalUri, item]));
+  const matchedUris = new Set<string>();
+  for (const selectedItem of selected) {
+    const version = canonicalInputs.get(selectedItem.sourceVersionId) ?? await input.storage.evidence.sourceVersionById(selectedItem.sourceVersionId as SourceVersionId);
+    const item = version ? plannedByUri.get(version.canonicalUri) : undefined;
+    const metadata = objectRecord(version?.metadata);
+    if (!item || !version || matchedUris.has(version.canonicalUri) || (item.sourceVersionId !== undefined && item.sourceVersionId !== selectedItem.sourceVersionId)
+      || normalizeContentHash(String(version.contentHash)) !== normalizeContentHash(item.contentHash) || version.byteLength !== item.byteLength
+      || normalizeContentHash(selectedItem.contentHash) !== normalizeContentHash(item.contentHash) || selectedItem.byteLength !== item.byteLength
+      || (item.sourceFileHash !== undefined && (metadata.sourceHash !== item.sourceFileHash || metadata.authorship !== "human_authored")))
+      throw new Error(`planned source owner/file binding does not match canonical source: ${selectedItem.sourceVersionId}`);
+    if (reports.some(report => (report.originalSourceVersionId || report.sourceVersionId) === selectedItem.sourceVersionId && report.sourceSystem === "dialogue") && !item.sourceFileHash)
+      throw new Error("human dialogue plan requires the exact original file hash");
+    matchedUris.add(version.canonicalUri);
+  }
+  if (matchedUris.size !== plannedByUri.size) throw new Error("completed reports omit planned brain source files");
+  const ids = selected.map(item => item.sourceVersionId);
+  return completeInitialSourceBrainBuild({ storage: input.storage, informationLabel: input.informationLabel, sourceId: plan.sourceId,
+    sourceSchema: plan.schema, rootPath: plan.rootPath, sourceManifestHash: input.sourceManifestHash, selectedItems: selected,
+    reports, configuration: input.configuration, now: input.now, completion: { explicitSelection: true, selectedItemIds: ids,
+      completedItemIds: ids, stoppedByHeapSafetyBound: false, interrupted: false, skippedRequiredItemIds: [] } });
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+function stringArray(value: unknown): string[] { return Array.isArray(value) && value.every(item => typeof item === "string") ? value : []; }
+function isLanguageTrainingReport(value: unknown): value is LanguageCorpusTrainingReport {
+  const row = objectRecord(value), artifacts = objectRecord(row.artifacts);
+  return row.schema === "scce.languageCorpusTrainingReport.v1" && typeof row.sourceVersionId === "string" && typeof row.originalSourceVersionId === "string"
+    && typeof row.sourceContentHash === "string" && typeof row.sourceByteLength === "number" && typeof row.sourceSystemId === "string"
+    && typeof row.sourceSystem === "string" && typeof row.streamUri === "string" && typeof artifacts.languageProfileId === "string"
+    && Array.isArray(artifacts.evidenceIds) && artifacts.evidenceIds.every(item => typeof item === "string")
+    && Array.isArray(artifacts.ngramModelIds) && artifacts.ngramModelIds.every(item => typeof item === "string")
+    && [row.languageProfiles, row.ngramModels, row.evidence].every(value => typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+}
+
 /**
  * Finalize one explicit, completed source selection as the owner's first active brain.
  * The trainer remains responsible for its durable per-document checkpoints; this function
@@ -273,7 +413,6 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
   const configuration = sanitizeSourceBrainBuildConfiguration(input.configuration ?? {});
   const selected = [...input.selectedItems].sort((a, b) => compare(a.sourceVersionId, b.sourceVersionId));
   if (!selected.length) throw new Error("source brain build requires an explicit nonempty source selection");
-  if (selected.length > 512) throw new Error("source brain build selection exceeds the bounded 512-item completion limit");
   if (new Set(selected.map(item => item.sourceVersionId)).size !== selected.length) throw new Error("source brain selection contains duplicate source-version identities");
   for (const item of selected) {
     if (!item.sourceVersionId || !/^(?:sha256_)?[a-f0-9]{64}$/iu.test(item.contentHash) || !Number.isSafeInteger(item.byteLength) || item.byteLength <= 0) {
@@ -309,10 +448,12 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     if (normalizeContentHash(item.contentHash) !== normalizeContentHash(report.sourceContentHash) || item.byteLength !== report.sourceByteLength) {
       throw new Error(`source brain report does not match selected source bytes: ${item.sourceVersionId}`);
     }
-    if (report.languageProfiles < 1 || report.ngramModels < 1 || !report.artifacts.languageProfileId || !report.artifacts.ngramModelIds.length) {
+    if (report.languageProfiles !== 1 || report.ngramModels < 1 || report.ngramModels !== report.artifacts.ngramModelIds.length
+      || new Set(report.artifacts.ngramModelIds).size !== report.artifacts.ngramModelIds.length || !report.artifacts.languageProfileId) {
       throw new Error(`source brain input has no persisted language profile/model output: ${item.sourceVersionId}`);
     }
-    if (report.evidence < 1 || !report.artifacts.evidenceIds.length) throw new Error(`source brain input has no evidence output: ${item.sourceVersionId}`);
+    if (report.evidence < 1 || report.evidence !== report.artifacts.evidenceIds.length
+      || new Set(report.artifacts.evidenceIds).size !== report.artifacts.evidenceIds.length) throw new Error(`source brain input has no evidence output: ${item.sourceVersionId}`);
   }
 
   const activeBefore = await input.storage.brainImports.active();
@@ -330,20 +471,20 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     throw new Error("source brain identity requires root, source, schema, and SHA-256 source manifest hash");
   }
 
+  let existingActive: BrainLifecycleRecord | undefined;
   if (activeBefore.activeImportRunIds.length || activeBefore.activeBrainVersion) {
     if (activeBefore.activeImportRunIds.includes(importRunId) && activeBefore.activeBrainVersion === brainVersion) {
       const existing = await input.storage.brainImports.getLifecycle(importRunId);
       if (!existing || existing.state !== "ACTIVE" || existing.validation?.disposition !== "PASSED" || !existing.manifest.replayManifest) {
         throw new Error("active source brain marker does not match a validated lifecycle record");
       }
-      return { lifecycle: existing, report: existing.validation, replayManifestHash: existing.manifest.replayManifest.byteHash, active: true, idempotent: true };
-    }
-    throw new Error("initial source brain build refuses to replace an existing active brain");
+      existingActive = existing;
+    } else throw new Error("initial source brain build refuses to replace an existing active brain");
   }
 
   const sourceVersionIds = selected.map(item => item.sourceVersionId);
   const trainedSourceVersionIds = [...new Set(reports.map(report => report.sourceVersionId))].sort(compare);
-  const profileIds = reports.map(report => report.artifacts.languageProfileId);
+  const profileIds = [...new Set(reports.map(report => report.artifacts.languageProfileId))].sort(compare);
   const evidenceIds = [...new Set(reports.flatMap(report => report.artifacts.evidenceIds))].sort(compare);
   const ngramModelIds = [...new Set(reports.flatMap(report => report.artifacts.ngramModelIds))].sort(compare);
   let sourceBytesVerified = true;
@@ -354,39 +495,83 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     const bytes = await input.storage.blobs.get((`sha256_${blobHash}`) as never);
     if (bytes.byteLength !== item.byteLength || hasher.digestHex(bytes) !== blobHash) { sourceBytesVerified = false; break; }
   }
-  const versionsForEvidence = await input.storage.evidence.sourceVersionsForEvidence(evidenceIds as EvidenceId[]);
-  const evidenceRows = await input.storage.evidence.getEvidenceBatch(evidenceIds as EvidenceId[]);
-  const sourceVersionsByHash = input.storage.evidence.sourceVersionsByContentHashes
-    ? await input.storage.evidence.sourceVersionsByContentHashes(selected.map(item => (`sha256_${normalizeContentHash(item.contentHash)}`) as never))
-    : [];
-  const rawSourceVersionsPersisted = Boolean(input.storage.evidence.sourceVersionsByContentHashes)
-    && selected.every(item => sourceVersionsByHash.some(version => String(version.sourceVersionId) === item.sourceVersionId
-      && normalizeContentHash(String(version.contentHash)) === normalizeContentHash(item.contentHash)
-      && version.byteLength === item.byteLength));
-  const profiles = await input.storage.model.listLanguageProfiles({ limit: Math.min(10_000, Math.max(100, profileIds.length * 2)), sourceVersionIds: trainedSourceVersionIds as SourceVersionId[] });
-  const persistedModels = await input.storage.languageMemory.listNgramModels({ profileIds, limit: 10_000 });
-  const modelIds = new Set(persistedModels.map(model => String(model.id)));
-  const persistedProfileIds = new Set(profiles.map(profile => String(profile.id)));
+  const evidenceOwners = new Map<string, string>();
+  const evidenceSourceIds = new Map<string, string>();
+  let evidencePromoted = true;
+  const versions = new Map<string, SourceVersion>();
+  for (const page of workPages(evidenceIds)) {
+    const rows = await input.storage.evidence.getEvidenceBatch(page as EvidenceId[]);
+    for (const row of rows) if (page.includes(String(row.id))) {
+      evidenceOwners.set(String(row.id), String(row.sourceVersionId)); evidenceSourceIds.set(String(row.id), String(row.sourceId));
+      if (row.status !== "promoted") evidencePromoted = false;
+    }
+    for (const version of await input.storage.evidence.sourceVersionsForEvidence(page as EvidenceId[])) versions.set(String(version.sourceVersionId), version);
+  }
+  let rawSourceVersionsPersisted = Boolean(input.storage.evidence.sourceVersionsByContentHashes);
+  for (const page of workPages(selected)) {
+    const rows = await input.storage.evidence.sourceVersionsByContentHashes?.(page.map(item => (`sha256_${normalizeContentHash(item.contentHash)}`) as never)) ?? [];
+    for (const version of rows) versions.set(String(version.sourceVersionId), version);
+    rawSourceVersionsPersisted &&= page.every(item => rows.some(version => String(version.sourceVersionId) === item.sourceVersionId
+      && normalizeContentHash(String(version.contentHash)) === normalizeContentHash(item.contentHash) && version.byteLength === item.byteLength));
+  }
+  const parentSourceVersionIds = new Set<string>();
+  let sourceLineageVerified = true;
+  for (const report of reports) {
+    let version = versions.get(report.sourceVersionId);
+    if (version) {
+      const hash = normalizeContentHash(String(version.contentHash));
+      if (!await input.storage.blobs.exists((`sha256_${hash}`) as never)) sourceLineageVerified = false;
+      else {
+        const bytes = await input.storage.blobs.get((`sha256_${hash}`) as never);
+        if (bytes.byteLength !== version.byteLength || hasher.digestHex(bytes) !== hash) sourceLineageVerified = false;
+      }
+    }
+    const seen = new Set<string>();
+    while (version?.derivation) {
+      const id = String(version.sourceVersionId), parentId = String(version.derivation.derivedFromSourceVersionId);
+      if (seen.has(id) || !parentId || !input.storage.evidence.sourceVersionById) { sourceLineageVerified = false; break; }
+      seen.add(id);
+      const parent = await input.storage.evidence.sourceVersionById(parentId as SourceVersionId);
+      if (!parent || version.role !== "evidence-derivative") { sourceLineageVerified = false; break; }
+      const hash = normalizeContentHash(String(parent.contentHash));
+      if (!await input.storage.blobs.exists((`sha256_${hash}`) as never)) { sourceLineageVerified = false; break; }
+      const bytes = await input.storage.blobs.get((`sha256_${hash}`) as never);
+      if (bytes.byteLength !== parent.byteLength || hasher.digestHex(bytes) !== hash) { sourceLineageVerified = false; break; }
+      parentSourceVersionIds.add(parentId);
+      versions.set(parentId, parent);
+      version = parent;
+    }
+  }
+  const profileHeaders = input.storage.model.listLanguageProfileHeaders;
+  const modelHeaders = input.storage.languageMemory.listNgramModelHeaders;
+  if (!profileHeaders || !modelHeaders) throw new Error("source brain completion requires exact owned artifact metadata reads");
+  const profiles: LanguageProfileHeader[] = [];
+  const persistedModels: NgramModelHeader[] = [];
+  for (const page of workPages(profileIds)) profiles.push(...await profileHeaders({ profileIds: page, limit: page.length }));
+  const modelOwner = new Map(reports.flatMap(report => report.artifacts.ngramModelIds.map(id => [id, report.artifacts.languageProfileId] as const)));
+  for (const page of workPages(ngramModelIds)) persistedModels.push(...await modelHeaders({ modelIds: page,
+    profileIds: [...new Set(page.map(id => modelOwner.get(id)!))], limit: page.length }));
+  const profileById = new Map(profiles.map(profile => [profile.id, profile]));
+  const modelById = new Map(persistedModels.map(model => [model.id, model]));
+  const persistedProfileIds = new Set(profileById.keys());
+  const modelIds = new Set(modelById.keys());
   const expectedEvidenceVersions = new Set(trainedSourceVersionIds);
-  const observedEvidenceVersions = new Set(versionsForEvidence.map(version => String(version.sourceVersionId)));
-  const sourceVersionsPresent = evidenceRows.length === evidenceIds.length
-    && evidenceRows.every(row => expectedEvidenceVersions.has(String(row.sourceVersionId)))
-    && [...observedEvidenceVersions].every(id => expectedEvidenceVersions.has(id));
-  const evidenceOwnedByReportSource = reports.every(report => {
-    const reportEvidence = evidenceRows.filter(row => report.artifacts.evidenceIds.includes(String(row.id)));
-    const reportVersions = versionsForEvidence.filter(version => report.artifacts.evidenceIds.some(id => {
-      const row = evidenceRows.find(candidate => String(candidate.id) === id);
-      return row && String(row.sourceVersionId) === String(version.sourceVersionId);
-    }));
-    return reportEvidence.length === report.artifacts.evidenceIds.length
-      && reportEvidence.length > 0
-      && reportEvidence.every(row => String(row.sourceVersionId) === report.sourceVersionId)
-      && reportVersions.length > 0
-      && reportVersions.every(version => String(version.sourceVersionId) === report.sourceVersionId
-        && (!version.derivation || String(version.derivation.derivedFromSourceVersionId) === report.originalSourceVersionId));
+  const sourceVersionsPresent = evidencePromoted && evidenceOwners.size === evidenceIds.length
+    && [...evidenceOwners.values()].every(id => expectedEvidenceVersions.has(id));
+  const evidenceOwnedByReportSource = sourceLineageVerified && reports.every(report => {
+    const version = versions.get(report.sourceVersionId);
+    const noNewTransform = report.originalSourceVersionId === report.sourceVersionId;
+    return report.artifacts.evidenceIds.length > 0
+      && report.artifacts.evidenceIds.every(id => evidenceOwners.get(id) === report.sourceVersionId && evidenceSourceIds.get(id) === String(version?.sourceId))
+      && version !== undefined && String(version.sourceVersionId) === report.sourceVersionId
+      && (!version.derivation || noNewTransform || String(version.derivation.derivedFromSourceVersionId) === report.originalSourceVersionId);
   });
-  const profilesMatchSourceVersions = reports.every(report => profiles.some(profile => String(profile.id) === report.artifacts.languageProfileId && String(profile.sourceVersionId) === report.sourceVersionId));
-  const artifactsPersisted = profileIds.every(id => persistedProfileIds.has(id)) && profilesMatchSourceVersions && ngramModelIds.every(id => modelIds.has(id));
+  const profilesMatchSourceVersions = reports.every(report => {
+    const profile = profileById.get(report.artifacts.languageProfileId);
+    return profile && (String(profile.sourceVersionId) === report.sourceVersionId || profile.parentSourceVersionIds?.includes(report.sourceVersionId as SourceVersionId));
+  });
+  const artifactsPersisted = profileIds.every(id => persistedProfileIds.has(id)) && profilesMatchSourceVersions
+    && reports.every(report => report.artifacts.ngramModelIds.every(id => modelById.get(id)?.profileId === report.artifacts.languageProfileId));
 
   const identityRuntime = createLanguageIdentityRuntime({
     store: input.storage.languageIdentities,
@@ -394,16 +579,23 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     now: () => now,
     informationLabel: input.informationLabel
   });
-  let identityResult = await identityRuntime.ensure({ initializeIfMissing: true });
-  let assignments = input.storage.languageIdentities ? await input.storage.languageIdentities.listProfileLanguages({ profileIds }) : [];
-  if (input.storage.languageIdentities && profileIds.some(id => !assignments.some(item => item.profileId === id))) {
-    identityResult = await identityRuntime.ensure({ rebuild: true });
-    assignments = await input.storage.languageIdentities.listProfileLanguages({ profileIds });
+  let identityResult = await identityRuntime.ensure({ initializeIfMissing: true, requiredProfileIds: profileIds });
+  const readAssignments = async () => {
+    const rows: { profileId: string; languageId: string }[] = [];
+    if (input.storage.languageIdentities) for (const page of workPages(profileIds)) rows.push(...await input.storage.languageIdentities.listProfileLanguages({ profileIds: page }));
+    return rows;
+  };
+  let assignments = await readAssignments();
+  const firstAssigned = new Set(assignments.map(row => row.profileId));
+  if (input.storage.languageIdentities && profileIds.some(id => !firstAssigned.has(id))) {
+    identityResult = await identityRuntime.ensure({ rebuild: true, requiredProfileIds: profileIds });
+    assignments = await readAssignments();
   }
   const assignedProfiles = new Set(assignments.map(item => item.profileId));
   const persistedIdentities = input.storage.languageIdentities ? await input.storage.languageIdentities.listIdentities() : [];
   const persistedIdentityIds = new Set(persistedIdentities.map(identity => String(identity.id)));
-  const selectedAssignments = assignments.filter(item => profileIds.includes(item.profileId));
+  const selectedProfileIds = new Set(profileIds);
+  const selectedAssignments = assignments.filter(item => selectedProfileIds.has(item.profileId));
   const identityReady = Boolean(input.storage.languageIdentities)
     && persistedIdentities.length > 0
     && profileIds.every(id => assignedProfiles.has(id))
@@ -411,6 +603,11 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     && selectedAssignments.every(item => persistedIdentityIds.has(item.languageId))
     && identityResult.readiness === "ready";
 
+  const parentBindings = [...parentSourceVersionIds].sort(compare).map(id => {
+    const parent = versions.get(id)!;
+    return { sourceId: parent.sourceId, sourceVersionId: id, contentHash: parent.contentHash, byteLength: parent.byteLength,
+      ...(parent.role ? { role: parent.role } : {}), ...(parent.derivation ? { derivation: parent.derivation } : {}) };
+  });
   const content = {
     graphShardCount: 0,
     languageShardCount: profileIds.length,
@@ -420,7 +617,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
   const replayManifest = compileBrainReplayManifest({
     sourceSchema: input.sourceSchema,
     sourceManifestHash: input.sourceManifestHash,
-    componentIds: [...sourceVersionIds, ...trainedSourceVersionIds, ...profileIds, ...evidenceIds, ...ngramModelIds, ...persistedIdentityIds, ...selectedAssignments.map(item => `${item.profileId}->${item.languageId}`)].sort(compare),
+    componentIds: [...sourceVersionIds, ...parentSourceVersionIds, ...parentBindings.map(parent => `${parent.sourceVersionId}:${parent.contentHash}:${parent.byteLength}`), ...trainedSourceVersionIds, ...profileIds, ...evidenceIds, ...ngramModelIds, ...persistedIdentityIds, ...selectedAssignments.map(item => `${item.profileId}->${item.languageId}`)].sort(compare),
     content,
     configuration: toJsonValue(configuration),
     hasher
@@ -447,6 +644,8 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     metadata: toJsonValue({
       sourceBuild: true,
       selectedItems: selected,
+      parentSourceVersionIds: [...parentSourceVersionIds].sort(compare),
+      parentBindings,
       sourceManifestHash: input.sourceManifestHash,
       sourceManifestDigest: selectedDigest,
       configuration,
@@ -464,10 +663,10 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     }), severity: "error" as const, message: "every selected raw source version has one or more matching completed trainer projections" },
     { id: "source.raw_bytes_persisted", passed: sourceBytesVerified, severity: "error" as const, message: "the exact selected source bytes are present under their content-addressed blob identities" },
     { id: "source.raw_version_persisted", passed: rawSourceVersionsPersisted, severity: "error" as const, message: "every selected raw source version is durably bound to its exact byte hash and length" },
-    { id: "source.evidence_persisted", passed: sourceVersionsPresent && evidenceOwnedByReportSource, severity: "error" as const, message: "source evidence rows are durable and each trainer report's evidence belongs to that source version", details: toJsonValue({ expected: evidenceIds.length, observed: evidenceRows.length, evidenceOwnedByReportSource }) },
+    { id: "source.evidence_persisted", passed: sourceVersionsPresent && evidenceOwnedByReportSource, severity: "error" as const, message: "source evidence rows are durable and each trainer report's evidence belongs to that source version", details: toJsonValue({ expected: evidenceIds.length, observed: evidenceOwners.size, evidenceOwnedByReportSource }) },
     { id: "source.language_artifacts_persisted", passed: artifactsPersisted, severity: "error" as const, message: "all reported language profiles belong to their selected source versions and all n-gram models are durable", details: toJsonValue({ expectedProfiles: profileIds.length, observedProfiles: persistedProfileIds.size, profilesMatchSourceVersions, expectedModels: ngramModelIds.length, observedModels: modelIds.size }) },
     { id: "source.language_identity_ready", passed: identityReady, severity: "error" as const, message: "every selected language profile has a persisted assignment to a durable learned identity", details: toJsonValue({ identityCount: persistedIdentities.length, assignedProfileCount: selectedAssignments.length }) },
-    { id: "source.no_existing_active_brain", passed: activeBefore.activeImportRunIds.length === 0 && !activeBefore.activeBrainVersion, severity: "error" as const, message: "initial source build did not replace an existing active brain" }
+    { id: "source.no_existing_active_brain", passed: Boolean(existingActive) || (activeBefore.activeImportRunIds.length === 0 && !activeBefore.activeBrainVersion), severity: "error" as const, message: "initial source build did not replace an existing active brain" }
   ];
   const validation: BrainValidationReport = {
     schema: "scce.brainValidationReport.v1",
@@ -480,6 +679,11 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     validatedAt: now
   };
 
+  if (existingActive) {
+    if (validation.disposition !== "PASSED") throw new Error("active source brain no longer satisfies canonical source/artifact validation");
+    if (existingActive.manifest.replayManifest?.byteHash !== replayManifest.byteHash) throw new Error("active source brain replay artifact identity changed");
+    return { lifecycle: existingActive, report: validation, replayManifestHash: replayManifest.byteHash, active: true, idempotent: true };
+  }
   let lifecycle = await input.storage.brainImports.getLifecycle(importRunId);
   if (!lifecycle) {
     await input.storage.brainImports.putLifecycle({ importRunId, brainVersion, rootPath, state: "CREATED", manifest, revision: 0, createdAt: now, updatedAt: now });
@@ -560,4 +764,8 @@ export function sanitizeSourceBrainBuildConfiguration(value: unknown): unknown {
     safe[key] = sanitizeSourceBrainBuildConfiguration(child);
   }
   return safe;
+}
+
+function* workPages<T>(items: readonly T[], pageSize = 512): Generator<T[]> {
+  for (let offset = 0; offset < items.length; offset += pageSize) yield items.slice(offset, offset + pageSize);
 }

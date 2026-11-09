@@ -2379,10 +2379,17 @@ describe("multi-corpus training", () => {
       expect(projection.sourceId).toBe(fixture.state.sourceVersions.find(source => source.sourceVersionId === projection.sourceVersionId)!.sourceId);
       return publish(change);
     };
+    const complete = vi.fn(async (report: import("../stored-corpus-construction-training.js").StoredCorpusConstructionTrainingReport) => {
+      expect(report.selection?.languageTrainingComplete).toBe(true);
+      expect(report.selection?.selectedSourceVersionIds).toEqual(fixture.state.sourceVersions.map(source => String(source.sourceVersionId)).sort());
+      expect(report.reports.every(item => fixture.state.models.some(model => item.artifacts.ngramModelIds.includes(model.id)))).toBe(true);
+    });
     const report = await trainStoredCorpusConstructions({ storage: fixture.storage, sourceSystem: "wikipedia", minArticleBytes: 0, maxTotalBytes: 65536,
+      sourceVersionIds: fixture.state.sourceVersions.map(source => String(source.sourceVersionId)), onSourceBrainTrainingComplete: complete,
       ngramMaxOrder: 4, ngramMaxCountersPerOrder: 12000, ngramVocabularyLimit: 24000,
       corpusSegmentation: { scope: { informationLabel: corpusLabel, sourceVersionIds: fixture.state.sourceVersions.map(source => String(source.sourceVersionId)) },
         recipeId: corpusSegmentationInputRecipe(4096), normalizationContractId: corpus.model.normalizationContractId, bounds: { pageRows: 3, maxPageBytes: 65536 } } });
+    expect(complete).toHaveBeenCalledExactlyOnceWith(report);
     expect(report.exhausted).toBe(true); expect(report.sourcesSkipped).toEqual([]); expect(report.batchesFailed).toEqual([]); expect(report.articlesTrained).toBe(2);
     expect(report.reports.every(item => item.ngramModels > 0 && item.segmentation?.mode === "corpus_snapshot")).toBe(true);
     expect(fixture.state.profiles.map(profile => ({ sourceVersionId: profile.sourceVersionId, kneserNey: profile.kneserNey }))
