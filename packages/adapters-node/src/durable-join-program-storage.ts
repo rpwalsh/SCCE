@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { JOIN_PROGRAM_MIXTURE_SCHEMA, JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA,
+import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, JOIN_PROGRAM_MIXTURE_SCHEMA, JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA,
   canonicalJsonByteLength, isJoinProgramMixture, joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "@scce/kernel";
+import { DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA, decodeDurableCreativeEvents, encodeDurableCreativeEvents } from "./durable-creative-event-storage.js";
 
 export const DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA = "scce.durable_join_program.storage.v1";
 export const DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA = "scce.durable_join_program.byte_ledger.v1";
@@ -20,6 +21,7 @@ function transform(value: unknown, encoding: boolean): unknown {
   if (encoding && (Array.isArray(value) || rootRecord && Object.hasOwn(rootRecord, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY))) return value;
   const seen = new WeakMap<object, unknown>();
   const sizes = new WeakMap<object, JsonByteLengths>();
+  let packedCreativeEvents = false;
   const visit = (value: unknown): unknown => {
     if (!value || typeof value !== "object") return value;
     if (seen.has(value)) return seen.get(value);
@@ -35,6 +37,12 @@ function transform(value: unknown, encoding: boolean): unknown {
       return result;
     }
     const row = record(value);
+    if (row?.schema === DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA) {
+      if (encoding) return value;
+      const events = decodeDurableCreativeEvents(row);
+      seen.set(value, events);
+      return events;
+    }
     if (row?.schema === DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA) {
       if (encoding) return value;
       const mixture = Object.keys(row).length === 4 && validSizes(row) && record(row.mixture)?.schema === JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA
@@ -54,7 +62,12 @@ function transform(value: unknown, encoding: boolean): unknown {
     if (encoding && row && Object.hasOwn(row, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) return value;
     let changed = false;
     const entries = Object.entries(value).map(([key, child]) => {
-      const next = visit(child);
+      let next: unknown;
+      if (encoding && row?.schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA && key === "events" && Array.isArray(child)) {
+        const packed = encodeDurableCreativeEvents(child);
+        if (packed) { packedCreativeEvents = true; next = packed; }
+        else next = visit(child);
+      } else next = visit(child);
       if (next !== child) changed = true;
       return [key, next] as const;
     });
@@ -70,7 +83,8 @@ function transform(value: unknown, encoding: boolean): unknown {
   const ledger = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...jsonByteLengths(value, sizes),
     ...(Object.hasOwn(original, "joinProgram") ? { joinProgramMemberJsonbBytes: jsonByteLengths(original.joinProgram, sizes).decodedJsonbBytes
       + canonicalJsonByteLength("joinProgram") + 2 + (Object.keys(original).length > 1 ? 2 : 0) } : {}) };
-  return { ...resultRecord, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: ledger };
+  const stored = { ...resultRecord, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: ledger };
+  return packedCreativeEvents && jsonByteLengths(stored, sizes).decodedJsonBytes >= ledger.decodedJsonBytes ? value : stored;
 }
 
 interface JsonByteLengths { decodedJsonBytes: number; decodedJsonbBytes: number }
@@ -85,7 +99,7 @@ function jsonByteLengths(value: unknown, cache: WeakMap<object, JsonByteLengths>
     if (found) return found;
     const children = Array.isArray(value) ? Array.from(value, child => jsonByteLengths(child, cache))
       : Object.entries(value).map(([key, child]) => {
-        const bytes = jsonByteLengths(child, cache), keyBytes = canonicalJsonByteLength(key);
+        const bytes = jsonByteLengths(child, cache), keyBytes = Buffer.byteLength(JSON.stringify(key));
         return { decodedJsonBytes: keyBytes + 1 + bytes.decodedJsonBytes, decodedJsonbBytes: keyBytes + 2 + bytes.decodedJsonbBytes };
       });
     const result = children.reduce((total, child) => ({ decodedJsonBytes: total.decodedJsonBytes + child.decodedJsonBytes,
@@ -93,7 +107,7 @@ function jsonByteLengths(value: unknown, cache: WeakMap<object, JsonByteLengths>
     cache.set(value, result);
     return result;
   }
-  const decodedJsonBytes = canonicalJsonByteLength(value);
+  const decodedJsonBytes = typeof value === "string" ? Buffer.byteLength(JSON.stringify(value)) : canonicalJsonByteLength(value);
   if (typeof value !== "number" || !Number.isFinite(value) || !String(value).includes("e")) return { decodedJsonBytes, decodedJsonbBytes: decodedJsonBytes };
   const [mantissa, exponent] = String(value).split("e");
   const unsigned = mantissa!.replace(/^-/, ""), digits = unsigned.replace(".", "");
