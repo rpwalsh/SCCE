@@ -172,6 +172,7 @@ export async function readCorpusMembershipCounts(storage: CorpusMembershipStorag
   let batch: Array<{ key: string; hash: string }> = [], bytes = 2;
   const flush = async () => {
     if (!batch.length) return;
+    const requestedKeys = new Set(batch.map(row => row.key));
     const access = storage.informationAccessPredicate("r", 4);
     const rows = await storage.query<{ key: string; count: string; valid: boolean }>(`WITH requested AS MATERIALIZED (
       SELECT q.* FROM jsonb_to_recordset($3::jsonb) q(key text,hash text)
@@ -192,9 +193,9 @@ export async function readCorpusMembershipCounts(storage: CorpusMembershipStorag
     [run.run.runId, countCollection(kind), JSON.stringify(batch), ...access.params, CORPUS_COUNT_PAGE_SCHEMA]);
     if (rows.length !== batch.length) return fail();
     for (const row of rows) {
-      const count = Number(row.count);
-      if (!row.valid || !batch.some(item => item.key === row.key) || Object.hasOwn(result, row.key) || !Number.isSafeInteger(count) || count < 0) return fail();
-      result[row.key] = count;
+      const key = row.key, count = Number(row.count);
+      if (!row.valid || !requestedKeys.has(key) || Object.hasOwn(result, key) || !Number.isSafeInteger(count) || count < 0) return fail();
+      result[key] = count;
     }
     batch = []; bytes = 2;
   };

@@ -186,6 +186,8 @@ it("stores block-sized exact-key leaves and reuses their receipt capacity for bo
   }
   expect(leaves).toBeGreaterThan(1);
   expect(f.reads.filter(read => read.collection === "input/class-counts").every(read => read.pageRows === 8)).toBe(true);
+  for await (const page of f.run.pages("input/class-counts", { pageRows: 8 }))
+    expect(page.reduce((sum, row) => sum + durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2, 0)).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
   f.setBlockSize(16384); f.reads.length = 0;
   expect(await prepareCorpusMembershipCounts(f.storage, f.run, { id: "inventory", count: 1 })).toEqual(first);
   expect(f.reads.filter(read => read.collection === "input/class-counts").every(read => read.pageRows === 8)).toBe(true);
@@ -204,4 +206,34 @@ it("retains an oversized atomic full key within the declared run budget as one v
   expect(await readCorpusMembershipCounts(f.storage, f.run, "class", [key, "before", "after", "unseen"])).toEqual({ [key]: 1, before: 1, after: 1, unseen: 0 });
   for await (const page of f.memory.pages({ collection: "input/class-counts", ...f.run.bounds })) for (const row of page)
     expect(durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
+});
+
+it("validates a full 4096-key unordered response with linear key inspections", async () => {
+  const f = fixture(4096, 1048576), keys = Array.from({ length: 4096 }, (_, index) => `unit.雪🧭.${index}`);
+  let inspections = 0, queries = 0;
+  const storage: CorpusMembershipStorage = { ...f.storage, query: async <T>(_sql: string, params: unknown[] = []): Promise<T[]> => {
+    queries++;
+    const requested = JSON.parse(String(params[2])) as Array<{ key: string; hash: string }>;
+    expect(requested).toHaveLength(keys.length);
+    return requested.reverse().map(item => ({ get key() { inspections++; return item.key; }, count: "7", valid: true })) as T[];
+  } };
+  expect(await readCorpusMembershipCounts(storage, f.run, "class", [...keys, keys[0]!])).toEqual(Object.fromEntries(keys.map(key => [key, 7])));
+  expect(queries).toBe(1);
+  expect(inspections).toBeLessThanOrEqual(keys.length * 4);
+});
+
+it.each(["duplicate", "foreign", "invalid_schema", "missing", "negative", "fractional", "overflow"])("retains strict response rejection for %s", async kind => {
+  const f = fixture();
+  const storage: CorpusMembershipStorage = { ...f.storage, query: async <T>(): Promise<T[]> => {
+    const rows = [{ key: "owned.a", count: "1", valid: true }, { key: "owned.b", count: "2", valid: true }];
+    if (kind === "duplicate") rows[1]!.key = "owned.a";
+    if (kind === "foreign") rows[1]!.key = "foreign";
+    if (kind === "invalid_schema") rows[1]!.valid = false;
+    if (kind === "missing") rows.pop();
+    if (kind === "negative") rows[1]!.count = "-1";
+    if (kind === "fractional") rows[1]!.count = "1.5";
+    if (kind === "overflow") rows[1]!.count = "9007199254740992";
+    return rows as T[];
+  } };
+  await expect(readCorpusMembershipCounts(storage, f.run, "context", ["owned.a", "owned.b"])).rejects.toThrow(/membership pages/);
 });
