@@ -2654,6 +2654,85 @@ describe("multi-corpus training", () => {
 });
 
 describe("raw Wikipedia shares the canonical language compiler", () => {
+  it("learns the first canonical profile and ngrams from acquire-only Wikipedia without replacing its source owners", async () => {
+    const root = await tempDir("wiki-acquire-stored-bootstrap-");
+    const dumpPath = path.join(root, "enwiki-fixture.xml.bz2");
+    const indexPath = path.join(root, "index.txt");
+    const body = await readFile(new URL("../../../kernel/src/__tests__/fixtures/animalia-source.md", import.meta.url), "utf8");
+    const xml = `<mediawiki><page><title>Animalia</title><ns>0</ns><id>1</id><revision><id>11</id><text xml:space="preserve">${body.replaceAll("&", "&amp;").replaceAll("<", "&lt;")}</text></revision></page></mediawiki>`;
+    await writeFile(dumpPath, execFileSync("python", ["-c", "import bz2,sys;sys.stdout.buffer.write(bz2.compress(sys.stdin.buffer.read()))"], { input: xml, windowsHide: true }));
+    await writeFile(indexPath, "0:1:Animalia\n");
+    const fixture = memoryStorage();
+    const checkpoints = new Map<string, IngestionCheckpoint>();
+    fixture.storage.ingestion = { put: async (row: IngestionCheckpoint) => { checkpoints.set(row.id, structuredClone(row)); },
+      get: async (id: string) => checkpoints.get(id) ?? null,
+      list: async (query: any) => [...checkpoints.values()].filter(row => row.rootUri === query.rootUri && (!query.status || row.status === query.status)
+        && (!query.phase || row.phase === query.phase) && (!query.itemUriPrefix || row.itemUri.startsWith(query.itemUriPrefix)))
+        .sort((left, right) => right.offsetBytes - left.offsetBytes).slice(0, query.limit) } as any;
+    const blobs = new Map<string, Uint8Array>();
+    fixture.storage.blobs.put = async bytes => { const hash = blobContentHash(bytes); blobs.set(hash, Uint8Array.from(bytes)); return hash; };
+    fixture.storage.blobs.get = async hash => { const bytes = blobs.get(String(hash)); if (!bytes) throw new Error("missing fixture blob"); return bytes; };
+    fixture.storage.evidence.getEvidenceBatch = async ids => fixture.state.evidence.filter(span => ids.includes(span.id));
+    fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence.filter(span => !query.sourceVersionId || String(span.sourceVersionId) === String(query.sourceVersionId))
+      .map(span => ({ span, score: span.alpha, reason: "exact raw source" }));
+    const nodes = new Map<string, any>();
+    const edges = new Map<string, any>();
+    const hyperedges = new Map<string, any>();
+    fixture.storage.graph.upsertNodes = async rows => { for (const row of rows) nodes.set(String(row.id), structuredClone(row)); };
+    fixture.storage.graph.upsertEdges = async rows => { for (const row of rows) edges.set(String(row.id), structuredClone(row)); };
+    fixture.storage.graph.upsertHyperedges = async rows => { for (const row of rows) hyperedges.set(String(row.id), structuredClone(row)); };
+    fixture.storage.graph.getSlice = async query => ({ query, bounded: true, nodes: [...nodes.values()], edges: [...edges.values()],
+      hyperedges: [...hyperedges.values()].filter(row => !query.evidenceIds?.length || row.evidenceIds.some((id: string) => query.evidenceIds!.map(String).includes(id))) });
+    const config = { runtime: { tempRoot: root, maxChunkBytes: 65536, corpora: { wikipedia: { enabled: true, dumpPath, indexPath,
+      maxPagesPerRun: 0, maxBlocksPerRun: 0, ngramShardChars: 100000, memorySafetyBoundMb: 100000,
+      ngramMaxOrder: 4, ngramMaxCountersPerOrder: 12000, ngramVocabularyLimit: 24000 } } } } as any;
+    const ingestor = createWikipediaV3Ingestor({ storage: fixture.storage, config });
+    const publish = vi.spyOn(ingestor as any, "registerActiveWikipediaImport").mockResolvedValue(undefined);
+    try {
+      const acquired = await ingestor.ingest({ dumpPath, acquireOnly: true });
+      expect(acquired.pages).toBe(1);
+      expect(acquired.languagePatterns).toBe(0);
+      expect(fixture.state.profiles).toEqual([]);
+      expect(fixture.state.models).toEqual([]);
+      expect(publish).not.toHaveBeenCalled();
+      const sources = structuredClone(fixture.state.sourceVersions), evidence = structuredClone(fixture.state.evidence);
+      const selected = sources.filter(source => source.role === "original").map(source => String(source.sourceVersionId));
+      expect(selected).toHaveLength(1);
+      fixture.storage.evidence.listEvidenceBackedSourceVersions = async (query = {}) => fixture.state.sourceVersions
+        .filter(source => selected.includes(String(source.sourceVersionId)) && (!query.afterSourceVersionId || source.sourceVersionId > query.afterSourceVersionId))
+        .sort((a,b)=>a.sourceVersionId.localeCompare(b.sourceVersionId)).slice(0,query.limit)
+        .map(source=>({sourceVersionId:source.sourceVersionId,contentHash:source.contentHash,canonicalUri:source.canonicalUri,byteLength:source.byteLength,maxAlpha:1,
+          promotedSpanCount:fixture.state.evidence.filter(span=>span.sourceVersionId===source.sourceVersionId&&span.status==="promoted").length}));
+      fixture.storage.evidence.sourceVersionsForEvidence = async ids=>fixture.state.sourceVersions.filter(source=>fixture.state.evidence.some(span=>ids.includes(span.id)&&span.sourceVersionId===source.sourceVersionId));
+      const report = await trainStoredCorpusConstructions({storage:fixture.storage,sourceSystem:"wikipedia",sourceVersionIds:selected,minArticleBytes:0,
+        maxTotalBytes:65536,ngramMaxOrder:4,ngramMaxCountersPerOrder:12000,ngramVocabularyLimit:24000});
+      expect(report.sourcesSkipped).toEqual([]);expect(report.batchesFailed).toEqual([]);
+      expect(report.articlesTrained).toBe(1);expect(report.selection?.languageTrainingComplete).toBe(true);
+      expect(report.selection?.completedSourceVersionIds).toEqual(selected);
+      expect(fixture.state.profiles).toHaveLength(1);expect(fixture.state.models.length).toBeGreaterThan(0);
+      expect(fixture.state.profiles[0]!.sourceVersionId).toBe(selected[0]);
+      expect(fixture.state.models.some(model=>model.maxOrder===4)).toBe(true);
+      expect(fixture.state.sourceVersions).toEqual(sources);expect(fixture.state.evidence).toEqual(evidence);
+      const originalProfile=structuredClone(fixture.state.profiles[0]);
+      const originalModels=structuredClone(fixture.state.models);
+      const retained=structuredClone({units:fixture.state.units,patterns:fixture.state.patterns,frames:fixture.state.frames,events:fixture.state.events,checkpoints:[...checkpoints]});
+      const replay=await trainStoredCorpusConstructions({storage:fixture.storage,sourceSystem:"wikipedia",sourceVersionIds:selected,minArticleBytes:0,maxTotalBytes:65536,
+        ngramMaxOrder:4,ngramMaxCountersPerOrder:12000,ngramVocabularyLimit:24000});
+      expect(replay.sourcesSkipped).toEqual([]);expect(replay.batchesFailed).toEqual([]);
+      expect(fixture.state.profiles).toEqual([originalProfile]);
+      expect(fixture.state.models).toEqual(originalModels);
+      expect({units:fixture.state.units,patterns:fixture.state.patterns,frames:fixture.state.frames,events:fixture.state.events,checkpoints:[...checkpoints]}).toEqual(retained);
+      const initialCheckpoint=[...checkpoints.values()].find(row=>row.rootUri.endsWith("/initial-language-learning")&&row.status==="complete")!;
+      expect(initialCheckpoint).toBeDefined();
+      checkpoints.set(initialCheckpoint.id,{...initialCheckpoint,metadata:kernel.toJsonValue({...recordOf(initialCheckpoint.metadata!),binding:"tampered"})});
+      const refused=await trainStoredCorpusConstructions({storage:fixture.storage,sourceSystem:"wikipedia",sourceVersionIds:selected,minArticleBytes:0,maxTotalBytes:65536,
+        ngramMaxOrder:4,ngramMaxCountersPerOrder:12000,ngramVocabularyLimit:24000});
+      expect(refused.batchesFailed[0]?.reason).toContain("checkpoint binding mismatch");
+      expect(refused.selection?.languageTrainingComplete).toBe(false);
+      expect(fixture.state.profiles).toEqual([originalProfile]);expect(fixture.state.models).toEqual(originalModels);
+
+    } finally { publish.mockRestore(); }
+  });
   it.each([undefined, MIN_WIKIPEDIA_MAX_ARTICLE_CHARS])("ingests raw pages once and reports a clipped surface instead of claiming full training: %s", async maxArticleChars => {
     const root = await tempDir("wiki-shared-compiler-");
     const dumpPath = path.join(root, "enwiki-fixture.xml.bz2");

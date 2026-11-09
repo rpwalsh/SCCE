@@ -15,7 +15,7 @@ import {
   type ScceStorage,
   type SourceVersion
 } from "@scce/kernel";
-import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText, type LanguageCorpusTrainingReport, type LanguageCorpusTrainingInput, corpusCheckpointId } from "./language-corpus-trainer.js";
 import { readSourceTranscriptArchive } from "./source-transcript-archive.js";
 import { prepareLanguageTrainingSegmentationInput, type LanguageTrainingSegmentationDeclaration, type PreparedLanguageTrainingSegmentation } from "./language-training-segmentation.js";
 import { persistDialogueContextualQaComponent, type DialogueContextualQaReport } from "./dialogue-contextual-qa-component.js";
@@ -153,9 +153,10 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   let qaRetainedBytes = 0;
 
   const trainSource = async (item: ReplaySource): Promise<void> => {
-    if (input.corpusSegmentation && segmentationBatch?.index !== batchIndex) segmentationBatch = {
+    if (segmentationBatch?.index !== batchIndex) segmentationBatch = {
       index: batchIndex, selection: await prepareLanguageTrainingSegmentationInput(input.storage, input.corpusSegmentation)
     };
+    const initialLearning = item.profile === undefined;
     let trainingLabel: InformationLabel | undefined;
     try {
       const { transcriptArchive: _archive, ...metadata } = recordOf(item.source.metadata);
@@ -166,7 +167,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
       ], { explicitMergeAuthority: false });
       trainingLabel = informationLabel;
       const prefix = input.includeUriPrefixes?.find(value => item.source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(item.source.canonicalUri);
-      const report = await trainLanguageCorpusText({
+      let trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
         ...(segmentationBatch ? { preparedCorpusSegmentation: segmentationBatch.selection } : {}),
         storage: input.storage,
@@ -183,23 +184,33 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
         createdAt: item.source.observedAt,
         informationLabel,
         persistSource: false,
-        persistProfile: Boolean(input.corpusSegmentation),
-        skipNgramPersistence: !input.languageOnly && !input.corpusSegmentation,
+        persistProfile: initialLearning || Boolean(input.corpusSegmentation),
+        skipNgramPersistence: !initialLearning && !input.languageOnly && !input.corpusSegmentation,
         skipNgramObservationPersistence: true,
         ...(input.languageOnly ? { languageOnly: true } : {}),
-        ...(input.corpusSegmentation || input.languageOnly ? { ngramMaxOrder: input.ngramMaxOrder, ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
+        ...(initialLearning || input.corpusSegmentation || input.languageOnly ? { ngramMaxOrder: input.ngramMaxOrder, ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
           ngramVocabularyLimit: input.ngramVocabularyLimit } : { ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 4096 }),
         creativeEventCompiler: compiler,
         graphSnapshotSourceVersionIds: [String(item.source.sourceVersionId)],
         constructionPoolUriPrefix: prefix,
         corpusCheckpoint: {
-          rootUri: `scce://stored-corpus-replay/${sourceSystem}/${LANGUAGE_CORPUS_TRAINING_RECIPE_ID}`,
+          rootUri: `scce://stored-corpus-replay/${sourceSystem}/${LANGUAGE_CORPUS_TRAINING_RECIPE_ID}${initialLearning && !input.corpusSegmentation ? "/initial-language-learning" : ""}`,
           itemUri: item.source.canonicalUri,
           contentHash: String(item.source.contentHash),
           byteLength: item.source.byteLength
         },
         corpusMetadata: { ...metadata, lane: "stored-corpus-construction-replay", replayRecipeId: LANGUAGE_CORPUS_TRAINING_RECIPE_ID } as JsonValue
-      });
+      };
+      if (item.profile && !input.corpusSegmentation) {
+        const initialInput: LanguageCorpusTrainingInput = { ...trainingInput, profile: undefined, persistProfile: true, skipNgramPersistence: false,
+          ngramMaxOrder: input.ngramMaxOrder, ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder, ngramVocabularyLimit: input.ngramVocabularyLimit,
+          corpusCheckpoint: { ...trainingInput.corpusCheckpoint!, rootUri: `${trainingInput.corpusCheckpoint!.rootUri}/initial-language-learning` } };
+        const initialId = corpusCheckpointId(initialInput)!;
+        // A completed initial learn keeps its exact declared phase and inputs on retry.
+        // The canonical trainer below validates the entire checkpoint binding, including malformed/stale receipts.
+        if (await input.storage.ingestion.get(initialId)) trainingInput = initialInput;
+      }
+      const report = await trainLanguageCorpusText(trainingInput);
       reports.push(report);
       articlesTrained++;
       bytesTrained += item.bytes;
@@ -332,7 +343,6 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
       if (interrupted()) return false;
       const profile = profiles.filter(row => String(row.sourceVersionId) === String(source.sourceVersionId))
         .sort((left, right) => (right.updatedAt ?? right.createdAt) - (left.updatedAt ?? left.createdAt) || left.id.localeCompare(right.id))[0];
-      if (!profile && !input.corpusSegmentation) throw new Error("original language profile is missing");
       if (String(source.contentHash) !== String(version.contentHash) || source.byteLength !== version.byteLength) throw new Error("source content ownership changed during replay");
       const bytes = await input.storage.blobs.get(source.contentHash);
       if (interrupted()) return false;

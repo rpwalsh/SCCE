@@ -316,7 +316,7 @@ export function languageCorpusTrainingRecipeId(sourceSystem: string): string {
     ? LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID : LANGUAGE_CORPUS_TRAINING_RECIPE_ID;
 }
 
-function corpusCheckpointId(input: LanguageCorpusTrainingInput): string | undefined {
+export function corpusCheckpointId(input: LanguageCorpusTrainingInput): string | undefined {
   const checkpoint = input.corpusCheckpoint;
   if (!checkpoint) return undefined;
   // Checkpoint identity must remain stable across process retries even when a
