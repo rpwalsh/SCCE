@@ -42,6 +42,7 @@ import { SURFACE_REALIZATION_STRATEGY_IDS } from "../../../kernel/src/surface-co
 import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, readCompletedCorpusCheckpoint, corpusSourceVersionIdFor, LANGUAGE_CORPUS_TRAINING_RECIPE_ID, LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID, languageCorpusTrainingRecipeId, type LanguageCorpusTrainingInput } from "../language-corpus-trainer.js";
 import { LANGUAGE_TRAINING_BATCH_RECIPE_ID } from "../../../kernel/src/language-training-recipe.js";
 import { blobContentHash } from "../postgres.js";
+import { OSS_CONTRACT_CLOSURE_RECIPE } from "../oss-owned-contract-closure.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
 import { MIN_WIKIPEDIA_MAX_ARTICLE_CHARS } from "../config.js";
@@ -554,14 +555,49 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(fixture.state.models.filter(row => recordOf(row.modelJson).sourceHash === blobContentHash(Buffer.from(changedA)))).toHaveLength(2);
     expect(new Set(fixture.state.models.map(row => row.id)).size).toBe(6);
     expect(new Set(fixture.state.sourceVersions.filter(row => recordOf(row.metadata).relativePath === "src/a.ts").map(row => row.sourceId))).toEqual(new Set(originalOwners));
-    expect([...checkpoints.values()].filter(row => row.status === "complete")).toHaveLength(6);
+    const learning = [...checkpoints.values()].filter(row => recordOf(row.metadata).schema === "scce.corpusTrainingCheckpoint.v1");
+    expect(learning).toHaveLength(6);
+    const checkpointIds = createIdFactory({ clock: createClock(), hasher: createHasher(), namespace: "corpus-training-checkpoint", deterministicReplay: true });
+    const segmentationIdentity = (await prepareLanguageTrainingSegmentationInput(fixture.storage)).identity;
+    const expectedLearning = [["src/a.ts", a], ["src/a.ts", changedA], ["src/b.ts", b]].flatMap(([relativePath, text]) =>
+      [[CORPUS_SOURCE_SYSTEM_IDS.ossCode, "code_surface_tokens"], [CORPUS_SOURCE_SYSTEM_IDS.ossDocs, "code_adjacent_prose"]].map(([sourceSystem, projection]) => {
+        const itemUri = `${relativePath}#projection=${projection}&sourceHash=${blobContentHash(Buffer.from(text!))}`;
+        return checkpointIds.semanticId("corpus_training_checkpoint", { compilerRecipe: languageCorpusTrainingRecipeId(sourceSystem!), sourceSystem,
+          segmentationIdentity, rootUri: second.sourceUriBase, itemUri, sourceEvidenceRecipe: "scce.language_corpus_source_evidence.v1" });
+      }));
+    expect(learning.map(row => row.id).sort()).toEqual(expectedLearning.sort());
+    for (const row of learning) {
+      const metadata = recordOf(row.metadata);
+      expect(row).toMatchObject({ rootUri: second.sourceUriBase, phase: "stored", status: "complete" });
+      expect(metadata.compilerRecipe).toBe(languageCorpusTrainingRecipeId(String(metadata.sourceSystem)));
+      expect(metadata.batchRecipe).toBe(LANGUAGE_TRAINING_BATCH_RECIPE_ID);
+      expect(metadata.segmentationIdentity).toEqual(segmentationIdentity);
+      expect(metadata.rootUri).toBe(row.rootUri); expect(metadata.itemUri).toBe(row.itemUri);
+      expect(recordOf(metadata.report).schema).toBe("scce.languageCorpusTrainingReport.v1");
+    }
+    const snapshotIdentity = (report: typeof first, texts: { a: string; b: string }) => createHasher().digestHex(kernel.canonicalStringify({
+      recipe: OSS_CONTRACT_CLOSURE_RECIPE, sourceUriBase: report.sourceUriBase, snapshotHash: report.snapshotHash,
+      inventory: [["src/a.ts", blobContentHash(Buffer.from(texts.a)), Buffer.byteLength(texts.a)], ["src/b.ts", blobContentHash(Buffer.from(texts.b)), Buffer.byteLength(texts.b)]]
+    }));
+    const oldIdentity = snapshotIdentity(first, { a, b }), currentIdentity = snapshotIdentity(second, { a: changedA, b });
+    const headId = `oss.contract.snapshot.${createHasher().digestHex(second.sourceUriBase)}`;
+    const controls = [...checkpoints.values()].filter(row => recordOf(row.metadata).schema !== "scce.corpusTrainingCheckpoint.v1");
+    expect(controls.map(row => row.id).sort()).toEqual([headId, `oss.contract.closure.${oldIdentity}`, `oss.contract.closure.${currentIdentity}`].sort());
+    expect(checkpoints.get(headId)).toMatchObject({ rootUri: second.sourceUriBase, itemUri: "@source-owned-project-snapshot", status: "complete", phase: "stored",
+      metadata: { schema: "scce.oss_owned_contract_snapshot.v1", recipe: OSS_CONTRACT_CLOSURE_RECIPE, identity: currentIdentity, snapshotHash: second.snapshotHash, complete: true } });
+    for (const identity of [oldIdentity, currentIdentity]) expect(checkpoints.get(`oss.contract.closure.${identity}`)).toMatchObject({ rootUri: second.sourceUriBase,
+      itemUri: "@source-owned-project-closure", status: "complete", phase: "stored", offsetBytes: 0,
+      metadata: { identity, nextCandidateIndex: 0, round: 1, incompleteInRound: 0, complete: true } });
     const firstWitness = fixture.state.sourceVersions.find(row => recordOf(row.metadata).sourceHash === bHash);
     expect(recordOf(firstWitness?.metadata).acquisitionProvenance).toEqual(first.acquisitionProvenance);
     expect(fixture.state.sourceVersions.filter(row => recordOf(row.metadata).sourceHash === blobContentHash(Buffer.from(changedA)))
       .every(row => JSON.stringify(recordOf(row.metadata).acquisitionProvenance) === JSON.stringify(second.acquisitionProvenance))).toBe(true);
     const counts = Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]));
+    const checkpointBeforeReplay = structuredClone([...checkpoints]);
+    const checkpointWrite = vi.spyOn(fixture.storage.ingestion, "put");
     await trainOssCorpus(secondOptions);
     expect(Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]))).toEqual(counts);
+    expect([...checkpoints]).toEqual(checkpointBeforeReplay); expect(checkpointWrite).not.toHaveBeenCalled();
   });
 
   it("reaches a compact code construction beyond the style model quota in an actual chat turn", async () => {
