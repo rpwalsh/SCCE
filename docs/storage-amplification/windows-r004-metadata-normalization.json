@@ -1,0 +1,103 @@
+{
+  "schema": "scce.native_source_artifact_metadata_summary.v1",
+  "sourceLearningRevision": "b6cbbfaf279a884858af8ec1afbe6cceedc8aff7",
+  "nativeStorageRevision": "e5f14ca735dd3bb15ad558120c1d56c8ba2c0c25",
+  "sourceSystem": "wikipedia",
+  "sourceReadOnly": true,
+  "fixtureRolledBack": true,
+  "sourceOwners": 29,
+  "decodedRecords": {
+    "units": 5784,
+    "models": 29,
+    "frames": 272,
+    "patterns": 17150
+  },
+  "checks": [
+    {
+      "name": "fresh-physical-fixture-is-empty",
+      "passed": true
+    },
+    {
+      "name": "source-transaction-enforces-read-only",
+      "passed": true
+    },
+    {
+      "name": "all-selected-owner-full-record-hashes-match",
+      "passed": true
+    },
+    {
+      "name": "missing-holder-cannot-return-partial-metadata",
+      "passed": true
+    },
+    {
+      "name": "changed-holder-digest-cannot-return-partial-metadata",
+      "passed": true
+    },
+    {
+      "name": "changed-compilation-metadata-digest-cannot-return-partial-metadata",
+      "passed": true
+    },
+    {
+      "name": "changed-holder-value-cannot-return-partial-metadata",
+      "passed": true
+    },
+    {
+      "name": "foreign-holder-profile-cannot-return-partial-metadata",
+      "passed": true
+    },
+    {
+      "name": "inaccessible-holder-cannot-return-partial-metadata",
+      "passed": true
+    },
+    {
+      "name": "unit-budget-preserves-only-existing-first-oversized-exception",
+      "passed": true
+    },
+    {
+      "name": "unit-prefix-budget-charges-full-restored-metadata",
+      "passed": true
+    },
+    {
+      "name": "complete-pattern-budget-charges-reconstructed-metadata",
+      "passed": true
+    },
+    {
+      "name": "fixture-rows-revision-and-active-state-restored",
+      "passed": true
+    }
+  ],
+  "sourceCompilationIdentity": "existing learned payloads rebound by canonical compiler stamp with an exact common inherited metadata subset; original compilation identities are not claimed unchanged",
+  "physical": {
+    "language_units": {
+      "rows": 5784,
+      "normalized_bytes": "17637376",
+      "baseline_bytes": "61104128"
+    },
+    "language_patterns": {
+      "rows": 17150,
+      "normalized_bytes": "142581760",
+      "baseline_bytes": "318349312"
+    },
+    "semantic_frames": {
+      "rows": 272,
+      "normalized_bytes": "1966080",
+      "baseline_bytes": "4767744"
+    },
+    "ngram_models": {
+      "rows": 29,
+      "normalized_bytes": "6782976",
+      "baseline_bytes": "6979584"
+    }
+  },
+  "physicalTotals": {
+    "commonTableAndIndexBytes": "63143936",
+    "baselineTableAndIndexBytes": "454344704",
+    "normalizedTableAndIndexBytes": "232112128",
+    "includes": "all canonical product tables with TOAST and indexes; same shared source/evidence/profile/creative components counted in both alternatives"
+  },
+  "physicalSavingBytes": "222232576",
+  "measurementScope": "paired rollback-only native fixture; unchanged common source/evidence/profile/creative tables counted in both alternatives; excludes unrelated R004 graph/consolidation payloads; no R004 migration or compaction",
+  "fullReceiptSha256": "523a5f40c1fe509e61e60125dc804f3c11da9d00efe4d8910b196f5239fa2896",
+  "ownerDigestReceiptsSha256": "beba6d32d74a926700ceb0760fde91e86c182750db3b71f3ead90bdf240121b4",
+  "passed": true
+}

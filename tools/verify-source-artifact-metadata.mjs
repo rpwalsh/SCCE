@@ -212,6 +212,7 @@ export async function verifySourceArtifactMetadata(options) {
         for (const [family, expected] of Object.entries({ units: rebound.units, models: rebound.models, frames: rebound.semanticFrames, patterns: rebound.patterns })) parity[family] = await compare(expected, actual[family]);
         report.owners.push({ sourceVersionId, profileId: profile.id, priorCompilationId: receipt.compilationId,
           compilationId: record(record(rebound.models[0].modelJson).sourceCompilation).compilationId, unpublishedRead, publishedScopes, patternReadContracts, parity });
+        options.onProgress?.({ phase: report.currentStage, completedProfiles: report.owners.length, totalSourceOwners: ownerIds.length });
         if (!negative) negative = { profileId: profile.id, holderId: holders[0].id, unitIds: rebound.units.map(row => row.id), pattern: rebound.patterns.find(row => row.patternKind !== 'source_compilation') };
       }
     }
@@ -276,7 +277,7 @@ export async function verifySourceArtifactMetadata(options) {
     report.passed = true; report.currentStage = 'complete';
   } catch (error) { report.error = { stage: report.currentStage, name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null,
     ...(error?.code === 'ERR_ASSERTION' && error.generatedMessage === false ? { assertion: String(error.message).slice(0, 240) } : {}),
-    frames: typeof error?.stack === 'string' ? error.stack.split('\n').slice(1, 5).map(line => line.trim()) : [] }; }
+    frames: typeof error?.stack === 'string' ? error.stack.split('\n').filter(line => /^\s*at /u.test(line)).slice(0, 4).map(line => line.trim()) : [] }; }
   finally {
     if (fixtureOpen) await fixturePhysical?.query('ROLLBACK'); if (sourceOpen) await sourcePhysical?.query('ROLLBACK');
     for (const original of originals.reverse()) { original.adapter.pool.query = original.query; original.adapter.pool.connect = original.connect; }
@@ -288,6 +289,6 @@ export async function verifySourceArtifactMetadata(options) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { const report = await verifySourceArtifactMetadata(parseSourceArtifactMetadataArgs(process.argv.slice(2))); console.log(JSON.stringify(report)); if (!report.passed) process.exitCode = 1; }
+  try { const report = await verifySourceArtifactMetadata({ ...parseSourceArtifactMetadataArgs(process.argv.slice(2)), onProgress: value => process.stderr.write(JSON.stringify(value) + '\n') }); console.log(JSON.stringify(report)); if (!report.passed) process.exitCode = 1; }
   catch (error) { console.log(JSON.stringify({ schema: 'scce.native_source_artifact_metadata_verification.v1', capabilityEvaluation: false, passed: false, error: { name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null } })); process.exitCode = 1; }
 }

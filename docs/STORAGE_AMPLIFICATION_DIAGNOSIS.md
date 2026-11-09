@@ -156,3 +156,19 @@ The [field-size ledger](storage-amplification/windows-r004-inherited-metadata.js
 | `normalization` | 10,812,921 | 3,184,544 | 29 |
 
 These are rendered field sizes, not physical space savings. In contrast, the 86 packed `joinProgram` values are all distinct and occupy 349,544,063 rendered bytes; their size alone does not establish duplication. The repair target is the shared inherited metadata boundary in `stampPattern`, `stampUnit`, and `stampFrame`, with exact reconstruction and unchanged source ownership, labels, query headers, and learned payloads. A fresh corrected build must measure physical growth after complete-record parity passes. No reduction is claimed by this baseline audit.
+
+## Verified metadata normalization
+
+The canonical source-compilation receipt now owns shared inherited metadata. Units, patterns, frames, and n-gram records reference exact matching metadata values while retaining query fields inline. Normal full reads reconstruct complete records; projected request reads retain their existing contract. Compilation identities now bind the shared metadata digest, and ordinary training publishes the holder before its dependent artifacts in the same transaction.
+
+The [native comparison](storage-amplification/windows-r004-metadata-normalization.json) reconstructed all 29 owners: 5,784 units, 17,150 patterns, 272 frames, and 29 n-gram records. Every complete-record canonical digest matched its logical input after the explicitly disclosed compilation-identity rebind. Thirteen native checks passed, including inaccessible/missing/changed holders, exact decoded byte budgets, and complete rollback of fixture rows, revision, and activation state. The source database remained read-only.
+
+| Native paired fixture | Before | After |
+| --- | ---: | ---: |
+| Units, including indexes and TOAST | 61,104,128 B | 17,637,376 B |
+| Patterns, including indexes and TOAST | 318,349,312 B | 142,581,760 B |
+| Frames, including indexes and TOAST | 4,767,744 B | 1,966,080 B |
+| N-gram records, including indexes and TOAST | 6,979,584 B | 6,782,976 B |
+| All fixture tables and indexes, including identical common data | 454,344,704 B | 232,112,128 B |
+
+The paired fixture saves **222,232,576 B (48.9%)**. Existing JOIN and creative-event packing remain identical in both alternatives. This is a storage-format comparison, not a measurement of ingestion throughput or a claim that the whole R004 database shrank: unrelated graph and consolidation data were not imported, and no production migration or compaction ran. The corrected product build starts in a fresh physical database from pinned raw inputs.
