@@ -1,0 +1,13 @@
+{
+  "schema": "scce.request_artifact_admission_diagnostic.v1",
+  "readOnlyApplicationData": true,
+  "inventory": {
+    "stored_rows": 2048,
+    "current_recipe_rows": 0,
+    "evidence_linked_rows": 0
+  },
+  "runtimeAdmittedRows": 0,
+  "compatibleRuntimeClassifier": false,
+  "requiredRecipe": "kernel.dialogue_request_communicative_act.v2",
+  "qualification": "Calls the actual PostgreSQL adapter and the same reader options as production request-classifier hydration; does not bypass ownership, source projection or information-label guards."
+}
