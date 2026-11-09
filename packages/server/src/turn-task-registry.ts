@@ -5,7 +5,6 @@ import {
   createEventFactory,
   createHasher,
   createIdFactory,
-  toJsonValue,
   type EpisodeId,
   type JsonValue,
   type ScceEvent,
@@ -213,12 +212,16 @@ export class TurnTaskRegistry {
   #persist(task: LiveTurnTask, frame: TurnTaskFrame): void {
     task.persistenceTail = task.persistenceTail
       .then(async () => {
+        // JSON text escapes NUL and lone surrogate code units before the
+        // event canonicalizer/PostgreSQL JSONB boundary sees the payload.
+        const frameJsonText = JSON.stringify(frame);
         const event = this.#eventFactory.create({
           episodeId: task.episodeId,
           typeId: eventType(frame.type),
           payload: {
-            schema: "scce.turn_task_event.v1",
-            frame: toJsonValue(frame)
+            schema: "scce.turn_task_event.v2",
+            frameJsonText,
+            frameJsonSha256: createHasher().digestHex(frameJsonText)
           },
           parents: task.lastEvent ? [task.lastEvent] : []
         });
@@ -273,9 +276,47 @@ function eventType(type: TurnTaskFrame["type"]): string {
 function frameFromEvent(event: ScceEvent): TurnTaskFrame | undefined {
   if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) return undefined;
   const record = event.payload as Record<string, JsonValue>;
-  if (record.schema !== "scce.turn_task_event.v1") return undefined;
-  const frame = record.frame;
-  if (!frame || typeof frame !== "object" || Array.isArray(frame)) return undefined;
-  const candidate = frame as unknown as TurnTaskFrame;
-  return candidate.schema === "scce.turn_task_frame.v1" ? candidate : undefined;
+  if (record.schema === "scce.turn_task_event.v1") {
+    // Existing ledger entries retain their original representation and hash.
+    const frame = record.frame;
+    if (!frame || typeof frame !== "object" || Array.isArray(frame)) return undefined;
+    return frame.schema === "scce.turn_task_frame.v1" ? frame as unknown as TurnTaskFrame : undefined;
+  }
+  if (record.schema !== "scce.turn_task_event.v2") return undefined;
+  if (Object.keys(record).some(key => !["schema", "frameJsonText", "frameJsonSha256"].includes(key))
+    || typeof record.frameJsonText !== "string" || typeof record.frameJsonSha256 !== "string"
+    || record.frameJsonSha256 !== createHasher().digestHex(record.frameJsonText)) {
+    throw new Error("invalid persisted turn task frame checksum/envelope");
+  }
+  let frame: unknown;
+  try { frame = JSON.parse(record.frameJsonText); }
+  catch { throw new Error("invalid persisted turn task frame JSON"); }
+  if (!validStoredFrame(frame, event)) throw new Error("invalid persisted turn task frame identity/types");
+  return frame;
+}
+
+function validStoredFrame(value: unknown, event: ScceEvent): value is TurnTaskFrame {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const frame = value as Record<string, unknown>;
+  const keys = ["schema", "taskId", "sequence", "observedAt", "type", "requestId", "phase", "status", "elapsedMs", "value", "error", "detail", "persistence", "answer", "assistantForce", "cognition"];
+  if (Object.keys(frame).some(key => !keys.includes(key)) || frame.schema !== "scce.turn_task_frame.v1"
+    || typeof frame.taskId !== "string" || frame.taskId !== String(event.episodeId)
+    || typeof frame.sequence !== "number" || !Number.isSafeInteger(frame.sequence) || frame.sequence < 1
+    || typeof frame.observedAt !== "number" || !Number.isSafeInteger(frame.observedAt) || frame.observedAt < 0
+    || typeof frame.type !== "string" || !["accepted", "progress", "result", "error", "cancelled"].includes(frame.type)) return false;
+  if (eventType(frame.type as TurnTaskFrame["type"]) !== String(event.typeId)) return false;
+  for (const key of ["requestId", "phase", "error", "answer", "assistantForce"]) {
+    if (frame[key] !== undefined && typeof frame[key] !== "string") return false;
+  }
+  if (frame.status !== undefined && (typeof frame.status !== "number" || !Number.isSafeInteger(frame.status))) return false;
+  if (frame.elapsedMs !== undefined && (typeof frame.elapsedMs !== "number" || !Number.isFinite(frame.elapsedMs) || frame.elapsedMs < 0)) return false;
+  if (frame.persistence !== undefined && frame.persistence !== "pending" && frame.persistence !== "durable") return false;
+  return ["value", "detail", "cognition"].every(key => frame[key] === undefined || validJsonValue(frame[key]));
+}
+
+function validJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(validJsonValue);
+  return value !== null && typeof value === "object" && Object.values(value).every(validJsonValue);
 }

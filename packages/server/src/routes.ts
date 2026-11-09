@@ -4475,7 +4475,9 @@ async function streamTurnResponse(input: {
       requestId,
       status: response.status,
       elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
-      value: toJsonValue(value)
+      // dispatch already serialized this value as JSON. Canonicalizing it
+      // again would rewrite NUL-bearing file contents and invalidate hashes.
+      value: value as JsonValue
     });
   } catch (error) {
     error = domainHttpError(error);
