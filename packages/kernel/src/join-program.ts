@@ -606,10 +606,11 @@ function* joinEvents(document: {
   const hasher = createHasher();
   const unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
   for (const path of document.lattice.segmentationForest.paths) {
+    const pathWeight = Math.max(0, path.posterior);
+    if (pathWeight === 0) continue;
     const units = path.unitIds
       .map(unitId => requiredUnit(unitsById, unitId))
       .filter(isSurfaceBearingUnit);
-    const pathWeight = Math.max(0, path.posterior);
     const derivationShapeId = derivationShape(units);
     for (let index = 1; index < units.length; index += 1) {
       const left = units[index - 1]!;
