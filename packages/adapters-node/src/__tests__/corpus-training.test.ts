@@ -3,6 +3,7 @@
 import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { readFileSync } from "node:fs";
 import { corpusSegmentationInputRecipe } from "../corpus-segmentation-producer.js";
+import { prepareLanguageTrainingSegmentationInput } from "../language-training-segmentation.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
 import type { TranscriptTurn } from "../../../kernel/src/dialogue-communicative-act-learning.js";
 const humanCreativePair = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
@@ -1168,7 +1169,7 @@ describe("prepared corpus training", () => {
 });
 
 describe("multi-corpus training", () => {
-  it("upgrades an actual v3 source checkpoint to v4 without changing owned inputs or duplicating canonical identities", async () => {
+  it("recompiles actual v3 owned inputs in the current segmentation scope while archiving the old checkpoint", async () => {
     const legacy = JSON.parse(readFileSync(new URL("./fixtures/legacy-language-batch-v3-checkpoint.json", import.meta.url), "utf8")) as {
       input: Omit<LanguageCorpusTrainingInput, "storage">; checkpoint: IngestionCheckpoint;
       canonical: Pick<MemoryState, "models" | "patterns" | "units" | "frames" | "profiles" | "evidence"> & { sources: SourceVersion[] };
@@ -1200,20 +1201,20 @@ describe("multi-corpus training", () => {
       get: async id => checkpoints.get(id) ?? null, list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
     const input = { ...legacy.input, storage: fixture.storage };
     const before = structuredClone(state);
-    for (const changed of [
+    const changedInputs = [
       { ...input, text: `${input.text} changed` }, { ...input, ngramMaxOrder: 3 },
       { ...input, informationLabel: { ...input.informationLabel!, principals: ["different-owner"] } },
       { ...input, corpusMetadata: { declaredLicense: "different-license" } }
-    ]) {
-      await expect(readCompletedCorpusCheckpoint(changed)).rejects.toThrow("checkpoint binding mismatch");
-      await expect(trainLanguageCorpusText(changed)).rejects.toThrow("checkpoint binding mismatch");
-    }
-    expect(state).toEqual(before);
+    ];
     expect(await readCompletedCorpusCheckpoint(input)).toBeUndefined();
+    expect(state).toEqual(before);
     expect(checkpoints.get(legacy.checkpoint.id)).toEqual(legacy.checkpoint);
     const upgraded = await trainLanguageCorpusText(input);
-    expect(checkpoints.size).toBe(1);
-    expect(recordOf(checkpoints.get(legacy.checkpoint.id)!.metadata).batchRecipe).toBe(LANGUAGE_TRAINING_BATCH_RECIPE_ID);
+    expect(checkpoints.size).toBe(2);
+    expect(checkpoints.get(legacy.checkpoint.id)).toEqual(legacy.checkpoint);
+    const scopedCheckpoint = [...checkpoints.values()].find(row => row.id !== legacy.checkpoint.id)!;
+    expect(recordOf(scopedCheckpoint.metadata).batchRecipe).toBe(LANGUAGE_TRAINING_BATCH_RECIPE_ID);
+    expect(recordOf(scopedCheckpoint.metadata).segmentationIdentity).toEqual((await prepareLanguageTrainingSegmentationInput(fixture.storage)).identity);
     expect(upgraded.admission).toEqual(recordOf(recordOf(legacy.checkpoint.metadata).report).admission);
     expect(state.sourceVersions.map(row => row.sourceVersionId)).toEqual(legacy.artifactIds.sourceVersions);
     expect(state.sourceVersions).toEqual(legacy.canonical.sources);
@@ -1224,8 +1225,17 @@ describe("multi-corpus training", () => {
     expect(state.models.every(row => recordOf(recordOf(row.modelJson).sourceCompilation).compilerRecipe === LANGUAGE_TRAINING_BATCH_RECIPE_ID)).toBe(true);
     expect(state.patterns.filter(row => recordOf(row.patternJson).schema === "scce.source_language_compilation_receipt.v1")).toHaveLength(2);
     const completed = structuredClone(state);
+    const completedCheckpoints = structuredClone(checkpoints);
+    for (const changed of changedInputs) {
+      await expect(readCompletedCorpusCheckpoint(changed)).rejects.toThrow("checkpoint binding mismatch");
+      await expect(trainLanguageCorpusText(changed)).rejects.toThrow("checkpoint binding mismatch");
+    }
+    expect(state).toEqual(completed);
+    expect(checkpoints).toEqual(completedCheckpoints);
+    expect(await readCompletedCorpusCheckpoint(input)).toEqual(upgraded);
     expect(await trainLanguageCorpusText(input)).toEqual(upgraded);
     expect(state).toEqual(completed);
+    expect(checkpoints).toEqual(completedCheckpoints);
     const clock = createClock({ fixedTime: 150000, stepMs: 1 });
     const hasher = createHasher();
     const recorded = storageFixtureForEvaluation({ evidence: state.evidence, clockNow: () => clock.now() });
@@ -1604,6 +1614,10 @@ describe("multi-corpus training", () => {
     const ids = createIdFactory({ clock: createClock(), hasher, namespace: "corpus-training-checkpoint", deterministicReplay: true });
     const oldId = ids.semanticId("corpus_training_checkpoint", { compilerRecipe: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
       sourceSystem: canonicalCorpusSourceSystemId(sourceSystem), rootUri: input.corpusCheckpoint.rootUri, itemUri: input.corpusCheckpoint.itemUri });
+    const scopedId = ids.semanticId("corpus_training_checkpoint", { compilerRecipe: languageCorpusTrainingRecipeId(sourceSystem),
+      sourceSystem: canonicalCorpusSourceSystemId(sourceSystem), segmentationIdentity: (await prepareLanguageTrainingSegmentationInput(fixture.storage)).identity,
+      rootUri: input.corpusCheckpoint.rootUri, itemUri: input.corpusCheckpoint.itemUri,
+      ...(sourceSystem === "oss_code" ? { sourceEvidenceRecipe: "scce.language_corpus_source_evidence.v1" } : {}) });
     const checkpoints = new Map<string, IngestionCheckpoint>();
     fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); }, get: async id => checkpoints.get(id) ?? null, list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
     if (sourceSystem === "oss_code") checkpoints.set(oldId, { id: oldId, rootUri: input.corpusCheckpoint.rootUri, itemUri: input.corpusCheckpoint.itemUri, phase: "stored", status: "complete", offsetBytes: 0, updatedAt: 1,
@@ -1612,11 +1626,13 @@ describe("multi-corpus training", () => {
     expect(first.compilerRecipe).toBe(languageCorpusTrainingRecipeId(sourceSystem));
     if (sourceSystem === "wikipedia") {
       expect(first.compilerRecipe).toBe(LANGUAGE_CORPUS_TRAINING_RECIPE_ID);
-      expect(checkpoints.has(oldId)).toBe(true);
+      expect(checkpoints.has(oldId)).toBe(false);
+      expect(checkpoints.has(scopedId)).toBe(true);
     } else {
       expect(first.compilerRecipe).toBe(LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID);
       expect(first.sourceCodeFunctionPatterns).toBe(1);
       expect(checkpoints.size).toBe(2);
+      expect(checkpoints.has(scopedId)).toBe(true);
       expect((checkpoints.get(oldId)!.metadata as { binding: string }).binding).toBe("old-code-v2");
     }
     const rows = fixture.state.patterns.length;
@@ -1634,7 +1650,9 @@ describe("multi-corpus training", () => {
     const checkpointKey = { compilerRecipe: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
       sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem), rootUri: input.corpusCheckpoint.rootUri, itemUri: input.corpusCheckpoint.itemUri };
     const legacyId = ids.semanticId("corpus_training_checkpoint", checkpointKey);
-    const scopedId = ids.semanticId("corpus_training_checkpoint", { ...checkpointKey, sourceEvidenceRecipe: "scce.language_corpus_source_evidence.v1" });
+    const scopedId = ids.semanticId("corpus_training_checkpoint", { ...checkpointKey,
+      segmentationIdentity: (await prepareLanguageTrainingSegmentationInput(fixture.storage)).identity,
+      sourceEvidenceRecipe: "scce.language_corpus_source_evidence.v1" });
     const checkpoints = new Map<string, IngestionCheckpoint>();
     fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); },
       get: async id => checkpoints.get(id) ?? null, list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
