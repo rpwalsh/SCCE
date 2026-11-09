@@ -11,8 +11,7 @@ export const SOURCE_ARTIFACT_METADATA_REF_SCHEMA = "scce.source_artifact_metadat
 const hasher = createHasher();
 const record = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const fail = (): never => { throw new Error("canonical source artifact metadata is missing, inaccessible or changed"); };
-// Root objects inspected by SQL remain directly queryable. Only the measured semantic
-// pattern schemas may share these explicit inherited provenance scalars; other families stay unchanged.
+// Keep SQL roots inline; share proven semantic provenance scalars only.
 const SCALAR_PROVENANCE_FIELDS = new Set(["sourceUri", "sourceHash", "sourceSystemId", "title", "authorship", "corpusRole", "forceClass", "provenanceClass", "transcriptSchema", "annotatedTurns"]);
 const SCALAR_PROVENANCE_SCHEMAS = new Set(["scce.language_construction_pattern.v1", "scce.induced_language_model.semantic_memory.v1"]);
 const QUERY_ROOTS = new Set<string>([...REQUEST_SEED_PATTERN_JSON_FIELDS, ...REQUEST_SEED_FRAME_JSON_FIELDS, "graphBoundConstructions", "lexicalClasses", "sourceCompilation", "compilation", "inheritedMetadata", "bundle", "joinProgram", "profileBinding", "sourceDependencies", "requestDependencies", "trainingWitnesses", "pooledSourceBinding", "requirementCoefficients", "model", "identity", "sourceAdmission", "sourceMetadataBinding", "transcriptArchive"]);
