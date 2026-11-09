@@ -1,0 +1,256 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+export function parseSourceBrainPublicationArgs(args) {
+  const result = {};
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index], value = args[index + 1];
+    if (!['--config', '--output'].includes(flag) || !value || value.startsWith('--') || result[flag])
+      throw Error('Usage: node tools/verify-source-brain-publication.mjs --config <fresh-local-config.json> [--output <receipt.json>]');
+    result[flag] = value;
+  }
+  if (!result['--config']) throw Error('A fresh, migrated local verification database config is required');
+  if (result['--output'] && path.resolve(result['--output']).toLowerCase() === path.resolve(result['--config']).toLowerCase()) throw Error('Receipt output must not replace the input config');
+  return { configPath: result['--config'], outputPath: result['--output'] };
+}
+
+export async function verifySourceBrainPublication(options) {
+  const { readScceRuntimeConfig } = await import('../packages/adapters-node/dist/config.js');
+  const { createPostgresStorageAdapter } = await import('../packages/adapters-node/dist/postgres.js');
+  const { trainLanguageCorpusText } = await import('../packages/adapters-node/dist/language-corpus-trainer.js');
+  const { trainDialogueCorpus } = await import('../packages/adapters-node/dist/dialogue-corpus.js');
+  const { trainStoredCorpusConstructions } = await import('../packages/adapters-node/dist/stored-corpus-construction-training.js');
+  const { completeInitialSourceBrainBuild, sourceBrainSelectedItemsFromReports } = await import('../packages/adapters-node/dist/source-brain-build.js');
+  const { finalizeCorpusBrainManifest } = await import('../packages/cli/dist/corpus-brain-manifest.js');
+  const { POSTGRES_REQUIRED_TABLES, canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
+    evidenceSourceFamilyId, preparePooledLanguageProfileBinding } = await import('../packages/kernel/dist/index.js');
+  const config = await readScceRuntimeConfig(options.configPath);
+  if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(new URL(config.database.url).hostname)) throw Error('Rollback-only publication verification requires local PostgreSQL');
+  const access = config.security.informationAccess;
+  if (!access || !access.maximumExportClass || access.maximumExportClass === 'public') throw Error('Publication fixture requires an owner-private information-access context');
+  const storage = createPostgresStorageAdapter({ ...config.database, informationAccess: access });
+  const hasher = createHasher(), suffix = randomUUID(), clock = createClock({ fixedTime: 1 });
+  const ids = createIdFactory({ hasher, clock, namespace: `native-publication.${suffix}`, deterministicReplay: true });
+  const label = { tenantId: access.tenantId, principals: [access.principalId], compartments: [...access.compartments], exportClass: access.maximumExportClass, mergePolicy: 'isolated' };
+  const report = { schema: 'scce.native_source_brain_publication.v1', at: new Date().toISOString(), capabilityEvaluation: false,
+    isolation: 'fresh_physical_database_single_backend_outer_rollback_with_adapter_savepoints',
+    segmentation: 'explicit_fixture_local_bootstrap', checks: [], fixtureRolledBack: false, stages: [] };
+  const tables = POSTGRES_REQUIRED_TABLES.filter(name => name !== 'storage_meta');
+  let physical, outerOpen = false, root, stage = 'preflight', initial, sequence = 0;
+  let queryTail = Promise.resolve();
+  const physicalQuery = (sql, params) => {
+    const next = queryTail.then(() => physical.query(sql, params));
+    queryTail = next.then(() => undefined, () => undefined);
+    return next;
+  };
+  const originalConnect = storage.pool.connect, originalQuery = storage.pool.query;
+  const check = (name, operation) => { operation(); report.checks.push({ name, passed: true }); };
+  const mark = value => { stage = value; report.stages.push({ phase: value, at: new Date().toISOString() }); };
+  const counts = async () => Object.fromEntries((await storage.query(tables.map(name => `SELECT '${name}' AS name,count(*)::text AS count FROM ${storage.table(name)}`).join(' UNION ALL '))).map(row => [row.name, Number(row.count)]));
+  const snapshot = async () => ({ revision: await storage.languageMemory.readRevision(), active: await storage.brainImports.active(),
+    counts: await counts(), metadataDigest: hasher.digestHex(canonicalStringify(await storage.query(`SELECT key,value_json FROM ${storage.table('storage_meta')} ORDER BY key COLLATE "C"`))) });
+  try {
+    assert.equal((await storage.verify()).ok, true, 'Fresh verification database must already be migrated');
+    initial = await snapshot();
+    check('fresh-physical-database-has-no-source-learned-or-lifecycle-state', () => {
+      assert.ok(Object.values(initial.counts).every(count => count === 0));
+      assert.equal(initial.active.activeBrainVersion, undefined); assert.deepEqual(initial.active.activeImportRunIds, []);
+    });
+    physical = await storage.pool.connect();
+    await physicalQuery('BEGIN'); outerOpen = true;
+    storage.pool.query = physicalQuery;
+    storage.pool.connect = async () => {
+      const name = `publication_adapter_${++sequence}`;
+      return { async query(sql, params) {
+        if (sql === 'BEGIN') return physicalQuery(`SAVEPOINT ${name}`);
+        if (sql === 'COMMIT') return physicalQuery(`RELEASE SAVEPOINT ${name}`);
+        if (sql === 'ROLLBACK') { await physicalQuery(`ROLLBACK TO SAVEPOINT ${name}`); return physicalQuery(`RELEASE SAVEPOINT ${name}`); }
+        return physicalQuery(sql, params);
+      }, release() {} };
+    };
+    root = await mkdtemp(path.join(tmpdir(), 'scce-native-publication-'));
+    const settings = { ngramMaxOrder: 2, ngramMaxCountersPerOrder: 256, ngramVocabularyLimit: 512 };
+    const publicFixtureBytes = await readFile(new URL('../packages/kernel/src/__tests__/fixtures/squad-contextual-qa-family.json', import.meta.url));
+    const publicFixture = JSON.parse(publicFixtureBytes.toString('utf8'));
+    const rows = publicFixture.records.filter((row, index, all) => all.findIndex(other => other.context === row.context) === index).slice(0, 2);
+    assert.equal(rows.length, 2, 'Committed human training fixture needs two distinct unchanged contexts');
+    report.sources = { dataset: publicFixture.dataset, split: publicFixture.split, committedFixtureSha256: hasher.digestHex(publicFixtureBytes), contexts: rows.length };
+    mark('normal-public-source-training');
+    const publicReports = [], pages = [];
+    for (const [index, row] of rows.entries()) {
+      const uri = `fixture://native-publication/${suffix}/public/${index}`;
+      const trained = await trainLanguageCorpusText({ storage, ...settings, languageOnly: true, skipNgramObservationPersistence: true,
+        sourceSystem: 'wikipedia', sourceUri: uri, streamUri: uri, text: row.context, informationLabel: label, createdAt: 1, idFactory: ids,
+        corpusMetadata: { authorship: 'human_authored', dataset: publicFixture.dataset, originalTrainingSha256: publicFixture.sha256, articleTitle: row.articleTitle, originalRecordId: row.qa.id },
+        originalSource: { bytes: Buffer.from(JSON.stringify(row)), sourceUri: `${uri}/record.json`, transformId: 'native-fixture.squad-record-context.v1', kind: 'extracted-text', originalCoordinateSpace: 'source-bytes' } });
+      const evidence = await storage.evidence.getEvidenceBatch(trained.artifacts.evidenceIds);
+      assert.ok(evidence.length && evidence.every(span => span.status === 'promoted' && span.sourceVersionId === trained.sourceVersionId));
+      const source = await storage.evidence.sourceVersionById(trained.sourceVersionId);
+      assert.ok(source?.derivation && source.derivation.derivedFromSourceVersionId === trained.originalSourceVersionId);
+      const ownedText = Buffer.from(await storage.blobs.get(source.contentHash)).toString('utf8');
+      assert.equal(ownedText, row.context, 'Public fixture context must remain byte-exact through normal source training');
+      publicReports.push(trained); pages.push({ text: ownedText, source, evidence });
+    }
+    check('normal-public-trainer-produced-real-derived-source-owners', () => assert.equal(publicReports.length, 2));
+    mark('normal-pooled-owner-training');
+    const text = pages.map(page => page.text).join('\n\n'), virtualVersion = ids.sourceVersionId(`pool:${suffix}:${text}`);
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: virtualVersion, text, createdAt: 1 });
+    let offset = 0;
+    const sourceFamilyRanges = pages.map(page => { const row = { start: offset, end: offset + page.text.length,
+      sourceFamilyId: evidenceSourceFamilyId(page.evidence[0]), sourceVersionId: page.source.sourceVersionId }; offset = row.end + 2; return row; });
+    const evidence = pages.flatMap(page => page.evidence);
+    const profileBinding = preparePooledLanguageProfileBinding({ profile, sourceVersionId: virtualVersion, text, evidence,
+      parentSourceVersionIds: pages.map(page => page.source.sourceVersionId), sourceFamilyRanges, hasher });
+    const pooled = await trainLanguageCorpusText({ storage, ...settings, sourceSystem: 'wikipedia', sourceUri: `scce://native-publication/${suffix}/pool`,
+      streamUri: `scce://native-publication/${suffix}/pool`, sourceVersionId: virtualVersion, text, profile, profileBinding, sourceFamilyRanges, evidence,
+      persistSource: false, persistProfile: true, languageOnly: true, skipNgramObservationPersistence: true, informationLabel: label, createdAt: 1, idFactory: ids });
+    const pooledHeader = await storage.model.listLanguageProfileHeaders({ profileIds: [pooled.artifacts.languageProfileId], limit: 1 });
+    const pooledModels = await storage.languageMemory.listNgramModelHeaders({ modelIds: pooled.artifacts.ngramModelIds, profileIds: [pooled.artifacts.languageProfileId], limit: pooled.artifacts.ngramModelIds.length });
+    check('native-pooled-profile-header-retains-real-current-evidence-owners', () => {
+      assert.equal(pooledHeader.length, 1); assert.equal(pooledHeader[0].sourceVersionId, virtualVersion);
+      assert.deepEqual([...pooledHeader[0].parentSourceVersionIds].sort(), pages.map(page => page.source.sourceVersionId).sort());
+      assert.equal(pooledModels.length, pooled.artifacts.ngramModelIds.length); assert.ok(pooledModels.every(row => row.profileId === pooled.artifacts.languageProfileId));
+    });
+    const virtualSource = await storage.evidence.sourceVersionById(virtualVersion);
+    check('pooled-profile-has-no-fabricated-source-version', () => assert.equal(virtualSource, null));
+    mark('normal-human-dialogue-training');
+    const humanBytes = await readFile(new URL('../packages/kernel/src/__tests__/fixtures/dolly-human-creative-pair.json', import.meta.url));
+    const dialogueRoot = path.join(root, 'dialogue');
+    const { mkdir } = await import('node:fs/promises'); await mkdir(dialogueRoot);
+    const humanPath = path.join(dialogueRoot, 'human.json'); await writeFile(humanPath, humanBytes);
+    const dialogue = await trainDialogueCorpus({ storage, ...settings, rootPath: dialogueRoot, authorship: 'human_authored', informationLabel: label });
+    check('normal-human-dialogue-producer-completed-without-standalone-activation', () => {
+      assert.equal(dialogue.selection.languageTrainingComplete, true); assert.equal(dialogue.filesTrained, 1); assert.deepEqual(dialogue.filesSkipped, []);
+      assert.equal(dialogue.sourceBrainBuild, undefined);
+    });
+    mark('normal-explicit-stored-replay');
+    const stored = await trainStoredCorpusConstructions({ storage, ...settings, sourceSystem: 'wikipedia', languageOnly: true,
+      sourceVersionIds: pages.map(page => page.source.sourceVersionId), minArticleBytes: 0, maxArticleBytes: 1024 * 1024,
+      maxTotalBytes: 1024 * 1024, batchBytes: 1024 * 1024, maxSourceAttempts: pages.length, sourcePageSize: pages.length });
+    check('normal-stored-replay-reports-full-current-owner-artifacts', () => {
+      assert.equal(stored.selection.languageTrainingComplete, true); assert.equal(stored.articlesTrained, pages.length);
+      assert.deepEqual(stored.sourcesSkipped, []); assert.deepEqual(stored.batchesFailed, []);
+      assert.ok(stored.reports.every(row => row.segmentation.mode === 'local_bootstrap' && row.ngramModels > 0));
+    });
+    const reports = [...stored.reports, ...dialogue.reports];
+    const profiles = await storage.model.listLanguageProfileHeaders({ profileIds: reports.map(row => row.artifacts.languageProfileId), limit: reports.length });
+    const models = await storage.languageMemory.listNgramModelHeaders({ modelIds: reports.flatMap(row => row.artifacts.ngramModelIds), profileIds: profiles.map(row => row.id), limit: reports.reduce((sum, row) => sum + row.artifacts.ngramModelIds.length, 0) });
+    check('native-direct-profile-and-model-headers-match-normal-reports', () => {
+      assert.equal(profiles.length, reports.length);
+      assert.equal(models.length, reports.reduce((sum, row) => sum + row.artifacts.ngramModelIds.length, 0));
+      assert.ok(reports.every(row => profiles.some(profile => profile.id === row.artifacts.languageProfileId && profile.sourceVersionId === row.sourceVersionId)));
+    });
+    const storedBytes = Buffer.from(JSON.stringify(stored)), dialogueBytes = Buffer.from(JSON.stringify(dialogue));
+    await writeFile(path.join(root, 'stored.json'), storedBytes); await writeFile(path.join(root, 'dialogue.json'), dialogueBytes);
+    const selected = sourceBrainSelectedItemsFromReports(reports), selectedItems = [];
+    for (const item of selected) {
+      const version = await storage.evidence.sourceVersionById(item.sourceVersionId);
+      selectedItems.push({ ...item, canonicalUri: version.canonicalUri,
+        ...(version.canonicalUri === pathToFileURL(humanPath).href ? { sourceFileHash: hasher.digestHex(humanBytes) } : {}) });
+    }
+    const plan = { schema: 'scce.storedSourceBrainPlan.v1', sourceId: `native-publication.${suffix}`, rootPath: root, selectedItems,
+      reportFiles: [{ path: 'stored.json', sha256: hasher.digestHex(storedBytes) }, { path: 'dialogue.json', sha256: hasher.digestHex(dialogueBytes) }] };
+    const manifestBytes = Buffer.from(JSON.stringify(plan)), manifestPath = path.join(root, 'plan.json'); await writeFile(manifestPath, manifestBytes);
+    const byteBudget = manifestBytes.byteLength + storedBytes.byteLength + dialogueBytes.byteLength;
+    const finalizerInput = { storage, informationLabel: label, manifestPath, maxTotalBytes: byteBudget };
+    mark('partial-cohort-refusal');
+    const partialBytes = Buffer.from(JSON.stringify({ ...stored, stoppedByHeapSafetyBound: true }));
+    const partialPlan = { ...plan, reportFiles: [{ path: 'partial-stored.json', sha256: hasher.digestHex(partialBytes) }, plan.reportFiles[1]] };
+    const partialManifestBytes = Buffer.from(JSON.stringify(partialPlan)), partialPath = path.join(root, 'partial-plan.json');
+    await writeFile(path.join(root, 'partial-stored.json'), partialBytes); await writeFile(partialPath, partialManifestBytes);
+    await assert.rejects(finalizeCorpusBrainManifest({ ...finalizerInput, manifestPath: partialPath,
+      maxTotalBytes: partialManifestBytes.byteLength + partialBytes.byteLength + dialogueBytes.byteLength }), /complete stored-source/);
+    const afterPartialActive = await storage.brainImports.active(), beforeReady = await counts();
+    check('partial-cohort-never-registers-or-activates', () => {
+      assert.deepEqual(afterPartialActive.activeImportRunIds, []); assert.equal(afterPartialActive.activeBrainVersion, undefined);
+      assert.equal(beforeReady.brain_import_lifecycle, 0);
+    });
+    mark('canonical-ready-validation');
+    const selectedIds = selected.map(row => row.sourceVersionId);
+    const ready = await completeInitialSourceBrainBuild({ storage, informationLabel: label, sourceId: plan.sourceId, sourceSchema: plan.schema,
+      rootPath: plan.rootPath, sourceManifestHash: hasher.digestHex(manifestBytes), selectedItems: selected, reports,
+      configuration: { maxTotalBytes: byteBudget }, completion: { explicitSelection: true, selectedItemIds: selectedIds, completedItemIds: selectedIds,
+        stoppedByHeapSafetyBound: false, interrupted: false, skippedRequiredItemIds: [] }, activate: false });
+    check('canonical-validation-produces-ready-with-learned-identities', () => {
+      assert.equal(ready.lifecycle.state, 'READY'); assert.equal(ready.report.disposition, 'PASSED'); assert.equal(ready.active, false);
+      assert.ok(ready.report.checks.every(row => row.passed));
+    });
+    const parentIds = pages.map(page => page.source.derivation.derivedFromSourceVersionId);
+    check('replay-manifest-retains-real-source-parent-chain', () => assert.ok(parentIds.every(id => ready.lifecycle.manifest.replayManifest.componentIds.includes(id))));
+    const invalidatedId = stored.reports[0].artifacts.evidenceIds[0];
+    mark('stale-ready-refusal');
+    await physicalQuery('SAVEPOINT publication_ready_negative');
+    await storage.query(`UPDATE ${storage.table('evidence_spans')} SET status='quarantined' WHERE id=$1`, [invalidatedId]);
+    await assert.rejects(finalizeCorpusBrainManifest(finalizerInput), /ready source brain no longer satisfies canonical source\/artifact validation/);
+    const staleReadyActive = await storage.brainImports.active(), staleReadyLifecycle = await storage.brainImports.getLifecycle(ready.lifecycle.importRunId);
+    await physicalQuery('ROLLBACK TO SAVEPOINT publication_ready_negative'); await physicalQuery('RELEASE SAVEPOINT publication_ready_negative');
+    check('fresh-failed-validation-cannot-activate-existing-ready', () => {
+      assert.deepEqual(staleReadyActive.activeImportRunIds, []); assert.equal(staleReadyActive.activeBrainVersion, undefined); assert.equal(staleReadyLifecycle.state, 'READY');
+    });
+    mark('canonical-manifest-finalization');
+    const active = await finalizeCorpusBrainManifest(finalizerInput);
+    check('combined-manifest-activates-the-same-validated-ready-brain', () => {
+      assert.equal(active.status, 'activated'); assert.equal(active.active, true); assert.equal(active.importRunId, ready.lifecycle.importRunId);
+      assert.deepEqual((active.checks ?? []).filter(row => !row.passed), []);
+    });
+    const activeMarker = await storage.brainImports.active();
+    assert.equal(activeMarker.activeBrainVersion, ready.lifecycle.brainVersion); assert.deepEqual(activeMarker.activeImportRunIds, [ready.lifecycle.importRunId]);
+    const revisionBeforeReplay = await storage.languageMemory.readRevision();
+    const replay = await finalizeCorpusBrainManifest(finalizerInput);
+    check('same-current-cohort-finalization-is-idempotent', () => { assert.equal(replay.active, true); assert.equal(replay.idempotent, true); assert.equal(replay.importRunId, active.importRunId); });
+    const revisionAfterReplay = await storage.languageMemory.readRevision();
+    check('idempotent-finalization-does-not-rewrite-language-state', () => assert.equal(revisionAfterReplay, revisionBeforeReplay));
+    mark('stale-active-refusal');
+    await physicalQuery('SAVEPOINT publication_active_negative');
+    await storage.query(`UPDATE ${storage.table('evidence_spans')} SET status='quarantined' WHERE id=$1`, [invalidatedId]);
+    await assert.rejects(finalizeCorpusBrainManifest(finalizerInput), /active source brain no longer satisfies canonical source\/artifact validation/);
+    const revokedPooled = await storage.model.listLanguageProfileHeaders({ profileIds: [pooled.artifacts.languageProfileId], limit: 1 });
+    const revokedModels = await storage.languageMemory.listNgramModelHeaders({ modelIds: pooled.artifacts.ngramModelIds, profileIds: [pooled.artifacts.languageProfileId], limit: pooled.artifacts.ngramModelIds.length });
+    await physicalQuery('ROLLBACK TO SAVEPOINT publication_active_negative'); await physicalQuery('RELEASE SAVEPOINT publication_active_negative');
+    check('active-replay-and-pooled-headers-refuse-revoked-current-support', () => { assert.deepEqual(revokedPooled, []); assert.deepEqual(revokedModels, []); });
+    report.fixtureArtifacts = { selectedOwners: selected.length, directReportedProfiles: profiles.length, directReportedNgramStructures: models.length,
+      pooledProfiles: pooledHeader.length, pooledNgramStructures: pooledModels.length, parentVersions: parentIds.length,
+      activeBrainVersion: active.activeBrainVersion, observedFixtureCounts: await counts() };
+  } catch (error) {
+    report.error = { stage, name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null,
+      lastPassedCheck: report.checks.at(-1)?.name ?? null };
+  } finally {
+    if (outerOpen) { try { await physicalQuery('ROLLBACK'); report.fixtureRolledBack = true; }
+      catch (error) { report.error ??= { stage: 'outer-rollback', name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null }; } }
+    try {
+      if (initial && report.fixtureRolledBack) {
+        const restored = await snapshot();
+        check('outer-rollback-retains-zero-fixture-source-and-learned-records', () => assert.deepEqual(restored.counts, initial.counts));
+        check('outer-rollback-restores-revision-and-storage-metadata', () => { assert.equal(restored.revision, initial.revision); assert.equal(restored.metadataDigest, initial.metadataDigest); });
+        check('outer-rollback-restores-empty-active-marker', () => assert.deepEqual(restored.active, initial.active));
+      }
+    } catch (error) { report.error ??= { stage: 'rollback-verification', name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null }; }
+    storage.pool.connect = originalConnect; storage.pool.query = originalQuery; physical?.release(); await storage.close();
+    if (root) {
+      const resolved = path.resolve(root);
+      if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('scce-native-publication-')) throw Error('Unexpected disposable fixture directory');
+      await rm(resolved, { recursive: true, force: true });
+    }
+  }
+  report.passed = !report.error && report.fixtureRolledBack;
+  if (options.outputPath) await writeFile(options.outputPath, JSON.stringify(report, null, 2));
+  return report;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const report = await verifySourceBrainPublication(parseSourceBrainPublicationArgs(process.argv.slice(2)));
+    console.log(JSON.stringify(report));
+    if (!report.passed) process.exitCode = 1;
+  } catch (error) {
+    console.log(JSON.stringify({ schema: 'scce.native_source_brain_publication.v1', capabilityEvaluation: false, passed: false,
+      error: { stage: 'startup-or-cleanup', name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null } }));
+    process.exitCode = 1;
+  }
+}
