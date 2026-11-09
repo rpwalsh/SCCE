@@ -49,7 +49,7 @@ async function fixture() {
   const hasher = createHasher(), runtime = createLanguageMemoryRuntime({ hasher, idFactory: createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true }) });
   const produce = (profile: LanguageProfile, text: string): NgramModelRecord => ({ ...runtime.train({ streamId: `fixture://${profile.id}`, sourceSystem: "wikipedia",
     profile, text, sourceVersionId: profile.sourceVersionId, evidence: profile.id === direct.id ? source.pages[0]!.evidence : source.evidence,
-    createdAt: 1, retainNgramObservations: false }).models[0]!, informationLabel: label });
+    createdAt: 1, retainObservations: false }).models[0]!, informationLabel: label });
   const directModel = produce(direct, source.pages[0]!.text), pooledModel = produce(pooled, source.text);
   await adapter.model.putLanguageProfiles!([direct, pooled]);
   await adapter.languageMemory.putNgramModels!([directModel, pooledModel]);
