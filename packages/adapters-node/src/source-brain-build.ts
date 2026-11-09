@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
   canonicalStringify,
+  CORPUS_SOURCE_SYSTEM_IDS,
   compileBrainReplayManifest,
   createHasher,
   createLanguageIdentityRuntime,
@@ -284,11 +285,19 @@ export async function completeInitialSourceBrainFromStoredReport(input: {
     completion: { explicitSelection: true, selectedItemIds: ids, completedItemIds: ids, stoppedByHeapSafetyBound: false, interrupted: false, skippedRequiredItemIds: [] } });
 }
 
+export interface SourceBrainPlannedProjection {
+  sourceSystemId: string;
+  projection?: string;
+  transformId?: string;
+  originalSourceVersionId?: string;
+  sourceVersionId?: string;
+}
+
 export interface StoredSourceBrainPlan {
   schema: "scce.storedSourceBrainPlan.v1";
   sourceId: string;
   rootPath: string;
-  selectedItems: Array<Omit<SourceBrainSelectedItem, "sourceVersionId"> & { sourceVersionId?: string; canonicalUri: string; sourceFileHash?: string }>;
+  selectedItems: Array<Omit<SourceBrainSelectedItem, "sourceVersionId"> & { sourceVersionId?: string; canonicalUri: string; sourceFileHash?: string; projections?: SourceBrainPlannedProjection[] }>;
   reportFiles: Array<{ path: string; sha256?: string }>;
 }
 
@@ -305,8 +314,9 @@ export function validateStoredSourceBrainPlan(value: unknown, complete = false):
       || typeof row.byteLength !== "number" || !Number.isSafeInteger(row.byteLength) || row.byteLength <= 0
       || (row.sourceFileHash !== undefined && (typeof row.sourceFileHash !== "string" || !/^[a-f0-9]{64}$/iu.test(row.sourceFileHash))))
       throw new Error("invalid planned source file/owner binding");
+    const projections = row.projections === undefined ? undefined : parsePlannedProjections(row.projections);
     return { ...(typeof row.sourceVersionId === "string" ? { sourceVersionId: row.sourceVersionId } : {}), canonicalUri: row.canonicalUri, contentHash: row.contentHash, byteLength: row.byteLength,
-      ...(typeof row.sourceFileHash === "string" ? { sourceFileHash: row.sourceFileHash.toLowerCase() } : {}) };
+      ...(typeof row.sourceFileHash === "string" ? { sourceFileHash: row.sourceFileHash.toLowerCase() } : {}), ...(projections ? { projections } : {}) };
   });
   const reportFiles = plan.reportFiles.map(value => {
     const row = objectRecord(value);
@@ -328,8 +338,9 @@ export async function completeInitialSourceBrainFromStoredReports(input: {
   if (input.reports.length !== plan.reportFiles.length) throw new Error("brain manifest requires every planned report file");
   const reports: LanguageCorpusTrainingReport[] = [];
   const canonicalInputs = new Map<string, SourceVersion>();
+  const declaredAcquisitions = new Map<string, unknown>();
   for (const value of input.reports) {
-    const report = objectRecord(value), selection = objectRecord(report.selection);
+    const report = await sourceBrainNormalTrainingReport(value), selection = objectRecord(report.selection);
     if (!Array.isArray(report.reports) || !report.reports.every(isLanguageTrainingReport)) throw new Error("invalid completed source training report");
     if (report.schema === "scce.dialogueCorpusTrainReport.v1") {
       const selected = stringArray(selection.selectedSourceUris), completed = stringArray(selection.completedSourceUris);
@@ -359,33 +370,125 @@ export async function completeInitialSourceBrainFromStoredReports(input: {
         || report.stoppedByHeapSafetyBound !== false || report.stoppedByStorageFailure !== false || report.stoppedByInterruption !== false
         || !Array.isArray(report.sourcesSkipped) || report.sourcesSkipped.length || !Array.isArray(report.batchesFailed) || report.batchesFailed.length)
         throw new Error("brain manifest requires a complete stored-source report");
+    } else if (report.schema === "scce.ossCorpusTrainReport.v1") {
+      const skipped = Array.isArray(report.filesSkipped) ? report.filesSkipped.map(objectRecord) : undefined;
+      const closure = objectRecord(report.sourceContractClosure);
+      if (!skipped || report.snapshotComplete !== true || report.inspectionTruncated !== false || report.stoppedByHeapSafetyBound !== false
+        || typeof report.snapshotHash !== "string" || !/^[a-f0-9]{64}$/iu.test(report.snapshotHash)
+        || !Number.isSafeInteger(report.startFileIndex) || !Number.isSafeInteger(report.filesConsidered) || !Number.isSafeInteger(report.nextFileIndex)
+        || Number(report.startFileIndex) < 0 || Number(report.filesConsidered) < 0
+        || report.nextFileIndex !== Number(report.startFileIndex) + Number(report.filesConsidered)
+        || skipped.some(row => typeof row.reason !== "string" || row.reason.startsWith("training_failed:"))
+        || report.reports.some(row => row.sourceSystemId !== CORPUS_SOURCE_SYSTEM_IDS.ossCode && row.sourceSystemId !== CORPUS_SOURCE_SYSTEM_IDS.ossDocs)
+        || report.docsTrained !== report.reports.filter(row => row.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossDocs).length
+        || report.codeTrained !== report.reports.filter(row => row.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossCode).length
+        || (report.sourceContractClosure !== undefined && (closure.complete !== true || closure.incompleteInRound !== 0)))
+        throw new Error("brain manifest requires complete normal OSS training reports");
+      if (report.acquisitionProvenance !== undefined) for (const row of report.reports) declaredAcquisitions.set(row.sourceVersionId, report.acquisitionProvenance);
+    } else if (report.schema === "scce.gutenbergCorpusTrainReport.v1") {
+      if (report.stoppedByHeapSafetyBound !== false || !Array.isArray(report.filesSkipped) || report.filesSkipped.length
+        || report.filesTrained !== report.reports.length || !Number.isSafeInteger(report.startFileIndex) || Number(report.startFileIndex) < 0
+        || report.sourceSystem !== CORPUS_SOURCE_SYSTEM_IDS.gutenberg || report.reports.some(row => row.sourceSystemId !== report.sourceSystem))
+        throw new Error("brain manifest requires complete normal Gutenberg training reports");
     } else throw new Error("unsupported source brain report schema");
     reports.push(...report.reports);
   }
   const selected = sourceBrainSelectedItemsFromReports(reports);
-  if (selected.length !== plan.selectedItems.length) throw new Error("completed reports do not cover the entire planned brain cohort exactly");
   if (!input.storage.evidence.sourceVersionById) throw new Error("brain finalization requires canonical source identity reads");
-  const plannedByUri = new Map(plan.selectedItems.map(item => [item.canonicalUri, item]));
-  const matchedUris = new Set<string>();
-  for (const selectedItem of selected) {
-    const version = canonicalInputs.get(selectedItem.sourceVersionId) ?? await input.storage.evidence.sourceVersionById(selectedItem.sourceVersionId as SourceVersionId);
-    const item = version ? plannedByUri.get(version.canonicalUri) : undefined;
-    const metadata = objectRecord(version?.metadata);
-    if (!item || !version || matchedUris.has(version.canonicalUri) || (item.sourceVersionId !== undefined && item.sourceVersionId !== selectedItem.sourceVersionId)
-      || normalizeContentHash(String(version.contentHash)) !== normalizeContentHash(item.contentHash) || version.byteLength !== item.byteLength
-      || normalizeContentHash(selectedItem.contentHash) !== normalizeContentHash(item.contentHash) || selectedItem.byteLength !== item.byteLength
-      || (item.sourceFileHash !== undefined && (metadata.sourceHash !== item.sourceFileHash || metadata.authorship !== "human_authored")))
-      throw new Error(`planned source owner/file binding does not match canonical source: ${selectedItem.sourceVersionId}`);
-    if (reports.some(report => (report.originalSourceVersionId || report.sourceVersionId) === selectedItem.sourceVersionId && report.sourceSystem === "dialogue") && !item.sourceFileHash)
-      throw new Error("human dialogue plan requires the exact original file hash");
-    matchedUris.add(version.canonicalUri);
+  const byUri = new Map<string, Array<{ report: LanguageCorpusTrainingReport; original: SourceVersion; source: SourceVersion }>>();
+  for (const report of reports) {
+    const originalId = report.originalSourceVersionId || report.sourceVersionId;
+    const original = canonicalInputs.get(originalId) ?? await input.storage.evidence.sourceVersionById(originalId as SourceVersionId);
+    const source = await input.storage.evidence.sourceVersionById(report.sourceVersionId as SourceVersionId);
+    if (!original || !source || (originalId !== report.sourceVersionId && source.derivation && String(source.derivation.derivedFromSourceVersionId) !== originalId))
+      throw new Error("completed training projection lacks its exact canonical source/parent");
+    if (declaredAcquisitions.has(report.sourceVersionId)) {
+      const acquisition = canonicalStringify(toJsonValue(declaredAcquisitions.get(report.sourceVersionId)));
+      if (canonicalStringify(toJsonValue(objectRecord(original.metadata).acquisitionProvenance)) !== acquisition
+        || canonicalStringify(toJsonValue(objectRecord(source.metadata).acquisitionProvenance)) !== acquisition)
+        throw new Error("completed OSS acquisition provenance differs from canonical source owners");
+    }
+    canonicalInputs.set(originalId, original);
+    const group = byUri.get(original.canonicalUri) ?? []; group.push({ report, original, source }); byUri.set(original.canonicalUri, group);
   }
-  if (matchedUris.size !== plannedByUri.size) throw new Error("completed reports omit planned brain source files");
+  if (byUri.size !== plan.selectedItems.length) throw new Error("completed reports do not cover the entire planned brain cohort exactly");
+  for (const item of plan.selectedItems) {
+    const group = byUri.get(item.canonicalUri);
+    if (!group?.length) throw new Error("completed reports omit planned brain source files");
+    const originalIds = new Set(group.map(row => String(row.original.sourceVersionId)));
+    if ((item.sourceVersionId !== undefined && (originalIds.size !== 1 || !originalIds.has(item.sourceVersionId)))
+      || group.some(({ report, original }) => normalizeContentHash(String(original.contentHash)) !== normalizeContentHash(item.contentHash)
+        || original.byteLength !== item.byteLength || normalizeContentHash(report.sourceContentHash) !== normalizeContentHash(item.contentHash)
+        || report.sourceByteLength !== item.byteLength || (item.sourceFileHash !== undefined
+          && normalizeContentHash(String(objectRecord(original.metadata).sourceHash)) !== item.sourceFileHash)))
+      throw new Error(`planned source owner/file binding does not match canonical source: ${item.canonicalUri}`);
+    const human = group.some(row => row.report.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.dialogue);
+    if (human && (!item.sourceFileHash || group.some(row => objectRecord(row.original.metadata).authorship !== "human_authored")))
+      throw new Error("human dialogue plan requires the exact original file hash and authorship");
+    const projectedCorpus = group.some(row => new Set<string>([CORPUS_SOURCE_SYSTEM_IDS.ossCode, CORPUS_SOURCE_SYSTEM_IDS.ossDocs, CORPUS_SOURCE_SYSTEM_IDS.gutenberg]).has(row.report.sourceSystemId));
+    if (projectedCorpus && !item.sourceFileHash) throw new Error("projected source file requires its exact original file hash");
+    if (!item.projections) {
+      if (group.length !== 1 || originalIds.size !== 1 || projectedCorpus) throw new Error("planned physical file requires its complete explicit projection declarations");
+    } else {
+      if (item.projections.length !== group.length) throw new Error("completed reports omit or duplicate a planned file projection");
+      const matched = new Set<number>();
+      for (const expected of item.projections) {
+        const matches = group.flatMap((row, index) => {
+          const metadata = objectRecord(row.source.metadata);
+          return row.report.sourceSystemId === expected.sourceSystemId && metadata.sourceSystemId === expected.sourceSystemId
+            && (expected.projection === undefined || metadata.projection === expected.projection)
+            && (expected.transformId === undefined || row.source.derivation?.transformId === expected.transformId)
+            && (expected.originalSourceVersionId === undefined || String(row.original.sourceVersionId) === expected.originalSourceVersionId)
+            && (expected.sourceVersionId === undefined || String(row.source.sourceVersionId) === expected.sourceVersionId) ? [index] : [];
+        });
+        if (matches.length !== 1 || matched.has(matches[0]!)) throw new Error("planned projection is ambiguous, foreign, changed, or missing");
+        matched.add(matches[0]!);
+      }
+    }
+  }
   const ids = selected.map(item => item.sourceVersionId);
   return completeInitialSourceBrainBuild({ storage: input.storage, informationLabel: input.informationLabel, sourceId: plan.sourceId,
     sourceSchema: plan.schema, rootPath: plan.rootPath, sourceManifestHash: input.sourceManifestHash, selectedItems: selected,
     reports, configuration: input.configuration, now: input.now, completion: { explicitSelection: true, selectedItemIds: ids,
       completedItemIds: ids, stoppedByHeapSafetyBound: false, interrupted: false, skippedRequiredItemIds: [] } });
+}
+
+function parsePlannedProjections(value: unknown): SourceBrainPlannedProjection[] {
+  if (!Array.isArray(value) || !value.length) throw new Error("planned file projections must be nonempty");
+  const rows = value.map(value => {
+    const row = objectRecord(value);
+    if (Object.keys(row).some(key => !["sourceSystemId", "projection", "transformId", "originalSourceVersionId", "sourceVersionId"].includes(key))
+      || typeof row.sourceSystemId !== "string" || !row.sourceSystemId || (row.projection === undefined && row.transformId === undefined)
+      || ["projection", "transformId", "originalSourceVersionId", "sourceVersionId"].some(key => row[key] !== undefined && (typeof row[key] !== "string" || !row[key])))
+      throw new Error("invalid planned source projection");
+    return { sourceSystemId: row.sourceSystemId,
+      ...(typeof row.projection === "string" ? { projection: row.projection } : {}), ...(typeof row.transformId === "string" ? { transformId: row.transformId } : {}),
+      ...(typeof row.originalSourceVersionId === "string" ? { originalSourceVersionId: row.originalSourceVersionId } : {}),
+      ...(typeof row.sourceVersionId === "string" ? { sourceVersionId: row.sourceVersionId } : {}) };
+  });
+  if (new Set(rows.map(row => canonicalStringify(toJsonValue(row)))).size !== rows.length) throw new Error("duplicate planned file projection");
+  return rows;
+}
+
+async function sourceBrainNormalTrainingReport(value: unknown): Promise<Record<string, unknown>> {
+  const report = objectRecord(value);
+  if (report.schema !== "scce.githubOssAcquisition.v1") return report;
+  const provenance = objectRecord(report.provenance), training = objectRecord(report.training), acquisition = objectRecord(training.acquisitionProvenance);
+  if (typeof report.commitSha !== "string" || !/^[a-f0-9]{40}$/u.test(report.commitSha) || typeof report.remoteUrl !== "string"
+    || provenance.commitSha !== report.commitSha || provenance.remoteUrl !== report.remoteUrl || !Array.isArray(report.files)
+    || training.schema !== "scce.ossCorpusTrainReport.v1" || training.snapshotKind !== "git_snapshot"
+    || training.snapshotHash !== provenance.snapshotHash || acquisition.commitSha !== report.commitSha || acquisition.remoteUrl !== report.remoteUrl
+    || acquisition.snapshotHash !== provenance.snapshotHash) throw new Error("brain manifest requires an exact pinned GitHub acquisition/training report");
+  const files = report.files.map(value => { const row = objectRecord(value);
+    if (typeof row.path !== "string" || !row.path || typeof row.contentHash !== "string" || !/^[a-f0-9]{64}$/iu.test(row.contentHash)
+      || typeof row.byteLength !== "number" || !Number.isSafeInteger(row.byteLength) || row.byteLength < 0) throw new Error("invalid GitHub snapshot file binding");
+    return { path: row.path, contentHash: row.contentHash, byteLength: row.byteLength }; });
+  const { ingestMaterialSnapshot } = await import("./oss-corpus.js");
+  const snapshot = ingestMaterialSnapshot(files);
+  if (new Set(files.map(file => file.path)).size !== files.length || snapshot.snapshotHash !== provenance.snapshotHash
+    || canonicalStringify(toJsonValue(snapshot.fileHashes)) !== canonicalStringify(toJsonValue(provenance.fileHashes))
+    || files.reduce((sum, file) => sum + file.byteLength, 0) !== report.totalBytes) throw new Error("GitHub snapshot inventory differs from completed training provenance");
+  return training;
 }
 
 function objectRecord(value: unknown): Record<string, unknown> {

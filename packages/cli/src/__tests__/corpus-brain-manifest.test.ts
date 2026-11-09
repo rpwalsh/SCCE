@@ -13,7 +13,7 @@ vi.mock("@scce/adapters-node", async () => ({
   completeInitialSourceBrainFromStoredReports: complete,
   sourceBrainBuildReceipt: (value: unknown) => value
 }));
-import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, verifyPlannedDialogueFiles } from "../corpus-brain-manifest.js";
+import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, verifyPlannedSourceFiles } from "../corpus-brain-manifest.js";
 const roots: string[] = [];
 afterEach(async () => { complete.mockClear(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function fixture() {
@@ -32,7 +32,7 @@ it("reads the exact pinned manifest/reports through the CLI helper and delegates
   const f = await fixture(), manifest = await readCorpusBrainManifest(f.manifestPath, 65536, true);
   expect(parseCorpusTrainOptions([`--brain-manifest=${f.manifestPath}`])).toEqual({ brainManifestPath: f.manifestPath });
   expect(plannedStoredSourceIds(manifest)).toEqual(["wiki-owned"]);
-  await verifyPlannedDialogueFiles(manifest, f.root);
+  await verifyPlannedSourceFiles(manifest, f.root);
   await finalizeCorpusBrainManifest({ storage: {} as ScceStorage, informationLabel: { tenantId: "owner", principals: ["owner"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" }, manifestPath: f.manifestPath, maxTotalBytes: 65536 });
   expect(complete).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ plan: f.plan, reports: [JSON.parse(f.report)], sourceManifestHash: manifest.hash }));
 });
@@ -40,7 +40,7 @@ it("refuses changed report/file hashes, foreign stored selection and cumulative 
   const f = await fixture(), manifest = await readCorpusBrainManifest(f.manifestPath, 65536, true);
   expect(() => plannedStoredSourceIds(manifest, ["not-planned"])).toThrow("outside");
   await writeFile(path.join(f.root, "human.json"), "changed");
-  await expect(verifyPlannedDialogueFiles(manifest, f.root)).rejects.toThrow("file hash changed");
+  await expect(verifyPlannedSourceFiles(manifest, f.root)).rejects.toThrow("file hash changed");
   await writeFile(path.join(f.root, "report.json"), f.report + " ");
   const args = { storage: {} as ScceStorage, informationLabel: { tenantId: "owner", principals: ["owner"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const }, manifestPath: f.manifestPath, maxTotalBytes: 65536 };
   await expect(finalizeCorpusBrainManifest(args)).rejects.toThrow("report hash changed");
@@ -52,5 +52,15 @@ it("allows a pre-training report path without a final hash but refuses finalizat
   await writeFile(f.manifestPath, JSON.stringify(value));
   expect((await readCorpusBrainManifest(f.manifestPath, 65536)).plan.reportFiles).toEqual(value.reportFiles);
   await expect(readCorpusBrainManifest(f.manifestPath, 65536, true)).rejects.toThrow("report file/hash");
+  expect(complete).not.toHaveBeenCalled();
+});
+
+it("refuses malformed or duplicate planned projection pins rather than silently discarding constraints", async () => {
+  const f = await fixture();
+  const projection = { sourceSystemId: "opaque-source-system", projection: "verbatim" };
+  for (const projections of [[{ ...projection, sourceVersionID: "misspelled-owner-pin" }], [projection, projection], []]) {
+    await writeFile(f.manifestPath, JSON.stringify({ ...f.plan, selectedItems: [{ ...f.plan.selectedItems[0], projections }] }));
+    await expect(readCorpusBrainManifest(f.manifestPath, 65536, true)).rejects.toThrow(/projection/);
+  }
   expect(complete).not.toHaveBeenCalled();
 });

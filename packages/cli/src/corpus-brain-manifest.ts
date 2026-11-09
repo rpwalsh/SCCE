@@ -14,18 +14,18 @@ export async function readCorpusBrainManifest(manifestPath: string, byteBudget: 
   return { path: filename, hash: createHasher().digestHex(bytes), plan: validateStoredSourceBrainPlan(JSON.parse(bytes.toString("utf8")), complete), byteBudget, manifestBytes: bytes.byteLength };
 }
 
-/** File hashes are checked before normal dialogue training; canonical decoded source hashes are checked at finalization. */
-export async function verifyPlannedDialogueFiles(manifest: LoadedCorpusBrainManifest, rootPath: string): Promise<void> {
+/** File hashes are checked before normal file training; canonical decoded source hashes are checked at finalization. */
+export async function verifyPlannedSourceFiles(manifest: LoadedCorpusBrainManifest, rootPath: string): Promise<void> {
   const root = path.resolve(rootPath), hasher = createHasher(); let count = 0;
   for (const item of manifest.plan.selectedItems) {
     if (!item.sourceFileHash || !item.canonicalUri.startsWith("file:")) continue;
     const filename = fileURLToPath(item.canonicalUri), relative = path.relative(root, filename);
     if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) continue;
     const bytes = await readBounded(filename, manifest.byteBudget);
-    if (hasher.digestHex(bytes) !== item.sourceFileHash) throw new Error(`planned dialogue file hash changed: ${item.canonicalUri}`);
+    if (hasher.digestHex(bytes) !== item.sourceFileHash) throw new Error(`planned source file hash changed: ${item.canonicalUri}`);
     count++;
   }
-  if (!count) throw new Error("brain manifest contains no planned dialogue files under this training root");
+  if (!count) throw new Error("brain manifest contains no planned source files under this training root");
 }
 export function plannedStoredSourceIds(manifest: LoadedCorpusBrainManifest, requested?: readonly string[]): string[] {
   const all = manifest.plan.selectedItems.filter(item => !item.sourceFileHash).map(item => item.sourceVersionId!);

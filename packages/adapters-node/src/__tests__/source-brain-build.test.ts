@@ -5,9 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { BrainLifecycleRecord, BrainLifecycleState, ScceStorage } from "@scce/kernel";
 import type { LanguageCorpusTrainingReport } from "../language-corpus-trainer.js";
 
-vi.mock("@scce/kernel", () => {
+vi.mock("@scce/kernel", async importOriginal => {
+  const { CORPUS_SOURCE_SYSTEM_IDS } = await importOriginal<typeof import("@scce/kernel")>();
   const digestHex = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
   return {
+    CORPUS_SOURCE_SYSTEM_IDS,
     canonicalStringify: (value: unknown) => JSON.stringify(value),
     createHasher: () => ({ digestHex }),
     compileBrainReplayManifest: (input: { sourceSchema: string; sourceManifestHash: string; componentIds: string[]; content: unknown; configuration?: unknown }) => {

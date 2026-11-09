@@ -6,7 +6,7 @@ import { runModelCommand, runSensorCommand, runSettingsCommand } from "./setting
 import { runCodeCommand } from "./code-command.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { completeInitialSourceBrainFromStoredReport, completeInitialSourceBrainFromDialogueReport } from "@scce/adapters-node";
-import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, verifyPlannedDialogueFiles } from "./corpus-brain-manifest.js";
+import { finalizeCorpusBrainManifest, plannedStoredSourceIds, readCorpusBrainManifest, verifyPlannedSourceFiles } from "./corpus-brain-manifest.js";
 import { runCorpusSegmentationCommand } from "./corpus-segmentation-command.js";
 import { canonicalCorpusSourceSystemId, CORPUS_SOURCE_SYSTEM_IDS } from "@scce/kernel";
 import { parseUnitMetadataMaintenanceOptions } from "./db-maintenance-options.js";
@@ -751,14 +751,13 @@ async function corpus(
     const target = args[2];
     if (!target || (kind !== "gutenberg" && kind !== "oss" && kind !== "oss-github" && kind !== "dialogue")) return usage("scce corpus train <gutenberg|oss|oss-github|dialogue|wikipedia-stored> <path-or-url> [--commit=<sha>] [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-total-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>] [--acts-only]");
     const options = parseCorpusTrainOptions(args.slice(3));
-    if (options.brainManifestPath && kind !== "dialogue") throw new Error("--brain-manifest is supported by stored and dialogue training");
+    const manifest = options.brainManifestPath ? await readCorpusBrainManifest(options.brainManifestPath, options.maxTotalBytes ?? 64 * 1024 * 1024) : undefined;
     if (kind === "dialogue") {
       const access = config?.security?.informationAccess;
       if (!access) return usage("scce corpus train dialogue requires security.informationAccess in the runtime config");
       const informationLabel = { tenantId: access.tenantId, principals: [access.principalId], compartments: [...access.compartments],
         exportClass: "restricted" as const, mergePolicy: "isolated" as const };
-      const manifest = options.brainManifestPath ? await readCorpusBrainManifest(options.brainManifestPath, options.maxTotalBytes ?? 64 * 1024 * 1024) : undefined;
-      if (manifest) await verifyPlannedDialogueFiles(manifest, target);
+      if (manifest) await verifyPlannedSourceFiles(manifest, target);
       // The transcript is labelled with the operator's own access context, never the public corpus label.
       printJson(await trainDialogueCorpus({
         corpusSegmentation: config?.runtime.corpusSegmentation,
@@ -804,7 +803,7 @@ async function corpus(
           ngramVocabularyLimit: options.ngramVocabularyLimit,
           languageAliases: options.languageAliases,
           heapCheckpointMb: options.heapCheckpointMb,
-          onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromOssReport({
+          ...(manifest ? {} : { onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromOssReport({
             storage: runtime.storage,
             informationLabel,
             report,
@@ -828,12 +827,13 @@ async function corpus(
               languageAliases: options.languageAliases,
               heapCheckpointMb: options.heapCheckpointMb
             }
-          })
+          }) })
         }
       }));
       return;
     }
     if (kind === "gutenberg") {
+      if (manifest) await verifyPlannedSourceFiles(manifest, target);
       printJson(await trainGutenbergCorpus({
         corpusSegmentation: config?.runtime.corpusSegmentation,
         storage: runtime.storage,
@@ -847,7 +847,7 @@ async function corpus(
         ngramVocabularyLimit: options.ngramVocabularyLimit,
         languageAliases: options.languageAliases,
         heapCheckpointMb: options.heapCheckpointMb,
-        onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromGutenbergReport({
+        ...(manifest ? {} : { onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromGutenbergReport({
           storage: runtime.storage,
           informationLabel,
           report,
@@ -861,7 +861,7 @@ async function corpus(
             ngramVocabularyLimit: options.ngramVocabularyLimit,
             languageAliases: options.languageAliases
           }
-        }),
+        }) }),
         // The universal creative-event construction compiler was built and
         // tested but never wired into any production trainer -- without it,
         // prose training can never yield the creative-event constructions
@@ -876,12 +876,12 @@ async function corpus(
       storage: runtime.storage,
       rootPath: path.resolve(target),
       ...trainingOptions,
-      onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromOssReport({
+      ...(manifest ? {} : { onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromOssReport({
         storage: runtime.storage,
         informationLabel,
         report,
         configuration: trainingOptions
-      })
+      }) })
     }));
     return;
   }
