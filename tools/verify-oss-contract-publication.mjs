@@ -182,7 +182,7 @@ try {
   // prior-window code/tests using their already admitted owners, not train them again.
   const acquired = await trainOssCorpus({ ...options, startFileIndex: 0 });
   assert.equal(acquired.filesConsidered, 1);
-  const revised = await trainOssCorpus({ ...options, startFileIndex: cursor });
+  const revised = await trainOssCorpus({ ...options, startFileIndex: cursor, expectedSnapshotHash: acquired.snapshotHash });
   const current = await patterns();
   check('changed-canonical-project-context-republishes-without-retraining-prior-files', () => {
     assert.equal(revised.codeTrained, 0); assert.equal(current.length, 2);
