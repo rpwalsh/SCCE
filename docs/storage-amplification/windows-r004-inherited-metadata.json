@@ -1,0 +1,289 @@
+{
+  "at": "2026-11-09T15:02:37.624Z",
+  "databaseName": "scce_brain_20261109_r004",
+  "language_patterns": [
+    {
+      "key": "joinProgram",
+      "rows": 86,
+      "logical_bytes": "349544063",
+      "distinct_values": 86,
+      "max_bytes": 5426927
+    },
+    {
+      "key": "links",
+      "rows": 17121,
+      "logical_bytes": "349209834",
+      "distinct_values": 29,
+      "max_bytes": 27136
+    },
+    {
+      "key": "bundle",
+      "rows": 16601,
+      "logical_bytes": "58828926",
+      "distinct_values": 16601,
+      "max_bytes": 88477
+    },
+    {
+      "key": "originalStructure",
+      "rows": 17121,
+      "logical_bytes": "46588606",
+      "distinct_values": 29,
+      "max_bytes": 5902
+    },
+    {
+      "key": "semanticFrames",
+      "rows": 86,
+      "logical_bytes": "46275274",
+      "distinct_values": 86,
+      "max_bytes": 594731
+    },
+    {
+      "key": "structure",
+      "rows": 17121,
+      "logical_bytes": "30813011",
+      "distinct_values": 29,
+      "max_bytes": 4902
+    },
+    {
+      "key": "graphBoundConstructions",
+      "rows": 86,
+      "logical_bytes": "29168507",
+      "distinct_values": 86,
+      "max_bytes": 414254
+    },
+    {
+      "key": "relationHypothesisModel",
+      "rows": 86,
+      "logical_bytes": "22485996",
+      "distinct_values": 86,
+      "max_bytes": 385046
+    },
+    {
+      "key": "normalization",
+      "rows": 17121,
+      "logical_bytes": "10812921",
+      "distinct_values": 29,
+      "max_bytes": 712
+    },
+    {
+      "key": "templates",
+      "rows": 86,
+      "logical_bytes": "6055735",
+      "distinct_values": 86,
+      "max_bytes": 117265
+    },
+    {
+      "key": "rules",
+      "rows": 86,
+      "logical_bytes": "5008159",
+      "distinct_values": 86,
+      "max_bytes": 72158
+    },
+    {
+      "key": "boundarySignals",
+      "rows": 86,
+      "logical_bytes": "3519234",
+      "distinct_values": 86,
+      "max_bytes": 41238
+    },
+    {
+      "key": "indexPath",
+      "rows": 17121,
+      "logical_bytes": "1866189",
+      "distinct_values": 1,
+      "max_bytes": 109
+    },
+    {
+      "key": "dumpPath",
+      "rows": 17121,
+      "logical_bytes": "1831947",
+      "distinct_values": 1,
+      "max_bytes": 107
+    },
+    {
+      "key": "counts",
+      "rows": 317,
+      "logical_bytes": "1187864",
+      "distinct_values": 317,
+      "max_bytes": 11352
+    },
+    {
+      "key": "sourceCompilationId",
+      "rows": 17063,
+      "logical_bytes": "1126158",
+      "distinct_values": 29,
+      "max_bytes": 66
+    },
+    {
+      "key": "contentDigest",
+      "rows": 16601,
+      "logical_bytes": "1095666",
+      "distinct_values": 16601,
+      "max_bytes": 66
+    },
+    {
+      "key": "sourceSystemId",
+      "rows": 17121,
+      "logical_bytes": "975897",
+      "distinct_values": 1,
+      "max_bytes": 57
+    }
+  ],
+  "language_units": [
+    {
+      "key": "links",
+      "rows": 5784,
+      "logical_bytes": "87848320",
+      "distinct_values": 29,
+      "max_bytes": 27136
+    },
+    {
+      "key": "originalStructure",
+      "rows": 5784,
+      "logical_bytes": "10864024",
+      "distinct_values": 29,
+      "max_bytes": 5902
+    },
+    {
+      "key": "structure",
+      "rows": 5784,
+      "logical_bytes": "7103128",
+      "distinct_values": 29,
+      "max_bytes": 4902
+    },
+    {
+      "key": "normalization",
+      "rows": 5784,
+      "logical_bytes": "3184544",
+      "distinct_values": 29,
+      "max_bytes": 712
+    },
+    {
+      "key": "indexPath",
+      "rows": 5784,
+      "logical_bytes": "630456",
+      "distinct_values": 1,
+      "max_bytes": 109
+    },
+    {
+      "key": "dumpPath",
+      "rows": 5784,
+      "logical_bytes": "618888",
+      "distinct_values": 1,
+      "max_bytes": 107
+    },
+    {
+      "key": "sourceCompilationId",
+      "rows": 5784,
+      "logical_bytes": "381744",
+      "distinct_values": 29,
+      "max_bytes": 66
+    },
+    {
+      "key": "sourceSystemId",
+      "rows": 5784,
+      "logical_bytes": "329688",
+      "distinct_values": 1,
+      "max_bytes": 57
+    },
+    {
+      "key": "corpus",
+      "rows": 5784,
+      "logical_bytes": "289200",
+      "distinct_values": 1,
+      "max_bytes": 50
+    },
+    {
+      "key": "streamUri",
+      "rows": 5784,
+      "logical_bytes": "247992",
+      "distinct_values": 29,
+      "max_bytes": 71
+    },
+    {
+      "key": "sourceUri",
+      "rows": 5784,
+      "logical_bytes": "247992",
+      "distinct_values": 29,
+      "max_bytes": 71
+    },
+    {
+      "key": "lane",
+      "rows": 5784,
+      "logical_bytes": "202440",
+      "distinct_values": 1,
+      "max_bytes": 35
+    },
+    {
+      "key": "replayRecipeId",
+      "rows": 5784,
+      "logical_bytes": "196656",
+      "distinct_values": 1,
+      "max_bytes": 34
+    },
+    {
+      "key": "provenanceClass",
+      "rows": 5784,
+      "logical_bytes": "138816",
+      "distinct_values": 1,
+      "max_bytes": 24
+    },
+    {
+      "key": "forceClass",
+      "rows": 5784,
+      "logical_bytes": "138816",
+      "distinct_values": 1,
+      "max_bytes": 24
+    },
+    {
+      "key": "sourceFamilyId",
+      "rows": 5784,
+      "logical_bytes": "121464",
+      "distinct_values": 1,
+      "max_bytes": 21
+    },
+    {
+      "key": "profileEntropy",
+      "rows": 5784,
+      "logical_bytes": "100728",
+      "distinct_values": 29,
+      "max_bytes": 18
+    },
+    {
+      "key": "sourceKind",
+      "rows": 5784,
+      "logical_bytes": "92544",
+      "distinct_values": 1,
+      "max_bytes": 16
+    }
+  ],
+  "checkpoints": [
+    {
+      "phase": "discovered",
+      "status": "pending",
+      "rows": 1
+    },
+    {
+      "phase": "extracting",
+      "status": "running",
+      "rows": 130
+    },
+    {
+      "phase": "stored",
+      "status": "complete",
+      "rows": 61
+    }
+  ],
+  "sources": [
+    {
+      "source_system": "wikipedia",
+      "role": "original",
+      "rows": 29
+    },
+    {
+      "source_system": "wikipedia",
+      "role": "evidence-derivative",
+      "rows": 29
+    }
+  ]
+}

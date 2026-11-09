@@ -139,3 +139,20 @@ After the separately verified lossless event-page rewrite, live pattern JSON occ
 The rewrite preserved all 201 Wikipedia event-page decoded hashes, ownership columns and decoded-size ledgers. Its native temporary-table comparison measured 96,046,934 versus 46,466,963 stored payload bytes. Physical compaction reduced the Wikipedia candidate from its original 469,835,776 bytes to 419,921,920 bytes before the Dolly transcript was added. These are a limited representation improvement; the canonical template, lexical-form, witness and occurrence repair remains required.
 
 PostgreSQL size semantics: [size functions](https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADMIN-DBSIZE). Space reclamation: [routine vacuuming](https://www.postgresql.org/docs/18/routine-vacuuming.html).
+
+## Fresh R004 Wikipedia build
+
+The fresh `scce_brain_20261109_r004` build completed language learning for 29 Wikipedia articles at revision `b6cbbfaf279a884858af8ec1afbe6cceedc8aff7`. Its 29 promoted source owners contain 1,056,804 unique source bytes; all 29 have language profiles and compiled n-gram structures. This is the first acquired article block, not a complete Wikipedia build. No dialogue source was committed: the next stage failed while joining the public segmentation dependency with a private dialogue label.
+
+The [read-only native audit](storage-amplification/windows-r004-wiki-audit.json) measures 17,150 pattern rows containing 275,512,625 stored JSONB bytes, including 201,072,470 bytes in 16,386 ordinary source-example patterns. The 5,784 units contain 47,370,889 stored metadata bytes. Event normalization and JOIN packing are already active; raw n-gram observations remain absent. These measurements identify a current writer problem independently of the older development checkpoint.
+
+The [field-size ledger](storage-amplification/windows-r004-inherited-metadata.json) identifies inherited metadata copied into thousands of artifacts:
+
+| Field | Pattern logical JSON bytes | Unit logical JSON bytes | Distinct values in each family |
+| --- | ---: | ---: | ---: |
+| `links` | 349,209,834 | 87,848,320 | 29 |
+| `originalStructure` | 46,588,606 | 10,864,024 | 29 |
+| `structure` | 30,813,011 | 7,103,128 | 29 |
+| `normalization` | 10,812,921 | 3,184,544 | 29 |
+
+These are rendered field sizes, not physical space savings. In contrast, the 86 packed `joinProgram` values are all distinct and occupy 349,544,063 rendered bytes; their size alone does not establish duplication. The repair target is the shared inherited metadata boundary in `stampPattern`, `stampUnit`, and `stampFrame`, with exact reconstruction and unchanged source ownership, labels, query headers, and learned payloads. A fresh corrected build must measure physical growth after complete-record parity passes. No reduction is claimed by this baseline audit.
