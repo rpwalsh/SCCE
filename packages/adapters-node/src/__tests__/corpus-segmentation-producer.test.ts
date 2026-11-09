@@ -39,7 +39,7 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
       if(sql.includes("WITH selected AS"))return (params[0] as string[]).flatMap(id=>{const source=owners.find(owner=>owner.sourceVersionId===id);return source?[{fits:true,value:{sourceVersionId:source.sourceVersionId,sourceId:source.sourceId,parentSourceVersionId:null,sourceRole:"original",informationLabel:label}}]:[];}) as T[];
       if(sql.includes("SELECT substring")){const index=owners.findIndex(owner=>owner.evidenceId===params[0]);const text=texts[index]!;
         return [{text:corrupt?"changed":[...text].slice(Number(params[2])-1,Number(params[2])-1+Number(params[3])).join("")}] as T[];}
-      if(sql.includes("SELECT q.key")){const requested=JSON.parse(String(params[2])) as Array<{key:string}>;const field=sql.includes("'surfaceFormClassId'=q.key")?"surfaceFormClassId":"contextKey";const pairs=[];
+      if(sql.includes("SELECT q.key")){const requested=JSON.parse(String(params[2])) as Array<{key:string}>;const field=sql.includes("'surfaceFormClassId'=q.key")?"surfaceFormClassId":"contextKey";const pairs:Array<{orderKey:string;value:JsonValue}>=[];
         for await(const page of memory.pages({collection:String(params[1]),pageRows,maxPageBytes:12000}))pairs.push(...page);
         return requested.map(row=>({key:row.key,count:String(pairs.filter(pair=>(pair.value as Record<string,JsonValue>)[field]===row.key).length)})) as T[];}
       if(sql.includes("WITH candidate")&&sql.includes("evidence_id"))return owners.filter(owner=>owner.evidenceId>String(params[0])).slice(0,pageRows).map(row_json=>({evidence_id:row_json.evidenceId,row_json,admitted:true})) as T[];
