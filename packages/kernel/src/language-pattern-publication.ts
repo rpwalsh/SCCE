@@ -3,6 +3,7 @@
 import { corpusSourceAlias } from "./corpus-registry.js";
 import { jsonRecord } from "./kernel-answer-primitives.js";
 import { LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "./language-construction-memory.js";
+import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS } from "./language-induction-memory.js";
 import { canonicalStringify, toJsonValue } from "./primitives.js";
 import type { SourceCompilationOwner } from "./source-language-compilation.js";
 import type { LanguageMemoryStore, LanguagePatternRecord } from "./storage.js";
@@ -12,6 +13,10 @@ export const LANGUAGE_CONSTRUCTION_PUBLICATION = {
   patternSchema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
   componentRecipe: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID
 } as const;
+export const INDUCED_LANGUAGE_MEMORY_PUBLICATIONS = Object.freeze(INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS.map(patternSchema => Object.freeze({
+  patternSchema, componentRecipe: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID
+})));
+export const INDUCED_LANGUAGE_MEMORY_PUBLICATION_RECIPE_ID = "kernel.induced_language_memory_active_projection.v1" as const;
 
 /** Publishes the current compiled source projection, including a valid empty replacement. */
 export async function publishCompiledLanguagePatterns(input: {
@@ -56,7 +61,8 @@ export async function publishCompiledLanguagePatterns(input: {
   }
   for (const [index, scope] of input.projections.entries()) {
     await input.store.replaceLanguagePatternProjection!({
-      patterns: index === 0 ? patterns : patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === scope.patternSchema),
+      patterns: patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === scope.patternSchema
+        || index === 0 && !schemas.has(String(jsonRecord(pattern.patternJson).schema))),
       projection: { ...scope, profileId: input.profileId, sourceId: input.owner.sourceId, sourceVersionId: input.owner.sourceVersionId,
         sourceSystem, informationLabel: input.informationLabel,
         patternIds: patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === scope.patternSchema).map(pattern => pattern.id).sort() }

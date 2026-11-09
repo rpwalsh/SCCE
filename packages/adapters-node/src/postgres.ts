@@ -43,6 +43,7 @@ import {
   SOURCE_CODE_FUNCTION_PATTERN_SCHEMA,
   SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID,
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+  INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS,
   INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
   CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
   CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
@@ -4263,6 +4264,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA && projection.componentRecipe === SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID)
           || (projection.patternSchema === "scce.source_owned_test_contract.v1" && (projection.componentRecipe === "scce.source_owned_test_contract_projection.v1" || isSourceOwnedProjectProjection(projection.componentRecipe)))
           || (projection.patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA && projection.componentRecipe === CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID)
+          || (INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS.includes(projection.patternSchema) && projection.componentRecipe === INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID)
           || (projection.patternSchema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA && projection.componentRecipe === REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE
             && projection.sourceSystem === REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM)
           || (projection.patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA && projection.componentRecipe === SOURCE_COMPUTATION_CONSTRUCTION_RECIPE
@@ -4298,6 +4300,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             && (row.patternKind !== "source_code_assertion_contract" || metadata.sourceVersionId !== projection.sourceVersionId))
           || (projection.patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA
             && (row.patternKind !== "semantic_role" || metadata.sourceId !== projection.sourceId || metadata.sourceVersionId !== projection.sourceVersionId))
+          || (INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS.includes(projection.patternSchema)
+            && (metadata.profileId !== projection.profileId || metadata.sourceVersionId !== projection.sourceVersionId
+              || metadata.componentRecipe !== projection.componentRecipe))
           || (projection.patternSchema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA
             && (row.patternKind !== "discourse" || metadata.profileId !== projection.profileId || metadata.sourceId !== projection.sourceId
               || metadata.sourceVersionId !== projection.sourceVersionId || metadata.componentRecipe !== REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE || !row.evidenceIds.length))
@@ -4873,7 +4878,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ["scce.source_owned_test_contract.v1", "scce.source_owned_test_contract_projection.v1"],
         [CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID],
         [REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA, REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE],
-        [SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, SOURCE_COMPUTATION_CONSTRUCTION_RECIPE]
+        [SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, SOURCE_COMPUTATION_CONSTRUCTION_RECIPE],
+        ...INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS.map(schema => [schema, INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID] as const)
       ] as const) {
         if (query.patternSchemas && !query.patternSchemas.includes(patternSchema)) continue;
         if (patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA && query.sourceSystem && query.sourceSystem !== SOURCE_COMPUTATION_SOURCE_SYSTEM) {
@@ -4889,6 +4895,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         params.push(...projectionAccess.params);
         const ownedAct = patternSchema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA;
         const computation = patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA;
+        const induced = INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS.includes(patternSchema);
         const actAccess = ownedAct ? storage.informationAccessPredicate("owned_evidence", params.length + 1) : undefined;
         if (actAccess) params.push(...actAccess.params);
         const actProfileAccess = ownedAct ? storage.informationAccessPredicate("projection_profile", params.length + 1) : undefined;
@@ -4908,7 +4915,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             active_projection.value_json->>'sourceSystem' AS source_system,
             active_projection.value_json->>'patternSchema' AS pattern_schema,
             active_projection.value_json->>'componentRecipe' AS projection_recipe,
-            active_projection.value_json->'patternIds' AS pattern_ids${computation || conversationalGuard ? `,active_projection.value_json->>'sourceVersionId' AS source_version_id,
+            active_projection.value_json->'patternIds' AS pattern_ids${computation || conversationalGuard || induced ? `,active_projection.value_json->>'sourceVersionId' AS source_version_id,
             active_projection.value_json->'sourceDependencies' AS source_dependencies` : ""}
           FROM (SELECT value_json,value_json->'informationLabel' AS information_label FROM ${storage.table("storage_meta")}) active_projection
           WHERE ${projectionAccess.sql}
@@ -4941,7 +4948,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
               THEN dependency.value->'evidenceIds' ELSE '[]'::jsonb END) requested(evidence_id)) AS dependency_evidence_ids
           FROM ${projectionSet}_headers scoped
         )` : ""}, ${projectionSet} AS MATERIALIZED (
-          SELECT header.profile_id,header.source_system,header.pattern_schema,header.projection_recipe,member.pattern_id${computation ? ",header.source_version_id" : ""}
+          SELECT header.profile_id,header.source_system,header.pattern_schema,header.projection_recipe,member.pattern_id${computation || induced ? ",header.source_version_id" : ""}
           FROM ${projectionSet}_${computation || conversationalGuard ? "dependencies" : "headers"} header
           CROSS JOIN LATERAL jsonb_array_elements_text(CASE
             WHEN jsonb_typeof(header.pattern_ids)='array' THEN header.pattern_ids
@@ -4954,13 +4961,14 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         )`);
         const recipeKey = patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA
           ? `,CASE WHEN pattern.component_recipe IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}') THEN pattern.component_recipe ELSE $${constructionRecipeParam} END`
-          : computation ? ",pattern.component_recipe,pattern.owned_source_version_id" : projectGuard ? `,COALESCE(pattern.component_recipe,$${constructionRecipeParam})` : "";
+          : computation || induced ? ",pattern.component_recipe,pattern.owned_source_version_id" : projectGuard ? `,COALESCE(pattern.component_recipe,$${constructionRecipeParam})` : "";
         where.push(`(pattern.pattern_schema IS DISTINCT FROM $${constructionSchemaParam}
         OR (pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id${recipeKey}) IN (
-          SELECT profile_id,source_system,pattern_schema,pattern_id${recipeKey ? ",projection_recipe" : ""}${computation ? ",source_version_id" : ""} FROM ${projectionSet}
-        )${patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA ? ` OR NOT EXISTS (
+          SELECT profile_id,source_system,pattern_schema,pattern_id${recipeKey ? ",projection_recipe" : ""}${computation || induced ? ",source_version_id" : ""} FROM ${projectionSet}
+        )${patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA || induced ? ` OR NOT EXISTS (
           SELECT 1 FROM ${projectionSet}_headers published
           WHERE published.profile_id=pattern.profile_id AND published.source_system=pattern.source_system AND published.pattern_schema=pattern.pattern_schema
+            ${induced ? "AND published.source_version_id=pattern.owned_source_version_id" : ""}
         )` : ""})`);
         if (conversationalGuard) where.push(`(pattern.component_recipe IS DISTINCT FROM '${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}' OR (
           pattern.pattern_kind='semantic_role' AND COALESCE(array_length(pattern.evidence_ids,1),0)>0

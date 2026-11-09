@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
+import { captureFixtureLanguagePatternProjections, getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { readFileSync } from "node:fs";
 import { createSourceArtifactMetadataCodec } from "../source-artifact-metadata.js";
 import { corpusSegmentationInputRecipe } from "../corpus-segmentation-producer.js";
@@ -1227,6 +1227,58 @@ describe("prepared corpus training", () => {
 });
 
 describe("multi-corpus training", () => {
+  it("replaces induced memory after a same-owner construction replay changes its source windows", async () => {
+    const fixture = memoryStorage();
+    const text = "cat chased mouse. dog chased mouse. cat chased ball. dog chased ball. ".repeat(2);
+    const input = { storage: fixture.storage, sourceSystem: "oss_docs", streamUri: "oss_docs:induced-replay", sourceUri: "fixture://induced-replay/current.md",
+      text, informationLabel: publicCorpusInformationLabel, skipNgramObservationPersistence: true, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 };
+    const original = await trainLanguageCorpusText(input);
+    const profile = fixture.state.profiles.find(row => row.sourceVersionId === original.sourceVersionId)!;
+    const evidence = fixture.state.evidence.filter(row => row.sourceVersionId === original.sourceVersionId);
+    await trainLanguageCorpusText({ ...input, sourceUri: "fixture://induced-replay/other.md", streamUri: "oss_docs:induced-other" });
+    const induced = (rows: LanguagePatternRecord[]) => rows.filter(row => recordOf(row.patternJson).componentRecipe === INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
+    const prior = induced(await fixture.storage.languageMemory.listLanguagePatterns({ profileIds: [profile.id] }));
+    const other = induced(await fixture.storage.languageMemory.listLanguagePatterns({})).filter(row => row.profileId !== profile.id);
+    expect(prior.some(row => recordOf(row.patternJson).schema === "scce.induced_language_model.syntax_memory.v1")).toBe(true);
+    expect(prior.some(row => recordOf(row.patternJson).schema === "scce.induced_language_model.semantic_memory.v1")).toBe(true);
+    const published = new Map<string, LanguagePatternRecord>();
+    const publications: string[] = [];
+    let failReplacement = true;
+    const replace = fixture.storage.languageMemory.replaceLanguagePatternProjection!.bind(fixture.storage.languageMemory);
+    fixture.storage.languageMemory.replaceLanguagePatternProjection = async change => {
+      publications.push(change.projection.patternSchema);
+      if (failReplacement && change.projection.patternSchema === "scce.induced_language_model.semantic_memory.v1") throw Error("replacement failed");
+      for (const row of change.patterns) published.set(row.id, row);
+      await replace(change);
+    };
+    const checkpoints = new Map<string, IngestionCheckpoint>();
+    fixture.storage.ingestion.get = async id => checkpoints.get(id) ?? null;
+    fixture.storage.ingestion.put = async row => { checkpoints.set(row.id, row); };
+    vi.stubEnv("SCCE_INDUCTION_CHAR_BUDGET", "64"); vi.stubEnv("SCCE_INDUCTION_DOC_CHAR_CAP", "32");
+    const replayInput = { ...input, sourceVersionId: original.sourceVersionId as SourceVersionId, profile, evidence,
+      persistSource: false, persistProfile: false, skipNgramPersistence: true,
+      corpusCheckpoint: { rootUri: "fixture://induced-replay", itemUri: "current.md" } };
+    const prepared = await prepareLanguageCorpusTraining(replayInput);
+    await expect(commitLanguageCorpusTraining(replayInput, prepared)).rejects.toThrow("replacement failed");
+    expect(induced(await fixture.storage.languageMemory.listLanguagePatterns({ profileIds: [profile.id] }))).toEqual(prior);
+    expect([...checkpoints.values()].every(row => row.status !== "complete")).toBe(true);
+    failReplacement = false; publications.length = 0; published.clear();
+    await commitLanguageCorpusTraining(replayInput, prepared);
+    const current = induced([...published.values()]);
+    expect(current.length).toBeGreaterThan(0);
+    expect(current.some(row => !prior.some(old => old.id === row.id))).toBe(true);
+    const active = induced(await fixture.storage.languageMemory.listLanguagePatterns({ profileIds: [profile.id] }));
+    expect(active.map(row => row.id).sort()).toEqual(current.map(row => row.id).sort());
+    expect(induced(await fixture.storage.languageMemory.listLanguagePatterns({})).filter(row => row.profileId !== profile.id)).toEqual(other);
+    expect(prior.every(row => fixture.state.patterns.some(stored => stored.id === row.id))).toBe(true);
+    expect(publications).toEqual(expect.arrayContaining([
+      "scce.induced_language_model.morphology_memory.v1", "scce.induced_language_model.syntax_memory.v1",
+      "scce.induced_language_model.semantic_memory.v1", "scce.induced_language_model.translation_seed_memory.v1"
+    ]));
+    publications.length = 0; published.clear();
+    await trainLanguageCorpusText(replayInput);
+    expect(publications).toEqual([]); expect(published.size).toBe(0);
+  });
   it("recompiles actual v3 owned inputs in the current segmentation scope while archiving the old checkpoint", async () => {
     const legacy = JSON.parse(readFileSync(new URL("./fixtures/legacy-language-batch-v3-checkpoint.json", import.meta.url), "utf8")) as {
       input: Omit<LanguageCorpusTrainingInput, "storage">; checkpoint: IngestionCheckpoint;
@@ -3568,8 +3620,9 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     init: async () => undefined,
     transaction: async <T>(fn: () => Promise<T>) => {
       const before = Object.fromEntries(Object.entries(state).map(([key, rows]) => [key, [...rows]]));
+      const restoreProjections = captureFixtureLanguagePatternProjections(storage.languageMemory);
       const checkpointBefore=new Map(projectCheckpoints);
-      try { return await fn(); } catch (error) { Object.assign(state, before);projectCheckpoints.clear();for(const [id,row] of checkpointBefore)projectCheckpoints.set(id,row); throw error; }
+      try { return await fn(); } catch (error) { Object.assign(state, before);restoreProjections();projectCheckpoints.clear();for(const [id,row] of checkpointBefore)projectCheckpoints.set(id,row); throw error; }
     },
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),

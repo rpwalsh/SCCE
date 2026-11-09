@@ -6,6 +6,7 @@ import type { LanguageMemoryStore } from "../storage.js";
 import { REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA } from "../request-communicative-act.js";
 import { CONTEXTUAL_QA_CONSTRUCTION_RECIPE } from "../source-owned-contextual-qa.js";
 import { canonicalJsonByteLength } from "../canonical-json-digest.js";
+import { INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS } from "../language-induction-memory.js";
 
 const DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID = "scce.dialogue_conversational_construction.v2";
 const independentConstructionRecipes = new Set<string>([DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, CONTEXTUAL_QA_CONSTRUCTION_RECIPE]);
@@ -17,6 +18,11 @@ const rawLists = new WeakMap<LanguageMemoryStore, LanguageMemoryStore["listLangu
 
 export function removeFixtureLanguagePatternProjections(store: LanguageMemoryStore): void {
   manifests.get(store)?.clear();
+}
+
+export function captureFixtureLanguagePatternProjections(store: LanguageMemoryStore): () => void {
+  const before = structuredClone([...manifests.get(store) ?? []]);
+  return () => { const active = manifests.get(store); active?.clear(); for (const [key, value] of before) active?.set(key, value); };
 }
 
 export function installFixtureLanguagePatternProjection(store: LanguageMemoryStore): void {
@@ -32,6 +38,12 @@ export function installFixtureLanguagePatternProjection(store: LanguageMemorySto
       const admitted = rows.filter(row => {
         if (query?.patternIds && !query.patternIds.includes(row.id)) return false;
         const metadata = jsonRecord(row.patternJson);
+        if (INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS.includes(String(metadata.schema))) {
+          const owned = [...scopes.values()].filter(scope => scope.patternSchema === metadata.schema && scope.profileId === row.profileId
+            && scope.sourceSystem === metadata.sourceSystem && scope.sourceVersionId === metadata.sourceVersionId);
+          return !owned.length || owned.some(scope => scope.patternIds.includes(row.id)
+            && canonicalStringify(scope.informationLabel) === canonicalStringify(row.informationLabel));
+        }
         if (query?.contextualQaRequestFeatures && (!Array.isArray(metadata.contextualQaRequestFeatures)
           || !metadata.contextualQaRequestFeatures.some(feature => typeof feature === "string" && query.contextualQaRequestFeatures!.includes(feature)))) return false;
         if (metadata.schema === "scce.creative_event_compatibility_model.v1") {
