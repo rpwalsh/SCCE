@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import type { CorpusSegmentationScratchRow } from "@scce/kernel";
 import { PostgresCorpusSegmentationRun, corpusSegmentationScopeId, segmentationOrdinalKey } from "../corpus-segmentation-store.js";
 import type { PostgresStorageAdapter } from "../postgres.js";
 
@@ -73,7 +74,7 @@ it("uses indexed ASCII prefix bounds before decoded-byte measurement and preserv
     calls.push({sql,params});const after=String(params[2]),prefix=String(params[3]);
     return all.filter(row=>row.orderKey>after&&row.orderKey.startsWith(prefix)).slice(0,2).map((row,index)=>({order_key:row.orderKey,row_json:index===0?row.value:null,decoded_bytes:200,admitted:index===0})) as T[];
   };
-  const rows=[];for await(const page of run.scratch.pages({collection:"rows",prefix:"a~"}))rows.push(...page);
+  const rows=[];for await(const page of run.scratch.pages({collection:"rows",...run.bounds,prefix:"a~"}))rows.push(...page);
   expect(rows).toEqual(all.slice(0,3));
   const queries=calls.filter(call=>call.sql.includes("WITH candidate"));
   expect(queries.map(call=>call.params[2])).toEqual(["","a~0","a~1","a~2"]);
@@ -82,7 +83,7 @@ it("uses indexed ASCII prefix bounds before decoded-byte measurement and preserv
   expect(queries[0]!.sql).toContain('starts_with(v.order_key,$4)');
   expect(queries[0]!.sql.indexOf('chr(127)')).toBeLessThan(queries[0]!.sql.indexOf('), measured AS'));
   for(const prefix of ["opaque\u03bb","bad\u007f","bad\n",null as unknown as string,123 as unknown as string]){
-    await expect(async()=>{for await(const _page of run.scratch.pages({collection:"rows",prefix})){} }).rejects.toThrow(/ASCII/);
+    await expect(async()=>{for await(const _page of run.scratch.pages({collection:"rows",...run.bounds,prefix})){} }).rejects.toThrow(/ASCII/);
   }
 });
 
@@ -105,7 +106,7 @@ it("replays immutable inputs without rewriting their stored rows and refuses cha
       }
     }return written as T[];
   };
-  const rows=[{orderKey:"1",value:{opaque:[1,"\u03bb",null]}},{orderKey:"2",value:{other:true}}];
+  const rows:CorpusSegmentationScratchRow[]=[{orderKey:"1",value:{opaque:[1,"\u03bb",null]}},{orderKey:"2",value:{other:true}}];
   await run.putInput("inventory",rows);const before=JSON.stringify([...values]),digest=await run.digest("input/inventory");
   await run.putInput("inventory",rows);expect(JSON.stringify([...values])).toBe(before);expect(identicalUpdates).toBe(0);
   expect(digest.count).toBe(rows.length);expect(await run.digest("input/inventory")).toEqual(digest);
