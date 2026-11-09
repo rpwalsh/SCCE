@@ -25,12 +25,43 @@ const record = value => value && typeof value === 'object' && !Array.isArray(val
 const sorted = rows => [...rows].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 async function* rows(values) { yield values; }
 
+export async function readInternalSourceCompilationPatterns(storage, profileId, { profileSourceOwnershipSql, normalizeInformationLabel, decodeMany, jsonByteLengths }) {
+  const result = [];
+  let after = '';
+  while (true) {
+    const params = [profileId, after];
+    const access = storage.informationAccessPredicate('pattern', params.length + 1); params.push(...access.params);
+    const profileAccess = storage.informationAccessPredicate('profile', params.length + 1); params.push(...profileAccess.params);
+    const ownership = profileSourceOwnershipSql(storage, params, 'profile');
+    const page = await storage.query(`SELECT pattern.id,pattern.profile_id,pattern.pattern_kind,pattern.support,pattern.entropy,
+      pattern.pattern_json,pattern.evidence_ids,pattern.updated_at,pattern.information_label
+      FROM ${storage.table('language_patterns')} pattern JOIN ${storage.table('language_profiles')} profile ON profile.id=pattern.profile_id
+      WHERE pattern.profile_id=$1 AND pattern.pattern_kind='source_compilation' AND pattern.id>$2
+        AND ${access.sql} AND ${profileAccess.sql} AND ${ownership} ORDER BY pattern.id COLLATE "C" LIMIT 64`, params);
+    if (!page.length) break;
+    const values = await decodeMany(page.map(row => ({ value: row.pattern_json, profileId: row.profile_id, informationLabel: row.information_label })));
+    assert.equal(values.length, page.length, 'Internal receipt decoder omitted a row');
+    let decodedBytes = 0;
+    for (const [index, row] of page.entries()) {
+      assert.ok(row.id > after, 'Internal receipt cursor did not advance');
+      assert.equal(row.pattern_kind, 'source_compilation'); assert.equal(row.profile_id, profileId);
+      decodedBytes += jsonByteLengths(values[index]).decodedJsonbBytes;
+      assert.ok(decodedBytes <= 64 * 1024 * 1024, 'Internal receipt page exceeded its explicit decoded byte budget');
+      result.push({ id: row.id, profileId: row.profile_id, patternKind: row.pattern_kind, support: Number(row.support), entropy: Number(row.entropy),
+        patternJson: values[index], evidenceIds: row.evidence_ids, updatedAt: new Date(row.updated_at).getTime(), informationLabel: normalizeInformationLabel(row.information_label) });
+      after = row.id;
+    }
+  }
+  return result;
+}
+
 export async function verifySourceArtifactMetadata(options) {
   const { readScceRuntimeConfig } = await import('../packages/adapters-node/dist/config.js');
   const { createPostgresStorageAdapter } = await import('../packages/adapters-node/dist/postgres.js');
   const { createSourceArtifactMetadataCodec } = await import('../packages/adapters-node/dist/source-artifact-metadata.js');
+  const { profileSourceOwnershipSql } = await import('../packages/adapters-node/dist/pooled-profile-ownership.js');
   const { durableJoinProgramJsonByteLengths } = await import('../packages/adapters-node/dist/durable-join-program-storage.js');
-  const { canonicalStringify, createHasher, stampSourceLanguageCompilation, POSTGRES_REQUIRED_TABLES } = await import('../packages/kernel/dist/index.js');
+  const { canonicalStringify, createHasher, normalizeInformationLabel, stampSourceLanguageCompilation, POSTGRES_REQUIRED_TABLES } = await import('../packages/kernel/dist/index.js');
   const [sourceConfig, fixtureConfig] = await Promise.all([readScceRuntimeConfig(options.sourceConfigPath), readScceRuntimeConfig(options.fixtureConfigPath)]);
   for (const config of [sourceConfig, fixtureConfig]) if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(new URL(config.database.url).hostname)) throw Error('Native metadata verification requires local databases');
   const sourceIdentity = new URL(sourceConfig.database.url), fixtureIdentity = new URL(fixtureConfig.database.url);
@@ -96,12 +127,17 @@ export async function verifySourceArtifactMetadata(options) {
         await fixture.model.putLanguageProfile(profile);
         const query = { profileIds: [profile.id], sourceSystem: options.sourceSystem, limit: 4096, maxTotalJsonBytes: 64 * 1024 * 1024 };
         const units = await source.languageMemory.listLanguageUnits(query);
-        const patternIds = (await source.query(`SELECT id FROM ${source.table('language_patterns')} WHERE profile_id=$1 ORDER BY id COLLATE "C"`, [profile.id])).map(row => row.id);
-        const patterns = [];
+        const patternIds = (await source.query(`SELECT id FROM ${source.table('language_patterns')} WHERE profile_id=$1 AND pattern_kind<>'source_compilation' ORDER BY id COLLATE "C"`, [profile.id])).map(row => row.id);
+        const servablePatterns = [];
         for (let offset = 0; offset < patternIds.length; offset += 64) {
           const ids = patternIds.slice(offset, offset + 64), page = await source.languageMemory.listLanguagePatterns({ ...query, patternIds: ids, limit: ids.length, requireComplete: true });
-          assert.deepEqual(page.map(row => row.id).sort(), [...ids].sort(), 'Pattern source read exceeded its explicit byte window or admission scope'); patterns.push(...page);
+          assert.deepEqual(page.map(row => row.id).sort(), [...ids].sort(), 'Pattern source read exceeded its explicit byte window or admission scope'); servablePatterns.push(...page);
         }
+        const internal = async storage => readInternalSourceCompilationPatterns(storage, profile.id, { profileSourceOwnershipSql, normalizeInformationLabel,
+          decodeMany: inputs => createSourceArtifactMetadataCodec(storage).decodeMany(inputs), jsonByteLengths: durableJoinProgramJsonByteLengths });
+        const internalPatterns = await internal(source), patterns = [...servablePatterns, ...internalPatterns];
+        const physicalPatternIds = (await source.query(`SELECT id FROM ${source.table('language_patterns')} WHERE profile_id=$1 ORDER BY id COLLATE "C"`, [profile.id])).map(row => row.id);
+        assert.deepEqual(patterns.map(row => row.id).sort(), physicalPatternIds.sort(), 'Servable and owner-checked internal reads must preserve every physical pattern');
         const models = await source.languageMemory.listNgramModels(query), frames = await source.languageMemory.listSemanticFrames(query);
         assert.ok(units.length > 0 && units.length < query.limit && models.length > 0 && models.length < query.limit && frames.length < query.limit, 'Owner artifact window is incomplete');
         for (const [table, selector, actualRows] of [['language_units', 'profile_id', units], ['ngram_models', 'profile_id', models], ['semantic_frames', "frame_json->>'profileId'", frames]]) {
@@ -124,13 +160,18 @@ export async function verifySourceArtifactMetadata(options) {
         await fixture.languageMemory.putLanguageUnits(rebound.units);
         await fixture.languageMemory.putLanguagePatterns(rebound.patterns.filter(row => !holders.includes(row)));
         await fixture.languageMemory.putSemanticFrames(rebound.semanticFrames);
+        const expectedServable = rebound.patterns.filter(row => row.patternKind !== 'source_compilation'), expectedInternal = rebound.patterns.filter(row => row.patternKind === 'source_compilation');
         const actual = { units: await fixture.languageMemory.listLanguageUnits(query), models: await fixture.languageMemory.listNgramModels(query), frames: await fixture.languageMemory.listSemanticFrames(query), patterns: [] };
-        for (let offset = 0; offset < rebound.patterns.length; offset += 64) { const ids = rebound.patterns.slice(offset, offset + 64).map(row => row.id);
-          actual.patterns.push(...await fixture.languageMemory.listLanguagePatterns({ ...query, patternIds: ids, limit: ids.length, requireComplete: true })); }
+        for (let offset = 0; offset < expectedServable.length; offset += 64) { const ids = expectedServable.slice(offset, offset + 64).map(row => row.id);
+          const page = await fixture.languageMemory.listLanguagePatterns({ ...query, patternIds: ids, limit: ids.length, requireComplete: true });
+          assert.deepEqual(page.map(row => row.id).sort(), [...ids].sort(), 'Encoded servable pattern read must preserve every requested identity'); actual.patterns.push(...page); }
+        const actualInternal = await internal(fixture);
+        const patternReadContracts = { servable: await compare(expectedServable, actual.patterns), internalSourceCompilation: await compare(expectedInternal, actualInternal) };
+        actual.patterns.push(...actualInternal);
         const parity = {};
         for (const [family, expected] of Object.entries({ units: rebound.units, models: rebound.models, frames: rebound.semanticFrames, patterns: rebound.patterns })) parity[family] = await compare(expected, actual[family]);
         report.owners.push({ sourceVersionId, profileId: profile.id, priorCompilationId: receipt.compilationId,
-          compilationId: record(record(rebound.models[0].modelJson).sourceCompilation).compilationId, parity });
+          compilationId: record(record(rebound.models[0].modelJson).sourceCompilation).compilationId, patternReadContracts, parity });
         if (!negative) negative = { profileId: profile.id, holderId: holders[0].id, unitIds: rebound.units.map(row => row.id), pattern: rebound.patterns.find(row => row.patternKind !== 'source_compilation') };
       }
     }
