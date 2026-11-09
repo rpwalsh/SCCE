@@ -357,7 +357,7 @@ export class WikipediaV3Ingestor {
     const languageBatchJournalCheckpoint = await this.storage.ingestion.get(languageBatchJournalId) ?? null;
     const storedLanguageBatchJournal = readWikipediaLanguageBatchJournal(languageBatchJournalCheckpoint, inputManifest.identity, shardCharBudget, inputManifest.semantics.compilerIdentity);
     const languageBatchJournal = storedLanguageBatchJournal?.state === "open" ? storedLanguageBatchJournal : undefined;
-    if (input.finishPending && !languageBatchJournal) {
+    if (input.finishPending && !storedLanguageBatchJournal) {
       throw new Error("Wikipedia --finish-pending requires an open language batch journal for this verified input");
     }
     const resumeJournal = useStoredResume ? storedLanguageBatchJournal : undefined;
@@ -726,7 +726,9 @@ export class WikipediaV3Ingestor {
         if (!languageShardSamples.length && pendingBlockCheckpoints.length) {
           await flushLanguageShard(activeLanguageShardUri, true);
         }
-        await this.storage.transaction(async () => { await assertInputUnchanged(); await putLanguageBatchJournal("open"); });
+        const drainedBoundary = input.finishPending && !result.stoppedByOwner && !result.stoppedByHeapSafetyBound
+          && currentBlockComplete && languageShardSamples.length === 0 && languageShardChars === 0;
+        await this.storage.transaction(async () => { await assertInputUnchanged(); await putLanguageBatchJournal(drainedBoundary ? "idle" : "open"); });
       } else {
         await flushLanguageShard(activeLanguageShardUri, true);
         await this.storage.transaction(async () => { await assertInputUnchanged(); await putLanguageBatchJournal("idle"); });
@@ -1591,11 +1593,6 @@ function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | nul
   if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("Wikipedia language batch journal is malformed");
   const value = raw as Record<string, unknown>;
   if (value.version !== 1 || (value.state !== "open" && value.state !== "idle")) throw new Error("Wikipedia language batch journal version or state is invalid");
-  // Buffered semantic candidates were produced by this executable. An idle journal
-  // has no uncommitted payload and may resume under the same explicit recipes.
-  if (value.state === "open" && metadata.compilerIdentity !== compilerIdentity) {
-    throw new Error("Wikipedia open language batch compiler attestation differs or is missing; finish pending work with its original compiler before upgrading, or use an empty candidate schema for a fresh run");
-  }
   const blockOffset = typeof value.blockOffset === "number" ? value.blockOffset : NaN;
   const blockOrdinal = typeof value.blockOrdinal === "number" ? value.blockOrdinal : NaN;
   const lastProcessedPageOrdinal = typeof value.lastProcessedPageOrdinal === "number" ? value.lastProcessedPageOrdinal : NaN;
@@ -1630,6 +1627,12 @@ function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | nul
   }
   const pendingSamples = value.pendingSamples as unknown as WikipediaLanguageShardSample[];
   if (languageShardCharsForSamples(pendingSamples) !== pendingChars) throw new Error("Wikipedia language batch journal character count is invalid");
+  // Only a fully validated empty complete-boundary journal has no compiler-owned
+  // payload or midblock cursor left to interpret, including legacy drained OPEN rows.
+  const payloadFreeBoundary = pendingSamples.length === 0 && pendingChars === 0 && value.blockComplete === true;
+  if (value.state === "open" && !payloadFreeBoundary && metadata.compilerIdentity !== compilerIdentity) {
+    throw new Error("Wikipedia open language batch compiler attestation differs or is missing; finish pending work with its original compiler before upgrading, or use an empty candidate schema for a fresh run");
+  }
   return {
     ...(value as unknown as WikipediaLanguageBatchJournal),
     pendingSamples,

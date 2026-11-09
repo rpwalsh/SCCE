@@ -475,6 +475,62 @@ describe("Wikipedia recovery boundaries", () => {
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
 
+  it.each(["idle", "legacy-open"])("upgrades after a complete-boundary drain with a %s payload-free journal", async state => {
+    const f = await fixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxBlocks: 1 });
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      const journal = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))!.metadata as any).languageBatch;
+      expect(journal).toMatchObject({ state: "idle", pendingSamples: [], pendingChars: 0, blockComplete: true });
+      if (state === "legacy-open") journal.state = "open";
+      compiler.mockResolvedValue("compiler-after");
+      const resumed = await p.ingestor.ingest({ dumpPath: f.dumpPath });
+      expect(resumed.pages).toBe(1);
+      expect(p.page).toHaveBeenCalledTimes(2);
+      expect(p.trainedShards.flatMap(shard => shard.samples)).toHaveLength(2);
+      const trainedCount = p.train.mock.calls.length;
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      expect(p.train).toHaveBeenCalledTimes(trainedCount);
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it("validates legacy empty complete journals before treating them as compiler-independent", async () => {
+    const f = await fixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxBlocks: 1 });
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      const journal = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))!.metadata as any).languageBatch;
+      journal.state = "open"; journal.pendingChars = 1;
+      compiler.mockResolvedValue("compiler-after");
+      p.storage.ingestion.put.mockClear(); p.storage.events.append.mockClear(); p.train.mockClear(); p.page.mockClear();
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/character count is invalid/);
+      expect(p.storage.ingestion.put).not.toHaveBeenCalled(); expect(p.storage.events.append).not.toHaveBeenCalled();
+      expect(p.train).not.toHaveBeenCalled(); expect(p.page).not.toHaveBeenCalled();
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it("retains the compiler fence and exact cursor for a drained midblock journal", async () => {
+    const f = await sameBlockFixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      const journal = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))!.metadata as any).languageBatch;
+      expect(journal).toMatchObject({ state: "open", pendingSamples: [], pendingChars: 0, blockComplete: false, processedPageCount: 1 });
+      compiler.mockResolvedValue("compiler-after");
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/compiler attestation differs or is missing/);
+      compiler.mockResolvedValue("compiler-before");
+      const resumed = await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      expect(resumed.pages).toBe(1); expect(p.page).toHaveBeenCalledTimes(2);
+      expect(p.trainedShards.flatMap(shard => shard.samples)).toHaveLength(2);
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
   it("refuses an explicit rewind after a completed idle journal", async () => {
     const f = await fixture();
     try {
