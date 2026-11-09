@@ -13,25 +13,31 @@ pnpm build
 
 ## Configure your local database
 
-Create an empty PostgreSQL database. Put its connection settings in the ignored `scce.config.local.json`, which overlays `scce.config.json`:
+Put your local PostgreSQL connection settings in the ignored `scce.config.local.json`, which overlays `scce.config.json`. The account needs permission to create databases; the existing `postgres` maintenance database can supply the initial connection:
 
 ```json
 {
   "database": {
-    "url": "postgresql://YOUR_USER:YOUR_PASSWORD@127.0.0.1:5432/YOUR_DATABASE",
-    "schema": "scce3_runtime"
+    "url": "postgresql://YOUR_USER:YOUR_PASSWORD@127.0.0.1:5432/postgres",
+    "schema": "scce"
   }
 }
 ```
 
-The runtime creates and migrates its schema. Use the same configuration for training and serving so the server opens the brain you built.
+Create a fresh physical database for this brain build:
+
+```sh
+node tools/create-brain-database.mjs --config scce.config.json --output-config scce.first-brain.local.json
+```
+
+The tool creates, migrates and verifies a new database, confirms its source and learned tables are empty, and writes its connection settings to the new ignored config. It refuses an existing database or output file. Choose a new output path for each new build. Acquisition, consolidation, learning, publication and serving for that build all use the same configuration.
 
 ## Teach a bounded first collection
 
 Put a short README or Markdown document you own in `corpus/first-brain/`, then run:
 
 ```sh
-pnpm scce corpus train oss corpus/first-brain --docs-only --max-files=1 --max-file-bytes=65536
+pnpm scce --config scce.first-brain.local.json corpus train oss corpus/first-brain --docs-only --max-files=1 --max-file-bytes=65536
 ```
 
 This compiles document evidence, cognitive structures and language memory into PostgreSQL. Inspect the returned report for completed files, skipped files and resource stops before adding material. One source can contribute its own observations; a source-count minimum does not decide whether its exact facts are usable. The default CLI heap allowance is 3 GiB; whole-machine memory also includes PostgreSQL, the browser and the operating system. The whole-machine 8 GB qualification remains open.
@@ -41,7 +47,7 @@ See [corpus training](docs/CORPUS_TRAINING.md) for larger bounded collections, r
 ## Start and use the brain
 
 ```sh
-pnpm server
+pnpm server --config scce.first-brain.local.json
 ```
 
 Open `http://127.0.0.1:3873/`. `/api/ready` reports startup readiness. Ask about a concrete fact in your document, inspect its supporting evidence, then ask about something the document does not establish. The runtime records decisions and outcomes in the same durable store. Restarting the server reopens that state.

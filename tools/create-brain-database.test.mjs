@@ -2,17 +2,22 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createBrainDatabase, parseArguments, validateDatabaseName, verifyOutputPath } from './create-brain-database.mjs';
 
 async function fixture(run) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'scce-new-brain-'));
+  const temporaryDirectory = await realpath(os.tmpdir());
+  const root = await realpath(await mkdtemp(path.join(temporaryDirectory, 'scce-new-brain-')));
   execFileSync('git', ['init', '--quiet', root]);
   await writeFile(path.join(root, '.gitignore'), '*.local.json\n');
-  try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
+  try { await run(root); } finally {
+    assert.equal(path.dirname(root), temporaryDirectory);
+    assert.ok(path.basename(root).startsWith('scce-new-brain-'));
+    await rm(root, { recursive: true, force: true });
+  }
 }
 const config = { database: { url: 'postgres://operator:fixture-only-password@localhost/original', schema: 'brain', ssl: false },
   security: { informationAccess: { tenantId: 'fixture', principalId: 'owner' } },

@@ -1,6 +1,6 @@
 # Corpus Training
 
-SCCE training is corpus compilation. Source material first becomes an exact `scce.surface_lattice.v3`, then source versions, evidence spans, language profiles, n-gram observations and models, language units, language patterns, semantic frames, and traceable events in PostgreSQL. The base lattice is not truncated by higher-hypothesis caps: every admitted UTF-8 byte remains recoverable through byte, UTF-16, code-point, and grapheme coordinates.
+SCCE training is corpus compilation. Source material first becomes an exact `scce.surface_lattice.v3`, then source versions, evidence spans, language profiles, n-gram observations and structures, language units, language patterns, semantic frames, and traceable events in PostgreSQL. The base lattice is not truncated by higher-hypothesis caps: every admitted UTF-8 byte remains recoverable through byte, UTF-16, code-point, and grapheme coordinates.
 
 The current first-class language-memory source systems are:
 
@@ -18,17 +18,25 @@ These IDs are source-system IDs, not a semantic ontology. Corpus labels do not d
 
 Use one fresh physical PostgreSQL database for each ingestion build. These three phases share that database.
 
+After building the packages, create the database and its ignored local config from your existing local PostgreSQL configuration:
+
+```powershell
+node tools/create-brain-database.mjs --config scce.config.json --output-config scce.new-brain.local.json
+```
+
+Pass `--config scce.new-brain.local.json` to every CLI and server command for this build. The examples below use that path.
+
 `ingest wiki --acquire-only` stores the complete admitted source/evidence/graph and document signatures. It does not enqueue language shards, mark documents language-trained, or activate a learned brain. Its journal is an acquisition journal; use stored-source training after consolidation rather than switching it to `--finish-pending`.
 
 ```powershell
-pnpm scce --config scce.config.json ingest wiki <dump-path> --acquire-only --max-blocks=1
-pnpm scce --config scce.config.json db consolidate-segmentation segmentation-plan.json
-pnpm scce --config scce.config.json corpus train stored --source-system=wikipedia --min-article-bytes=0 --ngram-max-order=4 --ngram-max-counters=12000 --ngram-vocabulary-limit=24000
+pnpm scce --config scce.new-brain.local.json ingest wiki <dump-path> --acquire-only --max-blocks=1
+pnpm scce --config scce.new-brain.local.json db consolidate-segmentation segmentation-plan.json
+pnpm scce --config scce.new-brain.local.json corpus train stored --source-system=wikipedia --min-article-bytes=0 --ngram-max-order=4 --ngram-max-counters=12000 --ngram-vocabulary-limit=24000
 ```
 
 The consolidation plan uses `scce.corpus_segmentation_plan.v1`, an explicit `runId`, `scope`, `bounds`, and `windowUtf16`. Pin the actual committed cohort with `scope.sourceVersionIds` and its exact information label. Copy the complete consolidation receipt `trainingDeclaration` value into `runtime.corpusSegmentation`. It contains the exact canonical scope, current producer recipe, actual model normalization contract, and bounds; do not reconstruct a versioned recipe string by hand. Configure this declaration before the final command. A configured missing, incompatible, or stale snapshot fails training; it never selects a local fit instead. Unconfigured initial training records `local_bootstrap` explicitly.
 
-Stored global learning acquires missing full profiles from verified canonical source bytes and writes the full declared n-gram/profile/derived artifacts. The older unconfigured construction-only replay keeps its existing limits and preserves its original profiles/models. Explicit byte, article, source-attempt, and heap budgets remain effective: inspect `exhausted`, `nextSourceVersionId`, failures and skipped owners before declaring a cohort complete. Use `--min-article-bytes=0` when all admitted article lengths belong to the selected cohort; set total/attempt budgets large enough for that cohort and resume from the returned cursor when necessary.
+Stored global learning acquires missing full profiles from verified canonical source bytes and writes the full declared n-gram/profile/derived artifacts. Unconfigured construction-only replay keeps its declared limits and preserves the original profiles and n-gram structures. Explicit byte, article, source-attempt, and heap budgets remain effective: inspect `exhausted`, `nextSourceVersionId`, failures and skipped owners before declaring a cohort complete. Use `--min-article-bytes=0` when all admitted article lengths belong to the selected cohort; set total/attempt budgets large enough for that cohort and resume from the returned cursor when necessary.
 
 Source/version/ACL changes invalidate the frozen consolidation cohort. Adding owners to a source-system-wide scope also changes it; pin versions when new windows should use an existing frozen population. Changing the declaration or active snapshot creates a different derived compilation/checkpoint identity. Corpus statistics and model counts are measurements, not a fluency qualification.
 
