@@ -1,0 +1,8 @@
+{
+  "repository": "rpwalsh/SCCE",
+  "revision": "ac4fcc1482ae0763e62fb04329bf749152cde866",
+  "files": [
+    {"path": "packages/kernel/src/kernel-answer-primitives.ts", "sha256": "0325a58530a2a0d2e560e079e275dd3f7ac381fb70869fea473d1ba126f13a49"},
+    {"path": "packages/kernel/src/__tests__/bounded-edit-distance.test.ts", "sha256": "f623033ec59a1a32f816381287340f94c136f140cf208876f002d273cee8b573"}
+  ]
+}

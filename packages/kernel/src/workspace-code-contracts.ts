@@ -5,7 +5,7 @@ import {informationLabelAllowsRead,joinInformationLabels} from "./information-fl
 import {codeLanguageForPath} from "./code-request.js";
 import type {ScceStorage} from "./storage.js";
 import type {InformationAccessContext,EvidenceSpan,InformationLabel,JsonValue} from "./types.js";
-export const SOURCE_OWNED_CONTRACT_COMPILER_RECIPE="scce.source_owned_contract_snapshot_compiler.v2";
+export const SOURCE_OWNED_CONTRACT_COMPILER_RECIPE="scce.source_owned_contract_snapshot_compiler.v3";
 export const WORKSPACE_CONTRACT_PROJECTION_SCHEMA="scce.workspace.source_contract_projection.v1";
 export interface WorkspaceContractOwner {readonly path:string;readonly sourceId:string;readonly sourceVersionId:string;readonly contentHash:string;readonly namespace:string;readonly byteLength:number;readonly evidenceIds:readonly string[];readonly informationLabel:InformationLabel}
 export interface WorkspaceContractReceipt {readonly schema:typeof WORKSPACE_CONTRACT_PROJECTION_SCHEMA;readonly workspaceId:string;readonly componentRecipe:string;readonly blobHash:string;readonly contractCount:number;readonly ownerCount:number;readonly sourceRecordCount:number;readonly complete:boolean;readonly informationLabel:InformationLabel}

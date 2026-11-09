@@ -1,5 +1,6 @@
 # Preserve the pinned source excerpt's original bytes across platforms.
 packages/kernel/src/__tests__/fixtures/pride-and-prejudice-context-excerpt.txt -text whitespace=cr-at-eol,-blank-at-eof
+packages/adapters-node/src/__tests__/fixtures/public-vitest-contract/*.ts.txt -text whitespace=cr-at-eol
 
 # Keep frozen evaluation inputs and their content hashes byte-stable across checkout platforms.
 tools/capability-evaluation/questions.jsonl -text

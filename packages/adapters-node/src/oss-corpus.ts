@@ -174,7 +174,7 @@ async function ingestTypeScriptSourceOwnedTestContracts(input: {
   const testCandidates: Array<{ path: string; imports: string[] }> = [];
   for (const file of available) {
     const text = (await readFile(file.absolutePath)).toString("utf8");
-    if (importsNodeTest(text, file.path)) testCandidates.push({ path: normalizeRelative(file.path), imports: relativeModulePaths(text, file.path) });
+    if (importsSupportedTest(text, file.path)) testCandidates.push({ path: normalizeRelative(file.path), imports: relativeModulePaths(text, file.path) });
   }
   if (!testCandidates.length) return result;
   const chosenTests = testCandidates.sort((a, b) => a.path.localeCompare(b.path)).slice(0, 32);
@@ -211,7 +211,7 @@ async function ingestTypeScriptSourceOwnedTestContracts(input: {
       projectedTextHash: input.hasher.digestHex(codeTrainingSurface(text))
     }));
     sourceTexts.set(relativePath, text);
-    const isTest = importsNodeTest(text, relativePath);
+    const isTest = importsSupportedTest(text, relativePath);
     if (isTest) {
       testPaths.push(relativePath);
       testVersions.set(relativePath, { sourceVersionId: String(fileVersion), sourceHash });
@@ -240,10 +240,13 @@ async function ingestTypeScriptSourceOwnedTestContracts(input: {
 }
 
 
-function importsNodeTest(text: string, fileName: string): boolean {
+function importsSupportedTest(text: string, fileName: string): boolean {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
   return source.statements.some(statement => ts.isImportDeclaration(statement)
-    && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === "node:test");
+    && ts.isStringLiteral(statement.moduleSpecifier) && (statement.moduleSpecifier.text === "node:test"
+      || statement.moduleSpecifier.text === "vitest" && !statement.importClause?.isTypeOnly
+        && statement.importClause?.namedBindings && ts.isNamedImports(statement.importClause.namedBindings)
+        && statement.importClause.namedBindings.elements.some(element => !element.isTypeOnly && ["test", "it"].includes(element.propertyName?.text ?? element.name.text))));
 }
 
 function relativeModulePaths(text: string, fileName: string): string[] {

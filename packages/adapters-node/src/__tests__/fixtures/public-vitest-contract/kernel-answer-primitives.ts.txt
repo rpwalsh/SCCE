@@ -1,0 +1,314 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
+import { corpusIdentityGeneration, corpusNamedRuns } from "./corpus-identity.js";
+import { hasUncasedNonLatinLetter, hasUppercaseLetter, surfaceWords } from "./surface-linguistics.js";
+import type { JsonValue } from "./types.js";
+
+
+
+
+// Pure in its text, and called from inside per-span filters: one request's derivation ran once per candidate row.
+const namedSubjectAnchorsByText = new Map<string, string[]>();
+let memoizedGeneration = -1;
+
+export function namedSubjectAnchors(text: string): string[] {
+  // The answer is derived from the corpus signal, so it survives only as long as that signal does.
+  if (memoizedGeneration !== corpusIdentityGeneration()) {
+    namedSubjectAnchorsByText.clear();
+    memoizedGeneration = corpusIdentityGeneration();
+  }
+  const memoized = namedSubjectAnchorsByText.get(text);
+  if (memoized) return memoized;
+  const derived = namedPriorSurfaceRuns(text)
+    .map(normalizePriorKey)
+    .filter(namedSourceAnchorSpecificEnough)
+    .sort((left, right) => splitPriorUnits(right).length - splitPriorUnits(left).length || right.length - left.length);
+  if (namedSubjectAnchorsByText.size >= 512) namedSubjectAnchorsByText.clear();
+  namedSubjectAnchorsByText.set(text, derived);
+  return derived;
+}
+
+
+
+ function namedSourceAnchorSpecificEnough(anchor: string): boolean {
+  const units = splitPriorUnits(anchor);
+  if (units.length >= 2) return true;
+  return units.some(unit => [...unit].length >= 3 && !genericQuestionSignal(unit));
+}
+
+
+
+/**
+ * Source-neutral request units shared by graph retrieval and question-slot
+ * selection. Punctuation does not identify a language-independent question
+ * operator, so every observed unit remains available to downstream scoring.
+ *
+ * @internal Exported for focused routing-invariant tests; it is not re-exported
+ * from the package entrypoint.
+ */
+export function requestContentPriorUnits(text: string): string[] {
+  return splitPriorUnits(normalizePriorKey(text));
+}
+
+
+
+/** @internal See {@link requestContentPriorUnits}. */
+export function requestContentSurface(text: string): string {
+  const words = splitPriorSurfaceWords(text);
+  return words.join(" ") || text;
+}
+
+
+
+const ALPHABETIC = /\p{Alphabetic}/u;
+
+export function genericQuestionSignal(unit: string): boolean {
+  if (!unit) return true;
+  if (unit.length <= calibrated("units.generic_length_ceiling")) return true;
+  let letters = 0;
+  let repeated = 0;
+  let previous = "";
+  for (const char of unit) {
+    // Alphabetic contains every cased code point, so only uncased scripts gain letters here.
+    if (ALPHABETIC.test(char)) letters++;
+    if (char === previous) repeated++;
+    previous = char;
+  }
+  return letters <= 1 || repeated / Math.max(1, unit.length - 1) > calibrated("units.generic_repeated_character_ratio");
+}
+
+
+
+/**
+ * What the request names when the corpus has not spoken: its content units, whole.
+ *
+ * This was a capitalization reader -- cased runs joined across short connectors, a sentence-initial capital shed,
+ * a five-character bound on what counted as an opening word, and a length-based fallback for uncased input. It
+ * decided that "What did he discover?" names the verb and that "Explain relativity." names the imperative, and
+ * in Korean, Japanese, Chinese, Hebrew, Arabic or Devanagari it had no signal to read at all. corpus-identity.ts
+ * answers the question from the corpus instead, in any script; this remains only for the moment before any
+ * corpus signal exists, and it guesses in no language's favour.
+ */
+function namedPriorSurfaceRuns(text: string): string[] {
+  return corpusNamedRuns(text);
+}
+
+
+ function splitPriorSurfaceWords(text: string): string[] {
+  return surfaceWords(text);
+}
+
+
+
+/**
+ * A word written entirely in capitals is a name, however short.
+ *
+ * The single-word rule below keeps a run only at four normalized characters or more, which is a proxy for "long
+ * enough to be a name rather than a sentence-initial capital". It fails exactly on the names that carry the most
+ * information: measured on the live corpus, "What is DNA?" extracted the anchor "what" -- four characters, kept --
+ * and dropped "DNA" at three, so retrieval searched for the question word, gathered nothing, and refused a question
+ * whose article the corpus holds. Case, not length, is what separates a name from a sentence opening, and it reads
+ * the same way in every cased script.
+ */
+function acronymLikeUnit(value: string): boolean {
+  const letters = [...value].filter(character => /\p{Letter}/u.test(character));
+  return letters.length >= 2 && letters.every(character => /\p{Uppercase_Letter}/u.test(character));
+}
+
+export function surfaceEntityRuns(text: string): string[] {
+  const out: string[] = [];
+  let current: string[] = [];
+  const flush = () => {
+    if (
+      current.length >= 2 ||
+      current.some(hasUncasedNonLatinLetter) ||
+      current.some(acronymLikeUnit) ||
+      current.some(unit => hasPriorAnchorSignal(unit) && [...normalizePriorKey(unit)].length >= 4)
+    ) out.push(current.join(" "));
+    current = [];
+  };
+  for (const raw of surfaceWords(text)) {
+    const word = stripOuterPriorSeparators(raw);
+    if (!word) continue;
+    // A digit run continues a name it follows: "Apollo 11", "Windows 95", "World War 2".
+    //
+    // Digits carry no case, so the anchor-signal test below is false for them and the run flushed at "Apollo".
+    // The request subject became "apollo", which exact-matches the title of the article about the Greek god,
+    // and "When did Apollo 11 land on the Moon?" was answered from it. Only a run already under construction
+    // may be extended, so a bare year elsewhere in a sentence still starts nothing.
+    if (current.length > 0 && /^\p{Number}+$/u.test(word)) {
+      current.push(word);
+      continue;
+    }
+    if (hasPriorAnchorSignal(word) && splitPriorUnits(normalizePriorKey(word)).some(unit => unit.length >= 2)) {
+      current.push(word);
+      continue;
+    }
+    flush();
+  }
+  flush();
+  return uniqueKernelStrings(out).slice(0, 32);
+}
+
+
+
+export function boundedEditDistance(left: string, right: string, maxDistance: number): number {
+  if (Math.abs(left.length - right.length) > maxDistance) return maxDistance + 1;
+  // Banded Levenshtein (Ukkonen). A cell (i, j) with |i - j| > maxDistance
+  // can never hold a value <= maxDistance, so only the diagonal band of
+  // width 2*maxDistance+1 is computed: O(n * maxDistance) instead of the
+  // full O(n * m) row this previously filled. Profiled at 8.7% of a turn's
+  // CPU via requestUnitSimilarity, which calls this pairwise in a loop.
+  //
+  // Values are clamped at maxDistance+1. That preserves exactness for every
+  // result <= maxDistance (costs along an optimal DP path are
+  // non-decreasing, so a path to a small final value never crosses a
+  // clamped cell) and collapses everything larger into the single
+  // "too far" answer the callers already treat as a miss.
+  const cap = maxDistance + 1;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => Math.min(index, cap));
+  for (let i = 1; i <= left.length; i++) {
+    const current: number[] = new Array(right.length + 1).fill(cap);
+    const from = Math.max(1, i - maxDistance);
+    const to = Math.min(right.length, i + maxDistance);
+    if (from === 1) current[0] = Math.min(i, cap);
+    // Column 0 is a live cell of the row (deleting all of `left` so far);
+    // seeding rowMin from cap alone made a row whose band lies entirely
+    // past `right`'s end look exhausted and return early -- caught by the
+    // oracle test on ("b", "", 1), where the true distance is 1.
+    let rowMin = from === 1 ? (current[0] ?? cap) : cap;
+    for (let j = from; j <= to; j++) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      const value = Math.min(
+        (previous[j] ?? cap) + 1,
+        (current[j - 1] ?? cap) + 1,
+        (previous[j - 1] ?? cap) + cost,
+        cap
+      );
+      current[j] = value;
+      rowMin = Math.min(rowMin, value);
+    }
+    if (rowMin > maxDistance) return cap;
+    previous = current;
+  }
+  return Math.min(previous[right.length] ?? cap, cap);
+}
+
+
+
+export function kernelClamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+
+
+export function hasPriorAnchorSignal(value: string): boolean {
+  return hasUppercaseLetter(value) || hasUncasedNonLatinLetter(value);
+}
+
+
+
+export function stripOuterPriorSeparators(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && isPriorSeparator(value[start] ?? "")) start++;
+  while (end > start && isPriorSeparator(value[end - 1] ?? "")) end--;
+  return value.slice(start, end).trim();
+}
+
+
+
+export function isPriorSeparator(char: string): boolean {
+  return char === "\\" || char === "\"" || char === "'" || char === ":" || char === "," || char === "." || char === ";" || char === "?" || char === "!" || char === "{" || char === "}" || char === "[" || char === "]" || isPriorWhitespace(char);
+}
+
+
+
+export function collapsePriorWhitespace(value: string): string {
+  let out = "";
+  let pendingSpace = false;
+  for (const char of value) {
+    if (isPriorWhitespace(char)) {
+      pendingSpace = out.length > 0;
+      continue;
+    }
+    if (pendingSpace) out += " ";
+    out += char;
+    pendingSpace = false;
+  }
+  return out.trim();
+}
+
+
+
+ function isPriorWhitespace(char: string): boolean {
+  return char === " " || char === "\t" || char === "\n" || char === "\r";
+}
+
+
+
+export function splitPriorUnits(value: string): string[] {
+  const units: string[] = [];
+  let current = "";
+  for (const char of value) {
+    if (isPriorWhitespace(char)) {
+      if (current) units.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current) units.push(current);
+  return units;
+}
+
+
+
+export function normalizePriorKey(value: string): string {
+  return collapsePriorWhitespace(value.toLocaleLowerCase());
+}
+
+
+
+export function kernelString(value: JsonValue | undefined): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+
+
+export function kernelNumber(value: JsonValue | undefined, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return fallback;
+}
+
+
+
+export function kernelStringArray(value: JsonValue | undefined): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+
+
+export function uniqueKernelStrings(values: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const clean = value.trim();
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(clean);
+  }
+  return out;
+}
+
+
+
+export function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {};
+}
