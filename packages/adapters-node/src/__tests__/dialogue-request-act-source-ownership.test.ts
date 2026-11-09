@@ -7,6 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as kernel from "@scce/kernel";
 import * as trainer from "../language-corpus-trainer.js";
+import { DIALOGUE_CONVERSATIONAL_CHECKPOINT_SCHEMA } from "../dialogue-conversational-checkpoint.js";
 import { trainDialogueCorpus } from "../dialogue-corpus.js";
 import type { IngestionCheckpoint, LanguagePatternProjection, LanguagePatternRecord, ScceStorage } from "@scce/kernel";
 
@@ -105,7 +106,7 @@ it("attributes a single pooled measurement once per source and preserves it on a
   const newCheckpointMetadata = [...f.checkpoints.values()].filter(row => !previousCheckpoints.has(row.id))
     .map(row => row.metadata as Record<string, kernel.JsonValue>);
   expect(newCheckpointMetadata.map(metadata => metadata.schema).sort()).toEqual([
-    "scce.dialogue_computation_compilation.v1", "scce.dialogue_conversational_compilation.v1"
+    "scce.dialogue_computation_compilation.v1", DIALOGUE_CONVERSATIONAL_CHECKPOINT_SCHEMA
   ]);
   expect(newCheckpointMetadata.find(metadata => metadata.schema === "scce.dialogue_computation_compilation.v1")).toMatchObject({
     compilerFingerprint: kernel.SOURCE_COMPUTATION_CONSTRUCTION_RECIPE, projections: []

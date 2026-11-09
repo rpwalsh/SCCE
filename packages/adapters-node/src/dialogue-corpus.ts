@@ -48,7 +48,7 @@ import {
 import { corpusSourceVersionIdFor, normalizeCorpusTrainingText, readCompletedCorpusCheckpoint, stampPattern, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import {persistDialogueComputationComponent,type DialogueComputationReport} from "./dialogue-computation-component.js";
 import { persistDialogueContextualQaComponent, type DialogueContextualQaReport } from "./dialogue-contextual-qa-component.js";
-import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, runDialogueConversationalComponent } from "./dialogue-conversational-checkpoint.js";
+import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, conversationalCheckpointSources, runDialogueConversationalComponent } from "./dialogue-conversational-checkpoint.js";
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult, type SourceBrainFileAdmission } from "./source-brain-build.js";
 
 /**
@@ -276,8 +276,8 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     requestAuthorities: await persistDialogueRequestAuthorities(input, read),
     conversationalConstructions: await runDialogueConversationalComponent({
       storage: input.storage, rootUri: pathToFileURL(root).href, informationLabel: input.informationLabel, authorship: input.authorship,
-      sources: read.map(file => ({ sourceUri: file.sourceUri, sourceVersionId: String(corpusSourceVersionIdFor(file)), contentHash: sha256(file.text),
-        byteLength: Buffer.byteLength(file.text, "utf8"), ...(file.transcriptTurns ? { transcriptTurns: file.transcriptTurns } : {}) })),
+      sources: conversationalCheckpointSources(read.map(file => ({ sourceUri: file.sourceUri, sourceVersionId: String(corpusSourceVersionIdFor(file)), contentHash: sha256(file.text),
+        byteLength: Buffer.byteLength(file.text, "utf8"), ...(file.transcriptTurns ? { transcriptTurns: file.transcriptTurns } : {}) }))),
       compile: () => persistConversationalConstructions(input, read), unchanged: emptyConversationalConstructionReport
     }),
     computationConstructions: await persistDialogueComputationComponent({storage:input.storage,rootUri:pathToFileURL(root).href,informationLabel:input.informationLabel,authorship:input.authorship,sources:read}),

@@ -4,18 +4,29 @@ import { canonicalStringify, createHasher, toJsonValue, type ContentHash, type I
 
 /** Changes only the conversational auxiliary component, never immutable source or base compilation identity. */
 export const DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID = "scce.dialogue_conversational_construction.v2";
+export const DIALOGUE_CONVERSATIONAL_CHECKPOINT_SCHEMA = "scce.dialogue_conversational_compilation.v2";
 
 export interface DialogueSourceComponentInput<T> {
   storage: ScceStorage;
   rootUri: string;
   informationLabel: InformationLabel;
   authorship: string;
-  sources: readonly { sourceUri: string; sourceVersionId: string; contentHash: string; byteLength: number; transcriptTurns?: readonly TranscriptTurn[]; transcriptDigest?:string }[];
+  sources: readonly { sourceUri: string; sourceVersionId: string; contentHash: string; byteLength: number; transcriptDigest?:string }[];
   compile: () => Promise<{ report: T; projections: readonly LanguagePatternProjection[]; deferred?: boolean }>;
   unchanged: () => T;
 }
+export function conversationalCheckpointSources(sources: readonly { sourceUri: string; sourceVersionId: string; contentHash: string; byteLength: number; transcriptTurns?: readonly TranscriptTurn[] }[]): DialogueSourceComponentInput<unknown>["sources"] {
+  const hasher = createHasher();
+  return sources.map(({ sourceUri, sourceVersionId, contentHash, byteLength, transcriptTurns }) => ({ sourceUri, sourceVersionId, contentHash, byteLength,
+    transcriptDigest: hasher.digestHex(canonicalStringify(transcriptTurns ?? null)) }));
+}
+export function prepareDialogueSourceComponentBinding(input: Pick<DialogueSourceComponentInput<unknown>, "rootUri" | "informationLabel" | "authorship" | "sources">): { binding: string; byteLength: number } {
+  const sources = [...input.sources].sort((a, b) => a.sourceVersionId.localeCompare(b.sourceVersionId) || a.sourceUri.localeCompare(b.sourceUri));
+  return { binding: canonicalStringify({ rootUri: input.rootUri, informationLabel: input.informationLabel, authorship: input.authorship, sources }),
+    byteLength: sources.reduce((sum, source) => sum + source.byteLength, 0) };
+}
 export function runDialogueConversationalComponent<T>(input:DialogueSourceComponentInput<T>):Promise<T>{
-  return runDialogueSourceComponent(input,DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID,"scce.dialogue_conversational_compilation.v1","dialogue_conversational_compilation");
+  return runDialogueSourceComponent(input,DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID,DIALOGUE_CONVERSATIONAL_CHECKPOINT_SCHEMA,"dialogue_conversational_compilation");
 }
 export function runDialogueComputationComponent<T>(input:DialogueSourceComponentInput<T>):Promise<T>{
   return runDialogueSourceComponent(input,SOURCE_COMPUTATION_CONSTRUCTION_RECIPE,"scce.dialogue_computation_compilation.v1","dialogue_computation_compilation");
@@ -26,11 +37,9 @@ export function runDialogueContextualQaComponent<T>(input:DialogueSourceComponen
 async function runDialogueSourceComponent<T>(input:DialogueSourceComponentInput<T>,recipe:string,schema:string,idPrefix:string,compilerFingerprint=recipe):Promise<T>{
   if (!input.sources.length) return input.unchanged();
   const hasher = createHasher();
-  const sources = [...input.sources].sort((a, b) => a.sourceVersionId.localeCompare(b.sourceVersionId) || a.sourceUri.localeCompare(b.sourceUri));
-  const binding = canonicalStringify({ rootUri: input.rootUri, informationLabel: input.informationLabel, authorship: input.authorship, sources });
+  const { binding, byteLength } = prepareDialogueSourceComponentBinding(input);
   const contentHash = hasher.digestHex(binding) as ContentHash;
   const id = `${idPrefix}_${contentHash}`;
-  const byteLength = sources.reduce((sum, source) => sum + source.byteLength, 0);
   const current = async () => {
     const row = await input.storage.ingestion.get(id), metadata = row?.metadata;
     const valid = row?.status === "complete" && row.phase === "stored" && row.rootUri === input.rootUri && row.itemUri === input.rootUri

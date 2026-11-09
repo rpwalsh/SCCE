@@ -10,7 +10,7 @@ import type { EvidenceSpan, InformationLabel, IngestionCheckpoint, LanguagePatte
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { requestSeedLanguagePattern } from "../../../kernel/src/request-language-hydration.js";
 import { trainDialogueCorpus } from "../dialogue-corpus.js";
-import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "../dialogue-conversational-checkpoint.js";
+import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, DIALOGUE_CONVERSATIONAL_CHECKPOINT_SCHEMA, conversationalCheckpointSources, prepareDialogueSourceComponentBinding } from "../dialogue-conversational-checkpoint.js";
 
 const old = JSON.parse(readFileSync(new URL("./fixtures/conversation-multiline-old-empty.json", import.meta.url), "utf8"));
 const label: InformationLabel = { tenantId: "owner.tenant", principals: ["owner.principal"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" };
@@ -116,4 +116,78 @@ describe("cached-source conversational component replay", () => {
       expect(compiler).not.toHaveBeenCalled(); expect(induce).toHaveBeenCalledTimes(1); expect(publish).toHaveBeenCalled();
     } finally { compiler.mockRestore(); induce.mockRestore(); publish.mockRestore(); await rm(root, { recursive: true, force: true }); }
   });
+});
+
+it("keeps genuine sixteen-pair compiler payload hashes exact while its conversational receipt retains only transcript digests", async () => {
+  const source = JSON.parse(readFileSync(new URL("./fixtures/dolly-human-sixteen-pairs.json", import.meta.url), "utf8")) as kernel.DeclaredTranscriptSource;
+  expect(kernel.validateDeclaredTranscriptSource(source).turns).toHaveLength(32);
+  expect(source.sourceMetadata?.originalJsonlSha256).toBe("2df9083338b4abd6bceb5635764dab5d833b393b55759dffb0959b6fcbf794ec");
+  expect(source.sourceMetadata?.preparationManifestSha256).toBe("5127794bae91db70a325ff7529c5a8a1fc8ae788a1e89842483c6ca989c7c9cb");
+  expect(new Set(source.turns.map(turn => turn.sourceRecordId)).size).toBe(16);
+  const root = await mkdtemp(path.join(tmpdir(), "dialogue-genuine-checkpoint-")), f = fixture();
+  await writeFile(path.join(root, "human.json"), JSON.stringify(source));
+  const now = vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+  const compiler = vi.spyOn(kernel, "compileLanguageTrainingBatch"), induce = vi.spyOn(kernel, "induceConversationalActConstructionTrainingSets");
+  const hasher = kernel.createHasher();
+  const artifactHash = async () => hasher.digestHex(kernel.canonicalStringify({ versions: f.versions, evidence: f.evidence, events: f.events,
+    profiles: await f.storage.model.listLanguageProfiles(), models: await f.storage.languageMemory.listNgramModels(),
+    patterns: [...await f.storage.languageMemory.listLanguagePatterns(), ...await f.storage.languageMemory.listLanguagePatterns({ patternKind: "source_compilation" })],
+    projections: [...f.projections.values()] }));
+  const options = { storage: f.storage, rootPath: root, informationLabel: label, authorship: "human_authored" as const,
+    ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 128 };
+  try {
+    const first = await trainDialogueCorpus(options);
+    expect(first.filesSkipped).toEqual([]); expect(first.filesTrained).toBe(1); expect(compiler).toHaveBeenCalledTimes(1);
+    const receipt = [...f.checkpoints.values()].find(row => row.id.startsWith("dialogue_conversational_compilation_"))!;
+    expect(object(receipt.metadata).schema).toBe(DIALOGUE_CONVERSATIONAL_CHECKPOINT_SCHEMA);
+    const binding = object(receipt.metadata).binding;
+    if (typeof binding !== "string") throw Error("missing exact checkpoint binding");
+    const parsed = JSON.parse(binding) as { sources: Array<{ transcriptDigest: string; transcriptTurns?: unknown }> };
+    expect(parsed.sources).toHaveLength(1);
+    expect(parsed.sources[0]!.transcriptDigest).toBe(hasher.digestHex(kernel.canonicalStringify(source.turns)));
+    expect(parsed.sources[0]!).not.toHaveProperty("transcriptTurns");
+    expect(binding).not.toContain(source.turns[0]!.surface);
+    expect(Buffer.byteLength(binding)).toBeLessThan(2048);
+    const outputHash = await artifactHash(), inductionHash = hasher.digestHex(kernel.canonicalStringify(induce.mock.results.at(-1)!.value));
+    f.checkpoints.delete(receipt.id); compiler.mockClear(); induce.mockClear();
+    const rebuilt = await trainDialogueCorpus(options);
+    expect(rebuilt.reports).toEqual(first.reports); expect(compiler).not.toHaveBeenCalled(); expect(induce).toHaveBeenCalledTimes(1);
+    expect(hasher.digestHex(kernel.canonicalStringify(induce.mock.results[0]!.value))).toBe(inductionHash);
+    expect(await artifactHash()).toBe(outputHash);
+    expect(f.checkpoints.has(receipt.id)).toBe(true);
+    induce.mockClear(); const write = vi.spyOn(f.storage.ingestion, "put");
+    await trainDialogueCorpus(options);
+    expect(induce).not.toHaveBeenCalled(); expect(compiler).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
+    expect(await artifactHash()).toBe(outputHash);
+  } finally { compiler.mockRestore(); induce.mockRestore(); now.mockRestore(); await rm(root, { recursive: true, force: true }); }
+});
+
+it("formats all 128 actual Dolly source headers without retaining the 15,011-pair source payload again", () => {
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/dolly-checkpoint-128-headers.json", import.meta.url), "utf8")) as {
+    fileCount: number; turnCount: number; pairCount: number; textBytes: number; preparedFileInventoryDigest: string;
+    sourceMetadata: { originalJsonlSha256: string; preparationManifestSha256: string }; preparedFileInventoryDigestContract: string;
+    envelope: { rootUri: string; informationLabel: InformationLabel; authorship: string };
+    headers: Array<{ sourceUri: string; sourceVersionId: string; contentHash: string; byteLength: number; transcriptDigest: string }>;
+    compactBindingBytes: number; compactBindingSha256: string; expandedBindingBytes: number; expandedBindingSha256: string;
+  };
+  expect(fixture.sourceMetadata.originalJsonlSha256).toBe("2df9083338b4abd6bceb5635764dab5d833b393b55759dffb0959b6fcbf794ec");
+  expect(fixture.sourceMetadata.preparationManifestSha256).toBe("5127794bae91db70a325ff7529c5a8a1fc8ae788a1e89842483c6ca989c7c9cb");
+  expect(fixture.preparedFileInventoryDigestContract).toBe("sha256(canonical JSON of sorted [relative transcript filename, sha256(exact prepared file bytes)] pairs)");
+  expect(fixture.headers.every(source => source.sourceUri.startsWith("fixture://dolly15k/"))).toBe(true);
+  expect(fixture.fileCount).toBe(128); expect(fixture.turnCount).toBe(30022); expect(fixture.pairCount).toBe(15011);
+  expect(fixture.headers).toHaveLength(128); expect(new Set(fixture.headers.map(row => row.sourceVersionId)).size).toBe(128);
+  expect(fixture.headers.reduce((sum, source) => sum + source.byteLength, 0)).toBe(11812929);
+  expect(fixture.preparedFileInventoryDigest).toBe("83d84e29d13089f84746b92dbc648bef53924b0b40a4b138adc638d68ef5aa34");
+  const { binding, byteLength } = prepareDialogueSourceComponentBinding({ ...fixture.envelope, sources: fixture.headers });
+  expect(byteLength).toBe(fixture.textBytes);
+  expect(Buffer.byteLength(binding)).toBe(fixture.compactBindingBytes);
+  expect(kernel.createHasher().digestHex(binding)).toBe(fixture.compactBindingSha256);
+  expect(fixture.expandedBindingBytes).toBe(21018271); expect(fixture.compactBindingBytes).toBe(42854);
+  expect(binding).not.toContain("transcriptTurns"); expect(binding).not.toContain('"surface":');
+  const declared = kernel.validateDeclaredTranscriptSource(JSON.parse(readFileSync(new URL("./fixtures/dolly-human-sixteen-pairs.json", import.meta.url), "utf8")));
+  const source = { sourceUri: "fixture://binding", sourceVersionId: "source-version", contentHash: "a".repeat(64), byteLength: Buffer.byteLength(declared.text) };
+  const a = conversationalCheckpointSources([{ ...source, transcriptTurns: declared.turns }]);
+  const changed = structuredClone(declared.turns); changed[0]!.sourceRecordId += ".changed";
+  expect(conversationalCheckpointSources([{ ...source, transcriptTurns: changed }])[0]!.transcriptDigest).not.toBe(a[0]!.transcriptDigest);
+  expect(conversationalCheckpointSources([source])[0]!.transcriptDigest).not.toBe(conversationalCheckpointSources([{ ...source, transcriptTurns: [] }])[0]!.transcriptDigest);
 });

@@ -1,0 +1,936 @@
+{
+  "schema": "scce.dolly_checkpoint_header_fixture.v1",
+  "sourceMetadata": {
+    "dataset": "databricks/databricks-dolly-15k",
+    "uri": "https://huggingface.co/datasets/databricks/databricks-dolly-15k/tree/bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "pinnedRevision": "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "license": "CC-BY-SA-3.0",
+    "attribution": "Databricks, Inc. (2023); instruction records were authored by Databricks employees. Some source contexts are Wikipedia excerpts as documented by the dataset card.",
+    "shareAlikeNotice": "This preparation is adapted from material licensed CC BY-SA 3.0. Retain attribution and license notices; distribute adaptations under the same license.",
+    "changeNotice": "Instructions and responses are represented as NFC-normalized speech turns; source context is retained only through non-speech supportingSourceRanges. The source category is mapped explicitly to commitmentScope and requestAuthority and copied as sourceCategory on each pair of turns; no scope or authority is inferred from prompt wording.",
+    "originalJsonlSha256": "2df9083338b4abd6bceb5635764dab5d833b393b55759dffb0959b6fcbf794ec",
+    "preparationManifestSha256": "5127794bae91db70a325ff7529c5a8a1fc8ae788a1e89842483c6ca989c7c9cb"
+  },
+  "fileCount": 128,
+  "turnCount": 30022,
+  "pairCount": 15011,
+  "textBytes": 11812929,
+  "envelope": {
+    "rootUri": "fixture://dolly15k",
+    "informationLabel": {
+      "tenantId": "owner.tenant",
+      "principals": [
+        "owner.principal"
+      ],
+      "compartments": [],
+      "exportClass": "restricted",
+      "mergePolicy": "isolated"
+    },
+    "authorship": "human_authored"
+  },
+  "headers": [
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00001.json",
+      "sourceVersionId": "source_version_9ea7ab492c999f972182564d2e9bd6afed5dd1f3506024ee571c2fee",
+      "contentHash": "8a9ed53daa097205c3bc69c1ef7db5ffb48f296b36bcb32e2a1c6496c5510c3f",
+      "byteLength": 93822,
+      "transcriptDigest": "e1a5907b788de77beb3f057a4530934f8f23f5007b2449de19f330c35116a20e"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00002.json",
+      "sourceVersionId": "source_version_cdf6dad33105425b53c6a3009a87b4b2a8df2965dd4929de303d81a3",
+      "contentHash": "da94f40cea3f5f328593d20117dc57d4b962c7cb1794e1867024373b30aaaa25",
+      "byteLength": 91334,
+      "transcriptDigest": "bb5b5778ea381ee2efde12602ed4d5c2b93398dc0264149f54bb9c4c86da87da"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00003.json",
+      "sourceVersionId": "source_version_90a376b655cace8a20626c95afebd47c910ec2b9ac3ce50e1d9aa98e",
+      "contentHash": "0d082d63d300aaf334e8534bf058573a8de0eeef4bae8b4e2efbdfda043979f8",
+      "byteLength": 91673,
+      "transcriptDigest": "4a75995dc554d7f2655e77b1b10e9a020360227b8c52da4c865223af470ab562"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00004.json",
+      "sourceVersionId": "source_version_949acb0aad5c73355cac30bf64f39380a38c1e8ef986d1bd850d20c7",
+      "contentHash": "fc0dec02371216cd34e5cdc5045b478269e9b9b930b7eb28ce2b11f84849b892",
+      "byteLength": 93657,
+      "transcriptDigest": "4ee9843525b3bf4a203e0ecd74a0580879e4e7570e649e79137225df35893fdb"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00005.json",
+      "sourceVersionId": "source_version_6972c2814ec9c9035d38adde883558be1f89a036403b84569b667cbd",
+      "contentHash": "3d3a1fd76b56f70fb87be5e9109160d5175ad272ee8fe545ff902e0b26e1b97e",
+      "byteLength": 91865,
+      "transcriptDigest": "7f9ba4b0be9cbd66a6e3b6ee32ad3f3c15f4fae3d8e1887c9999ff7242706b3e"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00006.json",
+      "sourceVersionId": "source_version_ddd1a15e277217dc72968cabde668299e8b3e1b58095c363ac66aa43",
+      "contentHash": "7999b31ad15d3971a639530b8e9c43358205d9add1f143557594ba9567936965",
+      "byteLength": 97095,
+      "transcriptDigest": "e9934e4854ec1853456e0fdc4e9cf6596155ebc3d67757f318e85dccdc6bef54"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00007.json",
+      "sourceVersionId": "source_version_f0f1c80e1e1f6ae827daa6456dac38c00989801034242efd7a14d2c8",
+      "contentHash": "6e684b4aab4fbe6c5e5b2f153a36f692bc7bab3e98930ed89ad080ee21728bb4",
+      "byteLength": 91075,
+      "transcriptDigest": "3bf59cd417b7f11d493ede24d36e7ee86b19f7d65939cefce27c63a205ba7626"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00008.json",
+      "sourceVersionId": "source_version_aaf74de8234ea59e59fd919d0c689347028776b66a023378917437d3",
+      "contentHash": "42a4c28de0a7f2102708c4190a3a4a0276a7293e7093a81a8948c4436b02ad31",
+      "byteLength": 92856,
+      "transcriptDigest": "3f17fd7a68d0a743f2ad2f2e80f5da7dbd5a6fde253379cc173d9509d9531b27"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00009.json",
+      "sourceVersionId": "source_version_3b283fee36b889471b6454c050ec0ca0e895e4ee5e65a5e62fe6c375",
+      "contentHash": "20e526b17657212653c0eeacb66d70f59780cc54b57dde6a87f56a262440f9fa",
+      "byteLength": 93767,
+      "transcriptDigest": "fedd779733bcf24ab4a9dde3c5d5b5424627cb66b43261999de7930824771182"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00010.json",
+      "sourceVersionId": "source_version_497d5918016c451cc78ba10a8b392d165aca3a13bbf72bb0c0bb42b9",
+      "contentHash": "698f1d205f507da83df0af52fc1dff63cf01de2541d8f3b33b91c5d9365cb1bb",
+      "byteLength": 92037,
+      "transcriptDigest": "e6b57a941e30534853eff9c6667e0673893609d283f07826ba24cb5f52a59600"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00011.json",
+      "sourceVersionId": "source_version_3e446ebdf9bad53bfcaf93520977eae1388a3093c49ef8d223c0a145",
+      "contentHash": "5fb5af446963084f8734a2e767c2f2c9211599793e1d54755e58f8aba15a5bd4",
+      "byteLength": 93783,
+      "transcriptDigest": "368c54f9a94f29fdebab2d93b0ea79fcb452620c82b5f4c6786d7bac7a4db85f"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00012.json",
+      "sourceVersionId": "source_version_b927abff58434c08f5b456f23a0124df30acabc776596e28f26ad59f",
+      "contentHash": "395845097ef6a9337307a9671908d99f681edf674afdd15a1a1e71d4b8d5a494",
+      "byteLength": 91189,
+      "transcriptDigest": "d5a65e7459700107c61c1c292e06a1ed4df076277c27f80e717facd7fd8d1344"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00013.json",
+      "sourceVersionId": "source_version_15f46b59ce8b306191307fc46bcf2f517bc1ac322f3cd5156187d75c",
+      "contentHash": "2ada0ed6b13bbfe9e92f62186f855a8f8b6ffe1cb695de9fe755c755f17e5d97",
+      "byteLength": 92875,
+      "transcriptDigest": "b77b8d68e52e31f0f5bd1a2426f04087510db7b1556e698ebd8d46e0515e399a"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00014.json",
+      "sourceVersionId": "source_version_41338fb64b1da08c388bc99d3e7517ccaed95f705745ba387dfddea6",
+      "contentHash": "7990fad24d9ea4af4d7f52795b84ad984c414b875440f659d5ca50759dd093ba",
+      "byteLength": 94086,
+      "transcriptDigest": "ff2e3e799e55d27d83a59f639dd433567b9614908acb17ce20d1eab18055bd5c"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00015.json",
+      "sourceVersionId": "source_version_d039de40e024432ea10182f5132d7ae000fcdfe8f86a499e1dbbf81e",
+      "contentHash": "6e23da259756747e9d21c7b053363f114f209941f37f6366c5e52f18ff1e1893",
+      "byteLength": 93219,
+      "transcriptDigest": "8207351b23e50fb178b95a23817a691381ec4a6e088495996b519b7c7236298f"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00016.json",
+      "sourceVersionId": "source_version_b2363b41d90aed9c51c50aa8c0d9828822aae1f28c077a90b5c59466",
+      "contentHash": "058558469e93ae9218411501008a8fbf530c650a503a9bcad99ff1d79a32e6b9",
+      "byteLength": 80676,
+      "transcriptDigest": "bdb3d12615f4f046b786c52006582d626b5776820cd904d65f0d392ae2888fea"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00017.json",
+      "sourceVersionId": "source_version_9fe1f75fd4e8b6850f2dfce9bd037774ea2e34314eef9754b50838ca",
+      "contentHash": "d359348acbb6a67dbf72d87a397d4a52bbca649bbaf9cd170cc353729789b06e",
+      "byteLength": 102906,
+      "transcriptDigest": "293a746568c3609d65c64654fa28ccb5c3692c0d9d09c943f12078fcdaea8f94"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00018.json",
+      "sourceVersionId": "source_version_1a5a05b70294655175d9c8b80cd4b09f0fb3a809864fed7a19891243",
+      "contentHash": "2278290c5cee6ac68247383b30e67030ed31f06acdf6ddf86092e5db6e59578f",
+      "byteLength": 93092,
+      "transcriptDigest": "024f2bd5811b5b9376aa34e31b40b25a8faee78ecbc3972fd6ac270c178d8fef"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00019.json",
+      "sourceVersionId": "source_version_dd279b1a4ab0f4117da33a2d423fd64691c0eb69d1ccf6d64461a432",
+      "contentHash": "5e6e9d0612b9f306629aee6ca3fc85bc273e0ae5d1bf61bc3abd2f5aa5cfb2a5",
+      "byteLength": 92462,
+      "transcriptDigest": "857358e45db41141cd01fb980796478c1d4071ba4b105a146ac353462a76ba0d"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00020.json",
+      "sourceVersionId": "source_version_ddb37166893e44ac868b74d6c8bf05f191f8dc30b71564e5b55b5187",
+      "contentHash": "f46a9f05e6f97df93661460a741131bd2a779e0b0fd2332b74428c9cb05dc28d",
+      "byteLength": 95144,
+      "transcriptDigest": "911bd4cdfd1b4ee55ecb2301611cadb167f0d465e8020b64f860395046d7a079"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00021.json",
+      "sourceVersionId": "source_version_0bc6d4cdcb502b2310fc4f88d278c2d3e5f8d8a258894d4d2bf8243d",
+      "contentHash": "fcd743486b4c783e7ec86b83711d15c575d2135f86f75cc3ca0977b759da87fa",
+      "byteLength": 92330,
+      "transcriptDigest": "ef3ca0c6d917e06d8d171af2e902bbc7debf4a7e8e04e44f69f27176a38374a3"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00022.json",
+      "sourceVersionId": "source_version_328ce1df22825ac17de0adf011f21f89a4d031a57012fc518f21cae4",
+      "contentHash": "e115ac052413ea730975d81c4513951e1856e2d7bb17ca5d3014e3ac2b850d5f",
+      "byteLength": 92693,
+      "transcriptDigest": "382a5ca7eaa309bf5cf4e37ebe010ad29e95ffebf977cd324d1095c99016fc7c"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00023.json",
+      "sourceVersionId": "source_version_00eb34344dd6bb54bfbcbd955806626df2e78c4ff125c8911f7ec91b",
+      "contentHash": "8b73d07750001418fd74ec93af6fda412675508ddbdd5273a72d51f273733cd9",
+      "byteLength": 90401,
+      "transcriptDigest": "c912dcca34f7ca6651b7e5a869bccf1a0ad4d54a697e914fc15a42f7e5f56be3"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00024.json",
+      "sourceVersionId": "source_version_383555aa7c6b5a28a24b38fc3d2e761304dc442d79550ffc60cd0a26",
+      "contentHash": "677a7cfe11cd81b2e780762e7b8bd1ce1ddb20f9acaa088035268a6fe2d2e26b",
+      "byteLength": 91633,
+      "transcriptDigest": "2884b011c310db28c97e728b6ebbdfe81ac2ee7c5167fea69002949cc56de62c"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00025.json",
+      "sourceVersionId": "source_version_76a113bf9556a8348a9203d5b966f4a153d982fbb24d0a88308a0fea",
+      "contentHash": "c3ff4d3d73b44b38da64ac0a3dde3e12c382564f9a65f0e72e8299c6f6b46eba",
+      "byteLength": 94247,
+      "transcriptDigest": "9cfa5fbf29347d0acfac9ffb2ef0af2c22cb1676619401bc7007a6a26b722796"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00026.json",
+      "sourceVersionId": "source_version_5f990ca9dd759b63287499c6c1fe2b6f95b25eebf8b8d3487e960e63",
+      "contentHash": "22bdad0e7289b69f97b2c26cad01c2c1cd1fbb5bcba8c947b2a573f99fbeb446",
+      "byteLength": 97094,
+      "transcriptDigest": "0c439022c5d9a62880754d9c773e7543e8a82e43235cfed60a2bafea8cc27162"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00027.json",
+      "sourceVersionId": "source_version_cdb76c8f39ebddbfe8849c52a30145fb4cfcb1689c4d0e9ea1155676",
+      "contentHash": "b37029d2888b947e56eac578baf4715ebe4ac6e13f5e0a8a24dac252a1e28a72",
+      "byteLength": 90789,
+      "transcriptDigest": "d9fe9eaffc36f846603ef1bdb1d9084a927b292f13529933e6fdf2d1c1fffa9e"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00028.json",
+      "sourceVersionId": "source_version_060746af29dc72901281f83ad299e98ef96b968bf2d546a2b83fb89a",
+      "contentHash": "4221ef0fe0c06751c4981079aae4319e7340cb6e74666cf0323b9e1c4f409983",
+      "byteLength": 90057,
+      "transcriptDigest": "c8da32c16aa0b1f30b83f5d0b6b940bc37fffaca04bd5443778d91f4a562e337"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00029.json",
+      "sourceVersionId": "source_version_b66bb7d4f43d5b8c303b2d02ba077fee04164ae04ca6e91871773223",
+      "contentHash": "a387b17a3fb82959b60c30f2cca7fadb890443ed1d26b8dd0b91967c99930a9b",
+      "byteLength": 92684,
+      "transcriptDigest": "e914f55a27254fcc72daf341cbf44e3da053926d3f8b8e3a7b804fa7c362e962"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00030.json",
+      "sourceVersionId": "source_version_44607315579459e78145feb07fbf9f8584c5dd2ccd3e5b56c5bcbc8a",
+      "contentHash": "230d42573a105787126ed8c20db3cfed58857323426701d863c35fc33a48eb6f",
+      "byteLength": 92152,
+      "transcriptDigest": "5bb57eb81b6974079c1583ba741684c7861902018351cff9e09a6ddb545223c2"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00031.json",
+      "sourceVersionId": "source_version_29a58ab245fcefcce1d90bc8018f9ff13ee43fa44aa004a0d5be0fea",
+      "contentHash": "2a30ff811263c6c2b1af81839ae07b49dd624477890b5a6eac659a09b9b327b7",
+      "byteLength": 92772,
+      "transcriptDigest": "3d7516e2fa8744cf1945d40994a047b4afd9c7d7c6f87be220f7afb96914df7f"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00032.json",
+      "sourceVersionId": "source_version_6faf38769a80d2d2687eb77c486b5cdedc1b56e8757db6323c1b5146",
+      "contentHash": "9f2f390bd4449b5f819c53dfd5e4a7e0d0c2231eec25b785b588d4ef438a498f",
+      "byteLength": 90108,
+      "transcriptDigest": "71a52dca56f92d9bb4f35a3f9b1263744671472c7ea47af60b6b84457a374677"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00033.json",
+      "sourceVersionId": "source_version_44c528417329f07b3fbe8ff789daeda701ff732f9c9af0510bd0ef7e",
+      "contentHash": "3628481ca373ebbb6cbbc2777562e1e9152b5bcf49c71dd16e0dd648b6f030a8",
+      "byteLength": 88206,
+      "transcriptDigest": "bcf9e1dbef3386580d4434524d288e5eb027938d3e3011ea26929ce530adbf0d"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00034.json",
+      "sourceVersionId": "source_version_3d5066ba51e00c628107c9d7294994a0affeec5777fca2590cc38ef7",
+      "contentHash": "7975d8b38ba516a400365bde22fb8cdb852c6f1efd39bf9d96d7b456b4575035",
+      "byteLength": 92997,
+      "transcriptDigest": "f03e0c259916d90c5fedb725c307207ee4a5242b840aae7ec9923a2aea6dfffa"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00035.json",
+      "sourceVersionId": "source_version_558685b85b3cd46c550983723640d9fc4c4aff3db0c0a7d24dbc6a6d",
+      "contentHash": "a969b7ed68930744c898e48afd147820aec4f8b641cfbced09bca7ad41e599ad",
+      "byteLength": 88073,
+      "transcriptDigest": "5d85f275bfba272d57abb25934efdccf3859ff1bad218c4e7935dd1d578a95a5"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00036.json",
+      "sourceVersionId": "source_version_7b790540e7638663d60bde42f664569f6d719c4117d2814fe80e150f",
+      "contentHash": "1352ceaa434e92c8d083a42b137de8861ddef8ff83e07f3b338c8a2f9bbbf272",
+      "byteLength": 100360,
+      "transcriptDigest": "da792b01edeeaf0caacbdeae977eaa46fa45f7ca500c4489a0bd539303cb7237"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00037.json",
+      "sourceVersionId": "source_version_4fe1a980903316e0c0434d4cc6c2e14cd330c31ac477d01c0511291e",
+      "contentHash": "d0a0ddb4978dcf5589c6d531a7acc682e86d5946849082d395760470b77007e9",
+      "byteLength": 86573,
+      "transcriptDigest": "0148c1d6109e998bcc8daef0fd05b78aa81c6bfc444f5aad07aa7c32a490e8b9"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00038.json",
+      "sourceVersionId": "source_version_923363e94f8245e4d6f868545656d61130da5a3558c279c45107c759",
+      "contentHash": "12b4244b92e1d4605d3921ab182c8f89ff58c20d67d180e10e8533c96164263e",
+      "byteLength": 92899,
+      "transcriptDigest": "4bb16fc3ae2f26674df5aaf9f292df17d8a9e5eb8f6139297660c9891cbf12d0"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00039.json",
+      "sourceVersionId": "source_version_e14868b02e7065fa5077047087ad1998876762cd6bf1dfabf12a09b1",
+      "contentHash": "c6a99ac6123f7041c241d457c6ba177cc27bebb86db720a2d99597c1cc70bef5",
+      "byteLength": 100922,
+      "transcriptDigest": "e04e5cbee297a5802f6d9ac06f3fb5fc0554d52e9435e5adbdac4ff97a632833"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00040.json",
+      "sourceVersionId": "source_version_36c5649317064df0632ca9b6d413ebd75212d5cc472f52c050722dfe",
+      "contentHash": "5c02f633745b8f367afd8794234b3fdb9885e73e9d78b22399267e81860f6df2",
+      "byteLength": 91610,
+      "transcriptDigest": "11c3818a5e72e75dd2dcf7d473885cd4474c53f62e1ec898bb5b3e40a5e0c64a"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00041.json",
+      "sourceVersionId": "source_version_3aa4f2776b093f3c5931fed2dc99eb0028279bd37081f3ea6e5c3287",
+      "contentHash": "31b4d891612618901482e6a9b59634096cec7a419c2d6eb1fb70da80bab7eda0",
+      "byteLength": 95088,
+      "transcriptDigest": "322802ed8f2c0436fe5a6a867206bdd852565705ce1d906562cbecfecaecec93"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00042.json",
+      "sourceVersionId": "source_version_d9268187683bb311be44aa5fbd9cf965f71fda4a24c9115fa13e71b9",
+      "contentHash": "8ced624cf0a4be41afc889e90703cd768d0b47074a82a6327885fbb7e5d1ea87",
+      "byteLength": 94543,
+      "transcriptDigest": "3803f75d3d068d1e56fb12696773ba1734a0244683022d078bab2e877ef21c25"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00043.json",
+      "sourceVersionId": "source_version_3a73508c6b4d5a13631ae6872b1cdd0536290c4922ab0276a09e3304",
+      "contentHash": "61a826b68184596dca75e9b8d97e067db2163a4c53175653203aef90c3305fd8",
+      "byteLength": 88749,
+      "transcriptDigest": "b58a2a161c6a455cfa8747761496672513c2b4449dc8552a521699d6b8273efb"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00044.json",
+      "sourceVersionId": "source_version_777b8fc65bbf0776991ecc90c0d102cfe18fd820aaa1d7cfdfc82ea4",
+      "contentHash": "673c130b745a2c610d0d3a1cae0051dd6336d26c9e4e08ad53b78d5c0ab92519",
+      "byteLength": 90670,
+      "transcriptDigest": "6b271a0ff7a100eaee876da7080da69973db71611377c4df8d5caf4bf600a425"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00045.json",
+      "sourceVersionId": "source_version_ea872882f6c8dbe71d179a83f493b9d37b57aad98ca73727ec56352c",
+      "contentHash": "49e297633e33664b623645364ecf344ecce7718baa5e99fc9e8cbb0e68c35555",
+      "byteLength": 94031,
+      "transcriptDigest": "46b8de9041ac179c609f107e119ec9a625f4702f0dc359df3ef26f70d07560d6"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00046.json",
+      "sourceVersionId": "source_version_74fe11c3947aaf560e023a8aa8dfe09e40d23f07b2a68214bb35b5c1",
+      "contentHash": "cde84b79675758e0e69e9bac4664aa2978c2d0780e1aa78bad82710c566ff740",
+      "byteLength": 91846,
+      "transcriptDigest": "5c509b9c6eb649c41b7347a316493958dff4c14a9bd35e249c4042e5bbd223d4"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00047.json",
+      "sourceVersionId": "source_version_b610529d3a75d75a6e07f4297dc65415609db075897c5e1a84aa977d",
+      "contentHash": "31f5392a166ad614435b01013885173c67282410be3c2a81fcc3d7db3e64f785",
+      "byteLength": 96917,
+      "transcriptDigest": "82ca5cd9d3e701caab4ef8d145de384628144f62703fab5f4f24e14326a2a8f2"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00048.json",
+      "sourceVersionId": "source_version_510aa8b21c2c0ba15494d93059aa95bb0ec0358a23e36150e8f71b72",
+      "contentHash": "39032c33347c07a899927436dd9a7d87da0814b80945e0fe95d5cad0dc9c267a",
+      "byteLength": 92015,
+      "transcriptDigest": "d148ab2964b2600d3577177ecb25102923c5e797019b35902834cb5b9ee733b9"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00049.json",
+      "sourceVersionId": "source_version_4d51a9096b5ed99b33ddba2b956a8f667937a6b3c243ec7676b51eca",
+      "contentHash": "06881862ce735530f7d4e95118bfb0ca7d14d7e229cabdd0924d24f2eae88a23",
+      "byteLength": 95543,
+      "transcriptDigest": "8de6258cffd9251c9abe544fc8e023138dd1757f931becfc852cc086a2229993"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00050.json",
+      "sourceVersionId": "source_version_030b55188087c8ebd1ee51f47b0ff07b1a73df0dd4321911ab99c327",
+      "contentHash": "70a87052a39f677e073160e48cbbe1c0d84df51fc09efaa2a953ad829c75bafa",
+      "byteLength": 91641,
+      "transcriptDigest": "d781f75fb0140c477a6a48d1ef26d64910a9cf9ff199285470ce04d90e0dba04"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00051.json",
+      "sourceVersionId": "source_version_f6872dbe15ad7a544f6a4d9a87b4440a74ec1e46c9f2bddb8c758542",
+      "contentHash": "421d5101d2b8ccdf7b194f06f9aac747bbb98f09236390b2a41f11b22ae155fd",
+      "byteLength": 90752,
+      "transcriptDigest": "19f4a0e507f7a2c7e93e45307a9c96c1515ecbbd8a28f05507bceb3da82aa3d2"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00052.json",
+      "sourceVersionId": "source_version_e2688c04d428230e5b56595135426ea13d889e47fb6c34cf8e99821a",
+      "contentHash": "e725fae52f45ea9ba0964a7f6bd0c7d65e97f6a066f8acb185416e101500532a",
+      "byteLength": 89636,
+      "transcriptDigest": "db9c340eb42388219739f58f344cbdbb8dff3b3e4004b479c7f4a13b0b0a5d42"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00053.json",
+      "sourceVersionId": "source_version_aab039315450de747bd867790346005339c98aada1db9efd201728ab",
+      "contentHash": "612beb0dab9f97a96d0f3c66a92abc29d1cbd005f12c91ef568ab8065fb390a5",
+      "byteLength": 90598,
+      "transcriptDigest": "aac60bae7dc3e7a81b5de2434a821f052e2a8826d9a4c2e122fa2605a7c734da"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00054.json",
+      "sourceVersionId": "source_version_8a51f2b860c058303823eefd45c00c2c42f9419524fc93a7ea608c4d",
+      "contentHash": "42add8b0d562dd895fe7f922756a2701562fc3b78b4c929938b683ed6fd76a91",
+      "byteLength": 94651,
+      "transcriptDigest": "3cf412580cc4d7cade41daab570719a40ee0c36a68678c159d526780480f87e7"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00055.json",
+      "sourceVersionId": "source_version_0b6ec6664baf3984f2ba94546d5458d05ef683427f886cb4a21d9add",
+      "contentHash": "4d60e628a72de1eadf00da2ad07260131a9f645cd59ff7291c275e6c452dff1b",
+      "byteLength": 94706,
+      "transcriptDigest": "f9817ee35d0511211478beb9667ba17fccbcda989df32c70e5a8fda2e429149a"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00056.json",
+      "sourceVersionId": "source_version_9852a2cc9a4305471b7eb1e3afcb29dd77e0ada3b3f2d46e695c3d9b",
+      "contentHash": "006205ef27886d9c5616cb614bf1c76e4d0e4c5dbf148e0c676406896c16b4a8",
+      "byteLength": 91612,
+      "transcriptDigest": "4021ad7f912d48bf8a287d89f6df26bd16c0d7f77b5531505863bfeaf649b677"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00057.json",
+      "sourceVersionId": "source_version_bc26c240d2f11bfac7a6d668fdf38d46e41de81179951e598165afbe",
+      "contentHash": "49b7999f2e7ea40fb66b393c0d3e7f3641f89bc4ab24130d7bccfe27870d0a5d",
+      "byteLength": 90538,
+      "transcriptDigest": "1ffc654464843deb212aa41773f46dca71cbce695ab924f95d7b5534347621fc"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00058.json",
+      "sourceVersionId": "source_version_4e324148711e1ca2a0abde5b28923fb21cc3934dd8c8a8e71e45d758",
+      "contentHash": "dd099a6641e335798d11cb6d0353794f052ce698f444abf944b7efefc1f35cdc",
+      "byteLength": 95234,
+      "transcriptDigest": "30741fc3f9082a83704608fafd3df48b6f8aebc2b0b911d60268e2db017da12a"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00059.json",
+      "sourceVersionId": "source_version_16c0bebdd189a718f60a8c7ce7deb3ed292e8d97155e19741c0ade5d",
+      "contentHash": "ae64c0aa2539586d0afbdf0b57d17770f2c6b13b94750087928983f4187f9bef",
+      "byteLength": 88938,
+      "transcriptDigest": "97c0a3173717b72d7e30d58bc66f2c193fcd0b0e2565af901c4b3a65901d2899"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00060.json",
+      "sourceVersionId": "source_version_3e6100b56f37bcc1376758ea3e6bbd64b0eb64e314e680ba618ad5ea",
+      "contentHash": "58a9b1cde7689cc2ad78f23dc8b247b11053d83392675a485b238c17606cf8ab",
+      "byteLength": 92004,
+      "transcriptDigest": "9cef50bac909e2a3c9fefaa6680dee72a5169ead1341325f9de18f823d90ab5b"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00061.json",
+      "sourceVersionId": "source_version_c18bba530e4f9ca6ee158f2feea7ea4584e4ce21e228fe9d69df41cd",
+      "contentHash": "2151e60f3718d3c9330c5e209c2c3c987c23c7d30c662c68358903a4ed192f8f",
+      "byteLength": 94541,
+      "transcriptDigest": "cfc2a59a5aa42c39d6f4ef7cdca8689ff3e7c359dbc31c7f72e00b6de4725eb3"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00062.json",
+      "sourceVersionId": "source_version_e75ad0526dc9d072298d7cb6073b801ea45afc95883afeed7beb2528",
+      "contentHash": "eeea5bfef384ee5c45f6df672601188a03bf726c71350cb513e4f294f70aa940",
+      "byteLength": 87857,
+      "transcriptDigest": "7162dadba67abd1e36faf7110c11f3885338e9945ca7d6d3944281c2e0924690"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00063.json",
+      "sourceVersionId": "source_version_99fc4355662aeffac8920b7e20118d011cd914e355a9f8da53642a1a",
+      "contentHash": "1b5d0a7b731e9e29ba3c386aa52778bf1bb40be00c76cd405eba415b49b145aa",
+      "byteLength": 94154,
+      "transcriptDigest": "c03915a40c688fc956c94fc2aa47dee505ef09267cfc52086ba0e6f0c90bd2a9"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00064.json",
+      "sourceVersionId": "source_version_634b09acb02716bcb72ef476598da43815143048aeb79b74bf4247dd",
+      "contentHash": "2fcf8ea14478c2eaeeaf07494309ef1e8b5c070c486235f1ad0b15cbd8132153",
+      "byteLength": 89835,
+      "transcriptDigest": "c4b8465745f69d878b2d321ee2c023d8166cd4526b8053d4bc503b4519a87624"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00065.json",
+      "sourceVersionId": "source_version_dec5cfa69998375a63e99fa23ecb6abf431f1decfe1c851e65b0a89b",
+      "contentHash": "b81aedd268c2f868db08af1be606e3875061847f95f2ef81f87297783b6b108a",
+      "byteLength": 90708,
+      "transcriptDigest": "0b82b5b63d0ea946db18e6e821f3bebf94b953f1760de5be2e8264e9a837c4b0"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00066.json",
+      "sourceVersionId": "source_version_f534535089c21f978f7c22c2cab151bacbe4278949bc5716fa263d2a",
+      "contentHash": "8b66e279ad17e77e7b2bcea71bc8f07962f5ba9886b3abe2bfd06618eea7f2f8",
+      "byteLength": 93499,
+      "transcriptDigest": "42627f38e856edc706bc0d8395921685efc31239b09f6f0120a8e5ddf92a981c"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00067.json",
+      "sourceVersionId": "source_version_7b2cebc178f567ce4d4b407812975d410deb2cbbf6e39dacb0cca9b5",
+      "contentHash": "6be9c9fe9a3710d2c9a7c7d9048b74e686139c55de6912150fa506539e3f7034",
+      "byteLength": 96317,
+      "transcriptDigest": "1e645dae26b713c7e6d9053bfb2089c4fcf5c416edf7ad7011b60c4367a4ef62"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00068.json",
+      "sourceVersionId": "source_version_978d549973d8178decb3eb520115fd0ebacc423ad346a7db7a340700",
+      "contentHash": "7beba7ec7def546c3afd339a47119e192e2d5715ba8ebfef629b2f269d34572a",
+      "byteLength": 92309,
+      "transcriptDigest": "db671b96b6540befba662b1655570af68c8ede022c6421c5cda2dde431ee875a"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00069.json",
+      "sourceVersionId": "source_version_97eb562af29f8a973e8a20169b18b028e68b6fe41d7985a7958eac3f",
+      "contentHash": "9c9d33954f87e8df94912311ca32ab1f55563e6a59cecedcfcd1399cfcce8e7e",
+      "byteLength": 90158,
+      "transcriptDigest": "0bd390284270c7bff37e872e9a48a4622210c5747cfc3ea9e0611288cb65a210"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00070.json",
+      "sourceVersionId": "source_version_7ce36d900c3f5ca5779203cef1e30b3ec9ec68d7de5e0314d1c9fb7e",
+      "contentHash": "08936c68b9fcf441d103be6eb65f8d9397545366bdc1992dc6ebd35352b92597",
+      "byteLength": 95972,
+      "transcriptDigest": "c266bf925a904b5ad87b82c227afbb0932c0b0674263f253ae3a0c8e390b74a7"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00071.json",
+      "sourceVersionId": "source_version_f17feefc5ca98bbbc4f55087213a0645ae0798d03543d4d8c957cf97",
+      "contentHash": "a0dd2ee5206fd01cc3dde26b60b1cf1df58017fb2f333cf1e0e656bd2c418d72",
+      "byteLength": 89318,
+      "transcriptDigest": "23f585ce179181d0a98f8080b149ef6a72a091464adc4cc233d2f959c45d905a"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00072.json",
+      "sourceVersionId": "source_version_75d3e9f462573d751f34cc3e3d0a1c5d1fe7a33e711cb13146ca3aa1",
+      "contentHash": "1dfaa521c2d15904c4e10838608cd1c873e4898fcc38c7307dedf66c6c18fcfe",
+      "byteLength": 90662,
+      "transcriptDigest": "2fd4436b91300022379e1b2ad42a9837f798d794aef0f0607fa19276b024d905"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00073.json",
+      "sourceVersionId": "source_version_e46ef715973704121dfbb278e42eace855800c0e2563e7dd3c81b194",
+      "contentHash": "1a02b015d4eb2d38dc626243d3db8202d8c19a8a76b455bf045c84cdcd2db68d",
+      "byteLength": 93143,
+      "transcriptDigest": "03b813847a6ea39cce4c17c2d7dbb61910bcedc2c636034e73d4316a745d28c7"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00074.json",
+      "sourceVersionId": "source_version_96171fcab8ebfbe27ee88b7aa8093c5c07055eda747500b90f1867c9",
+      "contentHash": "a348cf1902bc170fba7848c96d22adf5ec51e91ff67fc8355df3a757683460c6",
+      "byteLength": 88423,
+      "transcriptDigest": "0631e698978fac2a10f94b940241f2465dbbbd22d9101c522c4b57866f513e8c"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00075.json",
+      "sourceVersionId": "source_version_06823338d906b48eeb0592ad6be0a63245cff9243ff76bbfa0f2791e",
+      "contentHash": "b7bb92940a3018ef9e683fc8b3c91ed1f0ea712820f9fc0c6a03f4a6472bce43",
+      "byteLength": 94681,
+      "transcriptDigest": "1e3f7c31992fe1d42870b0fe4d3b261853b372c94511b82e73b81064dc1c1e8c"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00076.json",
+      "sourceVersionId": "source_version_bc7300d348c2da06e2311c2420fc476d5f3da249393da021dc143338",
+      "contentHash": "5aec7980b5bb4d447c59cae22a74e85ae64814dab11c30469e3d13b017c04eb6",
+      "byteLength": 93015,
+      "transcriptDigest": "ce3772120954e9d790d2d32e024aebfffe4a32e4cb9e5b623dfe43da63ea39ce"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00077.json",
+      "sourceVersionId": "source_version_867565ab1ba052006d8d0f715575a509c92b61333657800ecd78d828",
+      "contentHash": "5c1f6e891d01183ea8bebdd63187fe6986dce88ce73aa871802b719d016b3017",
+      "byteLength": 97349,
+      "transcriptDigest": "6856e7d1ec7b3d908f8f3af91bfa5d9dde1fdb6cb771d5e052847e8fa284ae95"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00078.json",
+      "sourceVersionId": "source_version_024245463fc89262ef826f33f557bcd79bfd9fe7e3975a915fc8a6c3",
+      "contentHash": "4cb1f2e95fb6ac618aa488bafc3797a05602fa5db59fb3b7022ff257d922b85b",
+      "byteLength": 91237,
+      "transcriptDigest": "ec719c5c531e675935dde27df51e3040c5379e4654d59c7ac4f8a95bec164bba"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00079.json",
+      "sourceVersionId": "source_version_3cac02ad985a58489e50cecfbf75d74f40ae8c890fe231829388e5ae",
+      "contentHash": "4f16fac604e2c9bb94f2784feb675f7402bb76551f53a1bdea48a41c8bd25dae",
+      "byteLength": 94799,
+      "transcriptDigest": "89dfd0344b34361b3f03d37092c7bedaf19cf69c4c25a367ecfd77b70642b4f2"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00080.json",
+      "sourceVersionId": "source_version_06bbb81152c1837a07ca475c5c4d79b53227cc5feed3bfc99bc80c03",
+      "contentHash": "1aabe7a305dc76ccf416e4a6ca0836a961c3e6de0e0bc3106a44fe613e789bd1",
+      "byteLength": 86982,
+      "transcriptDigest": "a88718276b5baf46411054f468072949c8fc70f120a5b03e539f8b4054eb8e5c"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00081.json",
+      "sourceVersionId": "source_version_30caa8a27791ac18e62ed14446da0a90ea7329c336a53bc601fe2412",
+      "contentHash": "dcdb623bec24bbe461c632bcf7f433a66b508af2458c8af9d75cf8601f4083eb",
+      "byteLength": 94224,
+      "transcriptDigest": "7e41d3c1cd33d8749249c6f909ce9da7dd0884bba77899591bf2a0b44517a2f0"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00082.json",
+      "sourceVersionId": "source_version_184bf75af4476a30229104354304e072a693cf48b25a20f62c4a5d12",
+      "contentHash": "6f946f2bb2e1fe391c90f9943ad35c5ef3e2f5aed38ab5d52e9eb1742e5656c4",
+      "byteLength": 94809,
+      "transcriptDigest": "692cc0f192b7c5cd82d1808472b9029c0c9e3d33d4051ccd2c4e6c44455768a1"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00083.json",
+      "sourceVersionId": "source_version_3cb5bcd1a0ef43fb916126a1a2c7d8002151401d0500dc2a9307ea02",
+      "contentHash": "45ba2d7d324eece9280c01a09c9186c5ba528f602cc2556e6b0ba4c9d9da0736",
+      "byteLength": 93772,
+      "transcriptDigest": "2c80715e638effb83f6ff921f016a0795b720ec9b86e495087d1e7a49ee99708"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00084.json",
+      "sourceVersionId": "source_version_c109a412fa554758a22d06563273e995af87b38d3c69725d86b06f24",
+      "contentHash": "1dc99f4a2bbd477d6c3b38e8b071b1ffdcce318213dd4e81b56fe974a372eeda",
+      "byteLength": 91291,
+      "transcriptDigest": "8655caa118fd00011a6daa4c09c96a5494413e7be0edadd18e7921d6bcf8c5c6"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00085.json",
+      "sourceVersionId": "source_version_ce6f345f787d90da583afe73bbec278429ba66c21e366ed565ebd74e",
+      "contentHash": "48f37387d6516d680ef79f0aa669fa13502f750ed77ec41d2932db4ea224ff9e",
+      "byteLength": 94928,
+      "transcriptDigest": "6404a3b1d4f33e706bbc1d4e10e9a726d7c9219615ae0b370998e8dfd1d82b13"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00086.json",
+      "sourceVersionId": "source_version_dc740b474e30856047d5ec2392f90ce84cc12d2466653eb93c4e1f9a",
+      "contentHash": "7ad686f4e136838b02b68503847dc834a52d59f6e2359c3d65e73ffc15a2260a",
+      "byteLength": 92558,
+      "transcriptDigest": "718b8c850003e84382bc44ca5fc84a774f3aebddf151c37526efea5d52281100"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00087.json",
+      "sourceVersionId": "source_version_471c67277b6224e08c0c5d638805aa4295d55897163ea035b3b1131a",
+      "contentHash": "0544025dd7910404aaa060429853bb0be5780d3eb45918a158c274fad928cea7",
+      "byteLength": 95094,
+      "transcriptDigest": "25c2651c45c7f7696ef733a16eb448b47a9632dc9b475a7da53ccf6d84af6aee"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00088.json",
+      "sourceVersionId": "source_version_4394b6dc617d59ac3523f4b3d79168f08d6bfeebd180cd1748ff6a13",
+      "contentHash": "d2915fe7f37f6bfc7e694dd531747254ef5803bcfb947980218c3de65579dd7d",
+      "byteLength": 96698,
+      "transcriptDigest": "803000f3ef10a2194a1ed64d092405cadfe8df0dc83afdafef7fe30b563c408b"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00089.json",
+      "sourceVersionId": "source_version_28b866ca5e5f7482c6151a24b2c33d209ad18d61d061cfa74517cecb",
+      "contentHash": "ef52310bf022ac81ef31f27f820746f944229758ac21fda367b6ae8f4916973f",
+      "byteLength": 81068,
+      "transcriptDigest": "cc1d85468742a70aec1567206722462ecae4801557fc12d873c288e2ada33b64"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00090.json",
+      "sourceVersionId": "source_version_6edc76e12afdd4f4867907ecccd10365bc21e284d2b2f6b665218183",
+      "contentHash": "d700b96d81d7b5e8543b0174c31e41834e2b1bdfe4d15c6c3e48ae24ba5bb11c",
+      "byteLength": 100572,
+      "transcriptDigest": "7cb4dc2e0afd85c94db0c0de8241e16599cfd8cf54d12047e7d7618df8d84b67"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00091.json",
+      "sourceVersionId": "source_version_06dafad1dd1afc7b2069a64ec0d28bde93c0cda34351c9cc03adbaeb",
+      "contentHash": "fbb89903dbd14d3af88851c7762fa1ab3ae312563e2997fc162a475be989e235",
+      "byteLength": 90995,
+      "transcriptDigest": "8a6af48cac74b3493b07f5ef5db263c17affdd3790f2ff5d71a8cacbd13ca47e"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00092.json",
+      "sourceVersionId": "source_version_db91f79135781bc9195cebfd718ade83f15bb6b77fdfe888caae791c",
+      "contentHash": "8a1c1eb49a8bf8d264294a7de21480d6b090cd9a8d2e200e17f3acec2df7b0ca",
+      "byteLength": 97316,
+      "transcriptDigest": "996564afffea39d1d5d52475abacb82197242dc8939c1046d7332670a9986c0f"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00093.json",
+      "sourceVersionId": "source_version_14154e9b4e49b6fdfe9a0290e5f2bd808f0076c8c38cdde6ce2435f3",
+      "contentHash": "0e8bf64c083cff0948a8330c39ace572dc520ee20e910ab51ee3cd740fcfa210",
+      "byteLength": 97175,
+      "transcriptDigest": "89aa60a04e7b830c3e55ba0f9a28f432e6b01df34af358b38c47bec4a8a478a0"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00094.json",
+      "sourceVersionId": "source_version_dc707f7e21b70edd076ca4104e0633b57417e10840910a9dea9bf39b",
+      "contentHash": "4b9d1a77087b6458c175d16a15836d8e31b63aad0f763af6d6b406839133f7b4",
+      "byteLength": 90692,
+      "transcriptDigest": "b4fb32948f14c209fe8dbaf2d4c5401e4b306f9e3340e317f10ad0a611450c5b"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00095.json",
+      "sourceVersionId": "source_version_fc72686db4bdb0902f106ee71aba256054bd90a667fdd02ae08c2a8a",
+      "contentHash": "10df1a60d8a0bfe7a141bc414f28b561849f195af032a7039ce125140a6c76de",
+      "byteLength": 88690,
+      "transcriptDigest": "b3aa0d308e1dcc8a28cc2fc9117fe7ca24b805d770e9881f5338fa04edc28e3f"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00096.json",
+      "sourceVersionId": "source_version_449bebbfcb08496ba1e384098d21008ef6741ef3400a2f1500da7c00",
+      "contentHash": "4d5e8d797e083265fcf945c5cdb3d0d5325c7feb0da07ad321b821a364d8724a",
+      "byteLength": 100446,
+      "transcriptDigest": "96f4f668de9d4517c601fed5e3657ac24b33b8ef5a1e0f3cdab7920f58d6fa6b"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00097.json",
+      "sourceVersionId": "source_version_29295c1db2d77bc6e05c97afeb621db4a875ccf585fabf4e5a4bf179",
+      "contentHash": "f3ef7caf1112c7e76f2d63e66a82b5f1cb32e900d11232064d3c2786bece8660",
+      "byteLength": 96553,
+      "transcriptDigest": "acd7f03e03968f88823b185e297b897bf98e056bb8215ba2007e890bab6688c9"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00098.json",
+      "sourceVersionId": "source_version_7e35b0662a671adcfcaae152c872c07d08dc04b3e45e4d19b45e1303",
+      "contentHash": "cc2487d3d3b4712533728deecccc7bd3774c79edbce9d3997501cc24249d101f",
+      "byteLength": 92883,
+      "transcriptDigest": "3f106b10eb2a886964ab94a0e68d5e6475332db394e956ecbafee3607470d390"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00099.json",
+      "sourceVersionId": "source_version_d63c9e9c263520c560fd944d7fb6b8a61c74749444717e65f7c04b29",
+      "contentHash": "47b874eff8a383191fd5bf671c35455f0a7d53bd79dd6e1ae7b46587273512b0",
+      "byteLength": 92655,
+      "transcriptDigest": "24a6810bdc8d6630c9f31ce2da310b578c5d77d0471a48c055a33bbad767ddc2"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00100.json",
+      "sourceVersionId": "source_version_2db8eff9010638b7e3fbe8d5cf22845c698ffffd1ef46525062459d7",
+      "contentHash": "fb71a0bfdcc462057f60d561945e817e6c84604b2331a8d378c3767d0434be4d",
+      "byteLength": 90219,
+      "transcriptDigest": "9b52549bba66cb99ef9fe396ecd7da3863e79c86d4eef3ac1547f32a9d9e9f85"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00101.json",
+      "sourceVersionId": "source_version_d39fa1a59d810b9e5569291eeffa90ac3d93762247591fee674b8626",
+      "contentHash": "8d17235f1939cbdabc9fc99850c53dcc0921567945f318aeb014ee748a3478a4",
+      "byteLength": 89262,
+      "transcriptDigest": "0404b8895ef7bc882ca6a35779a1ccaf4c2f228b21318d96258187415203db48"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00102.json",
+      "sourceVersionId": "source_version_52dab491a85776d0b4f852ab0121715c30ee52f0726d9767b33a074c",
+      "contentHash": "5aad327050f870e73f5dfee553f1d0bb32d23a6de32056d95738ce933fb083a7",
+      "byteLength": 82731,
+      "transcriptDigest": "f80c0f850c0502bb06e818a6e50a196354e2f898e96000c9d69b62109a97923f"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00103.json",
+      "sourceVersionId": "source_version_aa7c9cd441ba76cdf4b9c5d073b58da4bf4e1cb27f5e22677bd23992",
+      "contentHash": "4c1e196b955f8bb65655a8bddb69e25b389124dcd43e8d3869dd85f05132752a",
+      "byteLength": 99548,
+      "transcriptDigest": "b8dbc7d73043e3d76ee565f304e00e5602d3df0da7ab442085d8d40e7b11afcf"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00104.json",
+      "sourceVersionId": "source_version_74e81a9233add663ba53f7dfa41a041dd479d3b4307e09b750d1b7ad",
+      "contentHash": "703a5b96e8b723099b1aa76512051d0c454bf6bea23dc8ba4f45407ea73dbb1d",
+      "byteLength": 92507,
+      "transcriptDigest": "cc2e3026ad6f839b92ff09ca47b17265bef1267b09dea97a0c4eb30144041290"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00105.json",
+      "sourceVersionId": "source_version_d7baf09dcbcbc32c4cd59e2b4429cbb5e8cee3765f7ab6cc998ba9d4",
+      "contentHash": "91c4630fe43ccc1d1beac54098da1f7aed86aff40a92e4cf59e4953af433eab4",
+      "byteLength": 92652,
+      "transcriptDigest": "1a3ca9716b3e6cce5d88cd9bf3830348d8a320d9a96bd38ef2cb23e8384233b8"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00106.json",
+      "sourceVersionId": "source_version_eaaf5dda95f73269436d141acf683a39463a3b5d78d7351a1b3ecc56",
+      "contentHash": "c394f837bd909d3635460042914d4c54faacf64c6fcc338962b7ac5bfcd0086b",
+      "byteLength": 97365,
+      "transcriptDigest": "d0ed74a5ce377460b517b950cc4917cf6f4a4f5eed6d3e35ab56f0f7c660c515"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00107.json",
+      "sourceVersionId": "source_version_a784d530116fe3e572abcf3263ac00f9cc9b445a84b672b375ec121e",
+      "contentHash": "5f163a3f9f841a7aea8ce7fe69a713617b496b1191475f46b3a572a574e1af45",
+      "byteLength": 93709,
+      "transcriptDigest": "d00b032929d9187272fcae80505feec82937c8cf0c9b091cde3d288c19a3eb2a"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00108.json",
+      "sourceVersionId": "source_version_4db3e94d3107fc7f8f4330306bf0fe2bbe559a4574c2c8b50d7bfb29",
+      "contentHash": "ec6f2751986a9459786bef2c42770b6b850b68231b534bfa25d7d2a6031bb88d",
+      "byteLength": 97122,
+      "transcriptDigest": "2a7d7964fa9841ce775d244258ee2afd41723f5cc57bbc4b0862bd53d567bda5"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00109.json",
+      "sourceVersionId": "source_version_c8b5bc6ffec45bb02c02dc2bd04a12bfb7f3ab23eb83d51fd89f0a03",
+      "contentHash": "4d3aca012a5a0897f8da926f4ec57adb7750ebe81f183017ec37193a54941b58",
+      "byteLength": 96214,
+      "transcriptDigest": "628ccb370f72d9af67f7afd955ac801157b65ee32dd827c9c537469a7acb7d2a"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00110.json",
+      "sourceVersionId": "source_version_63ef99c13179e274aa53791117ceac7455d227a8715a2589c30cb1df",
+      "contentHash": "f11615f1ff2dc4e024f49726929527d3d4e3e98f08f97c3b52d685386c25df33",
+      "byteLength": 90263,
+      "transcriptDigest": "4cde9479d5aab9df4588348a69be2769dc454dff482a9c24d5b933d5fcffd39c"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00111.json",
+      "sourceVersionId": "source_version_0df9a556d7af1e467f32d7d1b46b284bec17cd3cc5bc46560ec59e48",
+      "contentHash": "d68ef7876007a0f5d5625e7b167ef7675613ec4258855443f7d3d64f2aaa2286",
+      "byteLength": 97596,
+      "transcriptDigest": "139c72494c12cc81987855599f7ae45d8d165cdc1f753a76b978adfb81062c69"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00112.json",
+      "sourceVersionId": "source_version_2790a531f40e1927af12fca444d21c1eea4783a2eb31a68ab559aac4",
+      "contentHash": "028de3748b2ee28130e6b92149faf2f6dc4b2a0296f7da5f55b37d522df05bd2",
+      "byteLength": 89425,
+      "transcriptDigest": "229558304c89ed472b1ac97d101d49a5ba3c8b17430417c6884d1f00c761f2fa"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00113.json",
+      "sourceVersionId": "source_version_e90b9ffdb88e7d1d4e5cd91e886d0a60cbbc81e7d78b0aa3ae979b7d",
+      "contentHash": "b9937646f9f2ecff9f33fd25ba1003ca520ee81bd0c94ec613f3fcecbab3a4b8",
+      "byteLength": 89861,
+      "transcriptDigest": "ff45201d5fd073371d00630e32f62310bb79117e0d9f1daf5ccc6e5ee8457a72"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00114.json",
+      "sourceVersionId": "source_version_8ac4fcccf87750cd8e6f62e197d4a56bb5649bcf2c91b2d539c00834",
+      "contentHash": "8a21dd678629e4298aeaba24332fbbfa741d97efb96d235c811a5595fc3e964c",
+      "byteLength": 78786,
+      "transcriptDigest": "dfb9dd1a3dcb4fb46f9166498930f502934167802ac650bc26e18f97154c274a"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00115.json",
+      "sourceVersionId": "source_version_98dbfd0eb12adfff082d6e2b3300d2b2fa20802cdd02d53f628606eb",
+      "contentHash": "dbb1b4907c9af9310ed3beb4f53882994d2815fa59ef3916e70d3cecad88dc58",
+      "byteLength": 97479,
+      "transcriptDigest": "37c14b478a880c468e38ba302a2a4dca061b1ae6b16cff3ffee08ee1ba3a66a7"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00116.json",
+      "sourceVersionId": "source_version_b5561414a1e45d9f8836d28ba71257e175c40d3de70940ad7cbb9759",
+      "contentHash": "a114e62473229738c842e03d22b69f4cac969e7354dbdf0f5abff6a6bec4bf12",
+      "byteLength": 93988,
+      "transcriptDigest": "ef5d3e74747108f8d301ada218bbc00d0ac8b61af1e66c81d365c969e9bf2825"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00117.json",
+      "sourceVersionId": "source_version_7002da4fba4406c7ffb7594a212cdf4f93ca7bce87cbb99d4cc21447",
+      "contentHash": "4b2ae2ed9b6768c3c3df204f545889bc5a9326bdbb1065d0f6518131532f8a6d",
+      "byteLength": 94767,
+      "transcriptDigest": "c8452627fdcc5800b1962baa2884fd39e9e0136be8e99f087f441797caea9280"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00118.json",
+      "sourceVersionId": "source_version_d889a5a4ae75693568d11f3949b9835b15ce52a2b76c10206b0a6e6d",
+      "contentHash": "ce713c717bb462a41c42d11218ef75607d809ed4d5ef040d3d017ad0d567f8cd",
+      "byteLength": 94687,
+      "transcriptDigest": "81e900d8251faa030126ac82a5eb9274e915d448b6ff6632e8376dd0d99acce3"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00119.json",
+      "sourceVersionId": "source_version_be9be92b94a6a8b6f0bd95f2c80ee0ae2eeaf27516871cc431f0734f",
+      "contentHash": "17f59f2bc667c5b763e82256db0ee418bd6f5f7cda3a38bcd6351b405e814363",
+      "byteLength": 94808,
+      "transcriptDigest": "37b6720d65f4f0faef97bd604824795f832b316451106b7dcd6c18deccdccc58"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00120.json",
+      "sourceVersionId": "source_version_db37cee1ee11ed46e4488eb7237128ab45410e3a2bdd34dd6b692515",
+      "contentHash": "5c72fef27526fb754404b83ff4bbdd943ce32e8297b6d46b7d9f331320d44c4e",
+      "byteLength": 93537,
+      "transcriptDigest": "e5fa25328ce35ae1292a7e659cbcfdf81bdc924a0f89a65090ec5697756b1d76"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00121.json",
+      "sourceVersionId": "source_version_fcc68828f04fff7a99b13bf9e89ffaaa3d32f18e37fadb2397c9d921",
+      "contentHash": "8c6723fc106a337b1d995145558069b689eb9795757c49cde975008154f3953d",
+      "byteLength": 101468,
+      "transcriptDigest": "f9f8d58297f6f1f889b8f9482363b6d0a403cc99e85b1ba112f717f062dacc7e"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00122.json",
+      "sourceVersionId": "source_version_0b64cf897889635093ab36a4b971c0e07d1b7007dbbecfb0a4c37c82",
+      "contentHash": "4ff5aded94a54ab0d54bf06828397f1b97ceeda35db7f147be590aeeeecf94bd",
+      "byteLength": 94400,
+      "transcriptDigest": "01f711bc58eafa205c5a6bc629de5ad8f0e9f5bf8c160731e933f7b92b7de01d"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00123.json",
+      "sourceVersionId": "source_version_e1d6647e0f8e3266649916564861976fa2e29400a5cbb0504eee55fd",
+      "contentHash": "8b2f8516176d3e2c3804205f19343ed6d718edf6c4f8d66a6428d2b8c43ba584",
+      "byteLength": 87203,
+      "transcriptDigest": "e807796b30ce20d14249c16e13dfc5c6e3263a770d58fea4c790c53b2f03b3b1"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00124.json",
+      "sourceVersionId": "source_version_08894ff972a65ab27a14ba7a56b8a4858f30b1f5afd8f14edf1525a7",
+      "contentHash": "fd5a8c5b89687b9c3704efb386269fddc2a831efa93f921912924051cd47db58",
+      "byteLength": 89305,
+      "transcriptDigest": "8c0532646b089d008c5dc6552f614524b82446955496fd89adddc49481656326"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00125.json",
+      "sourceVersionId": "source_version_8bd4e23da0f9963c7b66576f17ace0d14e2cc35853f896a307d1785d",
+      "contentHash": "9ea5c1e43d244b5a0a4320fda84d3043765108afffb13844b97a55a24c9fd67c",
+      "byteLength": 88620,
+      "transcriptDigest": "b783b35f4fa92b3c400dd0db63039fdc9661fc14c7b72b5721c8811eaa2d16ed"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00126.json",
+      "sourceVersionId": "source_version_65ae9206558cc9afef83040f5d5dc2eebcbeebbb7a2797ef9b67671e",
+      "contentHash": "8eb22e36e2986e43b2ca7edca96dd9438216fdae92a44f72f613dfadb91c4588",
+      "byteLength": 91307,
+      "transcriptDigest": "1f2a6ed7130d79801287bcc961c00ecb1ba50c21053d95f4e86bdd4487ac7df7"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00127.json",
+      "sourceVersionId": "source_version_25e1ba1fba1b784665e935a53eabb991f96c410ae6e05168d53cad46",
+      "contentHash": "116e6d7fd6496c32b5b5ad31244ac2eb38f60e968193f978336b922022f59df2",
+      "byteLength": 90834,
+      "transcriptDigest": "24527b12f87dbf4df4b75ba726190b36fe4a31b61bd256cd028aea4367fdf2b8"
+    },
+    {
+      "sourceUri": "fixture://dolly15k/dialogue-00128.json",
+      "sourceVersionId": "source_version_564a59d1cc268ea23f4a7824d533f0dbb3f6778d97846a762e049305",
+      "contentHash": "4ae2ebc0b06a3f7ed17d8d774a0e15856a0f840596e2b4ce5631329578ae114b",
+      "byteLength": 38963,
+      "transcriptDigest": "71903d23a5f218c64955824bf8b0241133214034b345276658a81f2515468115"
+    }
+  ],
+  "expandedBindingBytes": 21018271,
+  "expandedBindingSha256": "7300abeb9b582202545f2dbef84441ef6c307daf6a4543a4a265985828e9c47c",
+  "compactBindingBytes": 42854,
+  "compactBindingSha256": "de801d95b4d4c3fb7cbd3d1e8edc8cb9f9e1c79d71edb9be6bf1c05184ad6452",
+  "capabilityEvaluation": false,
+  "preparedFileInventoryDigest": "83d84e29d13089f84746b92dbc648bef53924b0b40a4b138adc638d68ef5aa34",
+  "preparedFileInventoryDigestContract": "sha256(canonical JSON of sorted [relative transcript filename, sha256(exact prepared file bytes)] pairs)"
+}
