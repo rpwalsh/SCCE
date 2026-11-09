@@ -173,18 +173,18 @@ export async function readCorpusMembershipCounts(storage: CorpusMembershipStorag
       SELECT q.* FROM jsonb_to_recordset($3::jsonb) q(key text,hash text)
       CROSS JOIN (SELECT r.run_id FROM ${storage.table("segmentation_consolidation_runs")} r WHERE r.run_id=$1 AND ${access.sql}) admitted
     ), located AS MATERIALIZED (
-      SELECT q.*,matched.order_key FROM requested q LEFT JOIN LATERAL (SELECT v.order_key FROM ${storage.table("segmentation_consolidation_rows")} v
-        JOIN ${storage.table("segmentation_consolidation_runs")} r ON r.run_id=v.run_id
-        WHERE v.run_id=$1 AND v.collection=$2 AND v.order_key COLLATE "C" <= q.hash COLLATE "C" AND ${access.sql}
-        ORDER BY v.order_key COLLATE "C" DESC LIMIT 1) matched ON TRUE
-    ), selected_pages AS MATERIALIZED (
-      SELECT v.order_key,payload.schema AS page_schema,payload."endHash" AS end_hash,payload.entries FROM ${storage.table("segmentation_consolidation_rows")} v
-      JOIN (SELECT DISTINCT order_key FROM located WHERE order_key IS NOT NULL) needed ON needed.order_key=v.order_key
-      CROSS JOIN LATERAL jsonb_to_record(v.row_json) AS payload(schema text,"endHash" text,entries jsonb)
-      WHERE v.run_id=$1 AND v.collection=$2
-    ) SELECT q.key,COALESCE(page.entries->>q.key,'0') AS count,
-      q.order_key IS NULL OR (page.page_schema=$${4 + access.params.length} AND page.end_hash >= q.order_key COLLATE "C") AS valid
-      FROM located q LEFT JOIN selected_pages page ON page.order_key=q.order_key`,
+      SELECT q.key,matched.order_key,matched.count,matched.page_schema,matched.end_hash
+      FROM requested q LEFT JOIN LATERAL (
+        SELECT leaf.order_key,payload.entries->>q.key AS count,payload.schema AS page_schema,payload."endHash" AS end_hash
+        FROM (SELECT v.order_key,v.row_json FROM ${storage.table("segmentation_consolidation_rows")} v
+          JOIN ${storage.table("segmentation_consolidation_runs")} r ON r.run_id=v.run_id
+          WHERE v.run_id=$1 AND v.collection=$2 AND v.order_key COLLATE "C" <= q.hash COLLATE "C" AND ${access.sql}
+          ORDER BY v.order_key COLLATE "C" DESC LIMIT 1) leaf
+        CROSS JOIN LATERAL jsonb_to_record(leaf.row_json) AS payload(schema text,"endHash" text,entries jsonb)
+      ) matched ON TRUE
+    ) SELECT q.key,COALESCE(q.count,'0') AS count,
+      q.order_key IS NULL OR (q.page_schema=$${4 + access.params.length} AND q.end_hash >= q.order_key COLLATE "C") AS valid
+      FROM located q`,
     [run.run.runId, countCollection(kind), JSON.stringify(batch), ...access.params, CORPUS_COUNT_PAGE_SCHEMA]);
     if (rows.length !== batch.length) return fail();
     for (const row of rows) {

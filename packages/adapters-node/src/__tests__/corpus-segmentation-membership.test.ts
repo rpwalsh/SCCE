@@ -167,11 +167,11 @@ it("materializes page fields before member joins and collates complete text expr
     expect(sql.split("exact_counts AS MATERIALIZED (")[1]!.split("), hash_groups")[0]).not.toContain("row_json");
   }
   expect(await readCorpusMembershipCounts(f.storage, f.run, "context", ["context.🧭"])).toEqual({ "context.🧭": 1 });
-  const lookup = f.calls.find(call => call.sql.includes("selected_pages AS MATERIALIZED"))!.sql;
-  expect(lookup).toContain('jsonb_to_record(v.row_json) AS payload(schema text,"endHash" text,entries jsonb)');
+  const lookup = f.calls.find(call => call.sql.includes("located AS MATERIALIZED"))!.sql;
+  expect(lookup).toContain('jsonb_to_record(leaf.row_json) AS payload(schema text,"endHash" text,entries jsonb)');
   expect(lookup.split(") SELECT q.key")[1]).not.toContain("row_json");
-  expect(lookup).toContain("page.entries->>q.key");
-  expect(lookup).not.toContain("page.entries->q.hash");
+  expect(lookup).toContain("payload.entries->>q.key");
+  expect(lookup).not.toContain("payload.entries->q.hash");
   expect(lookup).not.toContain("jsonb_array_elements");
   expect(lookup).not.toContain("page_members");
 });
@@ -269,4 +269,31 @@ it("retains empty and absent exact lookups and rejects the removed nested-hash r
   expect(await readCorpusMembershipCounts(f.storage, f.run, "context", ["absent.雪"])).toEqual({ "absent.雪": 0 });
   const key = "key", hash = corpusMembershipHash(key);
   expect(() => corpusCountPageEntries({ schema: CORPUS_COUNT_PAGE_SCHEMA, endHash: hash, entries: { [hash]: { [key]: 1 } } })).toThrow(/membership pages/);
+});
+
+it("materializes only exact count scalars after one indexed predecessor leaf per requested key", async () => {
+  const f=fixture(4096,65536),keys=["__proto__","constructor","e\u0301","\u00e9","\ud83e\udded","1","10","2"];
+  for(const [index,key] of keys.entries()){
+    const hash=corpusMembershipHash(key);
+    await f.memory.putMany("input/class-counts",[{orderKey:hash,value:{schema:CORPUS_COUNT_PAGE_SCHEMA,endHash:hash,entries:{[key]:index+1}}}]);
+  }
+  expect(await readCorpusMembershipCounts(f.storage,f.run,"class",[...keys,"absent"])).toEqual({...Object.fromEntries(keys.map((key,index)=>[key,index+1])),absent:0});
+  const sql=f.calls.at(-1)!.sql;
+  expect(sql).not.toContain("selected_pages");
+  expect(sql).toContain("SELECT q.key,matched.order_key,matched.count,matched.page_schema,matched.end_hash");
+  expect(sql).toContain("FROM located q");
+  expect(sql.split(") SELECT q.key")[1]).not.toContain("JOIN");
+  expect(sql).toContain("payload.entries->>q.key AS count");
+  expect(sql).toContain('ORDER BY v.order_key COLLATE "C" DESC LIMIT 1) leaf');
+  expect(sql.indexOf("DESC LIMIT 1) leaf")).toBeLessThan(sql.indexOf("jsonb_to_record(leaf.row_json)"));
+  expect(sql).toContain("q.order_key IS NULL OR (q.page_schema=");
+  expect(sql).toContain('q.end_hash >= q.order_key COLLATE "C"');
+  expect(sql.match(/r\.information_label->>'tenantId'/gu)).toHaveLength(2);
+});
+
+it.each(["schema","range"] as const)("rejects a malformed matched leaf %s after projecting its exact scalar",async fault=>{
+  const f=fixture(),key="owned.\ud83e\udded",hash=corpusMembershipHash(key);
+  await f.memory.putMany("input/class-counts",[{orderKey:hash,value:{schema:fault==="schema"?"foreign.schema":CORPUS_COUNT_PAGE_SCHEMA,
+    endHash:fault==="range"?"0".repeat(64):hash,entries:{[key]:3}}}]);
+  await expect(readCorpusMembershipCounts(f.storage,f.run,"class",[key])).rejects.toThrow(/membership pages/u);
 });

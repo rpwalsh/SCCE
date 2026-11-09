@@ -202,9 +202,9 @@ it("stores completed count pages while reclaiming pair memberships before fittin
   expect(await f.memory.count("scratch/producer/class-membership")).toBe(0);
   expect(await f.memory.count("scratch/producer/context-membership")).toBe(0);
   expect(f.calls.filter(call=>call.sql.includes("exact_counts AS MATERIALIZED"))).toHaveLength(2);
-  const lookups=f.calls.filter(call=>call.sql.includes("selected_pages AS MATERIALIZED")&&call.sql.includes("SELECT q.key"));
+  const lookups=f.calls.filter(call=>call.sql.includes("located AS MATERIALIZED")&&call.sql.includes("SELECT q.key"));
   expect(lookups.length).toBeGreaterThan(0);
-  expect(lookups.every(call=>call.sql.includes("SELECT DISTINCT order_key FROM located")&&call.sql.includes('ORDER BY v.order_key COLLATE "C" DESC LIMIT 1')&&call.sql.includes("page.entries->>q.key")&&!call.sql.includes("page_members"))).toBe(true);
+  expect(lookups.every(call=>call.sql.includes("SELECT q.key,matched.order_key,matched.count,matched.page_schema,matched.end_hash")&&call.sql.includes('ORDER BY v.order_key COLLATE "C" DESC LIMIT 1) leaf')&&call.sql.includes("payload.entries->>q.key")&&!call.sql.includes("selected_pages")&&!call.sql.includes("page_members"))).toBe(true);
   for await(const page of cursor.documents())for(const document of page){
     const physical=await f.memory.count(`input/statistics/${segmentationOrdinalKey(document.ordinal)}`),logical=[];
     for await(const rows of cursor.statistics(document).rows())logical.push(...rows);

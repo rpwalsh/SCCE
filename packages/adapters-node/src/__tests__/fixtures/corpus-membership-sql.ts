@@ -50,14 +50,14 @@ export async function corpusMembershipSqlFixture(sql: string, params: unknown[],
     return [{ authorized: true, valid: true, expected: String(stored.length), matched: String(stored.length),
       leaf_byte_capacity: Math.max(target, ...stored.map(row => durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2)) }];
   }
-  if (sql.includes("selected_pages AS MATERIALIZED") && sql.includes("SELECT q.key")) {
+  if (sql.includes("WITH requested AS MATERIALIZED") && sql.includes("FROM located q")) {
     const requested = JSON.parse(String(params[2])) as Array<{ key: string; hash: string }>;
     const pages = await all(String(params[1]));
     return requested.map(request => {
       const page = pages.filter(page => page.orderKey <= request.hash).at(-1), value = page?.value as Record<string, JsonValue> | undefined;
       const entries = value?.entries as Record<string, JsonValue> | undefined;
       const found = entries && Object.hasOwn(entries, request.key) ? entries[request.key] : 0;
-      return { key: request.key, count: String(found ?? 0), valid: !page || value?.schema === CORPUS_COUNT_PAGE_SCHEMA && String(value.endHash) >= page.orderKey };
+      return { key: request.key, count: String(found ?? 0), valid: !page || value?.schema === CORPUS_COUNT_PAGE_SCHEMA && typeof value.endHash === "string" && value.endHash >= page.orderKey };
     });
   }
   return undefined;
