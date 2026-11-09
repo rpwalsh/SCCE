@@ -225,6 +225,24 @@ export async function verifySourceBrainPublication(options) {
       assert.deepEqual(afterPartialActive.activeImportRunIds, []); assert.equal(afterPartialActive.activeBrainVersion, undefined);
       assert.equal(beforeReady.brain_import_lifecycle, 0);
     });
+    mark('canonical-projection-parent-refusal');
+    const codeProjection = oss.reports.find(row => row.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossCode);
+    assert.ok(codeProjection, 'Native fixture needs a normal code projection');
+    const adjacentProjection = oss.reports.find(row => row.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossDocs && row.originalSourceVersionId !== codeProjection.originalSourceVersionId
+      && rawCodeParents.includes(row.originalSourceVersionId));
+    assert.ok(adjacentProjection, 'Native fixture needs both real same-file projection parents');
+    await physicalQuery('SAVEPOINT publication_missing_parent');
+    await storage.query(`UPDATE ${storage.table('source_versions')} SET metadata_json=jsonb_set(metadata_json,'{_scceSourceVersion,derivation}','null'::jsonb) WHERE id=$1`, [codeProjection.sourceVersionId]);
+    await assert.rejects(finalizeCorpusBrainManifest(finalizerInput), /exact canonical source\/parent/);
+    assert.equal((await counts()).brain_import_lifecycle, 0);
+    await physicalQuery('ROLLBACK TO SAVEPOINT publication_missing_parent'); await physicalQuery('RELEASE SAVEPOINT publication_missing_parent');
+    check('missing-canonical-projection-derivation-cannot-register-a-brain', () => {});
+    await physicalQuery('SAVEPOINT publication_foreign_parent');
+    await storage.query(`UPDATE ${storage.table('source_versions')} SET metadata_json=jsonb_set(metadata_json,'{_scceSourceVersion,derivation,derivedFromSourceVersionId}',to_jsonb($2::text)) WHERE id=$1`, [codeProjection.sourceVersionId, adjacentProjection.originalSourceVersionId]);
+    await assert.rejects(finalizeCorpusBrainManifest(finalizerInput), /exact canonical source\/parent/);
+    assert.equal((await counts()).brain_import_lifecycle, 0);
+    await physicalQuery('ROLLBACK TO SAVEPOINT publication_foreign_parent'); await physicalQuery('RELEASE SAVEPOINT publication_foreign_parent');
+    check('same-uri-same-bytes-foreign-projection-parent-cannot-register-a-brain', () => {});
     mark('canonical-ready-validation');
     const selectedIds = selected.map(row => row.sourceVersionId);
     const ready = await completeInitialSourceBrainBuild({ storage, informationLabel: label, sourceId: plan.sourceId, sourceSchema: plan.schema,
