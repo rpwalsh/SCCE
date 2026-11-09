@@ -16,6 +16,7 @@ function fixture() {
   const metadata = { links: Array.from({ length: 120 }, (_, index) => ({ index, target: `source-${index}-` + "???".repeat(120) })),
     arbitraryNestedProvenance: { authors: ["Human author"], license: { name: "Public fixture" } },
     requirementTargets: { factual: 1 }, sourceIds: ["source-a", "source-b"], scalar: "kept", nullValue: null };
+  Object.defineProperty(metadata, "constructor", { value: { sourceOwned: "opaque property" }, enumerable: true });
   const body = { ...metadata, profileId: "profile", sourceVersionId: owner.sourceVersionId, sourceSystem: "fixture", schema: "test.authored.learned.v1",
     joinProgram: { unrelatedLearnedValue: [2, 3] }, templates: [{ surface: "attested ?" }] };
   const streamId = sourceLanguageTrainingStreamId({ ...owner, sourceSystem: "fixture", hasher });
@@ -53,10 +54,16 @@ describe("canonical source artifact metadata", () => {
     expect(f.calls).toHaveLength(1);
     const decoded = await f.codec.decodeMany(encoded.map(value => ({ value, informationLabel: label })));
     expect(decoded).toEqual(f.originals); expect(f.originals).toEqual(before);
+    expect(Object.hasOwn(object(decoded[0]), "constructor")).toBe(true);
+    expect(Object.getPrototypeOf(decoded[0])).toBe(Object.prototype);
     expect(decoded.map(value => canonicalDigestHex(value, hasher))).toEqual(f.originals.map(value => canonicalDigestHex(value, hasher)));
     expect(f.calls).toHaveLength(2);
     expect(f.calls[0]!.sql).toContain("version.content_hash=receipt.pattern_json->'compilation'->>'contentHash'");
     expect(f.calls[0]!.sql).toContain("profile.source_version_id=version.id");
+    const firstLinks = object(decoded[0]).links as Array<Record<string, unknown>>;
+    firstLinks[0]!.target = "caller mutation";
+    expect((object(decoded[1]).links as Array<Record<string, unknown>>)[0]!.target).not.toBe("caller mutation");
+    expect((object(object(f.row.pattern_json.inheritedMetadata).value).links as Array<Record<string, unknown>>)[0]!.target).not.toBe("caller mutation");
   });
 
   it("binds metadata into the canonical compilation identity and keeps its holder nonrecursive", async () => {

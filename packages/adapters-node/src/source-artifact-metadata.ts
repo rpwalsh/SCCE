@@ -110,7 +110,8 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
         const ref = raw as unknown as Reference, id = compilationId(root); if (!id || ref.receiptId !== `source.language.compilation.${id}`) return fail();
         const shared = validate(input, owners.get(ref.receiptId), id, ref.digest)!;
         const next = { ...root }; delete next[SOURCE_ARTIFACT_METADATA_KEY];
-        for (const key of ref.keys) { if (!Object.hasOwn(shared.metadata, key) || Object.hasOwn(root, key)) return fail(); next[key] = shared.metadata[key]; }
+        for (const key of ref.keys) { if (!Object.hasOwn(shared.metadata, key) || Object.hasOwn(root, key)) return fail();
+          Object.defineProperty(next, key, { value: structuredClone(shared.metadata[key]), enumerable: true, writable: true, configurable: true }); }
         if (ref.introducedLedger) {
           const ledger = record(next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]); delete next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY];
           const sizes = durableJoinProgramJsonByteLengths(next);
