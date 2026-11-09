@@ -194,13 +194,13 @@ describe("learned rows carry the shard's provenance once", () => {
       const active = await fixture.storage.languageMemory.listLanguagePatterns({ profileIds: [current.profileId] });
       expect(active.filter(pattern => recordOf(pattern.patternJson).schema === legacyJson.schema).map(pattern => pattern.id)).toEqual([current.id]);
       const state = createLanguageMemoryRuntime({ hasher: createHasher() }).hydrate({ models: [], patterns: JSON.parse(JSON.stringify(active)), constructionEvidence: fixture.state.evidence });
-      const fresh = human.turns[0]!.surface.replace("Спанч", "Квартун");
+      const fresh = human.turns[0]!.surface.replace("Ð¡Ð¿Ð°Ð½Ñ‡", "ÐšÐ²Ð°Ñ€Ñ‚ÑƒÐ½");
       const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: fresh, models: state.creativeEventCompatibilityModels, hasher: createHasher() })!;
       expect(state.creativeEventCompatibilityModels.map(model => model.id)).toEqual([current.id]);
       const utterance = creativeSourceUtterances(state.creativeEventCompatibilityModels[0]!, current.profileId, createHasher())[0]!;
       const realized = realizeCreativeSourceUtterance({ utterance, bundles: state.importedConstructionBundles, frame, requestText: fresh,
         ownerTurnId: "owner.current", turns: [{ turnId: "owner.current", turnIndex: 0, roleId: "session.role.owner", surface: fresh }], semanticPlanId: "plan.current", hasher: createHasher() });
-      expect(realized?.realization.text.replace(/\s+/gu, " ")).toBe(human.turns[1]!.surface.replaceAll("Спанч", "Квартун").replace(/\s+/gu, " "));
+      expect(realized?.realization.text.replace(/\s+/gu, " ")).toBe(human.turns[1]!.surface.replaceAll("Ð¡Ð¿Ð°Ð½Ñ‡", "ÐšÐ²Ð°Ñ€Ñ‚ÑƒÐ½").replace(/\s+/gu, " "));
       const writes = Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]));
       await trainLanguageCorpusText(input);
       expect(compile).toHaveBeenCalledTimes(1);
@@ -1013,7 +1013,7 @@ describe("prepared corpus training", () => {
       sourceSystem: "gutenberg",
       streamUri: "fixture://moby-search",
       sourceUri: "fixture://moby-search",
-      text: "Émile notes that the captain of the Pequod was Ahab. The Pequod carried a crew of sailors.",
+      text: "Ã‰mile notes that the captain of the Pequod was Ahab. The Pequod carried a crew of sailors.",
       createdAt: 1700000000000,
       languageOnly: true,
       ngramMaxOrder: 2,
@@ -1245,10 +1245,10 @@ describe("multi-corpus training", () => {
   it("qualifies durable ordinary OSS observations across separate document training calls", async () => {
     const root = await tempDir("oss-durable-construction-pool-");
     const texts = [
-      "甲 f9 木。乙 f9 石。甲 f9 水。乙 f9 土。",
-      "丙 f9 木。丁 f9 石。甲 f9 水。乙 f9 土。",
-      "戊 f9 木。己 f9 石。甲 f9 水。乙 f9 土。",
-      "庚 f9 木。辛 f9 石。甲 f9 水。乙 f9 土。"
+      "ç”² f9 æœ¨ã€‚ä¹™ f9 çŸ³ã€‚ç”² f9 æ°´ã€‚ä¹™ f9 åœŸã€‚",
+      "ä¸™ f9 æœ¨ã€‚ä¸ f9 çŸ³ã€‚ç”² f9 æ°´ã€‚ä¹™ f9 åœŸã€‚",
+      "æˆŠ f9 æœ¨ã€‚å·± f9 çŸ³ã€‚ç”² f9 æ°´ã€‚ä¹™ f9 åœŸã€‚",
+      "åºš f9 æœ¨ã€‚è¾› f9 çŸ³ã€‚ç”² f9 æ°´ã€‚ä¹™ f9 åœŸã€‚"
     ];
     for (const [index, text] of texts.entries()) await writeFile(path.join(root, `${index}.md`), text, "utf8");
     const fixture = memoryStorage();
@@ -1356,7 +1356,7 @@ describe("multi-corpus training", () => {
     await trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "oss_docs", streamUri: "oss_docs:next", sourceUri: "scce://language-pool#path=next.md",
       corpusCheckpoint: { rootUri: "scce://language-pool", itemUri: "next.md" }, informationLabel,
       ...(reason === "declared_identity_conflict" ? { languageAliases: ["opaque.beta"] } : {}),
-      text: reason === "different_distribution" ? "この資料は小さな装置を記述する。装置は水を運ぶ。この資料は大きな装置を記述する。装置は油を運ぶ。"
+      text: reason === "different_distribution" ? "ã“ã®è³‡æ–™ã¯å°ã•ãªè£…ç½®ã‚’è¨˜è¿°ã™ã‚‹ã€‚è£…ç½®ã¯æ°´ã‚’é‹ã¶ã€‚ã“ã®è³‡æ–™ã¯å¤§ããªè£…ç½®ã‚’è¨˜è¿°ã™ã‚‹ã€‚è£…ç½®ã¯æ²¹ã‚’é‹ã¶ã€‚"
         : "The source describes a small pump. The pump carries water. The source describes a large pump. The pump carries oil.",
       ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
     const pool = (fixture.state.events.filter(event => event.typeId === "SymbolPatternLearned").at(-1)!.payload as { constructionPool: { evidenceIds: string[]; languageCompatibility: Array<{ status: string; basis: string }> } }).constructionPool;
@@ -2322,13 +2322,14 @@ describe("multi-corpus training", () => {
     expect(read).toEqual([blobContentHash(Buffer.from(texts.get("sv-d")!))]);
   });
 
-  it("relearns every selected stored source at declared full capacities through the verified corpus loader", async () => {
+  it.each([false, true])("relearns every selected stored source at declared full capacities through the verified corpus loader (private=%s)", async privateScope => {
     const fixture = memoryStorage();
+    const acquisitionIds = createIdFactory({ hasher: createHasher(), clock: createClock({ fixedTime: 1 }), namespace: "separate-source-acquisition" });
     for (const [index, text] of ["oma vela. oma neri.", "oma neri. oma vela."].entries()) await trainLanguageCorpusText({
       storage: fixture.storage, sourceSystem: "wikipedia", sourceUri: `fixture://global-stored/${index}`, streamUri: `fixture://global-stored/${index}`,
-      text, informationLabel: publicCorpusInformationLabel, skipNgramObservationPersistence: true, createdAt: 1
+      text, informationLabel: publicCorpusInformationLabel, skipNgramObservationPersistence: true, createdAt: 1, idFactory: acquisitionIds
     });
-    const originalProfiles = fixture.state.profiles.map(profile => ({ id: profile.id, sourceVersionId: profile.sourceVersionId, kneserNey: profile.kneserNey }));
+    const originalProfiles = fixture.state.profiles.map(profile => ({ sourceVersionId: profile.sourceVersionId, kneserNey: profile.kneserNey }));
     fixture.state.profiles = [];
     installDurableConstructionPool(fixture);
     fixture.storage.evidence.listEvidenceBackedSourceVersions = async (query = {}) => fixture.state.sourceVersions
@@ -2341,6 +2342,8 @@ describe("multi-corpus training", () => {
     fixture.storage.ingestion.get = async id => checkpoints.get(id) ?? null;
     fixture.storage.ingestion.put = async row => { checkpoints.set(row.id, row); };
     const corpus = await rawCorpusSegmentationFixture();
+    const corpusLabel: InformationLabel = privateScope ? { ...publicCorpusInformationLabel, principals: ["principal.private"],
+      compartments: ["segmentation.private"], exportClass: "restricted" } : publicCorpusInformationLabel;
     let depth = 0; let guarded = false;
     const original = fixture.storage.transaction.bind(fixture.storage);
     fixture.storage.transaction = async work => { if (!depth) guarded = false; depth++; try { return await original(work); } finally { depth--; } };
@@ -2351,16 +2354,25 @@ describe("multi-corpus training", () => {
     fixture.storage.corpusSegmentation = { readActive, consolidate: async () => { throw Error("training must not refit the global corpus"); } };
     const write = fixture.storage.languageMemory.putNgramModels!;
     fixture.storage.languageMemory.putNgramModels = async rows => { expect(guarded).toBe(true); await write(rows); };
+    const publish = fixture.storage.languageMemory.replaceLanguagePatternProjection!.bind(fixture.storage.languageMemory);
+    fixture.storage.languageMemory.replaceLanguagePatternProjection = async change => {
+      const projection = change.projection;
+      expect(projection.sourceId).toBe(fixture.state.sourceVersions.find(source => source.sourceVersionId === projection.sourceVersionId)!.sourceId);
+      return publish(change);
+    };
     const report = await trainStoredCorpusConstructions({ storage: fixture.storage, sourceSystem: "wikipedia", minArticleBytes: 0, maxTotalBytes: 65536,
       ngramMaxOrder: 4, ngramMaxCountersPerOrder: 12000, ngramVocabularyLimit: 24000,
-      corpusSegmentation: { scope: { informationLabel: publicCorpusInformationLabel, sourceVersionIds: fixture.state.sourceVersions.map(source => String(source.sourceVersionId)) },
+      corpusSegmentation: { scope: { informationLabel: corpusLabel, sourceVersionIds: fixture.state.sourceVersions.map(source => String(source.sourceVersionId)) },
         recipeId: "scce.corpus_segmentation_input.v1:4096", normalizationContractId: corpus.model.normalizationContractId, bounds: { pageRows: 3, maxPageBytes: 65536 } } });
     expect(report.exhausted).toBe(true); expect(report.sourcesSkipped).toEqual([]); expect(report.batchesFailed).toEqual([]); expect(report.articlesTrained).toBe(2);
     expect(report.reports.every(item => item.ngramModels > 0 && item.segmentation?.mode === "corpus_snapshot")).toBe(true);
-    expect(fixture.state.profiles.map(profile => ({ id: profile.id, sourceVersionId: profile.sourceVersionId, kneserNey: profile.kneserNey }))
-      .sort((a, b) => a.id.localeCompare(b.id))).toEqual([...originalProfiles].sort((a, b) => a.id.localeCompare(b.id)));
+    expect(fixture.state.profiles.map(profile => ({ sourceVersionId: profile.sourceVersionId, kneserNey: profile.kneserNey }))
+      .sort((a, b) => a.sourceVersionId.localeCompare(b.sourceVersionId))).toEqual([...originalProfiles].sort((a, b) => a.sourceVersionId.localeCompare(b.sourceVersionId)));
     expect(readActive.mock.calls.filter(call => !call[3]?.lockForCommit)).toHaveLength(1);
     expect(readActive.mock.calls.filter(call => call[3]?.lockForCommit)).toHaveLength(2);
+    expect(fixture.state.sourceVersions.every(source => kernel.canonicalStringify(source.informationLabel) === kernel.canonicalStringify(publicCorpusInformationLabel))).toBe(true);
+    expect(fixture.state.evidence.every(span => kernel.canonicalStringify(span.informationLabel) === kernel.canonicalStringify(publicCorpusInformationLabel))).toBe(true);
+    expect(fixture.state.models.slice(-2).every(model => kernel.canonicalStringify(model.informationLabel) === kernel.canonicalStringify(corpusLabel))).toBe(true);
     for (const model of fixture.state.models.slice(-2)) expect(recordOf(recordOf(model.modelJson).sourceCompilation).options).toMatchObject({
       maxOrder: 4, maxCountersPerOrder: 12000, vocabularyLimit: 24000, segmentationIdentity: { mode: "corpus_snapshot" }
     });
@@ -2927,13 +2939,13 @@ describe("dialogue corpus training", () => {
       .filter(span => String(span.sourceVersionId) === String(query.sourceVersionId) && span.status === "promoted")
       .map(span => ({ span, score: 1, reason: "exact owner source" }));
     const utterances: Array<{ surface: string; authority?: "factual" | "creative" }> = [
-      { surface: "où est le port ancien", authority: "factual" },
-      { surface: "où se trouve le port ancien", authority: "factual" },
-      { surface: "où est le port ancien", authority: "factual" },
+      { surface: "oÃ¹ est le port ancien", authority: "factual" },
+      { surface: "oÃ¹ se trouve le port ancien", authority: "factual" },
+      { surface: "oÃ¹ est le port ancien", authority: "factual" },
       { surface: "imagine le port comme un jardin suspendu", authority: "creative" },
       { surface: "imagine le port comme un jardin lumineux", authority: "creative" },
       { surface: "imagine le port comme un jardin suspendu", authority: "creative" },
-      { surface: "cette phrase déclarée sans autorité ne sera pas apprise" }
+      { surface: "cette phrase dÃ©clarÃ©e sans autoritÃ© ne sera pas apprise" }
     ];
     const surfaces = utterances.flatMap(({ surface }) => [surface, surface.split(/\s+/u).at(-1)!]);
     const text = surfaces.join("\n");

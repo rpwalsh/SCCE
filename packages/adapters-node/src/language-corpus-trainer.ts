@@ -1018,11 +1018,13 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   if (evidence.some(span => !span.informationLabel)) {
     throw new Error("language corpus evidence requires information labels");
   }
-  const informationLabel = joinInformationLabels(
+  const sourceEvidenceInformationLabel = joinInformationLabels(
     [sourceInformationLabel, ...evidence.map(span => span.informationLabel!)],
     { explicitMergeAuthority: false }
   );
-  evidence = evidence.map(span => ({ ...span, informationLabel }));
+  evidence = evidence.map(span => ({ ...span, informationLabel: sourceEvidenceInformationLabel }));
+  const corpusLabel = input.preparedCorpusSegmentation?.identity.declaration?.scope.informationLabel;
+  const informationLabel = corpusLabel ? joinInformationLabels([sourceEvidenceInformationLabel, corpusLabel], { explicitMergeAuthority: false }) : sourceEvidenceInformationLabel;
   profile = attachSourceDerivedLanguageAliases({ profile, metadata, evidence });
   profile = { ...profile, informationLabel };
   // Identity discovery counts documents. A document-owning training call (a book, a source file, a dialogue
@@ -1133,7 +1135,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   ]
     .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }))
     .map(item => jsonRecord(item.patternJson).schema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA
-      ? { ...item, patternJson: toJsonValue({ ...jsonRecord(item.patternJson), sourceId, sourceVersionId }) } : item);
+      ? { ...item, patternJson: toJsonValue({ ...jsonRecord(item.patternJson), sourceId: canonicalSource?.sourceId ?? sourceId, sourceVersionId }) } : item);
   let frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
 
   if (canonicalSource && models.length) {
@@ -1210,7 +1212,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     projectedGraph: sourceProjection?.graph,
     relationObservations: sourceProjection?.observations,
     sourceSystemId,
-    sourceId,
+    sourceId: canonicalSource?.sourceId ?? sourceId,
     sourceUri,
     namespace,
     sourceVersionId,
