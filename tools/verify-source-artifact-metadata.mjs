@@ -55,13 +55,41 @@ export async function readInternalSourceCompilationPatterns(storage, profileId, 
   return result;
 }
 
+export async function publishNativeArtifactSourceProjection({ source, fixture, owner, profile, sourceSystem, originalPatterns, patterns, priorCompilationId, scopes }, publisher) {
+  const projections = [];
+  for (const scope of scopes) {
+    const query = { ...scope, sourceId: owner.sourceId, sourceVersionId: owner.sourceVersionId, profileId: profile.id,
+      sourceSystem, informationLabel: profile.informationLabel, sourceCompilationId: priorCompilationId };
+    const active = await source.languageMemory.getLanguagePatternProjection(query);
+    const expected = originalPatterns.filter(row => record(row.patternJson).schema === scope.patternSchema).map(row => row.id).sort();
+    if (!active) { assert.equal(expected.length, 0, 'Source schema lacks its required canonical active projection'); continue; }
+    for (const key of ['sourceId', 'sourceVersionId', 'profileId', 'sourceSystem', 'patternSchema', 'componentRecipe', 'informationLabel'])
+      assert.deepEqual(active[key], query[key], 'Canonical source projection ownership differs from its requested scope');
+    assert.deepEqual([...active.patternIds].sort(), expected, 'Canonical source projection must cover its exact original member set');
+    projections.push(scope);
+  }
+  assert.ok(projections.length > 0, 'Source fixture requires canonical active publication scopes');
+  await publisher({ store: fixture.languageMemory, owner: { sourceId: owner.sourceId, sourceVersionId: owner.sourceVersionId, contentHash: owner.contentHash },
+    profileId: profile.id, sourceSystem, informationLabel: profile.informationLabel, patterns, projections });
+  return projections;
+}
+
+export function describeNativeArtifactPatternRead(expected, actual) {
+  const actualIds = new Set(actual.map(row => row.id)), expectedIds = new Set(expected.map(row => row.id));
+  return { expectedCount: expected.length, actualCount: actual.length,
+    missing: expected.filter(row => !actualIds.has(row.id)).map(row => ({ id: row.id, schema: record(row.patternJson).schema ?? null })),
+    extraIds: actual.filter(row => !expectedIds.has(row.id)).map(row => row.id) };
+}
+
 export async function verifySourceArtifactMetadata(options) {
   const { readScceRuntimeConfig } = await import('../packages/adapters-node/dist/config.js');
   const { createPostgresStorageAdapter } = await import('../packages/adapters-node/dist/postgres.js');
   const { createSourceArtifactMetadataCodec } = await import('../packages/adapters-node/dist/source-artifact-metadata.js');
   const { profileSourceOwnershipSql } = await import('../packages/adapters-node/dist/pooled-profile-ownership.js');
   const { durableJoinProgramJsonByteLengths } = await import('../packages/adapters-node/dist/durable-join-program-storage.js');
-  const { canonicalStringify, createHasher, normalizeInformationLabel, stampSourceLanguageCompilation, POSTGRES_REQUIRED_TABLES } = await import('../packages/kernel/dist/index.js');
+  const { canonicalStringify, createHasher, normalizeInformationLabel, publishCompiledLanguagePatterns, LANGUAGE_CONSTRUCTION_PUBLICATION,
+    CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
+    stampSourceLanguageCompilation, POSTGRES_REQUIRED_TABLES } = await import('../packages/kernel/dist/index.js');
   const [sourceConfig, fixtureConfig] = await Promise.all([readScceRuntimeConfig(options.sourceConfigPath), readScceRuntimeConfig(options.fixtureConfigPath)]);
   for (const config of [sourceConfig, fixtureConfig]) if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(new URL(config.database.url).hostname)) throw Error('Native metadata verification requires local databases');
   const sourceIdentity = new URL(sourceConfig.database.url), fixtureIdentity = new URL(fixtureConfig.database.url);
@@ -162,9 +190,20 @@ export async function verifySourceArtifactMetadata(options) {
         await fixture.languageMemory.putLanguagePatterns(rebound.patterns.filter(row => !holders.includes(row)));
         await fixture.languageMemory.putSemanticFrames(rebound.semanticFrames);
         const expectedServable = rebound.patterns.filter(row => row.patternKind !== 'source_compilation'), expectedInternal = rebound.patterns.filter(row => row.patternKind === 'source_compilation');
+        const firstPage = expectedServable.slice(0, 64), firstIds = firstPage.map(row => row.id);
+        const beforePublication = await fixture.languageMemory.listLanguagePatterns({ ...query, patternIds: firstIds, limit: firstIds.length, requireComplete: true });
+        const unpublishedRead = describeNativeArtifactPatternRead(firstPage, beforePublication);
+        report.lastUnpublishedRead = { sourceVersionId, profileId: profile.id, ...unpublishedRead };
+        report.currentStage = 'canonical-source-projection-publication';
+        const publishedScopes = await publishNativeArtifactSourceProjection({ source, fixture, owner, profile, sourceSystem: options.sourceSystem,
+          originalPatterns: patterns, patterns: rebound.patterns, priorCompilationId: receipt.compilationId,
+          scopes: [LANGUAGE_CONSTRUCTION_PUBLICATION, { patternSchema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, componentRecipe: CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID }] }, publishCompiledLanguagePatterns);
+        report.currentStage = 'owner-artifact-roundtrip';
         const actual = { units: await fixture.languageMemory.listLanguageUnits(query), models: await fixture.languageMemory.listNgramModels(query), frames: await fixture.languageMemory.listSemanticFrames(query), patterns: [] };
         for (let offset = 0; offset < expectedServable.length; offset += 64) { const ids = expectedServable.slice(offset, offset + 64).map(row => row.id);
           const page = await fixture.languageMemory.listLanguagePatterns({ ...query, patternIds: ids, limit: ids.length, requireComplete: true });
+          const diagnostic = describeNativeArtifactPatternRead(expectedServable.slice(offset, offset + 64), page);
+          if (diagnostic.missing.length || diagnostic.extraIds.length) report.patternReadFailure = { sourceVersionId, profileId: profile.id, ...diagnostic };
           assert.deepEqual(page.map(row => row.id).sort(), [...ids].sort(), 'Encoded servable pattern read must preserve every requested identity'); actual.patterns.push(...page); }
         const actualInternal = await internal(fixture);
         const patternReadContracts = { servable: await compare(expectedServable, actual.patterns), internalSourceCompilation: await compare(expectedInternal, actualInternal) };
@@ -172,7 +211,7 @@ export async function verifySourceArtifactMetadata(options) {
         const parity = {};
         for (const [family, expected] of Object.entries({ units: rebound.units, models: rebound.models, frames: rebound.semanticFrames, patterns: rebound.patterns })) parity[family] = await compare(expected, actual[family]);
         report.owners.push({ sourceVersionId, profileId: profile.id, priorCompilationId: receipt.compilationId,
-          compilationId: record(record(rebound.models[0].modelJson).sourceCompilation).compilationId, patternReadContracts, parity });
+          compilationId: record(record(rebound.models[0].modelJson).sourceCompilation).compilationId, unpublishedRead, publishedScopes, patternReadContracts, parity });
         if (!negative) negative = { profileId: profile.id, holderId: holders[0].id, unitIds: rebound.units.map(row => row.id), pattern: rebound.patterns.find(row => row.patternKind !== 'source_compilation') };
       }
     }
