@@ -4,7 +4,8 @@ import { afterEach, expect, it } from "vitest";
 import { PostgresStorageAdapter } from "../postgres.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID as conversationRecipe } from "../dialogue-conversational-checkpoint.js";
 import { REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA, REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE, REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
-  LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type LanguagePatternProjection, type LanguagePatternRecord } from "@scce/kernel";
+  LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECIPE,
+  type LanguagePatternProjection, type LanguagePatternRecord } from "@scce/kernel";
 
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });
@@ -108,7 +109,7 @@ it("keeps conversational auxiliary publication separate from base compilation an
   calls.length = 0;
   await adapter.languageMemory.listLanguagePatterns({ patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA] });
   const sql = calls.at(-1)!.sql;
-  expect(sql).toContain(`OR active_projection.value_json->>'componentRecipe'='${conversationRecipe}'`);
+  expect(sql).toContain(`OR active_projection.value_json->>'componentRecipe' IN ('${conversationRecipe}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}')`);
   for (const marker of ["sourceDependencies", "dependency_version.source_id=dependency.", "dependency_evidence.status='promoted'",
     "newer_dependency_version.observed_at,newer_dependency_version.id", "newer_dependency_evidence.status='promoted'",
     "dependency_evidence.information_label->>'tenantId'", "newer_dependency_version.information_label->>'tenantId'"]) expect(sql).toContain(marker);
@@ -125,7 +126,7 @@ it("keeps construction recipe identity in an uncorrelated admission key", async 
   const { adapter, calls } = fixture();
   await adapter.languageMemory.listLanguagePatterns({ patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA] });
   const sql = calls.at(-1)!.sql;
-  expect(sql).toContain(`pattern.id,CASE WHEN pattern.component_recipe='${conversationRecipe}'`);
+  expect(sql).toContain(`pattern.id,CASE WHEN pattern.component_recipe IN ('${conversationRecipe}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}')`);
   expect(sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id,projection_recipe FROM active_projection_ids_0");
   expect(sql).not.toContain("WHERE (pattern.component_recipe=");
   expect(sql).toContain("dependency_evidence.status='promoted'");
