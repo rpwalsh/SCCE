@@ -71,3 +71,5 @@ export * from "./corpus-segmentation-store.js";
 export * from "./corpus-segmentation-producer.js";
 export * from "./corpus-segmentation-lease.js";
 export { validatePopulationWorkerExecution } from "./population-candidate-execution.js";
+
+export { createSourceInductionExecution, runSourceInductionExecution, validateSourceInductionWorkerExecution, type SourceInductionWorkerExecution, type SourceInductionExecutionReceipt } from "./source-induction-execution.js";

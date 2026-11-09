@@ -10,7 +10,7 @@ import { createSourceInductionWorkerSession } from "../../../adapters-node/src/s
 import { rawCorpusSegmentationFixture } from "./fixtures/raw-corpus-segmentation.js";
 const hasher = createHasher();
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
-function port(options: { reorder?: boolean; fail?: number; wrongDigest?: boolean } = {}) {
+function port(options: { reorder?: boolean; fail?: number; wrongDigest?: boolean; reversePrepare?: boolean } = {}) {
   let active = 0, peak = 0, closed = false, releaseFirst!: () => void;
   const secondFinished = new Promise<void>(resolve => { releaseFirst = resolve; });
   const completed: number[] = [], opened: number[] = [];
@@ -32,7 +32,9 @@ function port(options: { reorder?: boolean; fail?: number; wrongDigest?: boolean
         } finally { if (job.ordinal === 1) releaseFirst(); }
       },
       async close() { if (released) return; released = true; raw.close(); active--; sessions.delete(session); } };
-    sessions.add(session); return session;
+    sessions.add(session);
+    if (options.reversePrepare) await new Promise(resolve => setTimeout(resolve, job.ordinal === 0 ? 15 : 0));
+    return session;
   } };
   return { execution, opened, completed, close, peak: () => peak, active: () => active };
 }
@@ -78,7 +80,7 @@ it("keeps source and qualification views serial and reuses the existing prepared
 });
 it("rebinds genuine worker-local measurements to centrally loaded corpus slices without a local refit", async () => {
   bounds(); const { loader } = await rawCorpusSegmentationFixture();
-  const expected = await compileSourceInductionWindowsFromCorpus({ documents, hasher, corpusLoader: loader }), worker = port({ reorder: true });
+  const expected = await compileSourceInductionWindowsFromCorpus({ documents, hasher, corpusLoader: loader }), worker = port({ reorder: true, reversePrepare: true });
   const actual = await compileSourceInductionWindowsAsync({ documents, hasher, corpusLoader: loader, execution: worker.execution });
   expect(canonicalStringify(actual)).toBe(canonicalStringify(expected)); await worker.close();
 });

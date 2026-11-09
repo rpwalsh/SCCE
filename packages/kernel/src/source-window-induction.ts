@@ -290,6 +290,8 @@ export async function compileSourceInductionWindowsAsync(input: SourceInductionC
     signal?.throwIfAborted();
     if (!completed.ok) throw completed.error;
     compiler.accept(completed.identity, completed.product);
+    // The canonical cache now owns only the compact product. Never retain resolved fullModel promises for the whole view.
+    inFlight.delete(completed.identity.batchKey);
   };
   try {
     signal?.throwIfAborted(); signal?.addEventListener("abort", aborted, { once: true });
