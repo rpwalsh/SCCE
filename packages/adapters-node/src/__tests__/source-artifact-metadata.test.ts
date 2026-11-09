@@ -11,14 +11,14 @@ import type { CreativeEventStorageHost } from "../canonical-creative-event-store
 const hasher = createHasher(), label: InformationLabel = { tenantId: "owner", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" };
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const object = (value: unknown): Record<string, unknown> => value as Record<string, unknown>;
-function fixture(suffix = "") {
+function fixture(suffix = "", inherited: Record<string, JsonValue> = {}, schema = "test.authored.learned.v1") {
   const text = "A public source records ? and ??." + suffix, profileId = `profile${suffix}`, ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true, namespace: "metadata" });
   const owner = { sourceId: ids.sourceId("fixture", "fixture://public-source"), sourceVersionId: ids.sourceVersionId(text), contentHash: ids.contentHash(text) };
   const metadata = { links: Array.from({ length: 120 }, (_, index) => ({ index, target: `source-${index}-` + "???".repeat(120) })),
     arbitraryNestedProvenance: { authors: ["Human author"], license: { name: "Public fixture" } },
-    requirementTargets: { factual: 1 }, sourceIds: ["source-a", "source-b"], scalar: "kept", nullValue: null };
+    requirementTargets: { factual: 1 }, sourceIds: ["source-a", "source-b"], scalar: "kept", nullValue: null, ...inherited };
   Object.defineProperty(metadata, "constructor", { value: { sourceOwned: "opaque property" }, enumerable: true });
-  const body = { ...metadata, profileId, sourceVersionId: owner.sourceVersionId, sourceSystem: "fixture", schema: "test.authored.learned.v1",
+  const body = { ...metadata, profileId, sourceVersionId: owner.sourceVersionId, sourceSystem: "fixture", schema,
     joinProgram: { unrelatedLearnedValue: [2, 3] }, templates: [{ surface: "attested ?" }] };
   const streamId = sourceLanguageTrainingStreamId({ ...owner, sourceSystem: "fixture", hasher });
   const stamped = stampSourceLanguageCompilation({ owner, profileId, sourceSystem: "fixture", streamId, text, chunks: [text], inheritedMetadata: toJsonValue(metadata),
@@ -39,6 +39,34 @@ function fixture(suffix = "") {
 }
 
 describe("canonical source artifact metadata", () => {
+  it.each(["scce.language_construction_pattern.v1", "scce.induced_language_model.semantic_memory.v1"])("shares only exact allowed inherited scalar provenance in %s", async schema => {
+    const provenance = { sourceUri: "fixture://human/\u96ea/e\u0301", sourceHash: "sha256:owned", sourceSystemId: "source:owned", title: "Original e\u0301 title",
+      authorship: "human_authored", corpusRole: "opaque.corpus.role", forceClass: "learned_language_prior", provenanceClass: "source_owned",
+      transcriptSchema: "scce.dialogue_transcript.v1", annotatedTurns: 222 };
+    const inline = { relativePath: "original.rs", streamUri: "fixture://original.rs", formalLanguage: "rust", parameterCount: 3, language: "opaque.language",
+      unknownScalar: "not opted in", scalar: "kept", nullValue: null, sourceSystem: "fixture" };
+    const f=fixture("provenance", {...provenance,...inline}, schema), value=f.originals[1];
+    const [encoded]=await f.codec.encodeMany([{artifactFamily:"language_pattern",value,informationLabel:label}]);
+    for(const key of Object.keys(provenance))expect(object(encoded)).not.toHaveProperty(key);
+    for(const [key,member] of Object.entries(inline))expect(object(encoded)[key]).toEqual(member);
+    const restored=(await f.codec.decodeMany([{value:JSON.parse(JSON.stringify(encoded)),informationLabel:label}]))[0];
+    expect(restored).toEqual(value);expect(canonicalDigestHex(restored,hasher)).toBe(canonicalDigestHex(value,hasher));
+    for(const familyValue of [f.originals[0],f.originals[2],f.originals[3]]){
+      const [other]=await f.codec.encodeMany([{value:familyValue,informationLabel:label}]);
+      for(const [key,member] of Object.entries(provenance))expect(object(other)[key]).toEqual(member);
+    }
+    const changed:Record<string,unknown>={...object(value),title:"locally learned override"};delete changed.sourceUri;
+    const [different]=await f.codec.encodeMany([{artifactFamily:"language_pattern",value:changed,informationLabel:label}]);
+    expect(object(different).title).toBe(changed.title);expect(object(object(different)[SOURCE_ARTIFACT_METADATA_KEY]).keys).not.toContain("sourceUri");
+    expect(await f.codec.decodeMany([{value:different,informationLabel:label}])).toEqual([changed]);
+    const unbound={...object(value)};delete unbound.sourceCompilationId;
+    expect((await f.codec.encodeMany([{artifactFamily:"language_pattern",value:unbound,informationLabel:label}]))[0]).toBe(unbound);
+  });
+  it("keeps scalar provenance inline for arbitrary pattern schemas",async()=>{
+    const f=fixture("other",{title:"attested title",sourceUri:"fixture://owned"});
+    const [encoded]=await f.codec.encodeMany([{artifactFamily:"language_pattern",value:f.originals[1],informationLabel:label}]);
+    expect(object(encoded).title).toBe("attested title");expect(object(encoded).sourceUri).toBe("fixture://owned");
+  });
   it("stores inherited objects once and reconstructs all four artifact families exactly", async () => {
     const f = fixture(), before = clone(f.originals);
     const encoded = await f.codec.encodeMany(f.originals.map(value => ({ value, informationLabel: label })));

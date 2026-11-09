@@ -5303,7 +5303,7 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
     const indices = values.flatMap((value, index) => isSourceCompilationMetadataHolder(value) ? [] : [index]);
     const creative = await codec.encodeMany(indices.map(index => ({ value: values[index], informationLabel: labels.get(patterns[index]!.id)! })));
     indices.forEach((index, position) => { values[index] = creative[position]; });
-    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(patterns.map((pattern, index) => ({ value: values[index], logicalValue: pattern.patternJson, profileId: pattern.profileId, informationLabel: labels.get(pattern.id)! })));
+    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(patterns.map((pattern, index) => ({ artifactFamily: "language_pattern" as const, value: values[index], logicalValue: pattern.patternJson, profileId: pattern.profileId, informationLabel: labels.get(pattern.id)! })));
     for (const [index, pattern] of patterns.entries()) payload.push({
     id: pattern.id,
     profile_id: pattern.profileId,

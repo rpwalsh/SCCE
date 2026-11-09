@@ -13,16 +13,16 @@ const adapters:PostgresStorageAdapter[]=[];
 afterEach(async()=>{clearResidentNgramModelJson();await Promise.all(adapters.splice(0).map(adapter=>adapter.close()));});
 const object=(value:unknown)=>value as Record<string,unknown>;
 const cold=<T>(value:T):T=>JSON.parse(JSON.stringify(value)) as T;
-function producer(variant="a"){
+function producer(variant="a",schema="scce.request_requirement_pattern.v1"){
   const text="A source records \u732b and e\u0301.",ids=createIdFactory({hasher,clock:createClock({fixedTime:1}),deterministicReplay:true,namespace:"storage.metadata"});
   const owner={sourceId:ids.sourceId("fixture","fixture://metadata"),sourceVersionId:ids.sourceVersionId(text),contentHash:ids.contentHash(text)},profileId="profile.metadata";
-  const metadata={sourceMetadata:{variant,provenance:Array.from({length:60},(_,index)=>({index,owner:"human",text:"\u732b.e\u0301.".repeat(60)}))}};
+  const metadata={title:"Owned source title",sourceUri:"fixture://canonical-metadata-source",sourceMetadata:{variant,provenance:Array.from({length:60},(_,index)=>({index,owner:"human",text:"\u732b.e\u0301.".repeat(60)}))}};
   const streamId=sourceLanguageTrainingStreamId({...owner,sourceSystem:"fixture",hasher}),options={maxOrder:1,maxCountersPerOrder:64,vocabularyLimit:64,languageOnly:false,retainNgramObservations:false};
   const input={owner,profileId,sourceSystem:"fixture",streamId,text,chunks:[text],options,hasher,inheritedMetadata:toJsonValue(metadata),
     models:[{id:canonicalNgramModelId({streamId,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",languageHint:"und",order:1,hasher}),streamId,languageHint:"und",maxOrder:1,discount:0.5,updatedAt:1000,
       modelJson:toJsonValue({...metadata,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",model:{order:1,totalUnigramCount:10}})}],
     artifacts:{units:[{id:"unit.metadata",profileId,sourceVersionId:owner.sourceVersionId,script:"Latin",unitKind:"symbol" as const,text:"\u732b",features:[],competenceVector:[1],alpha:1,evidenceIds:[],metadata:toJsonValue({...metadata,sourceSystem:"fixture"})}],
-      patterns:[{id:"pattern.metadata",profileId,patternKind:"semantic_role" as const,support:1,entropy:0,updatedAt:1000,evidenceIds:[],patternJson:toJsonValue({...metadata,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",schema:"scce.request_requirement_pattern.v1",surface:"opaque",requirementCoefficients:{factual:1},stats:{examples:1}})}],
+      patterns:[{id:"pattern.metadata",profileId,patternKind:"semantic_role" as const,support:1,entropy:0,updatedAt:1000,evidenceIds:[],patternJson:toJsonValue({...metadata,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",schema,surface:"opaque",requirementCoefficients:{factual:1},stats:{examples:1}})}],
       semanticFrames:[{id:"frame.metadata",frameJson:toJsonValue({...metadata,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",surface:"opaque"}),embedding:new Array<number>(64).fill(0),evidenceIds:[],alpha:1,createdAt:1000}]}};
   const result=stampSourceLanguageCompilation(input);
   return {...result,owner,profileId,metadata,receipt:result.patterns.find(pattern=>pattern.patternKind==="source_compilation")!};
@@ -128,4 +128,14 @@ it.each([false,true])("logical unit/model merges retain unknown keys and regener
   const model=(await f.adapter.languageMemory.listNgramModels({limit:10}))[0]!,unit=(await f.adapter.languageMemory.listLanguageUnits({limit:10}))[0]!;
   expect(object(model.modelJson).unknown).toEqual({keep:"\u732b"});expect(object(unit.metadata).unknown).toEqual({keep:"\u732b"});
   expect(object(model.modelJson).sourceMetadata).toEqual(value.metadata.sourceMetadata);expect(object(unit.metadata).sourceMetadata).toEqual(value.metadata.sourceMetadata);
+});
+
+it("the canonical pattern writer enables scalar sharing while other family writers stay unchanged",async()=>{
+  const f=fixture(),value=producer("construction","scce.language_construction_pattern.v1");await f.write(value);
+  const stored=f.table("language_patterns").get("pattern.metadata")!;
+  expect(object(stored.pattern_json).sourceUri).toBeUndefined();expect(object(stored.pattern_json).title).toBeUndefined();
+  for(const [table,column] of [["ngram_models","model_json"],["language_units","metadata_json"],["semantic_frames","frame_json"]]){
+    const row=[...f.table(table!).values()][0]!;expect(object(row[column!]).sourceUri).toBe(value.metadata.sourceUri);expect(object(row[column!]).title).toBe(value.metadata.title);
+  }
+  expect((await f.adapter.languageMemory.listLanguagePatterns({patternIds:["pattern.metadata"],limit:10}))[0]!.patternJson).toEqual(value.patterns[0]!.patternJson);
 });

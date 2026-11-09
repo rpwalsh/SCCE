@@ -11,9 +11,12 @@ export const SOURCE_ARTIFACT_METADATA_REF_SCHEMA = "scce.source_artifact_metadat
 const hasher = createHasher();
 const record = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const fail = (): never => { throw new Error("canonical source artifact metadata is missing, inaccessible or changed"); };
-// Root objects inspected by SQL must remain directly queryable. Scalars and primitive arrays always remain inline.
+// Root objects inspected by SQL remain directly queryable. Only the measured semantic
+// pattern schemas may share these explicit inherited provenance scalars; other families stay unchanged.
+const SCALAR_PROVENANCE_FIELDS = new Set(["sourceUri", "sourceHash", "sourceSystemId", "title", "authorship", "corpusRole", "forceClass", "provenanceClass", "transcriptSchema", "annotatedTurns"]);
+const SCALAR_PROVENANCE_SCHEMAS = new Set(["scce.language_construction_pattern.v1", "scce.induced_language_model.semantic_memory.v1"]);
 const QUERY_ROOTS = new Set<string>([...REQUEST_SEED_PATTERN_JSON_FIELDS, ...REQUEST_SEED_FRAME_JSON_FIELDS, "graphBoundConstructions", "lexicalClasses", "sourceCompilation", "compilation", "inheritedMetadata", "bundle", "joinProgram", "profileBinding", "sourceDependencies", "requestDependencies", "trainingWitnesses", "pooledSourceBinding", "requirementCoefficients", "model", "identity", "sourceAdmission", "sourceMetadataBinding", "transcriptArchive"]);
-interface Input { value: unknown; logicalValue?: unknown; profileId?: string; sourceVersionId?: string; informationLabel?: InformationLabel }
+interface Input { artifactFamily?: "language_pattern"; value: unknown; logicalValue?: unknown; profileId?: string; sourceVersionId?: string; informationLabel?: InformationLabel }
 interface Holder { id: string; profile_id: string; pattern_json: Record<string, unknown>; information_label: InformationLabel }
 interface ValidatedHolder { metadata: Record<string, unknown>; digest: string; compilationId: string; profileId: string; sourceVersionId: unknown; label: string }
 interface Reference { schema: string; receiptId: string; digest: string; keys: string[]; introducedLedger: boolean; recordDigest: string }
@@ -90,9 +93,12 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
         if (root[SOURCE_ARTIFACT_METADATA_KEY] !== undefined) return fail();
         const id = compilationId(root); if (!id) return input.value;
         const shared = validate(input, owners.get(`source.language.compilation.${id}`), id, validated); if (!shared) return input.value;
+        const scalarProvenance = input.artifactFamily === "language_pattern" && typeof root.schema === "string" && SCALAR_PROVENANCE_SCHEMAS.has(root.schema);
         const keys = Object.keys(shared.metadata).filter(key => !QUERY_ROOTS.has(key) && key !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY && key !== SOURCE_ARTIFACT_METADATA_KEY
-          && root[key] !== undefined && same(root[key], shared.metadata[key]) && root[key] !== null && typeof root[key] === "object"
-          && (!Array.isArray(root[key]) || (root[key] as unknown[]).some(value => value !== null && typeof value === "object")));
+          && root[key] !== undefined && same(root[key], shared.metadata[key])
+          && (root[key] !== null && typeof root[key] === "object"
+            ? !Array.isArray(root[key]) || (root[key] as unknown[]).some(value => value !== null && typeof value === "object")
+            : scalarProvenance && SCALAR_PROVENANCE_FIELDS.has(key)));
         if (!keys.length) return input.value;
         const existingLedger = record(root[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
         if (Object.hasOwn(root, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) {
