@@ -98,20 +98,34 @@ try {
   });
   const storedHeads = (await storage.query(`SELECT key,value_json FROM ${storage.table('storage_meta')} WHERE value_json->>'schema'='scce.language_pattern_active_projection.v1'`))
     .map(row => row.value_json).filter(row => row.sourceContractRoot);
-  const currentHeads = new Map(); let refusedStoredHeads = 0, readableStoredAliases = 0;
+  const currentHeads = new Map(), emptyHeads = new Map(); let refusedStoredHeads = 0, readableStoredAliases = 0;
   for (const candidate of storedHeads) {
     // Immutable publication receipts and active slots share a value schema. Only
     // the canonical guarded reader can establish which root/context is current.
     const current = await storage.languageMemory.getLanguagePatternProjection(candidate);
     if (!current) { refusedStoredHeads++; continue; }
     readableStoredAliases++;
-    assert.ok(current.patternIds.length > 0, 'An empty withdrawal receipt must not qualify as either published root');
+    if (current.patternIds.length === 0) {
+      const identity = JSON.stringify([current.sourceId, current.componentRecipe, current.sourceContractRoot.checkpointId]);
+      if (emptyHeads.has(identity)) assert.deepEqual(current, emptyHeads.get(identity), 'Empty receipt aliases must resolve the exact same current withdrawal');
+      else emptyHeads.set(identity, current);
+      continue;
+    }
     assert.ok(current.patternIds.every(id => published.some(pattern => pattern.id === id)), 'Historical patterns must not become readable through receipt aliases');
     const identity = JSON.stringify([current.sourceId, current.componentRecipe, current.sourceContractRoot.checkpointId]);
     if (currentHeads.has(identity)) assert.deepEqual(current, currentHeads.get(identity), 'Receipt aliases must resolve the exact same current head');
     else currentHeads.set(identity, current);
   }
   const heads = [...currentHeads.values()];
+  const publishedRoots = new Map(published.map(pattern => [pattern.patternJson.sourceContractClosure.rootCheckpointId, pattern.patternJson.sourceContractClosure]));
+  for (const empty of emptyHeads.values()) {
+    assert.deepEqual(empty.patternIds, []);
+    const closure = publishedRoots.get(empty.sourceContractRoot.checkpointId);
+    assert.ok(closure, 'Empty withdrawal must belong to an actual published test root');
+    assert.equal(empty.sourceContractRoot.sourceId, closure.testSourceId); assert.equal(empty.sourceContractRoot.sourceVersionId, closure.testSourceVersionId);
+    assert.equal(empty.sourceContractRoot.snapshotCheckpointId, closure.snapshotCheckpointId);
+    assert.equal(empty.sourceContractRoot.snapshotHash, closure.snapshotHash); assert.equal(empty.sourceContractRoot.scopeIdentity, closure.scopeIdentity);
+  }
   for (const pattern of published) {
     const matching = heads.filter(head => head.patternIds.includes(pattern.id)); assert.equal(matching.length, 1, 'Each published pattern must have exactly one current root');
     const head = matching[0], closure = pattern.patternJson.sourceContractClosure;
@@ -124,7 +138,7 @@ try {
     for (const head of heads) { assert.ok(head.sourceDependencies.length >= 6); assert.ok(head.sourceDependencies.every(dep => dep.originalSourceVersionId && dep.originalContentHash && dep.evidenceIds.length)); }
   });
   report.publication = { patternIds: published.map(row => row.id), rootCheckpointIds: heads.map(head => head.sourceContractRoot.checkpointId),
-    sourceDependencyCounts: heads.map(head => head.sourceDependencies.length), storedHeadRows: storedHeads.length, readableStoredAliases, refusedStoredHeads,
+    sourceDependencyCounts: heads.map(head => head.sourceDependencies.length), storedHeadRows: storedHeads.length, readableStoredAliases, refusedStoredHeads, emptyWithdrawalHeads: emptyHeads.size,
     windows: Object.keys(files).length, behaviorRequirements: joined.behaviorRequirements.length };
   for (const head of heads) assert.ok(await storage.languageMemory.getLanguagePatternProjection(head));
   const beforeReplay = await storage.languageMemory.readRevision();
