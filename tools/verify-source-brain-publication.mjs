@@ -25,10 +25,12 @@ export async function verifySourceBrainPublication(options) {
   const { createPostgresStorageAdapter } = await import('../packages/adapters-node/dist/postgres.js');
   const { trainLanguageCorpusText } = await import('../packages/adapters-node/dist/language-corpus-trainer.js');
   const { trainDialogueCorpus } = await import('../packages/adapters-node/dist/dialogue-corpus.js');
+  const { trainOssCorpus } = await import('../packages/adapters-node/dist/oss-corpus.js');
+  const { trainGutenbergCorpus } = await import('../packages/adapters-node/dist/gutenberg-corpus.js');
   const { trainStoredCorpusConstructions } = await import('../packages/adapters-node/dist/stored-corpus-construction-training.js');
   const { completeInitialSourceBrainBuild, sourceBrainSelectedItemsFromReports } = await import('../packages/adapters-node/dist/source-brain-build.js');
   const { finalizeCorpusBrainManifest } = await import('../packages/cli/dist/corpus-brain-manifest.js');
-  const { POSTGRES_REQUIRED_TABLES, canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
+  const { POSTGRES_REQUIRED_TABLES, CORPUS_SOURCE_SYSTEM_IDS, CODE_SURFACE_RECIPE_ID, canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
     evidenceSourceFamilyId, preparePooledLanguageProfileBinding } = await import('../packages/kernel/dist/index.js');
   const config = await readScceRuntimeConfig(options.configPath);
   if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(new URL(config.database.url).hostname)) throw Error('Rollback-only publication verification requires local PostgreSQL');
@@ -129,6 +131,42 @@ export async function verifySourceBrainPublication(options) {
       assert.equal(dialogue.selection.languageTrainingComplete, true); assert.equal(dialogue.filesTrained, 1); assert.deepEqual(dialogue.filesSkipped, []);
       assert.equal(dialogue.sourceBrainBuild, undefined);
     });
+    mark('normal-mixed-public-oss-and-book-training');
+    const codeBytes = await readFile(new URL('../packages/adapters-node/src/path-glob.ts', import.meta.url));
+    const docsBytes = await readFile(new URL('../README.md', import.meta.url));
+    const bookFixtureBytes = await readFile(new URL('../packages/kernel/src/__tests__/fixtures/alice-acquisition-excerpt.txt', import.meta.url));
+    // Same contiguous public-domain prefix used by the mixed-manifest producer regression.
+    const bookBytes = Buffer.from(bookFixtureBytes.toString('utf8').slice(0, 2200));
+    const repoRoot = path.join(root, 'repo'), booksRoot = path.join(root, 'books'), bookPath = path.join(booksRoot, 'alice.txt');
+    await mkdir(path.join(repoRoot, 'src'), { recursive: true }); await mkdir(booksRoot);
+    await writeFile(path.join(repoRoot, 'src', 'path-glob.ts'), codeBytes); await writeFile(path.join(repoRoot, 'README.md'), docsBytes); await writeFile(bookPath, bookBytes);
+    const ossUri = `fixture://native-publication/${suffix}/repo`;
+    const oss = await trainOssCorpus({ storage, ...settings, rootPath: repoRoot, sourceUriBase: ossUri, maxFiles: 20, maxFilesPerRun: 20 });
+    const books = await trainGutenbergCorpus({ storage, ...settings, rootPath: booksRoot, maxFilesPerRun: 20 });
+    check('normal-oss-and-gutenberg-producers-complete-without-separate-activation', () => {
+      assert.deepEqual(oss.filesSkipped, []); assert.equal(oss.sourceContractClosure.complete, true); assert.equal(oss.reports.length, 3);
+      assert.deepEqual(books.filesSkipped, []); assert.equal(books.reports.length, 1); assert.equal(books.stoppedByHeapSafetyBound, false);
+      assert.equal(oss.sourceBrainBuild, undefined); assert.equal(books.sourceBrainBuild, undefined);
+    });
+    const mixedPlanItems = [
+      { canonicalUri: `${ossUri}#path=src%2Fpath-glob.ts`, contentHash: hasher.digestHex(codeBytes), sourceFileHash: hasher.digestHex(codeBytes), byteLength: codeBytes.byteLength,
+        projections: [{ sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.ossCode, projection: 'code_surface_tokens', transformId: `${CODE_SURFACE_RECIPE_ID}:code_surface_tokens` },
+          { sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.ossDocs, projection: 'code_adjacent_prose' }] },
+      { canonicalUri: `${ossUri}#path=README.md`, contentHash: hasher.digestHex(docsBytes), sourceFileHash: hasher.digestHex(docsBytes), byteLength: docsBytes.byteLength,
+        projections: [{ sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.ossDocs, projection: 'verbatim' }] },
+      { canonicalUri: pathToFileURL(bookPath).href, contentHash: hasher.digestHex(bookBytes), sourceFileHash: hasher.digestHex(bookBytes), byteLength: bookBytes.byteLength,
+        projections: [{ sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.gutenberg, transformId: 'scce.gutenberg.boilerplate-strip.v1' }] }
+    ];
+    const rawCodeParents = [];
+    for (const item of oss.reports.filter(row => row.streamUri.endsWith('src/path-glob.ts'))) {
+      const parent = await storage.evidence.sourceVersionById(item.originalSourceVersionId); assert.ok(parent);
+      assert.equal(parent.canonicalUri, mixedPlanItems[0].canonicalUri); assert.deepEqual(Buffer.from(await storage.blobs.get(parent.contentHash)), codeBytes);
+      rawCodeParents.push(parent.sourceVersionId);
+    }
+    check('code-and-adjacent-prose-retain-distinct-real-raw-parents', () => { assert.equal(rawCodeParents.length, 2); assert.equal(new Set(rawCodeParents).size, 2); });
+    report.mixedPublicSources = { code: { path: 'packages/adapters-node/src/path-glob.ts', sha256: hasher.digestHex(codeBytes), bytes: codeBytes.byteLength },
+      docs: { path: 'README.md', sha256: hasher.digestHex(docsBytes), bytes: docsBytes.byteLength },
+      book: { path: 'packages/kernel/src/__tests__/fixtures/alice-acquisition-excerpt.txt', committedSha256: hasher.digestHex(bookFixtureBytes), prefixCodeUnits: 2200, sha256: hasher.digestHex(bookBytes), bytes: bookBytes.byteLength } };
     mark('normal-explicit-stored-replay');
     const stored = await trainStoredCorpusConstructions({ storage, ...settings, sourceSystem: 'wikipedia', languageOnly: true,
       sourceVersionIds: pages.map(page => page.source.sourceVersionId), minArticleBytes: 0, maxArticleBytes: 1024 * 1024,
@@ -138,7 +176,7 @@ export async function verifySourceBrainPublication(options) {
       assert.deepEqual(stored.sourcesSkipped, []); assert.deepEqual(stored.batchesFailed, []);
       assert.ok(stored.reports.every(row => row.segmentation.mode === 'local_bootstrap' && row.ngramModels > 0));
     });
-    const reports = [...stored.reports, ...dialogue.reports];
+    const reports = [...stored.reports, ...dialogue.reports, ...oss.reports, ...books.reports];
     const profiles = await storage.model.listLanguageProfileHeaders({ profileIds: reports.map(row => row.artifacts.languageProfileId), limit: reports.length });
     const models = await storage.languageMemory.listNgramModelHeaders({ modelIds: reports.flatMap(row => row.artifacts.ngramModelIds), profileIds: profiles.map(row => row.id), limit: reports.reduce((sum, row) => sum + row.artifacts.ngramModelIds.length, 0) });
     check('native-direct-profile-and-model-headers-match-normal-reports', () => {
@@ -146,26 +184,42 @@ export async function verifySourceBrainPublication(options) {
       assert.equal(models.length, reports.reduce((sum, row) => sum + row.artifacts.ngramModelIds.length, 0));
       assert.ok(reports.every(row => profiles.some(profile => profile.id === row.artifacts.languageProfileId && profile.sourceVersionId === row.sourceVersionId)));
     });
-    const storedBytes = Buffer.from(JSON.stringify(stored)), dialogueBytes = Buffer.from(JSON.stringify(dialogue));
+    const storedBytes = Buffer.from(JSON.stringify(stored)), dialogueBytes = Buffer.from(JSON.stringify(dialogue)), ossBytes = Buffer.from(JSON.stringify(oss)), booksBytes = Buffer.from(JSON.stringify(books));
     await writeFile(path.join(root, 'stored.json'), storedBytes); await writeFile(path.join(root, 'dialogue.json'), dialogueBytes);
+    await writeFile(path.join(root, 'oss.json'), ossBytes); await writeFile(path.join(root, 'books.json'), booksBytes);
     const selected = sourceBrainSelectedItemsFromReports(reports), selectedItems = [];
-    for (const item of selected) {
+    for (const item of sourceBrainSelectedItemsFromReports([...stored.reports, ...dialogue.reports])) {
       const version = await storage.evidence.sourceVersionById(item.sourceVersionId);
       selectedItems.push({ ...item, canonicalUri: version.canonicalUri,
         ...(version.canonicalUri === pathToFileURL(humanPath).href ? { sourceFileHash: hasher.digestHex(humanBytes) } : {}) });
     }
+    selectedItems.push(...mixedPlanItems);
     const plan = { schema: 'scce.storedSourceBrainPlan.v1', sourceId: `native-publication.${suffix}`, rootPath: root, selectedItems,
-      reportFiles: [{ path: 'stored.json', sha256: hasher.digestHex(storedBytes) }, { path: 'dialogue.json', sha256: hasher.digestHex(dialogueBytes) }] };
+      reportFiles: [{ path: 'stored.json', sha256: hasher.digestHex(storedBytes) }, { path: 'dialogue.json', sha256: hasher.digestHex(dialogueBytes) },
+        { path: 'oss.json', sha256: hasher.digestHex(ossBytes) }, { path: 'books.json', sha256: hasher.digestHex(booksBytes) }] };
     const manifestBytes = Buffer.from(JSON.stringify(plan)), manifestPath = path.join(root, 'plan.json'); await writeFile(manifestPath, manifestBytes);
-    const byteBudget = manifestBytes.byteLength + storedBytes.byteLength + dialogueBytes.byteLength;
+    const byteBudget = manifestBytes.byteLength + storedBytes.byteLength + dialogueBytes.byteLength + ossBytes.byteLength + booksBytes.byteLength;
     const finalizerInput = { storage, informationLabel: label, manifestPath, maxTotalBytes: byteBudget };
     mark('partial-cohort-refusal');
     const partialBytes = Buffer.from(JSON.stringify({ ...stored, stoppedByHeapSafetyBound: true }));
-    const partialPlan = { ...plan, reportFiles: [{ path: 'partial-stored.json', sha256: hasher.digestHex(partialBytes) }, plan.reportFiles[1]] };
+    const partialPlan = { ...plan, reportFiles: [{ path: 'partial-stored.json', sha256: hasher.digestHex(partialBytes) }, ...plan.reportFiles.slice(1)] };
     const partialManifestBytes = Buffer.from(JSON.stringify(partialPlan)), partialPath = path.join(root, 'partial-plan.json');
     await writeFile(path.join(root, 'partial-stored.json'), partialBytes); await writeFile(partialPath, partialManifestBytes);
     await assert.rejects(finalizeCorpusBrainManifest({ ...finalizerInput, manifestPath: partialPath,
-      maxTotalBytes: partialManifestBytes.byteLength + partialBytes.byteLength + dialogueBytes.byteLength }), /complete stored-source/);
+      maxTotalBytes: partialManifestBytes.byteLength + partialBytes.byteLength + dialogueBytes.byteLength + ossBytes.byteLength + booksBytes.byteLength }), /complete stored-source/);
+    const missingProjection = { ...oss, reports: oss.reports.filter(row => row.sourceSystemId !== CORPUS_SOURCE_SYSTEM_IDS.ossDocs || !row.streamUri.endsWith('src/path-glob.ts')), docsTrained: oss.docsTrained - 1 };
+    const missingBytes = Buffer.from(JSON.stringify(missingProjection)); await writeFile(path.join(root, 'missing-projection.json'), missingBytes);
+    const missingPlan = { ...plan, reportFiles: plan.reportFiles.map(item => item.path === 'oss.json' ? { path: 'missing-projection.json', sha256: hasher.digestHex(missingBytes) } : item) };
+    const missingPlanBytes = Buffer.from(JSON.stringify(missingPlan)), missingPlanPath = path.join(root, 'missing-projection-plan.json'); await writeFile(missingPlanPath, missingPlanBytes);
+    await assert.rejects(finalizeCorpusBrainManifest({ ...finalizerInput, manifestPath: missingPlanPath,
+      maxTotalBytes: missingPlanBytes.byteLength + storedBytes.byteLength + dialogueBytes.byteLength + missingBytes.byteLength + booksBytes.byteLength }), /projection/);
+    check('missing-owned-code-prose-projection-cannot-register-a-brain', () => {});
+    const partialBooksBytes = Buffer.from(JSON.stringify({ ...books, stoppedByHeapSafetyBound: true })); await writeFile(path.join(root, 'partial-books.json'), partialBooksBytes);
+    const partialBooksPlan = { ...plan, reportFiles: plan.reportFiles.map(item => item.path === 'books.json' ? { path: 'partial-books.json', sha256: hasher.digestHex(partialBooksBytes) } : item) };
+    const partialBooksPlanBytes = Buffer.from(JSON.stringify(partialBooksPlan)), partialBooksPath = path.join(root, 'partial-books-plan.json'); await writeFile(partialBooksPath, partialBooksPlanBytes);
+    await assert.rejects(finalizeCorpusBrainManifest({ ...finalizerInput, manifestPath: partialBooksPath,
+      maxTotalBytes: partialBooksPlanBytes.byteLength + storedBytes.byteLength + dialogueBytes.byteLength + ossBytes.byteLength + partialBooksBytes.byteLength }), /complete normal Gutenberg/);
+    check('partial-normal-book-report-cannot-register-a-brain', () => {});
     const afterPartialActive = await storage.brainImports.active(), beforeReady = await counts();
     check('partial-cohort-never-registers-or-activates', () => {
       assert.deepEqual(afterPartialActive.activeImportRunIds, []); assert.equal(afterPartialActive.activeBrainVersion, undefined);
@@ -183,6 +237,8 @@ export async function verifySourceBrainPublication(options) {
     });
     const parentIds = pages.map(page => page.source.derivation.derivedFromSourceVersionId);
     check('replay-manifest-retains-real-source-parent-chain', () => assert.ok(parentIds.every(id => ready.lifecycle.manifest.replayManifest.componentIds.includes(id))));
+    const mixedParentIds = [...oss.reports, ...books.reports].map(row => row.originalSourceVersionId);
+    check('mixed-manifest-retains-every-real-code-prose-docs-book-parent', () => assert.ok(mixedParentIds.every(id => ready.lifecycle.manifest.replayManifest.componentIds.includes(id))));
     const invalidatedId = stored.reports[0].artifacts.evidenceIds[0];
     mark('stale-ready-refusal');
     await physicalQuery('SAVEPOINT publication_ready_negative');
@@ -215,7 +271,7 @@ export async function verifySourceBrainPublication(options) {
     await physicalQuery('ROLLBACK TO SAVEPOINT publication_active_negative'); await physicalQuery('RELEASE SAVEPOINT publication_active_negative');
     check('active-replay-and-pooled-headers-refuse-revoked-current-support', () => { assert.deepEqual(revokedPooled, []); assert.deepEqual(revokedModels, []); });
     report.fixtureArtifacts = { selectedOwners: selected.length, directReportedProfiles: profiles.length, directReportedNgramStructures: models.length,
-      pooledProfiles: pooledHeader.length, pooledNgramStructures: pooledModels.length, parentVersions: parentIds.length,
+      pooledProfiles: pooledHeader.length, pooledNgramStructures: pooledModels.length, parentVersions: parentIds.length, mixedRawParentVersions: mixedParentIds.length,
       activeBrainVersion: active.activeBrainVersion, observedFixtureCounts: await counts() };
   } catch (error) {
     report.error = { stage, name: error?.name ?? 'Error', code: typeof error?.code === 'string' ? error.code : null,
