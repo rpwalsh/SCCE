@@ -7,7 +7,9 @@ import { createCorpusSegmentationRun, openCorpusSegmentationRun, activateCorpusS
 import { AsyncLocalStorage } from "node:async_hooks";
 import { languageUnitMetadataMergeSql, SOURCE_METADATA_BINDING_SCHEMA } from "./unit-source-metadata.js";
 import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js";
-import { createCanonicalCreativeEventCodec } from "./canonical-creative-event-store.js";
+import { createCanonicalCreativeEventCodec, type CreativeEventStorageHost } from "./canonical-creative-event-store.js";
+import { createSourceArtifactMetadataCodec } from "./source-artifact-metadata.js";
+import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA } from "./durable-join-program-storage.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "./dialogue-conversational-checkpoint.js";
 import { pooledProfileOwnershipSql, profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
 import {
@@ -875,14 +877,59 @@ async function readEventLedgerHead(query: (sql: string, params: readonly unknown
   return head;
 }
 
-function canonicalCreativeCodec(storage: PostgresStorageAdapter, client?: PoolClient) {
-  return createCanonicalCreativeEventCodec({
+function canonicalCodecHost(storage: PostgresStorageAdapter, client?: PoolClient): CreativeEventStorageHost {
+  return {
     table: name => storage.table(name),
     query: async <T>(sql: string, params: unknown[] = []): Promise<T[]> => client
       ? (await client.query(sql, params)).rows as T[] : storage.query<T>(sql, params),
     requireWritableInformationLabel: label => storage.requireWritableInformationLabel(label),
     informationAccessPredicate: (alias, firstParameter) => storage.informationAccessPredicate(alias, firstParameter),
     informationAccess: storage.informationAccess
+  };
+}
+
+function canonicalCreativeCodec(storage: PostgresStorageAdapter, client?: PoolClient) {
+  return createCanonicalCreativeEventCodec(canonicalCodecHost(storage, client));
+}
+
+function sourceArtifactMetadataCodec(storage: PostgresStorageAdapter) {
+  return createSourceArtifactMetadataCodec(canonicalCodecHost(storage));
+}
+
+function sourceArtifactJsonBytesSql(expression: string): string {
+  const ledger = `${expression}->'${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}'`;
+  return `CASE WHEN ${ledger}->>'schema'='${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA}'
+    AND jsonb_typeof(${ledger}->'decodedJsonbBytes')='number'
+    THEN (${ledger}->>'decodedJsonbBytes')::numeric ELSE octet_length(${expression}::text) END`;
+}
+
+function isSourceCompilationMetadataHolder(value: unknown): boolean {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && (value as Record<string, unknown>).schema === "scce.source_language_compilation_receipt.v1";
+}
+
+async function mergedSourceArtifactValues(storage: PostgresStorageAdapter, table: "ngram_models" | "language_units", column: "model_json" | "metadata_json", inputs: readonly { id: string; value: JsonValue; sourceVersionId?: string; informationLabel?: InformationLabel }[]): Promise<JsonValue[]> {
+  const rows = await storage.query<{ id: string; value: JsonValue; source_version_id?: string; information_label: InformationLabel }>(
+    `SELECT id,${column} AS value,information_label${table === "language_units" ? ",source_version_id" : ""} FROM ${storage.table(table)} WHERE id=ANY($1::text[]) FOR UPDATE`, [inputs.map(input => input.id)]);
+  if (!rows.length) return inputs.map(input => input.value);
+  const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.value, informationLabel: row.information_label })));
+  if (table === "language_units") {
+    const merged = await storage.query<{ id: string; value: JsonValue }>(
+      `SELECT lu.id,${languageUnitMetadataMergeSql(storage.table("source_versions"))} AS value
+       FROM jsonb_to_recordset($1::jsonb) AS lu(id text,source_version_id text,information_label jsonb,metadata_json jsonb)
+       JOIN jsonb_to_recordset($2::jsonb) AS EXCLUDED(id text,source_version_id text,information_label jsonb,metadata_json jsonb) ON EXCLUDED.id=lu.id`,
+      [canonicalStringify(rows.map((row, index) => ({ id: row.id, source_version_id: row.source_version_id, information_label: row.information_label, metadata_json: decoded[index] }))),
+        canonicalStringify(inputs.map(input => ({ id: input.id, source_version_id: input.sourceVersionId, information_label: input.informationLabel, metadata_json: input.value })))]);
+    const values = new Map(merged.map(row => [row.id, row.value]));
+    if (merged.length !== rows.length) throw new Error("unit logical metadata merge omitted an existing record");
+    return inputs.map(input => values.has(input.id) ? values.get(input.id)! : input.value);
+  }
+  const prior = new Map(rows.map((row, index) => [row.id, decoded[index] as JsonValue]));
+  return inputs.map(input => {
+    if (!prior.has(input.id)) return input.value;
+    const left = prior.get(input.id)!, right = input.value;
+    return left !== null && typeof left === "object" && !Array.isArray(left) && right !== null && typeof right === "object" && !Array.isArray(right)
+      ? { ...left, ...right } : [...(Array.isArray(left) ? left : [left]), ...(Array.isArray(right) ? right : [right])];
   });
 }
 
@@ -4503,7 +4550,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           const blobWhere = [`model.id=ANY($1::text[])`];
           appendInformationAccess(storage, "model", blobParams, blobWhere);
           const blobs = await storage.query<{ id: string; updated_at: Date; model_json: JsonValue; json_bytes: string }>(
-            `SELECT model.id, model.updated_at, model.model_json, octet_length(model.model_json::text) AS json_bytes
+            `SELECT model.id, model.updated_at, model.model_json, ${sourceArtifactJsonBytesSql("model.model_json")} AS json_bytes
              FROM ${storage.table("ngram_models")} model WHERE ${blobWhere.join(" AND ")}`,
             blobParams
           );
@@ -4511,36 +4558,40 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             // The ranking and the blobs are two snapshots; a row rewritten between them reports the version it was read at.
             const entry = { json: blob.model_json, jsonBytes: Number(blob.json_bytes), updatedAtMs: blob.updated_at.getTime() };
             jsonById.set(blob.id, entry);
-            rememberNgramModelJson(blob.id, entry.updatedAtMs, entry);
+            rememberNgramModelJson(storage, blob.id, entry.updatedAtMs, entry);
           }
         };
         // The budget needs every candidate's JSON size but only the admitted candidates' JSON. Sizes outlive the blobs
         // for that reason, so a row the budget rejects is measured once and never read again.
-        const unmeasured = sized.filter(row => ngramModelJsonBytes(row.id, row.updated_at.getTime()) === undefined).map(row => row.id);
+        const unmeasured = sized.filter(row => ngramModelJsonBytes(storage, row.id, row.updated_at.getTime()) === undefined).map(row => row.id);
         if (unmeasured.length) await readBlobs(unmeasured);
         let runningJsonBytes = 0;
         const admitted = sized.filter((row, index) => {
-          const jsonBytes = ngramModelJsonBytes(row.id, row.updated_at.getTime());
+          const jsonBytes = ngramModelJsonBytes(storage, row.id, row.updated_at.getTime());
           if (jsonBytes === undefined) return false;
           runningJsonBytes += jsonBytes;
           return runningJsonBytes <= budgetBytes || index === 0;
         });
         const unread = admitted.filter(row => {
           if (jsonById.has(row.id)) return false;
-          const held = residentNgramModelJson(row.id, row.updated_at.getTime());
+          const held = residentNgramModelJson(storage, row.id, row.updated_at.getTime());
           if (held) { jsonById.set(row.id, { ...held, updatedAtMs: row.updated_at.getTime() }); return false; }
           return true;
         }).map(row => row.id);
         if (unread.length) await readBlobs(unread);
-        return admitted.flatMap(row => {
+        const records = admitted.flatMap(row => {
           const held = jsonById.get(row.id);
           if (!held) return [];
           return [candidateToNgramModel({ ...row, updated_at: new Date(held.updatedAtMs) }, held.json)];
         }).filter(record => query.formalLanguage === undefined || codeLanguageForModelRecord(record) === query.formalLanguage)
           .slice(0, Number(params[limitParam - 1]));
+        const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(records.map(record => ({ value: record.modelJson, informationLabel: record.informationLabel })));
+        return records.map((record, index) => ({ ...record, modelJson: decoded[index] as JsonValue }));
       }
-      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel)
+      const records = (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel)
         .filter(record => query.formalLanguage === undefined || codeLanguageForModelRecord(record) === query.formalLanguage);
+      const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(records.map(record => ({ value: record.modelJson, informationLabel: record.informationLabel })));
+      return records.map((record, index) => ({ ...record, modelJson: decoded[index] as JsonValue }));
     },
     async listNgramObservations(query = {}) {
       const profileIds = query.profileIds?.length ? [...query.profileIds] : undefined;
@@ -4682,10 +4733,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.maxTotalJsonBytes && query.maxTotalJsonBytes > 0) {
         params.push(Math.floor(query.maxTotalJsonBytes));
         // Same prefetch equivalence as listNgramModels above.
-        return (await storage.query<LanguageUnitRow>(
+        const rows = await storage.query<LanguageUnitRow>(
           `SELECT ranked.* FROM (
              SELECT unit.*,
-               SUM(octet_length(unit.metadata_json::text) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
+               SUM((${sourceArtifactJsonBytesSql("unit.metadata_json")}) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
                ROW_NUMBER() OVER (ORDER BY unit.alpha DESC, unit.id ASC) AS relevance_rank
              FROM (
                SELECT * FROM ${storage.table("language_units")} unit
@@ -4697,9 +4748,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1
            ORDER BY ranked.alpha DESC, ranked.id ASC LIMIT $${unitLimitParam}`,
           params
-        )).map(rowToLanguageUnit);
+        );
+        const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.metadata_json, profileId: row.profile_id, sourceVersionId: row.source_version_id, informationLabel: row.information_label })));
+        return rows.map((row, index) => rowToLanguageUnit({ ...row, metadata_json: decoded[index] as JsonValue }));
       }
-      return (await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} unit WHERE ${where.join(" AND ")} ORDER BY alpha DESC, id ASC LIMIT $${unitLimitParam}`, params)).map(rowToLanguageUnit);
+      const rows = await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} unit WHERE ${where.join(" AND ")} ORDER BY alpha DESC, id ASC LIMIT $${unitLimitParam}`, params);
+      const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.metadata_json, profileId: row.profile_id, sourceVersionId: row.source_version_id, informationLabel: row.information_label })));
+      return rows.map((row, index) => rowToLanguageUnit({ ...row, metadata_json: decoded[index] as JsonValue }));
     },
     async listLanguagePatterns(query = {}) {
       if (query.requireComplete && (!Number.isSafeInteger(query.limit) || query.limit! <= 0
@@ -4951,7 +5006,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ELSE 'other'
       END`;
       const narrow = "decoded_jsonb_bytes,id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label,pattern_schema,pattern_language,source_system";
-      const decodedJsonbBytes = query.view === "request_seed" ? "NULL::numeric" : "pattern.decoded_jsonb_bytes";
+      const decodedJsonbBytes = query.view === "request_seed" ? "CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END" : "pattern.decoded_jsonb_bytes";
       // Exact prerequisites share one budget; category quotas apply only to searches.
       const partition = (alias: string) => query.patternIds ? "" : `PARTITION BY ${category(alias)} `;
       const byteAllowance = query.patternIds ? `$${params.length}` : `CEIL($${params.length}::numeric / category_counts.n)`;
@@ -5082,7 +5137,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
          ${resultSelect}`,
         params
       );
-      const patterns = await canonicalCreativeCodec(storage).decodeMany(rows.map(row => row.pattern_json));
+      const patterns = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.pattern_json, profileId: row.profile_id, informationLabel: row.information_label })));
+      const indices = patterns.flatMap((value, index) => isSourceCompilationMetadataHolder(value) ? [] : [index]);
+      const decoded = await canonicalCreativeCodec(storage).decodeMany(indices.map(index => patterns[index]));
+      indices.forEach((index, position) => { patterns[index] = decoded[position]; });
       return rows.map((row, index) => rowToLanguagePattern({ ...row, pattern_json: patterns[index] as JsonValue }));
     },
     async listSemanticFrames(query = {}) {
@@ -5112,7 +5170,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       appendInformationAccess(storage, "frame", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 500);
-      const frames = (await storage.query<SemanticFrameRow>(`SELECT id, ${query.view === "request_seed" ? `${jsonbFieldsSql("frame.frame_json", REQUEST_SEED_FRAME_JSON_FIELDS)} AS frame_json, '[]'::text AS embedding` : "frame_json, embedding::text AS embedding"}, evidence_ids, alpha, created_at, information_label FROM ${storage.table("semantic_frames")} frame WHERE ${where.join(" AND ")} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
+      const rows = await storage.query<SemanticFrameRow>(`SELECT id, ${query.view === "request_seed" ? `${jsonbFieldsSql("frame.frame_json", REQUEST_SEED_FRAME_JSON_FIELDS)} AS frame_json, '[]'::text AS embedding` : "frame_json, embedding::text AS embedding"}, evidence_ids, alpha, created_at, information_label FROM ${storage.table("semantic_frames")} frame WHERE ${where.join(" AND ")} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params);
+      const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.frame_json, informationLabel: row.information_label })));
+      const frames = rows.map((row, index) => rowToSemanticFrame({ ...row, frame_json: decoded[index] as JsonValue }));
       const matched = query.requestSurface === undefined ? frames : frames.filter(frame => {
         const surface = semanticFrameSurface(frame.frameJson);
         return surface !== undefined && normalizePriorKey(surface) === normalizedRequestSurface;
@@ -5135,13 +5195,20 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
   if (!models.length) return;
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "ngram_models", models.map(model => ({ id: model.id, informationLabel: model.informationLabel })));
-    const payload = models.map(model => ({
+    for (const model of models) {
+      const key = ngramModelVersionKey(storage, model.id, model.updatedAt);
+      residentNgramModelJsonByVersion.delete(key);
+      ngramModelJsonBytesByVersion.delete(key);
+    }
+    const merged = await mergedSourceArtifactValues(storage, "ngram_models", "model_json", models.map(model => ({ id: model.id, value: model.modelJson })));
+    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(models.map((model, index) => ({ value: merged[index], informationLabel: labels.get(model.id)! })));
+    const payload = models.map((model, index) => ({
       id: model.id,
       stream_id: model.streamId,
       language_hint: model.languageHint,
       max_order: model.maxOrder,
       discount: model.discount,
-      model_json: model.modelJson,
+      model_json: encoded[index],
       updated_at_ms: model.updatedAt,
       information_label: labels.get(model.id)!
     }));
@@ -5159,8 +5226,8 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
        updated_at_ms double precision,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET discount=EXCLUDED.discount, model_json=n.model_json || EXCLUDED.model_json, updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label
-     WHERE n.discount IS DISTINCT FROM EXCLUDED.discount OR n.model_json IS DISTINCT FROM (n.model_json || EXCLUDED.model_json)
+     ON CONFLICT(id) DO UPDATE SET discount=EXCLUDED.discount, model_json=EXCLUDED.model_json, updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label
+     WHERE n.discount IS DISTINCT FROM EXCLUDED.discount OR n.model_json IS DISTINCT FROM EXCLUDED.model_json
        OR n.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
@@ -5170,10 +5237,11 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
 
 async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: readonly LanguageUnitRecord[]): Promise<void> {
   if (!units.length) return;
-  const mergedMetadata = languageUnitMetadataMergeSql(storage.table("source_versions"));
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "language_units", units.map(unit => ({ id: unit.id, informationLabel: unit.informationLabel })));
-    const payload = units.map(unit => ({
+    const merged = await mergedSourceArtifactValues(storage, "language_units", "metadata_json", units.map(unit => ({ id: unit.id, value: unit.metadata, sourceVersionId: unit.sourceVersionId, informationLabel: labels.get(unit.id)! })));
+    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(units.map((unit, index) => ({ value: merged[index], profileId: unit.profileId, sourceVersionId: unit.sourceVersionId, informationLabel: labels.get(unit.id)! })));
+    const payload = units.map((unit, index) => ({
     id: unit.id,
     profile_id: unit.profileId,
     source_version_id: unit.sourceVersionId,
@@ -5184,7 +5252,7 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
     competence_vector_json: unit.competenceVector,
     alpha: unit.alpha,
     evidence_ids_json: unit.evidenceIds,
-      metadata_json: unit.metadata,
+      metadata_json: encoded[index],
       information_label: labels.get(unit.id)!
     }));
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
@@ -5217,9 +5285,9 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
        metadata_json jsonb,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=${mergedMetadata}, information_label=EXCLUDED.information_label
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=EXCLUDED.metadata_json, information_label=EXCLUDED.information_label
      WHERE lu.alpha IS DISTINCT FROM GREATEST(lu.alpha,EXCLUDED.alpha) OR NOT (lu.evidence_ids @> EXCLUDED.evidence_ids)
-       OR lu.metadata_json IS DISTINCT FROM (${mergedMetadata}) OR lu.information_label IS DISTINCT FROM EXCLUDED.information_label`,
+       OR lu.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json OR lu.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
     }
@@ -5231,7 +5299,11 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "language_patterns", patterns.map(pattern => ({ id: pattern.id, informationLabel: pattern.informationLabel })));
     const codec = canonicalCreativeCodec(storage), payload = [];
-    const encoded = await codec.encodeMany(patterns.map(pattern => ({ value: pattern.patternJson, informationLabel: labels.get(pattern.id)! })));
+    const values: unknown[] = patterns.map(pattern => pattern.patternJson);
+    const indices = values.flatMap((value, index) => isSourceCompilationMetadataHolder(value) ? [] : [index]);
+    const creative = await codec.encodeMany(indices.map(index => ({ value: values[index], informationLabel: labels.get(patterns[index]!.id)! })));
+    indices.forEach((index, position) => { values[index] = creative[position]; });
+    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(patterns.map((pattern, index) => ({ value: values[index], logicalValue: pattern.patternJson, profileId: pattern.profileId, informationLabel: labels.get(pattern.id)! })));
     for (const [index, pattern] of patterns.entries()) payload.push({
     id: pattern.id,
     profile_id: pattern.profileId,
@@ -5281,9 +5353,10 @@ async function putSemanticFramesBatch(storage: PostgresStorageAdapter, frames: r
   if (!frames.length) return;
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "semantic_frames", frames.map(frame => ({ id: frame.id, informationLabel: frame.informationLabel })));
-    const payload = frames.map(frame => {
+    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(frames.map(frame => ({ value: frame.frameJson, informationLabel: labels.get(frame.id)! })));
+    const payload = frames.map((frame, index) => {
       const surface = semanticFrameSurface(frame.frameJson);
-      return { id: frame.id, frame_json: frame.frameJson,
+      return { id: frame.id, frame_json: encoded[index],
         normalized_surface_hash: surface === undefined ? null : semanticFrameSurfaceHash(surface),
         embedding: vectorLiteral(frame.embedding, 64), evidence_ids_json: frame.evidenceIds, alpha: frame.alpha,
         created_at_ms: frame.createdAt, information_label: labels.get(frame.id)! };
@@ -7031,22 +7104,28 @@ function candidateToNgramModel(row: NgramCandidateRow, modelJson: JsonValue): Ng
 // budget has to weigh candidates it will then reject and nothing would retain those.
 const residentNgramModelJsonByVersion = new Map<string, WeakRef<object>>();
 const ngramModelJsonBytesByVersion = new Map<string, number>();
+const ngramModelCacheScopes = new WeakMap<PostgresStorageAdapter, number>();
+let nextNgramModelCacheScope = 0;
 const residentNgramModelJsonFinalizers = new FinalizationRegistry<string>(key => {
   if (residentNgramModelJsonByVersion.get(key)?.deref() === undefined) residentNgramModelJsonByVersion.delete(key);
 });
-function ngramModelVersionKey(id: string, updatedAtMs: number): string { return `${id}${updatedAtMs}`; }
-function ngramModelJsonBytes(id: string, updatedAtMs: number): number | undefined {
-  return ngramModelJsonBytesByVersion.get(ngramModelVersionKey(id, updatedAtMs));
+function ngramModelVersionKey(storage: PostgresStorageAdapter, id: string, updatedAtMs: number): string {
+  let scope = ngramModelCacheScopes.get(storage);
+  if (scope === undefined) { scope = nextNgramModelCacheScope++; ngramModelCacheScopes.set(storage, scope); }
+  return `${scope}${id}${updatedAtMs}`;
 }
-function residentNgramModelJson(id: string, updatedAtMs: number): { json: JsonValue; jsonBytes: number } | undefined {
-  const key = ngramModelVersionKey(id, updatedAtMs);
+function ngramModelJsonBytes(storage: PostgresStorageAdapter, id: string, updatedAtMs: number): number | undefined {
+  return ngramModelJsonBytesByVersion.get(ngramModelVersionKey(storage, id, updatedAtMs));
+}
+function residentNgramModelJson(storage: PostgresStorageAdapter, id: string, updatedAtMs: number): { json: JsonValue; jsonBytes: number } | undefined {
+  const key = ngramModelVersionKey(storage, id, updatedAtMs);
   const json = residentNgramModelJsonByVersion.get(key)?.deref();
   const jsonBytes = ngramModelJsonBytesByVersion.get(key);
   return json && jsonBytes !== undefined ? { json: json as JsonValue, jsonBytes } : undefined;
 }
-function rememberNgramModelJson(id: string, updatedAtMs: number, entry: { json: JsonValue; jsonBytes: number }): void {
+function rememberNgramModelJson(storage: PostgresStorageAdapter, id: string, updatedAtMs: number, entry: { json: JsonValue; jsonBytes: number }): void {
   if (!entry.json || typeof entry.json !== "object" || !Number.isFinite(entry.jsonBytes)) return;
-  const key = ngramModelVersionKey(id, updatedAtMs);
+  const key = ngramModelVersionKey(storage, id, updatedAtMs);
   ngramModelJsonBytesByVersion.set(key, entry.jsonBytes);
   residentNgramModelJsonByVersion.set(key, new WeakRef(entry.json as object));
   residentNgramModelJsonFinalizers.register(entry.json as object, key);
