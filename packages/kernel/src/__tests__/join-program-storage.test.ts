@@ -28,6 +28,14 @@ function legacy(mixture: JoinProgramMixture) {
 }
 
 describe("lossless join storage v2", () => {
+  it("serializes each distinct key atom once instead of every index occurrence", () => {
+    const stringify=vi.spyOn(JSON,"stringify");
+    try {
+      const stored=joinProgramMixtureStorageForm(fixture());
+      expect(stored.mixture.components[0]!.program.keyAtomDictionary).toContain("scale.shared");
+      expect(stringify.mock.calls.filter(([value])=>value==="scale.shared")).toHaveLength(1);
+    } finally { stringify.mockRestore(); }
+  });
   it("compacts one shared choice once across repeated keys and all indexes", () => {
     const mixture = fixture();
     const choice = Object.values(mixture.components[0]!.program.exactIndex)[0]![0]!;

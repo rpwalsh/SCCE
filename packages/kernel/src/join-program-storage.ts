@@ -27,7 +27,10 @@ export function joinProgramMixtureStorageForm(input: JoinProgramMixtureInput, op
   const components = mixture.components.map(component => {
     const evidenceIds = new Set<string>();
     const coordinates = new Map<string, JoinEvidenceCoordinate>();
-    const atoms = new Map<string, Atom>();
+    const atoms = new Map<Atom, string>();
+    const addAtom = (atom: Atom): void => {
+      if (!atoms.has(atom)) atoms.set(atom, JSON.stringify(atom));
+    };
     const coordinateKeys = new WeakMap<JoinEvidenceCoordinate, string>();
     const coordinateIdentity = (coordinate: JoinEvidenceCoordinate): string => {
       let key = coordinateKeys.get(coordinate);
@@ -44,12 +47,12 @@ export function joinProgramMixtureStorageForm(input: JoinProgramMixtureInput, op
         if (!parsedKeys.has(key)) {
           const parsed = keyAtoms(key);
           parsedKeys.set(key, parsed);
-          for (const atom of parsed ?? []) atoms.set(JSON.stringify(atom), atom);
+          for (const atom of parsed ?? []) addAtom(atom);
         }
         for (const choice of choices) {
           if (sourceChoices.has(choice)) continue;
           sourceChoices.add(choice);
-          atoms.set(JSON.stringify(choice.surface), choice.surface);
+          addAtom(choice.surface);
           for (const id of choice.evidenceIds) evidenceIds.add(id);
           for (const coordinate of choice.evidenceCoordinates) coordinates.set(coordinateIdentity(coordinate), coordinate);
         }
@@ -57,7 +60,7 @@ export function joinProgramMixtureStorageForm(input: JoinProgramMixtureInput, op
     }
     const evidenceIdDictionary = [...evidenceIds].sort();
     const evidenceCoordinateDictionary = [...coordinates].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value);
-    const keyAtomDictionary = [...atoms].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value);
+    const keyAtomDictionary = [...atoms].sort(([, a], [, b]) => a < b ? -1 : a > b ? 1 : 0).map(([value]) => value);
     const evidenceIndex = new Map(evidenceIdDictionary.map((id, index) => [id, index]));
     const coordinateIndex = new Map(evidenceCoordinateDictionary.map((value, index) => [coordinateIdentity(value), index]));
     const atomIndex = new Map(keyAtomDictionary.map((value, index) => [value, index]));
