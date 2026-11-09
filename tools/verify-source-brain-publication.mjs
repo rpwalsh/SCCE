@@ -178,6 +178,11 @@ export async function verifySourceBrainPublication(options) {
       assert.deepEqual(stored.sourcesSkipped, []); assert.deepEqual(stored.batchesFailed, []);
       assert.ok(stored.reports.every(row => row.segmentation.mode === 'local_bootstrap' && row.ngramModels > 0));
     });
+    const ngramCounts = await counts();
+    check('normal-corpus-producers-retain-compiled-ngrams-without-duplicate-raw-observations', () => {
+      assert.equal(ngramCounts.ngram_observations, 0); assert.ok(ngramCounts.ngram_models > 0);
+      assert.ok([...stored.reports, ...dialogue.reports, ...oss.reports, ...books.reports].every(row => row.ngramObservations === 0 && row.ngramModels > 0));
+    });
     const reports = [...stored.reports, ...dialogue.reports, ...oss.reports, ...books.reports];
     const profiles = await storage.model.listLanguageProfileHeaders({ profileIds: reports.map(row => row.artifacts.languageProfileId), limit: reports.length });
     const models = await storage.languageMemory.listNgramModelHeaders({ modelIds: reports.flatMap(row => row.artifacts.ngramModelIds), profileIds: profiles.map(row => row.id), limit: reports.reduce((sum, row) => sum + row.artifacts.ngramModelIds.length, 0) });
