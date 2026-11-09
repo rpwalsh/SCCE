@@ -15,6 +15,7 @@ const fail = (): never => { throw new Error("canonical source artifact metadata 
 const QUERY_ROOTS = new Set<string>([...REQUEST_SEED_PATTERN_JSON_FIELDS, ...REQUEST_SEED_FRAME_JSON_FIELDS, "graphBoundConstructions", "lexicalClasses", "sourceCompilation", "compilation", "inheritedMetadata", "bundle", "joinProgram", "profileBinding", "sourceDependencies", "requestDependencies", "trainingWitnesses", "pooledSourceBinding", "requirementCoefficients", "model", "identity", "sourceAdmission", "sourceMetadataBinding", "transcriptArchive"]);
 interface Input { value: unknown; logicalValue?: unknown; profileId?: string; sourceVersionId?: string; informationLabel?: InformationLabel }
 interface Holder { id: string; profile_id: string; pattern_json: Record<string, unknown>; information_label: InformationLabel }
+interface ValidatedHolder { metadata: Record<string, unknown>; digest: string; compilationId: string; profileId: string; sourceVersionId: unknown; label: string }
 interface Reference { schema: string; receiptId: string; digest: string; keys: string[]; introducedLedger: boolean; recordDigest: string }
 const same = (a: unknown, b: unknown): boolean => canonicalStringify(a) === canonicalStringify(b);
 const compilationId = (value: Record<string, unknown>): string | undefined => typeof value.sourceCompilationId === "string" ? value.sourceCompilationId
@@ -48,38 +49,47 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
     }
     return result;
   }
-  function validate(input: Input, holder: Holder | undefined, expectedId: string, expectedDigest?: string): { metadata: Record<string, unknown>; digest: string } | undefined {
-    // Bare low-level artifacts may have an older compilation without metadata. A reference may never fall back.
-    if (!holder) return fail();
-    const root = record(input.value)!;
+  function validateBase(holder: Holder): ValidatedHolder | undefined {
     const compilation = record(holder.pattern_json.compilation), shared = record(holder.pattern_json.inheritedMetadata);
-    if (!shared) { if (expectedDigest !== undefined) return fail(); return undefined; }
+    if (!shared) return undefined;
     const metadata = record(shared.value);
     const { compilationId: id, modelInventory: _inventory, ...header } = compilation ?? {};
     if (holder.pattern_json.schema !== "scce.source_language_compilation_receipt.v1" || compilation?.schema !== "scce.source_language_compilation.v1"
       || typeof compilation.compilerRecipe !== "string" || !metadata || shared.schema !== SOURCE_ARTIFACT_METADATA_SCHEMA || typeof shared.digest !== "string"
       || shared.digest !== canonicalDigestHex(metadata, hasher) || record(compilation?.options)?.artifactMetadataDigest !== shared.digest
-      || id !== expectedId || holder.id !== `source.language.compilation.${id}` || canonicalDigestHex(header, hasher) !== id
-      || compilation?.profileId !== holder.profile_id || input.profileId !== undefined && input.profileId !== holder.profile_id
-      || input.sourceVersionId !== undefined && input.sourceVersionId !== compilation?.sourceVersionId
-      || typeof root.profileId === "string" && root.profileId !== holder.profile_id
-      || input.informationLabel !== undefined && !same(normalizeInformationLabel(input.informationLabel), normalizeInformationLabel(holder.information_label))
-      || expectedDigest !== undefined && expectedDigest !== shared.digest) return fail();
+      || typeof id !== "string" || holder.id !== `source.language.compilation.${id}` || canonicalDigestHex(header, hasher) !== id
+      || compilation?.profileId !== holder.profile_id) return fail();
     try {
       validateSourceLanguageCompilationHeader({ owner: { sourceId: header.sourceId as SourceId, sourceVersionId: header.sourceVersionId as SourceVersionId,
         contentHash: header.contentHash as ContentHash }, profileId: holder.profile_id, sourceSystem: String(header.sourceSystem), hasher,
         modelJson: toJsonValue({ profileId: holder.profile_id, sourceVersionId: header.sourceVersionId, sourceCompilation: { ...header, compilationId: id } }), validationPolicy: "read_stored" });
     } catch { return fail(); }
-    return { metadata, digest: shared.digest };
+    return { metadata, digest: shared.digest, compilationId: id, profileId: holder.profile_id,
+      sourceVersionId: compilation.sourceVersionId, label: canonicalStringify(normalizeInformationLabel(holder.information_label)) };
+  }
+  function validate(input: Input, holder: Holder | undefined, expectedId: string,
+    validated: Map<Holder, ValidatedHolder | undefined>, expectedDigest?: string): ValidatedHolder | undefined {
+    if (!holder) return fail();
+    // The owner read and this memo belong only to this single invocation, never another call or database snapshot.
+    if (!validated.has(holder)) validated.set(holder, validateBase(holder));
+    const shared = validated.get(holder);
+    if (!shared) { if (expectedDigest !== undefined) return fail(); return undefined; }
+    const root = record(input.value)!;
+    if (shared.compilationId !== expectedId || input.profileId !== undefined && input.profileId !== shared.profileId
+      || input.sourceVersionId !== undefined && input.sourceVersionId !== shared.sourceVersionId
+      || typeof root.profileId === "string" && root.profileId !== shared.profileId
+      || input.informationLabel !== undefined && canonicalStringify(normalizeInformationLabel(input.informationLabel)) !== shared.label
+      || expectedDigest !== undefined && expectedDigest !== shared.digest) return fail();
+    return shared;
   }
   return {
     async encodeMany(inputs: readonly Input[]): Promise<unknown[]> {
-      const owners = await holders(inputs, true);
+      const owners = await holders(inputs, true), validated = new Map<Holder, ValidatedHolder | undefined>();
       return inputs.map(input => {
         const root = record(input.value); if (!root || root.schema === "scce.source_language_compilation_receipt.v1") return input.value;
         if (root[SOURCE_ARTIFACT_METADATA_KEY] !== undefined) return fail();
         const id = compilationId(root); if (!id) return input.value;
-        const shared = validate(input, owners.get(`source.language.compilation.${id}`), id); if (!shared) return input.value;
+        const shared = validate(input, owners.get(`source.language.compilation.${id}`), id, validated); if (!shared) return input.value;
         const keys = Object.keys(shared.metadata).filter(key => !QUERY_ROOTS.has(key) && key !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY && key !== SOURCE_ARTIFACT_METADATA_KEY
           && root[key] !== undefined && same(root[key], shared.metadata[key]) && root[key] !== null && typeof root[key] === "object"
           && (!Array.isArray(root[key]) || (root[key] as unknown[]).some(value => value !== null && typeof value === "object")));
@@ -99,7 +109,7 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
       });
     },
     async decodeMany(inputs: readonly Input[]): Promise<unknown[]> {
-      const owners = await holders(inputs, false);
+      const owners = await holders(inputs, false), validated = new Map<Holder, ValidatedHolder | undefined>();
       return inputs.map(input => {
         const root = record(input.value); if (!root || !Object.hasOwn(root, SOURCE_ARTIFACT_METADATA_KEY)) return input.value;
         const raw = record(root[SOURCE_ARTIFACT_METADATA_KEY]); if (!raw) return fail();
@@ -108,7 +118,7 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
           || raw.keys.some(key => typeof key !== "string" || QUERY_ROOTS.has(key) || key === SOURCE_ARTIFACT_METADATA_KEY || key === DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)
           || new Set(raw.keys).size !== raw.keys.length) return fail();
         const ref = raw as unknown as Reference, id = compilationId(root); if (!id || ref.receiptId !== `source.language.compilation.${id}`) return fail();
-        const shared = validate(input, owners.get(ref.receiptId), id, ref.digest)!;
+        const shared = validate(input, owners.get(ref.receiptId), id, validated, ref.digest)!;
         const next = { ...root }; delete next[SOURCE_ARTIFACT_METADATA_KEY];
         for (const key of ref.keys) { if (!Object.hasOwn(shared.metadata, key) || Object.hasOwn(root, key)) return fail();
           Object.defineProperty(next, key, { value: structuredClone(shared.metadata[key]), enumerable: true, writable: true, configurable: true }); }

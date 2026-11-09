@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as kernel from "@scce/kernel";
 import { canonicalDigestHex, createClock, createHasher, createIdFactory, sourceLanguageTrainingStreamId,
   stampSourceLanguageCompilation, toJsonValue, type InformationLabel, type JsonValue } from "@scce/kernel";
 import { createSourceArtifactMetadataCodec, SOURCE_ARTIFACT_METADATA_KEY } from "../source-artifact-metadata.js";
@@ -10,21 +11,21 @@ import type { CreativeEventStorageHost } from "../canonical-creative-event-store
 const hasher = createHasher(), label: InformationLabel = { tenantId: "owner", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" };
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const object = (value: unknown): Record<string, unknown> => value as Record<string, unknown>;
-function fixture() {
-  const text = "A public source records ? and ??.", ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true, namespace: "metadata" });
+function fixture(suffix = "") {
+  const text = "A public source records ? and ??." + suffix, profileId = `profile${suffix}`, ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true, namespace: "metadata" });
   const owner = { sourceId: ids.sourceId("fixture", "fixture://public-source"), sourceVersionId: ids.sourceVersionId(text), contentHash: ids.contentHash(text) };
   const metadata = { links: Array.from({ length: 120 }, (_, index) => ({ index, target: `source-${index}-` + "???".repeat(120) })),
     arbitraryNestedProvenance: { authors: ["Human author"], license: { name: "Public fixture" } },
     requirementTargets: { factual: 1 }, sourceIds: ["source-a", "source-b"], scalar: "kept", nullValue: null };
   Object.defineProperty(metadata, "constructor", { value: { sourceOwned: "opaque property" }, enumerable: true });
-  const body = { ...metadata, profileId: "profile", sourceVersionId: owner.sourceVersionId, sourceSystem: "fixture", schema: "test.authored.learned.v1",
+  const body = { ...metadata, profileId, sourceVersionId: owner.sourceVersionId, sourceSystem: "fixture", schema: "test.authored.learned.v1",
     joinProgram: { unrelatedLearnedValue: [2, 3] }, templates: [{ surface: "attested ?" }] };
   const streamId = sourceLanguageTrainingStreamId({ ...owner, sourceSystem: "fixture", hasher });
-  const stamped = stampSourceLanguageCompilation({ owner, profileId: "profile", sourceSystem: "fixture", streamId, text, chunks: [text], inheritedMetadata: toJsonValue(metadata),
+  const stamped = stampSourceLanguageCompilation({ owner, profileId, sourceSystem: "fixture", streamId, text, chunks: [text], inheritedMetadata: toJsonValue(metadata),
     options: { maxOrder: 1, maxCountersPerOrder: 100, vocabularyLimit: 100, languageOnly: false, retainNgramObservations: false }, hasher,
     models: [{ id: "model", streamId, languageHint: "und", maxOrder: 1, discount: 0.5, updatedAt: 1, modelJson: toJsonValue({ ...body, model: { learned: [1, 2] } }) }],
-    artifacts: { units: [{ id: "unit", profileId: "profile", sourceVersionId: owner.sourceVersionId, script: "Latin", unitKind: "symbol", text: "?", features: ["opaque"], competenceVector: [1], alpha: 1, evidenceIds: [], metadata: toJsonValue(body) }],
-      patterns: [{ id: "pattern", profileId: "profile", patternKind: "syntax", support: 1, entropy: 0, updatedAt: 1, evidenceIds: [], patternJson: toJsonValue(body) }],
+    artifacts: { units: [{ id: "unit", profileId, sourceVersionId: owner.sourceVersionId, script: "Latin", unitKind: "symbol", text: "?", features: ["opaque"], competenceVector: [1], alpha: 1, evidenceIds: [], metadata: toJsonValue(body) }],
+      patterns: [{ id: "pattern", profileId, patternKind: "syntax", support: 1, entropy: 0, updatedAt: 1, evidenceIds: [], patternJson: toJsonValue(body) }],
       semanticFrames: [{ id: "frame", frameJson: toJsonValue(body), embedding: [], evidenceIds: [], alpha: 1, createdAt: 1 }] } });
   const receipt = stamped.patterns.find(pattern => pattern.patternKind === "source_compilation")!;
   const row = { id: receipt.id, profile_id: receipt.profileId, pattern_json: clone(object(receipt.patternJson)), information_label: label };
@@ -64,6 +65,37 @@ describe("canonical source artifact metadata", () => {
     firstLinks[0]!.target = "caller mutation";
     expect((object(decoded[1]).links as Array<Record<string, unknown>>)[0]!.target).not.toBe("caller mutation");
     expect((object(object(f.row.pattern_json.inheritedMetadata).value).links as Array<Record<string, unknown>>)[0]!.target).not.toBe("caller mutation");
+  });
+
+  it("validates each unique holder once per invocation and revalidates it on the next call", async () => {
+    const f = fixture(), second = fixture("second"), rows = [f.row, second.row];
+    const codec = createSourceArtifactMetadataCodec({ ...f.host, query: async <T>(_sql: string, params: unknown[] = []): Promise<T[]> =>
+      rows.filter(row => (params[0] as string[]).includes(row.id)).map(row => clone(row) as T) });
+    const headerValidation = vi.spyOn(kernel, "validateSourceLanguageCompilationHeader"), digests = vi.spyOn(kernel, "canonicalDigestHex");
+    const metadataDigests = () => digests.mock.calls.filter(([value]) => value !== null && typeof value === "object" && !Array.isArray(value)
+      && Object.hasOwn(value, "links") && !Object.hasOwn(value, "profileId")).length;
+    const inputs = [...f.originals, ...second.originals, ...f.originals].map(value => ({ value, informationLabel: label }));
+    try {
+      const encoded = await codec.encodeMany(inputs);
+      expect(headerValidation).toHaveBeenCalledTimes(2); expect(metadataDigests()).toBe(2);
+      headerValidation.mockClear(); digests.mockClear();
+      const decoded = await codec.decodeMany(encoded.map(value => ({ value, informationLabel: label })));
+      expect(headerValidation).toHaveBeenCalledTimes(2); expect(metadataDigests()).toBe(2);
+      expect(decoded.map(value => canonicalDigestHex(value, hasher))).toEqual(inputs.map(input => canonicalDigestHex(input.value, hasher)));
+      // A new call must read and validate a new owner snapshot, including a now-corrupt holder.
+      object(object(f.row.pattern_json.inheritedMetadata).value).links = [];
+      await expect(codec.decodeMany([{ value: encoded[0], informationLabel: label }])).rejects.toThrow("metadata");
+    } finally { headerValidation.mockRestore(); digests.mockRestore(); }
+  });
+
+  it.each(["profile", "source", "label", "digest"])("still checks each %s binding after the holder is memoized", async mismatch => {
+    const f = fixture(), [encoded] = await f.codec.encodeMany([{ value: f.originals[0], informationLabel: label }]);
+    const second = { value: clone(encoded), informationLabel: label, profileId: "profile", sourceVersionId: String(f.owner.sourceVersionId) };
+    if (mismatch === "profile") second.profileId = "foreign";
+    if (mismatch === "source") second.sourceVersionId = "foreign";
+    if (mismatch === "label") second.informationLabel = { ...label, tenantId: "foreign" };
+    if (mismatch === "digest") object(object(second.value)[SOURCE_ARTIFACT_METADATA_KEY]).digest = "foreign";
+    await expect(f.codec.decodeMany([{ value: encoded, informationLabel: label }, second])).rejects.toThrow("metadata");
   });
 
   it("binds metadata into the canonical compilation identity and keeps its holder nonrecursive", async () => {
