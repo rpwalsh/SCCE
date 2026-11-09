@@ -513,8 +513,16 @@ describe("Postgres language-memory ownership queries", () => {
     await adapter.languageMemory.listNgramObservations({ profileIds: ["profile.a"], limit: 7 });
 
     // Models use the stored key; observations use the migration's matching indexed metadata expression.
-    expect(calls[0]?.sql).toContain("model.profile_id=ANY($1::text[])");
-    expect(calls[0]?.sql).not.toContain("sourceVersionId");
+    const modelSql = calls[0]!.sql;
+    expect(modelSql).toContain("model.profile_id=ANY($1::text[])");
+    expect(modelSql).not.toMatch(/\bmodel\.model_json\s*->>?\s*'(?:profileId|sourceVersionId)'/u);
+    expect(modelSql).not.toMatch(/\bOR\s*\(*\s*model\.(?:profile_id|model_json)/u);
+    expect(modelSql.indexOf("model.profile_id=ANY($1::text[])"))
+      .toBeLessThan(modelSql.indexOf("model_profile.id=model.profile_id"));
+    expect(modelSql).toContain("model_profile.profile_json->'pooledSourceBinding'");
+    expect(modelSql).toContain("pooled_parent.id=owned.value->>'sourceVersionId'");
+    expect(modelSql).toContain("pooled_evidence.status='promoted'");
+    expect(modelSql).toContain("pooled_newer.source_id=pooled_parent.source_id");
     expect(calls[0]?.params[0]).toEqual(["profile.a"]);
     expect(calls[0]?.params.at(-1)).toBe(7);
     expect(calls[1]?.sql).toContain("FROM unnest($5::text[]) AS owner(owner_id)");
