@@ -28,7 +28,7 @@ export async function verifySourceBrainPublication(options) {
   const { trainOssCorpus } = await import('../packages/adapters-node/dist/oss-corpus.js');
   const { trainGutenbergCorpus } = await import('../packages/adapters-node/dist/gutenberg-corpus.js');
   const { trainStoredCorpusConstructions } = await import('../packages/adapters-node/dist/stored-corpus-construction-training.js');
-  const { completeInitialSourceBrainBuild, sourceBrainSelectedItemsFromReports } = await import('../packages/adapters-node/dist/source-brain-build.js');
+  const { completeInitialSourceBrainBuild, createSourceBrainFileAdmission, sourceBrainSelectedItemsFromReports } = await import('../packages/adapters-node/dist/source-brain-build.js');
   const { finalizeCorpusBrainManifest } = await import('../packages/cli/dist/corpus-brain-manifest.js');
   const { POSTGRES_REQUIRED_TABLES, CORPUS_SOURCE_SYSTEM_IDS, CODE_SURFACE_RECIPE_ID, canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
     evidenceSourceFamilyId, preparePooledLanguageProfileBinding } = await import('../packages/kernel/dist/index.js');
@@ -141,13 +141,6 @@ export async function verifySourceBrainPublication(options) {
     await mkdir(path.join(repoRoot, 'src'), { recursive: true }); await mkdir(booksRoot);
     await writeFile(path.join(repoRoot, 'src', 'path-glob.ts'), codeBytes); await writeFile(path.join(repoRoot, 'README.md'), docsBytes); await writeFile(bookPath, bookBytes);
     const ossUri = `fixture://native-publication/${suffix}/repo`;
-    const oss = await trainOssCorpus({ storage, ...settings, rootPath: repoRoot, sourceUriBase: ossUri, maxFiles: 20, maxFilesPerRun: 20 });
-    const books = await trainGutenbergCorpus({ storage, ...settings, rootPath: booksRoot, maxFilesPerRun: 20 });
-    check('normal-oss-and-gutenberg-producers-complete-without-separate-activation', () => {
-      assert.deepEqual(oss.filesSkipped, []); assert.equal(oss.sourceContractClosure.complete, true); assert.equal(oss.reports.length, 3);
-      assert.deepEqual(books.filesSkipped, []); assert.equal(books.reports.length, 1); assert.equal(books.stoppedByHeapSafetyBound, false);
-      assert.equal(oss.sourceBrainBuild, undefined); assert.equal(books.sourceBrainBuild, undefined);
-    });
     const mixedPlanItems = [
       { canonicalUri: `${ossUri}#path=src%2Fpath-glob.ts`, contentHash: hasher.digestHex(codeBytes), sourceFileHash: hasher.digestHex(codeBytes), byteLength: codeBytes.byteLength,
         projections: [{ sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.ossCode, projection: 'code_surface_tokens', transformId: `${CODE_SURFACE_RECIPE_ID}:code_surface_tokens` },
@@ -157,6 +150,15 @@ export async function verifySourceBrainPublication(options) {
       { canonicalUri: pathToFileURL(bookPath).href, contentHash: hasher.digestHex(bookBytes), sourceFileHash: hasher.digestHex(bookBytes), byteLength: bookBytes.byteLength,
         projections: [{ sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.gutenberg, transformId: 'scce.gutenberg.boilerplate-strip.v1' }] }
     ];
+    const beforeSourceTraining = createSourceBrainFileAdmission({ schema: 'scce.storedSourceBrainPlan.v1', sourceId: `native-publication.${suffix}`,
+      rootPath: root, selectedItems: mixedPlanItems, reportFiles: [{ path: 'oss.json' }, { path: 'books.json' }] });
+    const oss = await trainOssCorpus({ storage, ...settings, beforeSourceTraining, rootPath: repoRoot, sourceUriBase: ossUri, maxFiles: 20, maxFilesPerRun: 20 });
+    const books = await trainGutenbergCorpus({ storage, ...settings, beforeSourceTraining, rootPath: booksRoot, maxFilesPerRun: 20 });
+    check('normal-oss-and-gutenberg-producers-complete-without-separate-activation', () => {
+      assert.deepEqual(oss.filesSkipped, []); assert.equal(oss.sourceContractClosure.complete, true); assert.equal(oss.reports.length, 3);
+      assert.deepEqual(books.filesSkipped, []); assert.equal(books.reports.length, 1); assert.equal(books.stoppedByHeapSafetyBound, false);
+      assert.equal(oss.sourceBrainBuild, undefined); assert.equal(books.sourceBrainBuild, undefined);
+    });
     const rawCodeParents = [];
     for (const item of oss.reports.filter(row => row.streamUri.endsWith('src/path-glob.ts'))) {
       const parent = await storage.evidence.sourceVersionById(item.originalSourceVersionId); assert.ok(parent);
