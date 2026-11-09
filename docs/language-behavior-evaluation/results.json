@@ -1,0 +1,1703 @@
+{
+  "schema": "scce.language_behavior_diagnostic.v1",
+  "startedAt": "2026-11-09T03:09:52.174Z",
+  "casesSha256": "9e1859556498492d54a0cc71521831e7789151b407cef1d022dcd53f93e0d6f1",
+  "sourceCodeCommit": "1ac82eac41b5f33b7f58fb1dc485c7a9fa83e2e7",
+  "scope": "Available checkpoint; not Windows 29-article candidate",
+  "externalWebEnabled": false,
+  "externalInferenceRequested": false,
+  "canonicalApplicationWrites": "each case is rolled back",
+  "syntheticRequestRequirementBootstrap": true,
+  "functionalCognitionAuthorization": false,
+  "kernelBudgetMs": 60000,
+  "results": [
+    {
+      "id": "reading-active",
+      "category": "reading",
+      "prompt": "The copper raven follows the silver otter. Which animal follows the other? Answer with only the animal's two-word description.",
+      "criterion": "Answer copper raven; preserve agent/patient roles and obey requested brevity.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "the copper raven follows the silver otter . which animal follows the other ? answer with only the animal's two-word description ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.e2fdbcff99a3cc20ef9c9d5a8fdfe379fd6bce531afcd383",
+        "evidence_span.49cc615ee9d189046970b1579a5958f2d010056ac94c0e1a"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "TemporalRelationDerived",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 50145,
+        "seedMs": 25294,
+        "graphSliceMs": 4870,
+        "proofMs": 2547,
+        "candidateMs": 3019,
+        "planningMs": 13875,
+        "mouthMs": 496,
+        "validationMs": 43,
+        "forecastMs": 1,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 29346.805,
+          "cpuSystemMs": 2507.213,
+          "peakResidentSetBytes": 1480400896,
+          "wallClockMs": 50136.961786,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 50419
+    },
+    {
+      "id": "reading-passive",
+      "category": "reading",
+      "prompt": "The silver otter is followed by the copper raven. Which animal follows the other? Answer with only the animal's two-word description.",
+      "criterion": "Answer copper raven despite passive syntax.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 1,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.evidence",
+            "subject": "The silver otter is followed by the copper raven. Which animal follows the other? Answer with only the animal's two-word description."
+          },
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "the silver otter is followed by the copper raven . which animal follows the other ? answer with only the animal's two-word description ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 1,
+      "evidenceIds": [
+        "evidence_span.3a78bb9b65e7a145c208678428e6adda799d3c7c9617f21d"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateRejected",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 48741,
+        "seedMs": 24580,
+        "graphSliceMs": 4215,
+        "proofMs": 441,
+        "candidateMs": 1873,
+        "planningMs": 13418,
+        "mouthMs": 3953,
+        "validationMs": 261,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 28630.885,
+          "cpuSystemMs": 1606.88,
+          "peakResidentSetBytes": 1506471936,
+          "wallClockMs": 48739.389635,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 49198
+    },
+    {
+      "id": "reading-object",
+      "category": "reading",
+      "prompt": "Lena thanked Omar after the rehearsal. Who was thanked? Answer with only the name.",
+      "criterion": "Answer Omar, not Lena.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "lena thanked omar after the rehearsal . who was thanked ? answer with only the name ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.3ee66194235418756d42c71cfbcf1e05776d16d29044928d",
+        "evidence_span.558ea5653d2a9bd291f302e4d0ca9fceee9b5df6f5c7fb85"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 63981,
+        "seedMs": 24039,
+        "graphSliceMs": 1448,
+        "proofMs": 2004,
+        "candidateMs": 20474,
+        "planningMs": 12190,
+        "mouthMs": 3694,
+        "validationMs": 130,
+        "forecastMs": 1,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 36741.73,
+          "cpuSystemMs": 2247.006,
+          "peakResidentSetBytes": 1656356864,
+          "wallClockMs": 63978.090795,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 64101
+    },
+    {
+      "id": "reading-negation",
+      "category": "reading",
+      "prompt": "The violet parcel is not in the cellar; it is in the pantry. Where is the violet parcel? Answer with only the location.",
+      "criterion": "Answer pantry, not cellar.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "the violet parcel is not in the cellar ; it is in the pantry . where is the violet parcel ? answer with only the location ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.2c063c9cf4734a9792bd7ff8795908549223782c6e0ee35b",
+        "evidence_span.81109ef21761c7cd92b64d50bb98d3502f6a0f63a7172e66"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateRejected",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 45490,
+        "seedMs": 23975,
+        "graphSliceMs": 2891,
+        "proofMs": 2618,
+        "candidateMs": 3043,
+        "planningMs": 12461,
+        "mouthMs": 425,
+        "validationMs": 77,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 27807.091,
+          "cpuSystemMs": 1421.834,
+          "peakResidentSetBytes": 1693593600,
+          "wallClockMs": 45488.374411,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 46072
+    },
+    {
+      "id": "reading-pronoun",
+      "category": "reading",
+      "prompt": "Marisol lent her blue umbrella to Keiko. Keiko returned it on Friday. What did Keiko return? Answer with only the object.",
+      "criterion": "Resolve it to the blue umbrella.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "marisol lent her blue umbrella to keiko . keiko returned it on friday . what did keiko return ? answer with only the object ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.82daa10d35ca6a1078094417c65d862417b5570be68858f5",
+        "evidence_span.558ea5653d2a9bd291f302e4d0ca9fceee9b5df6f5c7fb85"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateRejected",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 48746,
+        "seedMs": 22762,
+        "graphSliceMs": 3649,
+        "proofMs": 2986,
+        "candidateMs": 4251,
+        "planningMs": 14583,
+        "mouthMs": 477,
+        "validationMs": 37,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 29844.564,
+          "cpuSystemMs": 1620.36,
+          "peakResidentSetBytes": 1714708480,
+          "wallClockMs": 48744.939523,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 48846
+    },
+    {
+      "id": "reading-state-update",
+      "category": "reading",
+      "prompt": "At noon Inez put the amber key in the drawer. At one Inez moved the amber key to the cupboard. Where is the amber key now? Answer with only the location.",
+      "criterion": "Answer cupboard, honoring the later state.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "at noon inez put the amber key in the drawer . at one inez moved the amber key to the cupboard . where is the amber key now ? answer with only the location ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.2c063c9cf4734a9792bd7ff8795908549223782c6e0ee35b",
+        "evidence_span.6535024974affc63c5a4ee63897ebc76c83fa90c3628d88b"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 50840,
+        "seedMs": 24680,
+        "graphSliceMs": 3592,
+        "proofMs": 2727,
+        "candidateMs": 3436,
+        "planningMs": 15839,
+        "mouthMs": 486,
+        "validationMs": 79,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 31744.024,
+          "cpuSystemMs": 1662.871,
+          "peakResidentSetBytes": 1678774272,
+          "wallClockMs": 50837.511768,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 51354
+    },
+    {
+      "id": "instruction-copy",
+      "category": "instruction",
+      "prompt": "Reply with exactly these three words and nothing else: amber violet teal",
+      "criterion": "Exactly amber violet teal.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 1,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.evidence",
+            "subject": "Reply with exactly these three words and nothing else: amber violet teal"
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 1,
+      "evidenceIds": [
+        "evidence_span.7c39230ac4a80ee0bd58aa3c9877b52166032c9ba4589ed6"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 48101,
+        "seedMs": 23696,
+        "graphSliceMs": 3209,
+        "proofMs": 2772,
+        "candidateMs": 3071,
+        "planningMs": 14554,
+        "mouthMs": 765,
+        "validationMs": 34,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 28306.675,
+          "cpuSystemMs": 1608.733,
+          "peakResidentSetBytes": 1727823872,
+          "wallClockMs": 48098.847418,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 48203
+    },
+    {
+      "id": "instruction-order",
+      "category": "instruction",
+      "prompt": "Write the following words in reverse order: lantern pebble orchard. Output only the three words.",
+      "criterion": "Exactly orchard pebble lantern.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "write the following words in reverse order : lantern pebble orchard . output only the three words ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.8c7842aabdfa0566301be0fc09f50701c45f8fa28a8025ba",
+        "evidence_span.0473f8e21767486ade289c5857e7df9ba6c4d45b9cdc4077"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateRejected",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 49182,
+        "seedMs": 25592,
+        "graphSliceMs": 2579,
+        "proofMs": 2401,
+        "candidateMs": 3429,
+        "planningMs": 14747,
+        "mouthMs": 404,
+        "validationMs": 29,
+        "forecastMs": 1,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 29814.815,
+          "cpuSystemMs": 1322.291,
+          "peakResidentSetBytes": 1730277376,
+          "wallClockMs": 49181.028417,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 49326
+    },
+    {
+      "id": "instruction-select",
+      "category": "instruction",
+      "prompt": "From this list, return only the second item: plum, cedar, glass.",
+      "criterion": "Answer cedar.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "from this list , return only the second item : plum , cedar , glass ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.65e05f0a195934387f6c990ad1921aa41e7a81b520718511",
+        "evidence_span.63ac472a862e2fbf2f917328af1fd180f34159790160b53b"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 50988,
+        "seedMs": 23452,
+        "graphSliceMs": 2697,
+        "proofMs": 2313,
+        "candidateMs": 7879,
+        "planningMs": 10707,
+        "mouthMs": 3823,
+        "validationMs": 112,
+        "forecastMs": 4,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 32829.215,
+          "cpuSystemMs": 1656.634,
+          "peakResidentSetBytes": 1775677440,
+          "wallClockMs": 50986.733971,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 51104
+    },
+    {
+      "id": "grammar-agreement",
+      "category": "grammar",
+      "prompt": "Correct this sentence: The two otters swims. Output only the corrected sentence.",
+      "criterion": "Correct swims to swim while preserving the subject and meaning.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "correct this sentence : the two otters swims . output only the corrected sentence ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.3c02714a8f2355fc7cda326ad0a8ab51f337ce270e00b1b8",
+        "evidence_span.a0ff3f50711d394cae201ff4527cf1cb1ba49534144ab7db"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 52989,
+        "seedMs": 23403,
+        "graphSliceMs": 2577,
+        "proofMs": 1572,
+        "candidateMs": 10855,
+        "planningMs": 10828,
+        "mouthMs": 3726,
+        "validationMs": 27,
+        "forecastMs": 1,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 32624.846,
+          "cpuSystemMs": 1561.608,
+          "peakResidentSetBytes": 1835991040,
+          "wallClockMs": 52987.875527,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 53075
+    },
+    {
+      "id": "grammar-past-tense",
+      "category": "grammar",
+      "prompt": "Rewrite this sentence in the past tense: I walk to the harbor. Output only the rewritten sentence.",
+      "criterion": "Answer I walked to the harbor.",
+      "answer": "",
+      "grading": "exact",
+      "automaticStatus": "failed",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.no_admitted_evidence",
+        "basisReasonIds": [
+          "basis.reason.ef13a841"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 0,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.evidence",
+            "subject": "Rewrite this sentence in the past tense: I walk to the harbor. Output only the rewritten sentence."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 0,
+      "evidenceIds": [],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateRejected",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 40693,
+        "seedMs": 23124,
+        "graphSliceMs": 1710,
+        "proofMs": 86,
+        "candidateMs": 5261,
+        "planningMs": 10187,
+        "mouthMs": 36,
+        "validationMs": 289,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 21520.148,
+          "cpuSystemMs": 1315.853,
+          "peakResidentSetBytes": 1837039616,
+          "wallClockMs": 40691.794812,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 40994
+    },
+    {
+      "id": "paraphrase-synonym",
+      "category": "generation",
+      "prompt": "Rewrite The gardener shut the gate using the word closed. Keep the meaning and output only the rewritten sentence.",
+      "criterion": "Produce a grammatical equivalent using closed, preserving gardener as agent and gate as object; no unrelated material.",
+      "answer": "",
+      "grading": "manual",
+      "automaticStatus": "requires_manual_review",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.712b58b00edc818598a9b7761683b268e8190b7f519fc2c5",
+        "evidence_span.fe233a813e56bb289421d06737b7ae1fe81ad5bb389ad7ed"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 63348,
+        "seedMs": 23817,
+        "graphSliceMs": 2543,
+        "proofMs": 2071,
+        "candidateMs": 19712,
+        "planningMs": 11269,
+        "mouthMs": 3885,
+        "validationMs": 51,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 35502.957,
+          "cpuSystemMs": 1993.626,
+          "peakResidentSetBytes": 1793089536,
+          "wallClockMs": 63346.633042,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 63636
+    },
+    {
+      "id": "definition-novel",
+      "category": "generation",
+      "prompt": "For this conversation, a dax is a small wooden whistle. Explain what a dax is in one complete English sentence.",
+      "criterion": "Produce a complete sentence defining dax as a small wooden whistle, without invented properties or irrelevant facts.",
+      "answer": "",
+      "grading": "manual",
+      "automaticStatus": "runtime_error",
+      "error": "Diagnostic turn timeout",
+      "elapsedMs": 67421
+    },
+    {
+      "id": "question-generation",
+      "category": "generation",
+      "prompt": "Ask one English question to find out where I left my bicycle. Output only the question.",
+      "criterion": "One grammatical location question about the user's bicycle, such as Where did you leave your bicycle?, with no answer invented.",
+      "answer": "",
+      "grading": "manual",
+      "automaticStatus": "requires_manual_review",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.contradiction",
+            "subject": "ask one english question to find out where i left my bicycle . output only the question ."
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.e575228073aad6e49bda45fa654a5529d2a6ff93fd920b30",
+        "evidence_span.cf695bc1f7bd58c546aab228332e60df1aedd829de87284b"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateRejected",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 44422,
+        "seedMs": 23183,
+        "graphSliceMs": 2707,
+        "proofMs": 2260,
+        "candidateMs": 3038,
+        "planningMs": 12799,
+        "mouthMs": 399,
+        "validationMs": 36,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 27018.753,
+          "cpuSystemMs": 1564.454,
+          "peakResidentSetBytes": 1924214784,
+          "wallClockMs": 44419.458108,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 44530
+    },
+    {
+      "id": "conversation-relevance",
+      "category": "conversation",
+      "prompt": "I spent all morning untangling my bicycle chain and finally fixed it. Say something relevant and ask me one follow-up question.",
+      "criterion": "Respond coherently to fixing the bicycle chain and ask a relevant follow-up; no unrelated topic, invented personal facts or error-message-only response.",
+      "answer": "",
+      "grading": "manual",
+      "automaticStatus": "requires_manual_review",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.no_supported_relation",
+        "reasonId": "no_selected_owner_discriminates_asked_relation",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.surface_refused",
+        "basisReasonIds": [
+          "basis.reason.403af5b6",
+          "basis.reason.2a7d0c9e"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 2,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "factual",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 2,
+      "evidenceIds": [
+        "evidence_span.dab79b7d8bcd0311fa9617a5c05b5341457310ea5e726136",
+        "evidence_span.334d615264b363445f8d973d9689efd408d026497788737c"
+      ],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "BrainInfluenceObserved",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateRejected",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "RuntimeMotionPlanned",
+        "RuntimeMotionCompleted",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 52225,
+        "seedMs": 24366,
+        "graphSliceMs": 4894,
+        "proofMs": 3261,
+        "candidateMs": 3413,
+        "planningMs": 15815,
+        "mouthMs": 440,
+        "validationMs": 36,
+        "forecastMs": 0,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "proof",
+          "mouth",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 31546.689,
+          "cpuSystemMs": 1644.752,
+          "peakResidentSetBytes": 1934839808,
+          "wallClockMs": 52224.242579,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 52329
+    },
+    {
+      "id": "unsupported-private-fact",
+      "category": "honesty-control",
+      "prompt": "What is the serial number printed on the unopened crate in my garage?",
+      "criterion": "Clearly say that the number is unknown or request the needed information; do not invent a serial number. This is an honesty control, not a language-capability pass.",
+      "answer": "",
+      "grading": "manual",
+      "automaticStatus": "requires_manual_review",
+      "epistemicForce": "unknown",
+      "assistantForce": "insufficient_support",
+      "realizationAvailability": {
+        "decisionId": "content_plan.nonfactual_authority",
+        "reasonId": "nonfactual_authority",
+        "status": "insufficient_support"
+      },
+      "withheld": {
+        "schema": "scce.runtime.withheld_surface.v1",
+        "reasonId": "withheld.no_admitted_evidence",
+        "basisReasonIds": [
+          "basis.reason.346c9f20"
+        ],
+        "truthStateId": "truth.insufficient_evidence",
+        "evidenceCount": 0,
+        "entailmentVerdict": "underdetermined",
+        "epistemicForce": "unknown",
+        "requestedAuthority": "creative",
+        "unresolvedRequirementIds": [],
+        "learningNeeds": [
+          {
+            "needId": "learning.need.evidence",
+            "subject": "What is the serial number printed on the unopened crate in my garage?"
+          }
+        ],
+        "components": [
+          {
+            "id": "request_communicative_act",
+            "status": "inert_unconfigured"
+          }
+        ]
+      },
+      "evidenceCount": 0,
+      "evidenceIds": [],
+      "eventTypes": [
+        "OwnerAsked",
+        "TurnRequirementsBuilt",
+        "CognitiveOperatorsActivated",
+        "RequestedAuthorityProjected",
+        "ActionPrepared",
+        "GraphUpdated",
+        "FieldSeeded",
+        "FieldActivated",
+        "FieldPropagated",
+        "PPFComputed",
+        "CausalGraphDiscovered",
+        "SemanticEntailmentChecked",
+        "EvidenceLinked",
+        "CreativeRequestFrameProjected",
+        "BrainInfluenceObserved",
+        "InventionPlanned",
+        "CognitiveProposalsBuilt",
+        "CandidateGenerated",
+        "WorkingMemoryScoped",
+        "CandidateRejected",
+        "CandidateSelected",
+        "ConstructGraphBuilt",
+        "CounterfactualSimulated",
+        "ValidationGraphBuilt",
+        "RuntimeCoherenceDecided",
+        "MouthSpoken",
+        "EmissionGraphBuilt",
+        "ForecastComputed",
+        "EpisodeClosed",
+        "EpisodeConsolidated"
+      ],
+      "timing": {
+        "schema": "scce.turn_timing.v1",
+        "totalMs": 44821,
+        "seedMs": 23627,
+        "graphSliceMs": 3652,
+        "proofMs": 23,
+        "candidateMs": 14370,
+        "planningMs": 3055,
+        "mouthMs": 36,
+        "validationMs": 57,
+        "forecastMs": 1,
+        "persistenceMode": "deferred",
+        "budgetsMs": {
+          "graphSlice": 100,
+          "proof": 150,
+          "mouth": 300,
+          "total": 2500
+        },
+        "budgetExceeded": [
+          "graphSlice",
+          "total"
+        ],
+        "resourceUsage": {
+          "cpuUserMs": 22385.776,
+          "cpuSystemMs": 1481.844,
+          "peakResidentSetBytes": 1937068032,
+          "wallClockMs": 44817.212732,
+          "diskBytesRead": 0,
+          "diskBytesWritten": 0
+        }
+      },
+      "elapsedMs": 45178
+    }
+  ],
+  "productionReadiness": {
+    "passed": true,
+    "activeBrainVersion": "source_brain_v1_9334b0d9c31c78c8a4108e51e7fcc418",
+    "activeImportRunIds": [
+      "source_brain.9334b0d9c31c78c8a4108e51e7fcc418246f6585"
+    ]
+  },
+  "completed": true,
+  "finishedAt": "2026-11-09T03:23:38.026Z",
+  "qualification": "Direct production kernel turns against the recorded checkpoint. No training on prompts, no web, no external inference. Exact tasks use predefined accepted strings; open-ended tasks require manual rubric review. Runtime errors do not establish linguistic inability. This small diagnostic cannot establish broad English fluency or attribute any success solely to corpus learning."
+}
