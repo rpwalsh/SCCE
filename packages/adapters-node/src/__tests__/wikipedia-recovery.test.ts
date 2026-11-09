@@ -101,7 +101,7 @@ describe("Wikipedia recovery boundaries", () => {
       const result = await p.ingestor.ingest({ dumpPath: f.dumpPath, acquireOnly: true });
       expect(p.page).toHaveBeenCalledTimes(2); expect(p.train).not.toHaveBeenCalled(); expect(p.activate).not.toHaveBeenCalled();
       expect(result).toMatchObject({ pages: 2, sources: 2, ngramModels: 0, languagePatterns: 0, languageMode: "acquisition_only" });
-      expect(p.page.mock.calls.every(call => call[0].text.length > 0)).toBe(true);
+      for (const [file] of p.page.mock.calls) expect(file).toEqual(expect.objectContaining({ text: expect.stringMatching(/\S/u) }));
       const journal = p.rows().find(row => row.itemUri.endsWith("/language-batch"))!;
       expect(journal.metadata).toMatchObject({ languageBatch: { pendingSamples: [], pendingChars: 0, languageTrainingDocumentCount: 0 } });
       await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, acquireOnly: true, finishPending: true })).rejects.toThrow("cannot finish");
