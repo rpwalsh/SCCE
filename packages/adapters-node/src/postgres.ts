@@ -4357,9 +4357,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       appendInformationAccess(storage, "model", params, where, "bounded_by_order_and_limit");
       const ownerAccess = storage.informationAccessPredicate("model_profile", params.length + 1); params.push(...ownerAccess.params);
-      where.push(`(NOT EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} known_profile WHERE known_profile.id=model.profile_id)
-        OR EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} model_profile WHERE model_profile.id=model.profile_id
-          AND ${ownerAccess.sql} AND ${profileSourceOwnershipSql(storage, params, "model_profile")}))`);
+      where.push(`EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} model_profile WHERE model_profile.id=model.profile_id
+        AND ${ownerAccess.sql} AND ${profileSourceOwnershipSql(storage, params, "model_profile")})`);
       params.push(query.limit ?? 100);
       const limitParam = params.length;
       const trainedMass = ngramModelTrainedMassExpression("model");

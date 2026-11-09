@@ -26,7 +26,12 @@ it("enumerates actual assigned and unassigned profile owners without loading pro
     { profileId: "profile.unassigned", sourceVersionId: "version.unassigned", languageId: null }
   ]);
   expect(calls).toHaveLength(1);
-  expect(calls[0]!.sql).not.toContain("profile_json");
+  expect(calls[0]!.sql).toMatch(/^SELECT lp\.id,lp\.source_version_id,lp\.language_id FROM /u);
+  expect(calls[0]!.sql).not.toMatch(/SELECT\s+lp\.profile_json/iu);
+  expect(calls[0]!.sql).toContain("lp.profile_json->'pooledSourceBinding'");
+  expect(calls[0]!.sql).toContain("pooled_parent.id=owned.value->>'sourceVersionId'");
+  expect(calls[0]!.sql).toContain("pooled_evidence.status='promoted'");
+  expect(calls[0]!.sql).toContain("pooled_parent.information_label->>'tenantId'");
   expect(calls[0]!.sql).not.toContain("language_id IS NOT NULL");
   expect(calls[0]!.sql).toContain("lp.information_label->>'tenantId'");
   expect(calls[0]!.sql).toContain("sv.information_label->>'tenantId'");
