@@ -6,6 +6,15 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
+export async function auditSegmentationStorage(client, schema) {
+  if (typeof schema !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_]*$/u.test(schema)) throw new Error('Invalid schema identifier');
+  const result = await client.query(`SELECT run_id,collection,count(*)::text AS rows,
+    sum(pg_column_size(row_json))::text AS stored_json_bytes,max(pg_column_size(row_json))::text AS largest_stored_json_bytes
+    FROM "${schema}"."segmentation_consolidation_rows" GROUP BY run_id,collection
+    ORDER BY sum(pg_column_size(row_json)) DESC,run_id,collection`);
+  return { collections: result.rows, qualification: 'Live stored JSON bytes exclude row and index overhead and cannot assign free pages to individual collections.' };
+}
+
 export async function auditStorageAmplification(client, schema, scope = 'Unspecified database snapshot') {
   if (typeof schema !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_]*$/u.test(schema)) throw new Error('Invalid schema identifier');
   const quote = name => '"' + name.replaceAll('"', '""') + '"';
@@ -24,6 +33,7 @@ export async function auditStorageAmplification(client, schema, scope = 'Unspeci
       WHERE n.nspname=$1 AND c.relkind='r' ORDER BY pg_total_relation_size(c.oid) DESC`, [schema]);
     const columns = await rows('SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=$1', [schema]);
     const available = new Set(columns.map(row => `${row.table_name}.${row.column_name}`));
+    if (available.has('segmentation_consolidation_rows.row_json')) report.segmentation = await auditSegmentationStorage(client, schema);
     for (const [name, candidates] of Object.entries({
       language_patterns: ['pattern_json', 'evidence_ids', 'information_label'],
       language_units: ['metadata_json', 'features', 'evidence_ids', 'competence_vector', 'information_label'],
