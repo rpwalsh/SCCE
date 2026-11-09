@@ -358,7 +358,7 @@ export class WikipediaV3Ingestor {
     const storedLanguageBatchJournal = readWikipediaLanguageBatchJournal(languageBatchJournalCheckpoint, inputManifest.identity, shardCharBudget, inputManifest.semantics.compilerIdentity);
     const languageBatchJournal = storedLanguageBatchJournal?.state === "open" ? storedLanguageBatchJournal : undefined;
     if (input.finishPending && !storedLanguageBatchJournal) {
-      throw new Error("Wikipedia --finish-pending requires an open language batch journal for this verified input");
+      throw new Error("Wikipedia --finish-pending requires a stored language batch journal for this verified input");
     }
     const resumeJournal = useStoredResume ? storedLanguageBatchJournal : undefined;
     if (storedLanguageBatchJournal && !useStoredResume) {

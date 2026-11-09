@@ -328,7 +328,7 @@ describe("Wikipedia recovery boundaries", () => {
       await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true, startOffset: 0 }))
         .rejects.toThrow(/requires stored resume/);
       await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true }))
-        .rejects.toThrow(/requires an open language batch journal/);
+        .rejects.toThrow(/requires a stored language batch journal/);
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
 
