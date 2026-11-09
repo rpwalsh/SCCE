@@ -64,7 +64,7 @@ function modelMaterial(record: NgramModelRecord): JsonValue {
 
 export function stampSourceLanguageCompilation(input: {
   owner: SourceCompilationOwner; profileId: string; sourceSystem: string; streamId: string; text: string; chunks: readonly string[];
-  models: readonly NgramModelRecord[]; options: { maxOrder: number; maxCountersPerOrder: number; vocabularyLimit: number; languageOnly: boolean; retainNgramObservations: boolean };
+  models: readonly NgramModelRecord[]; options: { maxOrder: number; maxCountersPerOrder: number; vocabularyLimit: number; languageOnly: boolean; retainNgramObservations: boolean; segmentationIdentity?: JsonValue };
   artifacts: { units: readonly LanguageUnitRecord[]; patterns: readonly LanguagePatternRecord[]; semanticFrames: readonly SemanticFrameRecord[] }; hasher: Hasher;
 }): { models: NgramModelRecord[]; units: LanguageUnitRecord[]; patterns: LanguagePatternRecord[]; semanticFrames: SemanticFrameRecord[] } {
   if (input.models.length !== input.chunks.length) throw new Error("canonical source compiler must produce its complete chunk set");

@@ -17,10 +17,15 @@ import {
 } from "@scce/kernel";
 import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import { readSourceTranscriptArchive } from "./source-transcript-archive.js";
+import { prepareLanguageTrainingSegmentationInput, type LanguageTrainingSegmentationDeclaration, type PreparedLanguageTrainingSegmentation } from "./language-training-segmentation.js";
 import { persistDialogueContextualQaComponent, type DialogueContextualQaReport } from "./dialogue-contextual-qa-component.js";
 import { canonicalStringify, createHasher, type InformationLabel, type TranscriptTurn } from "@scce/kernel";
 
 export interface StoredCorpusConstructionTrainingOptions {
+  ngramMaxOrder?: number;
+  ngramMaxCountersPerOrder?: number;
+  ngramVocabularyLimit?: number;
+  corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   storage: ScceStorage;
   sourceSystem?: string;
   maxTotalBytes?: number;
@@ -78,7 +83,7 @@ export interface StoredCorpusConstructionTrainingReport {
 
 interface ReplaySource {
   source: SourceVersion;
-  profile: LanguageProfile;
+  profile?: LanguageProfile;
   evidence: EvidenceSpan[];
   text: string;
   bytes: number;
@@ -116,6 +121,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   const batchesFailed: StoredCorpusConstructionTrainingReport["batchesFailed"] = [];
   const sourcesSkipped: StoredCorpusConstructionTrainingReport["sourcesSkipped"] = [];
   let batchIndex = 0;
+  let segmentationBatch: { index: number; selection: PreparedLanguageTrainingSegmentation } | undefined;
   let articlesTrained = 0;
   let bytesTrained = 0;
   let stoppedByHeapSafetyBound = false;
@@ -137,17 +143,22 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   let qaRetainedBytes = 0;
 
   const trainSource = async (item: ReplaySource): Promise<void> => {
+    if (input.corpusSegmentation && segmentationBatch?.index !== batchIndex) segmentationBatch = {
+      index: batchIndex, selection: await prepareLanguageTrainingSegmentationInput(input.storage, input.corpusSegmentation)
+    };
     let trainingLabel: InformationLabel | undefined;
     try {
       const { transcriptArchive: _archive, ...metadata } = recordOf(item.source.metadata);
       const informationLabel = joinInformationLabels([
         ...(item.source.informationLabel ? [item.source.informationLabel] : []),
-        ...(item.profile.informationLabel ? [item.profile.informationLabel] : []),
+        ...(item.profile?.informationLabel ? [item.profile.informationLabel] : []),
         ...item.evidence.map(span => span.informationLabel!)
       ], { explicitMergeAuthority: false });
       trainingLabel = informationLabel;
       const prefix = input.includeUriPrefixes?.find(value => item.source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(item.source.canonicalUri);
       const report = await trainLanguageCorpusText({
+        corpusSegmentation: input.corpusSegmentation,
+        ...(segmentationBatch ? { preparedCorpusSegmentation: segmentationBatch.selection } : {}),
         storage: input.storage,
         sourceSystem,
         streamUri: typeof metadata.streamUri === "string" ? metadata.streamUri : item.source.canonicalUri,
@@ -162,9 +173,11 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
         createdAt: item.source.observedAt,
         informationLabel,
         persistSource: false,
-        persistProfile: false,
-        skipNgramPersistence: !input.languageOnly,
-        ...(input.languageOnly ? { languageOnly: true } : { ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 4096 }),
+        persistProfile: Boolean(input.corpusSegmentation),
+        skipNgramPersistence: !input.languageOnly && !input.corpusSegmentation,
+        ...(input.languageOnly ? { languageOnly: true } : {}),
+        ...(input.corpusSegmentation || input.languageOnly ? { ngramMaxOrder: input.ngramMaxOrder, ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
+          ngramVocabularyLimit: input.ngramVocabularyLimit } : { ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 4096 }),
         creativeEventCompiler: compiler,
         graphSnapshotSourceVersionIds: [String(item.source.sourceVersionId)],
         constructionPoolUriPrefix: prefix,
@@ -296,7 +309,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
       if (interrupted()) return false;
       const profile = profiles.filter(row => String(row.sourceVersionId) === String(source.sourceVersionId))
         .sort((left, right) => (right.updatedAt ?? right.createdAt) - (left.updatedAt ?? left.createdAt) || left.id.localeCompare(right.id))[0];
-      if (!profile) throw new Error("original language profile is missing");
+      if (!profile && !input.corpusSegmentation) throw new Error("original language profile is missing");
       if (String(source.contentHash) !== String(version.contentHash) || source.byteLength !== version.byteLength) throw new Error("source content ownership changed during replay");
       const bytes = await input.storage.blobs.get(source.contentHash);
       if (interrupted()) return false;
@@ -308,7 +321,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
       let transcriptRetainedBytes: number | undefined;
       if (qaEnabled) {
         const informationLabel = joinInformationLabels([...(source.informationLabel ? [source.informationLabel] : []),
-          ...(profile.informationLabel ? [profile.informationLabel] : []), ...evidence.map(span => span.informationLabel!)], { explicitMergeAuthority: false });
+          ...(profile?.informationLabel ? [profile.informationLabel] : []), ...evidence.map(span => span.informationLabel!)], { explicitMergeAuthority: false });
         try { transcriptTurns = await readSourceTranscriptArchive(input.storage, source, text,
           { maxExpandedSurfaceBytes: Math.max(0, maxTotalBytes - qaRetainedBytes - bytes.byteLength) }); }
         catch (error) { qaPool(source, informationLabel).deferred.push({ sourceVersionId: String(source.sourceVersionId), reason: errorText(error) }); throw error; }

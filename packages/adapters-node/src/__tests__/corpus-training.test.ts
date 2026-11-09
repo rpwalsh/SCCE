@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { readFileSync } from "node:fs";
+import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
 import type { TranscriptTurn } from "../../../kernel/src/dialogue-communicative-act-learning.js";
 const humanCreativePair = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
 import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
@@ -2319,6 +2320,50 @@ describe("multi-corpus training", () => {
     expect(last.exhausted).toBe(true);
     expect(last.eligibleSourcesRemaining).toBe(0);
     expect(read).toEqual([blobContentHash(Buffer.from(texts.get("sv-d")!))]);
+  });
+
+  it("relearns every selected stored source at declared full capacities through the verified corpus loader", async () => {
+    const fixture = memoryStorage();
+    for (const [index, text] of ["oma vela. oma neri.", "oma neri. oma vela."].entries()) await trainLanguageCorpusText({
+      storage: fixture.storage, sourceSystem: "wikipedia", sourceUri: `fixture://global-stored/${index}`, streamUri: `fixture://global-stored/${index}`,
+      text, informationLabel: publicCorpusInformationLabel, skipNgramObservationPersistence: true, createdAt: 1
+    });
+    const originalProfiles = fixture.state.profiles.map(profile => ({ id: profile.id, sourceVersionId: profile.sourceVersionId, kneserNey: profile.kneserNey }));
+    fixture.state.profiles = [];
+    installDurableConstructionPool(fixture);
+    fixture.storage.evidence.listEvidenceBackedSourceVersions = async (query = {}) => fixture.state.sourceVersions
+      .filter(source => !query.afterSourceVersionId || source.sourceVersionId > query.afterSourceVersionId).sort((a, b) => a.sourceVersionId.localeCompare(b.sourceVersionId))
+      .slice(0, query.limit).map(source => ({ sourceVersionId: source.sourceVersionId, contentHash: source.contentHash, canonicalUri: source.canonicalUri,
+        byteLength: source.byteLength, maxAlpha: 1, promotedSpanCount: fixture.state.evidence.filter(span => span.sourceVersionId === source.sourceVersionId).length }));
+    fixture.storage.evidence.sourceVersionsForEvidence = async ids => fixture.state.sourceVersions.filter(source => fixture.state.evidence.some(span => ids.includes(span.id) && span.sourceVersionId === source.sourceVersionId));
+    fixture.storage.blobs.get = async hash => { const bytes = fixture.state.blobs.find(bytes => blobContentHash(bytes) === hash); if (!bytes) throw Error("missing owned replay bytes"); return bytes; };
+    const checkpoints = new Map<string, IngestionCheckpoint>();
+    fixture.storage.ingestion.get = async id => checkpoints.get(id) ?? null;
+    fixture.storage.ingestion.put = async row => { checkpoints.set(row.id, row); };
+    const corpus = await rawCorpusSegmentationFixture();
+    let depth = 0; let guarded = false;
+    const original = fixture.storage.transaction.bind(fixture.storage);
+    fixture.storage.transaction = async work => { if (!depth) guarded = false; depth++; try { return await original(work); } finally { depth--; } };
+    const readActive = vi.fn(async (...[_scope, _required, _bounds, consistency]: Parameters<NonNullable<ScceStorage["corpusSegmentation"]>["readActive"]>) => {
+      if (consistency?.lockForCommit) { expect(depth).toBeGreaterThan(0); guarded = true; }
+      return { inference: corpus.model, loader: corpus.loader };
+    });
+    fixture.storage.corpusSegmentation = { readActive, consolidate: async () => { throw Error("training must not refit the global corpus"); } };
+    const write = fixture.storage.languageMemory.putNgramModels!;
+    fixture.storage.languageMemory.putNgramModels = async rows => { expect(guarded).toBe(true); await write(rows); };
+    const report = await trainStoredCorpusConstructions({ storage: fixture.storage, sourceSystem: "wikipedia", minArticleBytes: 0, maxTotalBytes: 65536,
+      ngramMaxOrder: 4, ngramMaxCountersPerOrder: 12000, ngramVocabularyLimit: 24000,
+      corpusSegmentation: { scope: { informationLabel: publicCorpusInformationLabel, sourceVersionIds: fixture.state.sourceVersions.map(source => String(source.sourceVersionId)) },
+        recipeId: "scce.corpus_segmentation_input.v1:4096", normalizationContractId: corpus.model.normalizationContractId, bounds: { pageRows: 3, maxPageBytes: 65536 } } });
+    expect(report.exhausted).toBe(true); expect(report.sourcesSkipped).toEqual([]); expect(report.batchesFailed).toEqual([]); expect(report.articlesTrained).toBe(2);
+    expect(report.reports.every(item => item.ngramModels > 0 && item.segmentation?.mode === "corpus_snapshot")).toBe(true);
+    expect(fixture.state.profiles.map(profile => ({ id: profile.id, sourceVersionId: profile.sourceVersionId, kneserNey: profile.kneserNey }))
+      .sort((a, b) => a.id.localeCompare(b.id))).toEqual([...originalProfiles].sort((a, b) => a.id.localeCompare(b.id)));
+    expect(readActive.mock.calls.filter(call => !call[3]?.lockForCommit)).toHaveLength(1);
+    expect(readActive.mock.calls.filter(call => call[3]?.lockForCommit)).toHaveLength(2);
+    for (const model of fixture.state.models.slice(-2)) expect(recordOf(recordOf(model.modelJson).sourceCompilation).options).toMatchObject({
+      maxOrder: 4, maxCountersPerOrder: 12000, vocabularyLimit: 24000, segmentationIdentity: { mode: "corpus_snapshot" }
+    });
   });
 
   it("crosses the old 100000-source ceiling using summaries and never hydrates a skipped legacy batch", async () => {

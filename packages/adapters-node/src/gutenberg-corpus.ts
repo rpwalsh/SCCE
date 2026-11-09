@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import type { LanguageTrainingSegmentationDeclaration } from "./language-training-segmentation.js";
 import { pathToFileURL } from "node:url";
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
@@ -15,6 +16,7 @@ import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLang
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
 
 export interface GutenbergCorpusTrainOptions {
+  corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   storage: ScceStorage;
   rootPath: string;
   startFileIndex?: number;
@@ -130,6 +132,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     // loop continues. A process-level OOM cannot be caught this way --
     // that is what the heap checkpoint above is for.
     const trainingInput: LanguageCorpusTrainingInput = {
+        corpusSegmentation: input.corpusSegmentation,
         storage: input.storage,
         sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
         streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}:${relativePath}`,

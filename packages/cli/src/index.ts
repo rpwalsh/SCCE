@@ -7,6 +7,7 @@ import { runCodeCommand } from "./code-command.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { completeInitialSourceBrainFromDialogueReport } from "@scce/adapters-node";
 import { runCorpusSegmentationCommand } from "./corpus-segmentation-command.js";
+import { canonicalCorpusSourceSystemId, CORPUS_SOURCE_SYSTEM_IDS } from "@scce/kernel";
 import { parseUnitMetadataMaintenanceOptions } from "./db-maintenance-options.js";
 import { compactUnitSourceMetadata, UnitMetadataMaintenanceError } from "@scce/adapters-node";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
@@ -718,6 +719,12 @@ async function corpus(
       const options = parseCorpusTrainOptions(args.slice(2));
       printJson(await trainStoredCorpusConstructions({
         storage: runtime.storage,
+        corpusSegmentation: config?.runtime.corpusSegmentation,
+        ...(canonicalCorpusSourceSystemId(options.sourceSystem ?? "wikipedia") === CORPUS_SOURCE_SYSTEM_IDS.wikipedia ? {
+          ngramMaxOrder: config?.runtime.corpora?.wikipedia?.ngramMaxOrder,
+          ngramMaxCountersPerOrder: config?.runtime.corpora?.wikipedia?.ngramMaxCountersPerOrder,
+          ngramVocabularyLimit: config?.runtime.corpora?.wikipedia?.ngramVocabularyLimit
+        } : {}),
         ...storedCorpusTrainOptionsFrom(options),
         creativeEventCompiler: createUniversalCreativeEventConstructionCompiler()
       }));
@@ -733,6 +740,7 @@ async function corpus(
         exportClass: "restricted" as const, mergePolicy: "isolated" as const };
       // The transcript is labelled with the operator's own access context, never the public corpus label.
       printJson(await trainDialogueCorpus({
+        corpusSegmentation: config?.runtime.corpusSegmentation,
         storage: runtime.storage,
         rootPath: path.resolve(target),
         authorship: "human_authored",
@@ -767,6 +775,7 @@ async function corpus(
           ...(options.maxDepth !== undefined ? { maxDepth: options.maxDepth } : {})
         },
         training: {
+          corpusSegmentation: config?.runtime.corpusSegmentation,
           includeDocs: options.includeDocs,
           includeSource: options.includeSource,
           ngramMaxOrder: options.ngramMaxOrder,
@@ -805,6 +814,7 @@ async function corpus(
     }
     if (kind === "gutenberg") {
       printJson(await trainGutenbergCorpus({
+        corpusSegmentation: config?.runtime.corpusSegmentation,
         storage: runtime.storage,
         rootPath: path.resolve(target),
         startFileIndex: options.startFileIndex,
@@ -841,6 +851,7 @@ async function corpus(
     }
     const trainingOptions = ossCorpusTrainOptionsFrom(options);
     printJson(await trainOssCorpus({
+        corpusSegmentation: config?.runtime.corpusSegmentation,
       storage: runtime.storage,
       rootPath: path.resolve(target),
       ...trainingOptions,

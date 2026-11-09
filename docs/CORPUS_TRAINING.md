@@ -14,6 +14,24 @@ The current first-class language-memory source systems are:
 
 These IDs are source-system IDs, not a semantic ontology. Corpus labels do not decide truth. Language patterns and other reusable structure are learned from admitted source material, not supplied by English-only conversation rules. The kernel interprets and reasons over persisted evidence and graph state, plans governed actions, and learns from recorded outcomes. Language memory helps realize selected meaning. Source-backed factual claims still require admissible evidence; proof/certification metadata can be attached when a relevant operation produces it, and is not a universal prerequisite for ordinary or creative output.
 
+## Acquire, consolidate, then learn
+
+Use one fresh physical PostgreSQL database for each ingestion build. These three phases share that database.
+
+`ingest wiki --acquire-only` stores the complete admitted source/evidence/graph and document signatures. It does not enqueue language shards, mark documents language-trained, or activate a learned brain. Its journal is an acquisition journal; use stored-source training after consolidation rather than switching it to `--finish-pending`.
+
+```powershell
+pnpm scce --config scce.config.json ingest wiki <dump-path> --acquire-only --max-blocks=1
+pnpm scce --config scce.config.json db consolidate-segmentation segmentation-plan.json
+pnpm scce --config scce.config.json corpus train stored --source-system=wikipedia --min-article-bytes=0 --ngram-max-order=4 --ngram-max-counters=12000 --ngram-vocabulary-limit=24000
+```
+
+The consolidation plan uses `scce.corpus_segmentation_plan.v1`, an explicit `runId`, `scope`, `bounds`, and `windowUtf16`. Pin the actual committed cohort with `scope.sourceVersionIds` and its exact information label. Copy that same scope and bounds into `runtime.corpusSegmentation`, together with `recipeId: "scce.corpus_segmentation_input.v1:<windowUtf16>"` and the `normalizationContractId` returned by consolidation. Configure this declaration before the final command. A configured missing, incompatible, or stale snapshot fails training; it never selects a local fit instead. Unconfigured initial training records `local_bootstrap` explicitly.
+
+Stored global learning acquires missing full profiles from verified canonical source bytes and writes the full declared n-gram/profile/derived artifacts. The older unconfigured construction-only replay keeps its existing limits and preserves its original profiles/models. Explicit byte, article, source-attempt, and heap budgets remain effective: inspect `exhausted`, `nextSourceVersionId`, failures and skipped owners before declaring a cohort complete. Use `--min-article-bytes=0` when all admitted article lengths belong to the selected cohort; set total/attempt budgets large enough for that cohort and resume from the returned cursor when necessary.
+
+Source/version/ACL changes invalidate the frozen consolidation cohort. Adding owners to a source-system-wide scope also changes it; pin versions when new windows should use an existing frozen population. Changing the declaration or active snapshot creates a different derived compilation/checkpoint identity. Corpus statistics and model counts are measurements, not a fluency qualification.
+
 ## Data Layout
 
 Downloaded or cloned corpora should live under gitignored paths:

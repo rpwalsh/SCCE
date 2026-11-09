@@ -19,6 +19,7 @@ import type {
 } from "@scce/kernel";
 import { normalizeSpreadsheetExtractionLimits, type SpreadsheetExtractionLimitOverrides } from "./spreadsheet-contract.js";
 import { assertOcrProfileId } from "./ocr-profile.js";
+import { validateLanguageTrainingSegmentationDeclaration, type LanguageTrainingSegmentationDeclaration } from "./language-training-segmentation.js";
 import { DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID, validateStructuredPatchValidationPolicy, type StructuredPatchValidationPolicy } from "./structured-patch-validation.js";
 
 /**
@@ -150,6 +151,7 @@ export interface ScceRuntimeConfig {
   database: { url: string; schema: string; ssl?: boolean | { rejectUnauthorized?: boolean } };
   runtime: {
     workspaceRoot: string;
+    corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
     tempRoot: string;
     maxFileBytes: number;
     maxChunkBytes: number;
@@ -288,6 +290,7 @@ export async function readScceRuntimeConfig(configPath = "scce.config.json"): Pr
 }
 
 export function validateConfig(config: ScceRuntimeConfig, source = "config"): void {
+  if (config.runtime?.corpusSegmentation) validateLanguageTrainingSegmentationDeclaration(config.runtime.corpusSegmentation);
   if (!config.server?.url) throw new Error(`${source}: missing server.url`);
   if (!config.database?.url) throw new Error(`${source}: missing database.url; SCCE v3 requires PostgreSQL`);
   if (!/^postgres(?:ql)?:\/\//i.test(config.database.url)) throw new Error(`${source}: database.url must be postgres:// or postgresql://; no embedded/local/in-memory alternate storage path exists`);

@@ -1,16 +1,19 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { canonicalTemporalCoordinates, createHasher, validatePooledLanguageProfileOwnership, type LanguageProfile } from "@scce/kernel";
 import { createWikipediaInputManifest } from "../wikipedia-input-manifest.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
+import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
+import * as boundary from "../../../kernel/src/boundary-estimator.js";
+import * as population from "../../../kernel/src/segmentation-population.js";
 
 describe("Wikipedia shard graph dependency validation", () => {
-  it("commits prepared training before persisting its projected graph additions", async () => {
+  it.each([false, true])("commits prepared training before persisting its projected graph additions (global=%s)", async global => {
     const root = await mkdtemp(path.join(tmpdir(), "scce-wiki-shard-commit-order-"));
     const dumpPath = path.join(root, "dump.bz2");
     const indexPath = path.join(root, "index.txt");
@@ -26,7 +29,14 @@ describe("Wikipedia shard graph dependency validation", () => {
       const graphRows = { nodes: new Map<string, any>(), edges: new Map<string, any>(), hyperedges: new Map<string, any>() };
       const hasher = createHasher();
       let persistedProfile: LanguageProfile | undefined;
+      const corpus = global ? await rawCorpusSegmentationFixture() : undefined;
+      const declaration = corpus ? { scope: { informationLabel: { tenantId: "scce.public.corpus", principals: [], compartments: [], exportClass: "public" as const, mergePolicy: "same_owner" as const },
+        sourceSystems: ["wikipedia"] }, recipeId: "scce.corpus_segmentation_input.v1:4096", normalizationContractId: corpus.model.normalizationContractId,
+        bounds: { pageRows: 3, maxPageBytes: 65536 } } : undefined;
+      const active = vi.fn(async () => corpus ? ({ inference: corpus.model, loader: corpus.loader }) : null);
+      const fit = vi.spyOn(boundary, "fitBoundaryEstimator"), learn = vi.spyOn(population, "learnSegmentationPopulations");
       const storage = {
+        ...(corpus ? { corpusSegmentation: { readActive: active } } : {}),
         transaction: async (fn: () => Promise<unknown>) => { transactionDepth++; try { return await fn(); } finally { transactionDepth--; } },
         events: { append: async (event: any) => { if (event.typeId === "SymbolPatternLearned") { order.push("training.commit"); transactionDepthAt.push(transactionDepth); } }, readRange: async () => [] },
         evidence: { listEvidenceBackedSourceVersions: async () => [], getEvidenceBatch: async () => [] },
@@ -49,7 +59,7 @@ describe("Wikipedia shard graph dependency validation", () => {
         }
       } as any;
       const ingestor = createWikipediaV3Ingestor({ storage,
-        config: { runtime: { tempRoot: root, corpora: { wikipedia: { ngramShardChars: 100_000, ngramMaxOrder: 2, ngramVocabularyLimit: 32 } } } } as any });
+        config: { runtime: { tempRoot: root, corpusSegmentation: declaration, corpora: { wikipedia: { ngramShardChars: 100_000, ngramMaxOrder: 2, ngramVocabularyLimit: 32 } } } } as any });
       const samples = Array.from({ length: 80 }, (_, index) => {
         const first = index % 2 === 0;
         const evidenceId = `evidence.${index}`;
@@ -102,7 +112,10 @@ describe("Wikipedia shard graph dependency validation", () => {
       expect(order.indexOf("checkpoint.commit")).toBeGreaterThan(order.indexOf("graph.hyperedges"));
       expect(transactionDepthAt.every(depth => depth > 0)).toBe(true);
       expect(transactionDepth).toBe(0);
+      if (global) { expect(active).toHaveBeenCalled(); expect(fit).not.toHaveBeenCalled(); expect(learn).not.toHaveBeenCalled(); }
+      else expect(active).not.toHaveBeenCalled();
     } finally {
+      vi.restoreAllMocks();
       await rm(root, { recursive: true, force: true });
     }
   });

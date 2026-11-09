@@ -3194,6 +3194,7 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
       const versionAccess = storage.informationAccessPredicate("sv", params.length + 1); params.push(...versionAccess.params);
       const newerAccess = storage.informationAccessPredicate("newer_version", params.length + 1); params.push(...newerAccess.params);
       const evidenceAccess = storage.informationAccessPredicate("newer_evidence", params.length + 1); params.push(...evidenceAccess.params);
+      const preferredProfileAccess = storage.informationAccessPredicate("preferred_full", params.length + 1); params.push(...preferredProfileAccess.params);
       // Trained shard profiles and page signatures are one discovery population. Unioned rather than replaced:
       // a brain ingested before page signatures existed still has only shard profiles, and must still discover.
       const rows = await storage.query<{ id: string; source_version_id: string; source_uri: string | null; namespace: string | null; model_source_system: string | null; scripts: JsonValue; direction: string | null; top: JsonValue }>(
@@ -3208,6 +3209,9 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
            UNION ALL
            SELECT ps.id, ps.source_version_id, ps.information_label, ps.scripts, ps.direction, ps.top_continuation
            FROM ${storage.table("language_profile_signatures")} ps
+           WHERE NOT EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} preferred_full
+             WHERE preferred_full.source_version_id=ps.source_version_id
+               AND preferred_full.profile_json->'pooledSourceBinding' IS NULL AND ${preferredProfileAccess.sql})
          ) src
          JOIN ${storage.table("source_versions")} sv ON sv.id = src.source_version_id
          LEFT JOIN ${storage.table("sources")} s ON s.id = sv.source_id

@@ -167,6 +167,7 @@ export interface LanguageTrainingBatch {
   languageOnly?: boolean;
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
   preparedInduction?: PreparedConstructionInduction;
+  segmentationIdentity?: JsonValue;
   profileBinding?: PooledLanguageProfileBinding;
   /** Owned durable evidence for construction learning; n-grams and graph alignment still use this document's evidence. */
   constructionEvidence?: readonly EvidenceSpan[];
@@ -689,6 +690,7 @@ export function compileLanguageTrainingBatch(input: {
     ? stampSourceLanguageCompilation({ owner: { ...batch.canonicalSource, sourceVersionId: batch.sourceVersionId }, profileId: batch.profile.id,
       sourceSystem: batch.sourceSystem, streamId: batch.streamId, text: batch.text, chunks: textChunks, models: rawModels,
       options: { ...(compileOptions as unknown as { maxOrder: number; maxCountersPerOrder: number; vocabularyLimit: number }),
+        ...(batch.segmentationIdentity ? { segmentationIdentity: batch.segmentationIdentity } : {}),
         languageOnly: Boolean(batch.languageOnly), retainNgramObservations: batch.retainNgramObservations !== false },
       artifacts: { units, patterns, semanticFrames }, hasher: input.hasher }) : undefined;
   const models = stamped?.models ?? rawModels;

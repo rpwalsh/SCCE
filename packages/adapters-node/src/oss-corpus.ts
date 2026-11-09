@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import type { LanguageTrainingSegmentationDeclaration } from "./language-training-segmentation.js";
 import { pathToFileURL } from "node:url";
 import { getHeapStatistics } from "node:v8";
 import ts from "typescript";
@@ -37,6 +38,7 @@ export const DEFAULT_OSS_FILES_PER_RUN = 2000;
 export const DEFAULT_OSS_FILES_PER_REPOSITORY = 100000;
 
 export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
+  corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   storage: ScceStorage;
   rootPath: string;
   /** Provenance of a fetched repository snapshot, retained on every trained projection. */
@@ -400,6 +402,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       const transformId = projected.projection === "code_surface_tokens"
         ? `${CODE_SURFACE_RECIPE_ID}:${projected.projection}` : `scce.oss.corpus-projection.v1:${projected.projection}`;
       const trainingInput: LanguageCorpusTrainingInput = {
+        corpusSegmentation: input.corpusSegmentation,
         storage: input.storage,
         sourceSystem: projected.sourceSystem,
         streamUri: `${projected.sourceSystem}:${relativePath}`,

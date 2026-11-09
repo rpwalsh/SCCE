@@ -111,6 +111,9 @@ export function ossCorpusTrainOptionsFrom(options: CorpusTrainOptions): Omit<Oss
 /** Forward replay bounds and ownership selection without conflating total bytes with one article. */
 export function storedCorpusTrainOptionsFrom(options: CorpusTrainOptions): Omit<StoredCorpusConstructionTrainingOptions, "storage"> {
   return {
+    ...(options.ngramMaxOrder !== undefined ? { ngramMaxOrder: options.ngramMaxOrder } : {}),
+    ...(options.ngramMaxCountersPerOrder !== undefined ? { ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder } : {}),
+    ...(options.ngramVocabularyLimit !== undefined ? { ngramVocabularyLimit: options.ngramVocabularyLimit } : {}),
     ...(options.maxSourceAttempts !== undefined ? { maxSourceAttempts: options.maxSourceAttempts } : {}),
     ...(options.sourceSystem !== undefined ? { sourceSystem: options.sourceSystem } : {}),
     ...(options.afterSourceVersionId !== undefined ? { afterSourceVersionId: options.afterSourceVersionId } : {}),

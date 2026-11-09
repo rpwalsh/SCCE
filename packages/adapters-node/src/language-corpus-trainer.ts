@@ -6,6 +6,8 @@ import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import { blobContentHash } from "./postgres.js";
 import { prepareCorpusSourceGraphProjection, SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "./corpus-source-graph-projection.js";
 import { sourceMetadataBoundOwner, unitSourceMetadataNormalizer } from "./unit-source-metadata.js";
+import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationLoader,
+  type LanguageTrainingSegmentationDeclaration, type PreparedLanguageTrainingSegmentation as PreparedCorpusSegmentationSelection } from "./language-training-segmentation.js";
 import { prepareSourceTranscriptArchive, type SourceTranscriptArchiveDescriptor } from "./source-transcript-archive.js";
 import { SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID } from "./source-code-function-learning.js";
 import {
@@ -37,6 +39,7 @@ import {
   compileLanguageTrainingBatch,
   publishCompiledLanguagePatterns,
   prepareLanguageTrainingInduction,
+  prepareLanguageTrainingInductionFromCorpus,
   SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID,
   preparedLanguageInductionProducts,
   sourceLanguageInductionDocuments,
@@ -91,6 +94,8 @@ import {
 import type { TranscriptTurn } from "@scce/kernel";
 
 export interface LanguageCorpusTrainingInput {
+  corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
+  preparedCorpusSegmentation?: PreparedCorpusSegmentationSelection;
   storage: ScceStorage;
   sourceSystem: string;
   streamUri: string;
@@ -204,6 +209,7 @@ export class CorpusCheckpointConflictError extends Error {
 }
 
 export interface LanguageCorpusTrainingReport {
+  segmentation?: PreparedCorpusSegmentationSelection["identity"];
   schema: "scce.languageCorpusTrainingReport.v1";
   /** Source-derived provenance label retained for storage/query compatibility. */
   sourceSystem: string;
@@ -296,6 +302,7 @@ const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
   // transaction keeps the full compiled batch alive while callers continue with alignment/promotion work.
   payload?: PreparedLanguageCorpusPayload;
   committed: boolean;
+  segmentation: PreparedCorpusSegmentationSelection;
 }>();
 
 const CORPUS_CHECKPOINT_SCHEMA = "scce.corpusTrainingCheckpoint.v1";
@@ -322,6 +329,7 @@ function corpusCheckpointId(input: LanguageCorpusTrainingInput): string | undefi
   return ids.semanticId("corpus_training_checkpoint", {
     compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem),
     sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem),
+    segmentationIdentity: input.preparedCorpusSegmentation?.identity,
     rootUri: checkpoint.rootUri,
     itemUri: checkpoint.itemUri,
     ...(sourceEvidenceRecipeId(input) ? { sourceEvidenceRecipe: sourceEvidenceRecipeId(input) } : {})
@@ -365,6 +373,7 @@ function checkpointMetadata(input: LanguageCorpusTrainingInput, binding: string,
     compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem),
     batchRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
     componentRecipes: corpusComponentRecipes(input),
+    segmentationIdentity: input.preparedCorpusSegmentation?.identity,
     binding,
     sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem),
     rootUri: checkpoint.rootUri,
@@ -465,6 +474,7 @@ async function prepareCorpusCheckpoint(input: LanguageCorpusTrainingInput, bindi
  * terminal checkpoint is already present.
  */
 export async function readCompletedCorpusCheckpoint(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport | undefined> {
+  input = await resolveTrainingSegmentationInput(input);
   const id = corpusCheckpointId(input);
   if (!id) return undefined;
   const existing = await input.storage.ingestion.get(id);
@@ -739,6 +749,7 @@ const TRAINING_SNAPSHOT_NODES = 512;
 const TRAINING_SNAPSHOT_EDGES = 1024;
 
 export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport> {
+  input = await resolveTrainingSegmentationInput(input);
   // Both source-owning and aggregate callers get an atomic learned write. CPU compilation precedes it.
   validateOriginalSourceBinding(input);
   if (input.corpusCheckpoint) {
@@ -750,12 +761,13 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
 }
 
 export async function prepareLanguageCorpusTraining(input: LanguageCorpusTrainingInput): Promise<PreparedLanguageCorpusTraining> {
+  input = await resolveTrainingSegmentationInput(input);
   validateOriginalSourceBinding(input);
   const inputBinding = trainingInputBinding(input);
   const payload = await prepareLanguageCorpusTrainingInternal(preparationInputSnapshot(input));
   if (trainingInputBinding(input) !== inputBinding) throw new Error("language training input changed during preparation");
   const token = Object.freeze({ sourceVersionId: payload.sourceVersionId, inputBinding, graphSnapshotDigest: payload.graphSnapshotDigest });
-  preparations.set(token, { storage: input.storage, payload, committed: false });
+  preparations.set(token, { storage: input.storage, payload, committed: false, segmentation: input.preparedCorpusSegmentation! });
   return token;
 }
 
@@ -763,6 +775,7 @@ export async function commitLanguageCorpusTraining(
   input: LanguageCorpusTrainingInput,
   prepared: PreparedLanguageCorpusTraining
 ): Promise<LanguageCorpusTrainingReport> {
+  input = await resolveTrainingSegmentationInput(input, preparations.get(prepared)?.segmentation);
   validateOriginalSourceBinding(input);
   if (input.corpusCheckpoint) {
     const replay = await prepareCorpusCheckpoint(input, checkpointBinding(input));
@@ -787,6 +800,7 @@ export async function commitLanguageCorpusTraining(
         if (canonicalStringify(toJsonValue(profiles.sort((a, b) => a.id.localeCompare(b.id)))) !== canonicalStringify(toJsonValue([...payload.constructionPoolProfiles].sort((a, b) => a.id.localeCompare(b.id))))) throw new Error("language training construction language profiles changed before commit; prepare again");
       }
       if (trainingInputBinding(input) !== prepared.inputBinding) throw new Error("language training input changed during commit validation");
+      await languageTrainingSegmentationLoader(input.storage, trainingSegmentationDeclaration(input), input.preparedCorpusSegmentation!, true);
       const report = await commitLanguageCorpusTrainingInternal(input, payload);
       if (input.corpusCheckpoint) {
         await input.storage.ingestion.put(checkpointRecord(input, checkpointBinding(input), report));
@@ -798,6 +812,17 @@ export async function commitLanguageCorpusTraining(
     held.payload = undefined;
     return result;
   } catch (error) { held.committed = false; throw error; }
+}
+
+function trainingSegmentationDeclaration(input: LanguageCorpusTrainingInput): LanguageTrainingSegmentationDeclaration | undefined {
+  return corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic ? input.corpusSegmentation : undefined;
+}
+
+async function resolveTrainingSegmentationInput(input: LanguageCorpusTrainingInput, expected?: PreparedCorpusSegmentationSelection): Promise<LanguageCorpusTrainingInput> {
+  const declaration = trainingSegmentationDeclaration(input);
+  const selection = input.preparedCorpusSegmentation ?? expected ?? await prepareLanguageTrainingSegmentationInput(input.storage, declaration);
+  await languageTrainingSegmentationLoader(input.storage, declaration, selection);
+  return { ...input, preparedCorpusSegmentation: selection };
 }
 
 /** The source version this text is stored under, so a later pass can find its evidence without re-training it. */
@@ -1015,9 +1040,12 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     ? { evidence: [] as EvidenceSpan[], documents: [] as LanguageInductionDocument[], profiles: [] as LanguageProfile[], languageCompatibility: [] }
     : await durableConstructionPoolEvidence({ input, evidence, sourceSystem, informationLabel, profile });
   const constructionPoolEvidence = constructionPool.evidence;
-  const preparedInduction = naturalInduction ? prepareLanguageTrainingInduction({ evidence,
-    constructionEvidence: [...evidence, ...constructionPoolEvidence], constructionContextDocuments: constructionPool.documents,
-    hasher, prepared: input.preparedInduction }).prepared : undefined;
+  const segmentationLoader = await languageTrainingSegmentationLoader(input.storage, trainingSegmentationDeclaration(input), input.preparedCorpusSegmentation!);
+  const inductionInput = { evidence, constructionEvidence: [...evidence, ...constructionPoolEvidence], constructionContextDocuments: constructionPool.documents,
+    hasher, prepared: input.preparedInduction };
+  const preparedInduction = naturalInduction ? (segmentationLoader
+    ? await prepareLanguageTrainingInductionFromCorpus({ ...inductionInput, corpusLoader: segmentationLoader })
+    : prepareLanguageTrainingInduction(inductionInput)).prepared : undefined;
   const inducedProducts = preparedInduction ? preparedLanguageInductionProducts({ documents: inductionDocuments, hasher, prepared: preparedInduction }) : undefined;
   const graphEligible = createCorpusRegistry(input.corpusRegistry ?? []).some(row => row.sourceSystemId === sourceSystemId && row.enabled && row.graphEvidenceEligible);
   const sourceProjection = source && input.persistSource !== false && graphEligible && naturalInduction
@@ -1058,6 +1086,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
         sourceReferenceBindings: jsonRecord(jsonRecord(input.corpusMetadata).sourceMetadata).sourceReferenceBindings as unknown as SourceReferenceBindingDeclaration
       } : {}),
       ...(preparedInduction ? { preparedInduction } : {}),
+      segmentationIdentity: toJsonValue(input.preparedCorpusSegmentation!.identity),
       ...(input.profileBinding ? { profileBinding: input.profileBinding } : {}),
       ...(constructionPoolEvidence.length ? { constructionEvidence: [...evidence, ...constructionPoolEvidence] } : {}),
       constructionContextDocuments: constructionPool.documents,
@@ -1084,9 +1113,11 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const observations = input.skipNgramPersistence || input.skipNgramObservationPersistence
     ? []
     : compiledBatch.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+  const modelMetadata = input.preparedCorpusSegmentation!.identity.mode === "corpus_snapshot"
+    ? toJsonValue({ ...jsonRecord(rowMetadata), segmentationCompilationId: hasher.digestHex(canonicalStringify(input.preparedCorpusSegmentation!.identity)) }) : rowMetadata;
   let models = input.skipNgramPersistence
     ? []
-    : compiledBatch.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
+    : compiledBatch.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, modelMetadata), informationLabel }));
   let units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
   const compiledConstructionPatterns: LanguagePatternRecord[] = [...compiledBatch.constructionPatterns];
   const compiledConstructionPatternIds = new Set(compiledConstructionPatterns.map(pattern => pattern.id));
@@ -1141,6 +1172,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     typeId: "SymbolPatternLearned",
     payload: {
       ...jsonRecord(compiledBatch.audit),
+      segmentation: toJsonValue(input.preparedCorpusSegmentation!.identity),
       sourceSystem,
       sourceSystemId,
       streamUri: input.streamUri,
@@ -1373,6 +1405,7 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     evidence: prepared.evidence.length,
     ngramObservations: prepared.observations.length,
     ngramModels: prepared.models.length,
+    segmentation: input.preparedCorpusSegmentation!.identity,
     languageUnits: prepared.units.length,
     languagePatterns: prepared.patterns.length,
     semanticFrames: prepared.frames.length,

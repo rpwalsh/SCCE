@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import type { LanguageTrainingSegmentationDeclaration } from "./language-training-segmentation.js";
 import { pathToFileURL } from "node:url";
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
@@ -57,6 +58,7 @@ import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrain
 export type DialogueCorpusAuthorship = "human_authored" | "system_generated";
 
 export interface DialogueCorpusTrainOptions {
+  corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   storage: ScceStorage;
   rootPath: string;
   /** Dialogue is owner-private. The trainer refuses a public label so a transcript cannot be exported as corpus. */
@@ -210,6 +212,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     // One pathological file costs that file, never the whole run.
     try {
       const trainingInput: LanguageCorpusTrainingInput = {
+        corpusSegmentation: input.corpusSegmentation,
         storage: input.storage,
         sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue,
         streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.dialogue}:${normalizeRelative(file.relativePath)}`,

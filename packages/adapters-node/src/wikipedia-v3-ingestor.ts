@@ -18,6 +18,7 @@ import {
   createSourceGraphBuilder,
   createTypedIngestProjector,
   prepareConstructionInduction,
+  prepareConstructionInductionFromCorpus,
   preparedLanguageInductionProducts,
   sourceLanguageInductionDocuments,
   observedEntitySurfacesFromInducedLanguageModel,
@@ -60,6 +61,7 @@ import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, spanProvenanceM
 import { createWikipediaInputManifest, wikipediaInputSourcesStillMatch, type WikipediaInputManifest } from "./wikipedia-input-manifest.js";
 import { WIKIPEDIA_SURFACE_TRANSFORM } from "./wikipedia-markup.js";
 import { ingestionCodeIdentity } from "./ingestion-code-identity.js";
+import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationLoader, type PreparedLanguageTrainingSegmentation } from "./language-training-segmentation.js";
 
 /** The compact Kneser-Ney summary's most-continued symbols, narrowed out of the profile's JSON shape. */
 function profileTopContinuation(kneserNey: unknown): Array<[string, number]> {
@@ -330,6 +332,8 @@ export class WikipediaV3Ingestor {
     };
     const rootUri = wikipediaRootUri(corpus);
     const wikiConfig = this.config.runtime.corpora?.wikipedia;
+    const segmentationSelection = input.acquireOnly ? undefined
+      : await prepareLanguageTrainingSegmentationInput(this.storage, this.config.runtime.corpusSegmentation);
     const inputManifest = await createWikipediaInputManifest({
       dumpPath: corpus.dumpPath, indexPath: corpus.indexPath,
       cacheDir: path.join(this.config.runtime.tempRoot ?? tmpdir(), "wikipedia-input-identities"),
@@ -340,7 +344,7 @@ export class WikipediaV3Ingestor {
         skipRedirects: corpus.skipRedirects, maxArticleChars: corpus.maxArticleChars,
         maxChunkBytes: this.config.runtime.maxChunkBytes ?? null,
         languageTrainingRecipeId: languageCorpusTrainingRecipeId("wikipedia"),
-        ...(input.acquireOnly ? { segmentation: { mode: "acquisition_only" } } : {}),
+        segmentation: input.acquireOnly ? { mode: "acquisition_only" } : segmentationSelection!.identity,
         ngramShardChars: effectiveNgramShardChars(wikiConfig?.ngramShardChars),
         ngramMaxOrder: wikiConfig?.ngramMaxOrder ?? 4,
         ngramMaxCountersPerOrder: wikiConfig?.ngramMaxCountersPerOrder ?? 128,
@@ -381,11 +385,11 @@ export class WikipediaV3Ingestor {
     await this.storage.events.append(this.events.create({
       episodeId,
       typeId: "OwnerAsked",
-      payload: { command: "ingest.wikipedia.v3", dumpPath: corpus.dumpPath, indexPath: corpus.indexPath ?? null, inputManifest: toJsonValue(inputManifest), resumedFromOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb, finishPending: input.finishPending === true }
+      payload: { command: "ingest.wikipedia.v3", dumpPath: corpus.dumpPath, indexPath: corpus.indexPath ?? null, inputManifest: toJsonValue(inputManifest), resumedFromOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb, finishPending: input.finishPending === true, acquireOnly: input.acquireOnly === true }
     }));
 
     const result: WikipediaV3IngestResult = {
-      ...(input.acquireOnly ? { languageMode: "acquisition_only" as const } : {}),
+      languageMode: input.acquireOnly ? "acquisition_only" : segmentationSelection!.identity.mode,
       episodeId: String(episodeId),
       inputManifestId: inputManifest.identity,
       rootUri,
@@ -510,7 +514,8 @@ export class WikipediaV3Ingestor {
       const imported = samples.length
         ? await this.ingestLanguageShard(samples, shardUri, episodeId, inputManifest, commitProgress, {
           ownerStopReason: () => { const decision = stopDecision(input, result); return decision?.kind === "owner" ? decision.reason : undefined; },
-          onPhase: async stage => { trainingStage = stage; await emitStatus("running"); }
+          onPhase: async stage => { trainingStage = stage; await emitStatus("running"); },
+          segmentation: segmentationSelection
         })
         : await this.storage.transaction(async () => { await commitProgress(); return undefined; });
       for (const checkpoint of pendingBlockCheckpoints) {
@@ -732,7 +737,7 @@ export class WikipediaV3Ingestor {
         if (!languageShardSamples.length && pendingBlockCheckpoints.length) {
           await flushLanguageShard(activeLanguageShardUri, true);
         }
-        const drainedBoundary = input.finishPending && !result.stoppedByOwner && !result.stoppedByHeapSafetyBound
+        const drainedBoundary = (input.finishPending || input.acquireOnly) && !result.stoppedByOwner && !result.stoppedByHeapSafetyBound
           && currentBlockComplete && languageShardSamples.length === 0 && languageShardChars === 0;
         await this.storage.transaction(async () => { await assertInputUnchanged(); await putLanguageBatchJournal(drainedBoundary ? "idle" : "open"); });
       } else {
@@ -1350,6 +1355,7 @@ export class WikipediaV3Ingestor {
   }
 
   private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>, inputManifest: WikipediaInputManifest, commitProgress: (trained?: WikipediaLanguageShardImport) => Promise<void>, control: {
+    segmentation?: PreparedLanguageTrainingSegmentation;
     ownerStopReason?: () => string | undefined;
     onPhase?: (stage: NonNullable<WikipediaV3IngestStatus["stage"]>) => Promise<void>;
   } = {}): Promise<WikipediaLanguageShardImport> {
@@ -1358,6 +1364,9 @@ export class WikipediaV3Ingestor {
     if (initialStop) throw new WikipediaOwnerStop(initialStop);
     await control.onPhase?.("preparing-language");
     const createdAt = samples.reduce((max, sample) => Math.max(max, sample.createdAt), 0) || this.clock.now();
+    const segmentation = await prepareLanguageTrainingSegmentationInput(this.storage, this.config.runtime.corpusSegmentation);
+    if (control.segmentation && canonicalStringify(control.segmentation.identity) !== canonicalStringify(segmentation.identity)) throw new Error("Wikipedia segmentation snapshot changed; restart with the new compiler manifest");
+    const corpusLoader = await languageTrainingSegmentationLoader(this.storage, this.config.runtime.corpusSegmentation, segmentation);
     // How much text one model is trained on is the strongest lever measured on this corpus, and it is a memory
     // bound rather than a modelling choice, so it is configurable with the measured-safe value as the default.
     const shardChars = effectiveNgramShardChars(this.config.runtime.corpora?.wikipedia?.ngramShardChars);
@@ -1380,7 +1389,9 @@ export class WikipediaV3Ingestor {
     await control.onPhase?.("language-induction");
     const inductionSpan = trace.span("language.induction");
     const documents = sourceLanguageInductionDocuments(evidence);
-    const preparedInduction = prepareConstructionInduction({ documents, hasher: this.hasher });
+    const preparedInduction = corpusLoader
+      ? await prepareConstructionInductionFromCorpus({ documents, hasher: this.hasher, corpusLoader })
+      : prepareConstructionInduction({ documents, hasher: this.hasher });
     const inducedProducts = preparedLanguageInductionProducts({ documents, hasher: this.hasher, prepared: preparedInduction });
     inductionSpan.end({ documents: documents.length });
     await control.onPhase?.("language-profile-binding");
@@ -1393,6 +1404,8 @@ export class WikipediaV3Ingestor {
     const vocabularyLimit = this.config.runtime.corpora?.wikipedia?.ngramVocabularyLimit ?? 8192;
     const trainSpan = trace.span("language.train");
     const trainingInput: LanguageCorpusTrainingInput = {
+      corpusSegmentation: this.config.runtime.corpusSegmentation,
+      preparedCorpusSegmentation: segmentation,
       storage: this.storage,
       sourceSystem: "wikipedia",
       streamUri: shardUri,

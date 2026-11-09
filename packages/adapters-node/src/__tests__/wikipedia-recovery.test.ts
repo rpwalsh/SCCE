@@ -93,17 +93,18 @@ function mockPipeline(config: any) {
 }
 
 describe("Wikipedia recovery boundaries", () => {
-  it("acquires complete source pages without enqueuing learned work or publishing an active language brain", async () => {
+  it.each([undefined, 1])("acquires complete source pages without enqueuing learned work or publishing an active language brain (blocks=%s)", async maxBlocks => {
     const f = await fixture();
     try {
       const p = mockPipeline(f.config);
       p.counts.ngramModels = 0;
-      const result = await p.ingestor.ingest({ dumpPath: f.dumpPath, acquireOnly: true });
-      expect(p.page).toHaveBeenCalledTimes(2); expect(p.train).not.toHaveBeenCalled(); expect(p.activate).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ pages: 2, sources: 2, ngramModels: 0, languagePatterns: 0, languageMode: "acquisition_only" });
+      const result = await p.ingestor.ingest({ dumpPath: f.dumpPath, acquireOnly: true, maxBlocks });
+      const pages = maxBlocks === 1 ? 1 : 2;
+      expect(p.page).toHaveBeenCalledTimes(pages); expect(p.train).not.toHaveBeenCalled(); expect(p.activate).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ pages, sources: pages, ngramModels: 0, languagePatterns: 0, languageMode: "acquisition_only" });
       for (const [file] of p.page.mock.calls) expect(file).toEqual(expect.objectContaining({ text: expect.stringMatching(/\S/u) }));
       const journal = p.rows().find(row => row.itemUri.endsWith("/language-batch"))!;
-      expect(journal.metadata).toMatchObject({ languageBatch: { pendingSamples: [], pendingChars: 0, languageTrainingDocumentCount: 0 } });
+      expect(journal.metadata).toMatchObject({ languageBatch: { state: "idle", pendingSamples: [], pendingChars: 0, languageTrainingDocumentCount: 0 } });
       await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, acquireOnly: true, finishPending: true })).rejects.toThrow("cannot finish");
       await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, resume: true })).rejects.toThrow();
     } finally { vi.restoreAllMocks(); await f.close(); }
