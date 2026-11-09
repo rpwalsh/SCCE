@@ -86,6 +86,19 @@ try {
   assert.ok(trained.length > 0, 'Acquisition emitted no model');
   modelIds.push(...trained.map(model => model.id));
   await writer.languageMemory.putNgramModels(trained);
+  const profileHeaders = await reader.model.listLanguageProfileHeaders({ profileIds, limit: profileIds.length });
+  check('native-exact-profile-headers-exclude-bodies', () => {
+    assert.deepEqual(profileHeaders.map(header => ({ id: header.id, sourceVersionId: header.sourceVersionId })), [{ id: profile.id, sourceVersionId }]);
+    assert.ok(profileHeaders.every(header => Object.keys(header).every(key => ['id', 'sourceVersionId', 'informationLabel', 'parentSourceVersionIds'].includes(key))));
+  });
+  const modelHeaders = await reader.languageMemory.listNgramModelHeaders({ modelIds, profileIds, limit: modelIds.length });
+  check('native-exact-ngram-headers-exclude-bodies', () => {
+    assert.deepEqual(modelHeaders.map(header => header.id).sort(), [...modelIds].sort());
+    assert.ok(modelHeaders.every(header => header.profileId === profile.id && !Object.hasOwn(header, 'modelJson')));
+  });
+  const missingProfiles = await reader.model.listLanguageProfileHeaders({ profileIds: ['missing.' + suffix], limit: 1 });
+  const missingModels = await reader.languageMemory.listNgramModelHeaders({ modelIds: ['missing.' + suffix], limit: 1 });
+  check('native-header-queries-respect-exact-missing-ids', () => { assert.deepEqual(missingProfiles, []); assert.deepEqual(missingModels, []); });
   const revisionBeforeReplay = await readRevision();
   await writer.evidence.putSourceVersion(source);
   await writer.evidence.putEvidenceSpans(spans);
@@ -110,6 +123,9 @@ try {
   check('source-acl-change-advances-once', () => assert.equal(BigInt(restrictedRevision), BigInt(afterAbort) + 1n));
   const coldRows = await reader.languageMemory.listNgramModels({ profileIds });
   check('cold-source-ownership-refuses-restricted-parent', () => assert.equal(coldRows.length, 0));
+  const restrictedProfileHeaders = await reader.model.listLanguageProfileHeaders({ profileIds, limit: profileIds.length });
+  const restrictedModelHeaders = await reader.languageMemory.listNgramModelHeaders({ modelIds, profileIds, limit: modelIds.length });
+  check('native-metadata-headers-refuse-restricted-owners', () => { assert.equal(restrictedProfileHeaders.length, 0); assert.equal(restrictedModelHeaders.length, 0); });
   await warm.synchronizeWithStorage();
   const after = await warm.hydrateSurfaceLanguageMemoryCached(12, cluster);
   const cold = await runtime().hydrateSurfaceLanguageMemoryCached(12, cluster);
