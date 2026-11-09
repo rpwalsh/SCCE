@@ -285,6 +285,7 @@ interface PreparedLanguageCorpusPayload {
   graphSnapshotDigest: string;
   constructionPoolEvidence: EvidenceSpan[];
   constructionPoolProfiles: LanguageProfile[];
+  constructionPoolDigest?: string;
   compilation: Required<Pick<LanguageCorpusTrainingReport, "alignmentPromotionObservations" | "alignmentCalibrationObservations"
     | "constructionCandidates" | "constructionAcquisition" | "graphSurfaceAlignments" | "rejectedLanguageConstructions">>;
   observations: NgramObservation[];
@@ -601,6 +602,10 @@ function evidenceDependencyDigest(evidence: readonly EvidenceSpan[]): string {
   return createHasher().digestHex(canonicalStringify(toJsonValue([...evidence].sort((a, b) => String(a.id).localeCompare(String(b.id))))));
 }
 
+function constructionPoolDigest(pool: Awaited<ReturnType<typeof durableConstructionPoolEvidence>>): string {
+  return createHasher().digestHex(canonicalStringify(toJsonValue(pool)));
+}
+
 async function durableConstructionPoolEvidence(input: {
   input: LanguageCorpusTrainingInput;
   evidence: readonly EvidenceSpan[];
@@ -799,6 +804,11 @@ export async function commitLanguageCorpusTraining(
         if (evidenceDependencyDigest(current) !== evidenceDependencyDigest(payload.constructionPoolEvidence)) throw new Error("language training construction evidence changed before commit; prepare again");
         const profiles = await input.storage.model.listLanguageProfiles({ sourceVersionIds: payload.constructionPoolProfiles.map(profile => profile.sourceVersionId), limit: payload.constructionPoolProfiles.length + 1 });
         if (canonicalStringify(toJsonValue(profiles.sort((a, b) => a.id.localeCompare(b.id)))) !== canonicalStringify(toJsonValue([...payload.constructionPoolProfiles].sort((a, b) => a.id.localeCompare(b.id))))) throw new Error("language training construction language profiles changed before commit; prepare again");
+      }
+      if (payload.constructionPoolDigest !== undefined) {
+        const current = await durableConstructionPoolEvidence({ input, evidence: payload.evidence, sourceSystem: payload.sourceSystem,
+          informationLabel: payload.informationLabel, profile: payload.profile });
+        if (constructionPoolDigest(current) !== payload.constructionPoolDigest) throw new Error("language training construction pool changed before commit; prepare again");
       }
       if (trainingInputBinding(input) !== prepared.inputBinding) throw new Error("language training input changed during commit validation");
       await languageTrainingSegmentationLoader(input.storage, trainingSegmentationDeclaration(input), input.preparedCorpusSegmentation!, true);
@@ -1241,6 +1251,10 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     graphSnapshotDigest: graphSnapshotDigest(batchGraphSnapshot),
     constructionPoolEvidence,
     constructionPoolProfiles: constructionPool.profiles,
+    ...(!input.languageOnly && needsConstructionContext(input)
+      && (input.constructionPoolUriPrefix ?? input.corpusCheckpoint?.rootUri)
+      && input.storage.evidence.listEvidenceBackedSourceVersions
+      ? { constructionPoolDigest: constructionPoolDigest(constructionPool) } : {}),
     compilation: {
       alignmentPromotionObservations: compiledBatch.alignmentHeldoutEvaluation.promotionObservations,
       alignmentCalibrationObservations: compiledBatch.alignmentHeldoutEvaluation.calibrationObservations,

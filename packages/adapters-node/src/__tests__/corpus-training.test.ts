@@ -1365,6 +1365,34 @@ describe("multi-corpus training", () => {
     expect(fixture.state.patterns).toHaveLength(patternsBefore);
   });
 
+  it.each([false, true])("rejects a newly available construction owner after preparation (existing owner: %s)", async existingOwner => {
+    const fixture = memoryStorage();
+    installDurableConstructionPool(fixture);
+    const rootUri = "scce://pool-membership/";
+    const text = "cat chased mouse. dog chased mouse. cat chased ball. dog chased ball.";
+    const base = { storage: fixture.storage, sourceSystem: "oss_docs", text, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
+      informationLabel: publicCorpusInformationLabel, constructionPoolUriPrefix: rootUri, skipNgramObservationPersistence: true };
+    if (existingOwner) await trainLanguageCorpusText({ ...base, streamUri: "oss_docs:first", sourceUri: `${rootUri}first.md` });
+    const input = { ...base, streamUri: "oss_docs:last", sourceUri: `${rootUri}last.md` };
+    const prepared = await prepareLanguageCorpusTraining(input);
+    await trainLanguageCorpusText({ ...base, streamUri: "oss_docs:middle", sourceUri: `${rootUri}middle.md` });
+    const stateBefore = structuredClone(fixture.state);
+    await expect(commitLanguageCorpusTraining(input, prepared)).rejects.toThrow("construction pool changed before commit");
+    expect(fixture.state).toEqual(stateBefore);
+    await expect(commitLanguageCorpusTraining(input, await prepareLanguageCorpusTraining(input))).resolves.toMatchObject({ sourceSystem: "oss_docs" });
+  });
+
+  it("does not invalidate a prepared construction pool for an owner outside its URI scope", async () => {
+    const fixture = memoryStorage();
+    installDurableConstructionPool(fixture);
+    const base = { storage: fixture.storage, sourceSystem: "oss_docs", text: "cat chased mouse. dog chased mouse.",
+      informationLabel: publicCorpusInformationLabel, skipNgramObservationPersistence: true, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 };
+    const input = { ...base, streamUri: "oss_docs:current", sourceUri: "scce://pool-membership/current.md", constructionPoolUriPrefix: "scce://pool-membership/" };
+    const prepared = await prepareLanguageCorpusTraining(input);
+    await trainLanguageCorpusText({ ...base, streamUri: "oss_docs:other", sourceUri: "scce://another-pool/other.md" });
+    await expect(commitLanguageCorpusTraining(input, prepared)).resolves.toMatchObject({ sourceSystem: "oss_docs" });
+  });
+
   it("uses an owned distributed window from a real book larger than the construction budget", async () => {
     const fixture = memoryStorage();
     const queries = installDurableConstructionPool(fixture);
