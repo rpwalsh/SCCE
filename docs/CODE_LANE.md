@@ -1,8 +1,8 @@
 # Writing and Repairing Code
 
-SCCE repairs source the way it answers questions: it composes from what it has learned, and something outside it decides whether the answer stands. For prose that arbiter is evidence. For code it is the compiler.
+SCCE connects learned source patterns, project structure, compiler information and executable checks in one local programming workflow. It can inspect a workspace, compose candidate repairs, validate them with the project's toolchain and retain the source and verification receipts behind a change.
 
-This is the property that distinguishes the lane commercially. A language model always produces an edit and has no mechanism guaranteeing the file it returns is buildable. This system either improves a file or leaves it exactly as it was — never between the two, and never by deleting the code that failed to compile.
+Verification follows the selected project policy: compilation checks syntax and types; executed unit and end-to-end tests check the behaviors they cover. Patch transactions restore the original files when their required validation fails. Each result records which checks actually ran.
 
 ## The division of labour
 
