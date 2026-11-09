@@ -199,8 +199,7 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
   });
   let selectedGroups = requestedSourceGroups.length === 1 ? requestedSourceGroups : grouped.size === 1 ? [...grouped.entries()] : [];
   if (explicitBindings.length > 1) {
-    // An exact set of formal owner ports can select several providers. Mere
-    // request-word overlap cannot turn independent repositories into one program.
+    // Formal owner ports select providers within one current project context.
     const boundGroups=[...grouped.entries()].filter(([,rows])=>explicitBindings.includes(String(rows[0]?.targetName)));
     const names=boundGroups.map(([,rows])=>String(rows[0]?.targetName));
     if(explicitBindings.length!==names.length || new Set(names).size!==names.length || names.some(name=>!explicitBindings.includes(name)))return empty;
@@ -218,8 +217,7 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
   const behaviorRequirements=lowered.flatMap(group=>group.behaviorRequirements),statefulBehaviorRequirements=lowered.flatMap(group=>group.statefulBehaviorRequirements);
   // Existing planners and repair selection admit one representation per program.
   if(behaviorRequirements.length&&statefulBehaviorRequirements.length)return empty;
-  // Distinct stateful targets also need an owned shared/independent state binding;
-  // matching project context alone does not prove their stores can be merged.
+  // Distinct stateful providers require an owned state-composition binding.
   if(selectedGroups.length>1&&statefulBehaviorRequirements.length)return empty;
   return {behaviorRequirements,statefulBehaviorRequirements,...(nativeDeclarations.length?{nativeDeclarations}:{})};
 }

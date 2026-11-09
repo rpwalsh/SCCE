@@ -18,6 +18,7 @@ export function validatePopulationWorkerExecution(value:CorpusSegmentationWorker
 }
 type ExecutionWorker=Pick<Worker,"on"|"postMessage"|"terminate">;
 interface Dependencies {
+  coordinatorHeapLimitBytes?:()=>number;
   worker?:(initialization:unknown,heapMb:number)=>ExecutionWorker;
   bundleDigest?:()=>Promise<string>;rss?:()=>number;onDirectory?:(directory:string)=>void;
 }
@@ -26,7 +27,9 @@ export function createPopulationCandidateExecution(input:{storage:PostgresStorag
   declaration:CorpusSegmentationWorkerExecution;signal?:AbortSignal},dependencies:Dependencies={}):{provider:PagedPopulationCandidateExecution;receipt:()=>CorpusSegmentationExecutionReceipt|undefined}{
   const declaration=validatePopulationWorkerExecution(input.declaration),coordinatorPgConnections=input.storage.pool.options.max??10;
   if(!Number.isSafeInteger(coordinatorPgConnections)||coordinatorPgConnections<1||declaration.totalPgConnections<coordinatorPgConnections+declaration.workers)throw Error("Population worker PG connection reservation exceeds declaration");
-  if(declaration.maxNodeRssBytes<getHeapStatistics().heap_size_limit+declaration.workers*(declaration.workerHeapMb*1024*1024+64*1024*1024))throw Error("Population worker Node memory declaration cannot reserve coordinator heap, worker heaps and page budgets");
+  const coordinatorHeapLimitBytes=(dependencies.coordinatorHeapLimitBytes??(()=>getHeapStatistics().heap_size_limit))();
+  if(!Number.isSafeInteger(coordinatorHeapLimitBytes)||coordinatorHeapLimitBytes<1
+    ||declaration.maxNodeRssBytes<coordinatorHeapLimitBytes+declaration.workers*(declaration.workerHeapMb*1024*1024+64*1024*1024))throw Error("Population worker Node memory declaration cannot reserve coordinator heap, worker heaps and page budgets");
   let receipt:CorpusSegmentationExecutionReceipt|undefined;
   return {receipt:()=>receipt,provider:{async fitCandidates(prepared,jobs){
     input.signal?.throwIfAborted();

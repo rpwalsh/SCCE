@@ -7,6 +7,7 @@ import {readFile,writeFile} from 'node:fs/promises';
 import {readScceRuntimeConfig} from '../packages/adapters-node/dist/config.js';
 import {createPostgresStorageAdapter} from '../packages/adapters-node/dist/postgres.js';
 import {consolidateCorpusSegmentation} from '../packages/adapters-node/dist/corpus-segmentation-producer.js';
+import {createPopulationCandidateExecution} from '../packages/adapters-node/dist/population-candidate-execution.js';
 import {parseCorpusSegmentationPlan} from '../packages/cli/dist/corpus-segmentation-command.js';
 import {canonicalStringify,createHasher} from '../packages/kernel/dist/index.js';
 const args=process.argv.slice(2),allowed=new Set(['--config','--plan','--execution','--output']);
@@ -31,6 +32,8 @@ async function rowDigest(runId){
 }
 try{
   assert.equal((await storage.verify()).ok,true,'Canonical schema must be verified before native workers');
+  const preflight=parseCorpusSegmentationPlan({...plan,execution},Date.now());
+  createPopulationCandidateExecution({storage,runId:preflight.runId,bounds:preflight.bounds,declaration:preflight.execution});
   for(const parallel of [false,true]){
     const runId=`native-population-${randomUUID()}`,input=parseCorpusSegmentationPlan({...plan,runId,...(parallel?{execution}:{execution:undefined})},Date.now());
     const cpu=process.cpuUsage(),start=performance.now();
@@ -45,5 +48,6 @@ try{
   assert.deepEqual(report.runs[1].retainedRows,report.runs[0].retainedRows,'Retained logical and physical rows changed');
   assert.equal(report.runs[1].executionReceipt.completedCandidates,report.runs[0].candidateCount);
   report.checks.push('same_owned_source_snapshot','full_canonical_model_equal','all_retained_rows_equal','worker_execution_receipt');
+  report.passed=true;
   await writeFile(flags.get('--output'),JSON.stringify(report,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify(report));
 }finally{await storage.pool.end();}

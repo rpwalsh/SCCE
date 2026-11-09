@@ -23,7 +23,7 @@ class FakeWorker extends EventEmitter {
 const cast=(worker:FakeWorker)=>worker as unknown as Pick<Worker,"on"|"postMessage"|"terminate">;
 it("bounds workers and PG reservations, orders completion slots and records aggregate process RSS",async()=>{
   const workers:FakeWorker[]=[],completed:number[]=[];let directory="";
-  const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},{bundleDigest:async()=>"bundle",rss:()=>123456,onDirectory:value=>{directory=value;},
+  const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},{coordinatorHeapLimitBytes:()=>512*1024**2,bundleDigest:async()=>"bundle",rss:()=>123456,onDirectory:value=>{directory=value;},
     worker:initialization=>{const worker=new FakeWorker(initialization,(worker,message)=>{
       if(message.type==="job"){const job=message.job!;setTimeout(()=>{completed.push(job.populationCount);worker.emit("message",{type:"result",populationCount:job.populationCount,candidate:candidate(job.populationCount)});},job.populationCount===1?10:0);}
       else if(message.type==="shutdown")worker.exit();
@@ -35,7 +35,7 @@ it("bounds workers and PG reservations, orders completion slots and records aggr
 });
 it.each([false,true])("awaits all workers before cleaning a failed job directory (forced=%s)",async forced=>{
   const workers:FakeWorker[]=[];let directory="";
-  const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},{bundleDigest:async()=>"bundle",rss:()=>123456,onDirectory:value=>{directory=value;},
+  const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},{coordinatorHeapLimitBytes:()=>512*1024**2,bundleDigest:async()=>"bundle",rss:()=>123456,onDirectory:value=>{directory=value;},
     worker:initialization=>{const worker=new FakeWorker(initialization,(worker,message)=>{
       if(message.type==="job"){writeFileSync(`${directory}/scce-boundary-fit-abcdef.bin`,"private numeric spool");queueMicrotask(()=>worker.emit("message",{type:"error",error:"candidate source failed"}));}
       else if(message.type==="abort"&&!forced)setTimeout(()=>worker.exit(),1);
@@ -47,16 +47,18 @@ it.each([false,true])("awaits all workers before cleaning a failed job directory
 it("rejects unknown/exhausted resources and invalid declarations before starting workers",async()=>{
   expect(()=>validatePopulationWorkerExecution({...declaration,workers:0})).toThrow("declaration");
   expect(()=>createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration:{...declaration,totalPgConnections:3}})).toThrow("PG connection");
+  for(const heap of [0,NaN,declaration.maxNodeRssBytes]) expect(()=>createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},
+    {coordinatorHeapLimitBytes:()=>heap})).toThrow("memory declaration");
   for(const rss of [0,declaration.maxNodeRssBytes+1]){
     let directory="",started=false;
-    const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},{bundleDigest:async()=>"bundle",rss:()=>rss,onDirectory:value=>{directory=value;},worker:()=>{started=true;throw Error("must not start");}});
+    const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},{coordinatorHeapLimitBytes:()=>512*1024**2,bundleDigest:async()=>"bundle",rss:()=>rss,onDirectory:value=>{directory=value;},worker:()=>{started=true;throw Error("must not start");}});
     await expect(execution.provider.fitCandidates(prepared,jobs)).rejects.toThrow(/RSS/);expect(started).toBe(false);await expect(stat(directory)).rejects.toMatchObject({code:"ENOENT"});
   }
 });
 it("cooperatively cancels active workers and rejects a changed executable handshake",async()=>{
   for(const mismatch of [false,true]){
     const controller=new AbortController(),workers:FakeWorker[]=[];
-    const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration,signal:controller.signal},{bundleDigest:async()=>mismatch?"expected":"bundle",rss:()=>123456,
+    const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration,signal:controller.signal},{coordinatorHeapLimitBytes:()=>512*1024**2,bundleDigest:async()=>mismatch?"expected":"bundle",rss:()=>123456,
       worker:initialization=>{const worker=new FakeWorker(initialization,(worker,message)=>{if(message.type==="abort")worker.exit();});workers.push(worker);
         if(!mismatch)queueMicrotask(()=>controller.abort(Error("owner cancelled")));return cast(worker);}});
     await expect(execution.provider.fitCandidates(prepared,jobs)).rejects.toThrow(mismatch?/response/:/cancelled/);expect(workers.every(worker=>worker.exited)).toBe(true);
@@ -64,7 +66,7 @@ it("cooperatively cancels active workers and rejects a changed executable handsh
 });
 it("retains primary worker failure when owned-directory cleanup refuses an unknown file",async()=>{
   let directory="";const workers:FakeWorker[]=[];
-  const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},{bundleDigest:async()=>"bundle",rss:()=>123456,
+  const execution=createPopulationCandidateExecution({storage,runId:"run",bounds:{pageRows:2,maxPageBytes:2048},declaration},{coordinatorHeapLimitBytes:()=>512*1024**2,bundleDigest:async()=>"bundle",rss:()=>123456,
     onDirectory:value=>{directory=value;writeFileSync(`${value}/unknown-owned-by-test.txt`,"must not delete");},
     worker:initialization=>{const worker=new FakeWorker(initialization,(worker,message)=>{if(message.type==="job")worker.exit(1);if(message.type==="abort")worker.exit();});workers.push(worker);return cast(worker);}});
   try{
