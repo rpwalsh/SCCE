@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
   acquireContextualQaConstructions, canonicalStringify, createHasher, CONTEXTUAL_QA_CONSTRUCTION_RECIPE as RECIPE,
-  CONTEXTUAL_QA_SOURCE_SYSTEM as SYSTEM, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA as SCHEMA,
+  CONTEXTUAL_QA_SOURCE_SYSTEM as SYSTEM, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA as SCHEMA, CONTEXTUAL_QA_COMPILER_FINGERPRINT,
   type ConversationalConstructionDocument, type InformationLabel, type LanguagePatternProjection,
   type ScceStorage, type SourceVersionId, type TranscriptTurn
 } from "@scce/kernel";
@@ -11,6 +11,7 @@ import { runDialogueContextualQaComponent } from "./dialogue-conversational-chec
 
 export interface DialogueContextualQaReport {
   schema: "scce.dialogue_contextual_qa_report.v1";
+  compilerFingerprint: typeof CONTEXTUAL_QA_COMPILER_FINGERPRINT;
   pairs: number;
   patternsPersisted: number;
   qualifiedFamilies: number;
@@ -24,6 +25,7 @@ export async function persistDialogueContextualQaComponent(input: {
   sources: readonly { sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[] }[];
 }): Promise<DialogueContextualQaReport> {
   const unchanged = (): DialogueContextualQaReport => ({ schema: "scce.dialogue_contextual_qa_report.v1", pairs: 0,
+    compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
     patternsPersisted: 0, qualifiedFamilies: 0, familyApplicability: [], rejected: [], unchanged: true });
   const hasher = createHasher();
   const eligible = input.sources.filter(source => source.transcriptTurns?.some(turn => turn.commitmentScope === "external" && turn.supportingSourceRanges?.length));
@@ -75,6 +77,7 @@ export async function persistDialogueContextualQaComponent(input: {
         persisted += patterns.length; projections.push(projection);
       }
       return { projections, report: { schema: "scce.dialogue_contextual_qa_report.v1" as const, pairs: acquired.pairs,
+        compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
         patternsPersisted: persisted, qualifiedFamilies: acquired.families.length, familyApplicability: acquired.families.map(family => family.applicability), rejected: acquired.rejected, unchanged: false } };
     } });
 }

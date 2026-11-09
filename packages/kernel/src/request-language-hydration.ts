@@ -5,6 +5,8 @@ import { REQUEST_REQUIREMENT_PATTERN_SCHEMA } from "./request-requirement-learni
 import type { LanguagePatternRecord, SemanticFrameRecord } from "./storage.js";
 import type { JsonValue } from "./types.js";
 
+export const SOURCE_CONSTRUCTION_READ_BUDGET = Object.freeze({ limit: 512, maxTotalJsonBytes: 8 * 1024 * 1024 });
+
 export const REQUEST_SEED_PATTERN_JSON_FIELDS = [
   "schema", "profileId", "sourceId", "sourceVersionId", "parentSourceVersionIds", "profileBindingDigest",
   "sourceSystem", "corpusRoleId", "languageId", "componentRecipe", "compilerRecipe", "sourceCompilationId", "contentDigest",

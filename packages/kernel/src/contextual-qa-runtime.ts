@@ -9,6 +9,8 @@ import { canonicalStringify } from "./primitives.js";
 import type { RequestValueBinding } from "./semantic-answer-construct.js";
 import type { ScceStorage } from "./storage.js";
 import type { EvidenceSpan, Hasher } from "./types.js";
+import { SOURCE_CONSTRUCTION_READ_BUDGET } from "./request-language-hydration.js";
+import { canonicalJsonByteLength } from "./canonical-json-digest.js";
 
 export interface VerifiedContextualQaConstructions {
   readonly requestDigest: string;
@@ -51,7 +53,9 @@ export async function contextualQaConstructionsForRequest(input: {
   if (!features.length) return undefined;
   const headers = await input.storage.languageMemory.listLanguagePatterns({ view: "request_seed",
     patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA], sourceSystem: CONTEXTUAL_QA_SOURCE_SYSTEM,
-    contextualQaRequestFeatures: features, limit: Number.MAX_SAFE_INTEGER });
+    contextualQaRequestFeatures: features, ...SOURCE_CONSTRUCTION_READ_BUDGET, requireComplete: true });
+  if (headers.length > SOURCE_CONSTRUCTION_READ_BUDGET.limit) return undefined;
+  if (canonicalJsonByteLength(headers.map(row => row.patternJson), SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes) > SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes) return undefined;
   const matching = headers.filter(pattern => {
     const metadata = jsonRecord(pattern.patternJson);
     return metadata.componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE && Array.isArray(metadata.contextualQaRequestForm)
@@ -60,8 +64,10 @@ export async function contextualQaConstructionsForRequest(input: {
   if (!matching.length) return undefined;
   const ids = [...new Set(matching.map(pattern => pattern.id))];
   const patterns = await input.storage.languageMemory.listLanguagePatterns({ patternIds: ids,
-    patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA], sourceSystem: CONTEXTUAL_QA_SOURCE_SYSTEM, limit: ids.length });
+    patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA], sourceSystem: CONTEXTUAL_QA_SOURCE_SYSTEM, limit: ids.length,
+    maxTotalJsonBytes: SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes, requireComplete: true });
   if (patterns.length !== ids.length || patterns.some(pattern => !ids.includes(pattern.id))) return undefined;
+  if (canonicalJsonByteLength(patterns.map(row => row.patternJson), SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes) > SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes) return undefined;
   const evidenceIds = [...new Set(patterns.flatMap(pattern => pattern.evidenceIds))];
   const evidence = await input.storage.evidence.getEvidenceBatch(evidenceIds);
   const bundles = patterns.flatMap(pattern => {
@@ -69,6 +75,7 @@ export async function contextualQaConstructionsForRequest(input: {
     return bundle ? [bundle] : [];
   });
   if (bundles.length !== patterns.length) return undefined;
+  if (canonicalJsonByteLength(bundles, SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes) > SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes) return undefined;
   const value = freezeQaValue({ requestDigest: input.hasher.digestHex(input.requestText), bundles, patternIds: ids });
   constructionReceipts.set(value, { storage: input.storage, generation: input.generation }); return value;
 }

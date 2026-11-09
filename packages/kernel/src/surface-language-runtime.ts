@@ -4,7 +4,7 @@ import { estimateRetainedProgramBytes } from "./retained-program-size.js";
 import { traceEvent } from "./debug/trace.js";
 import { canonicalDigestHex, canonicalJsonByteLength } from "./canonical-json-digest.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
-import { conversationalConstructionBinding, requestConstructionCandidate, requestSeedLanguagePattern, requestSeedSemanticFrame, sourceConstructionCandidate } from "./request-language-hydration.js";
+import { conversationalConstructionBinding, requestConstructionCandidate, requestSeedLanguagePattern, requestSeedSemanticFrame, sourceConstructionCandidate, SOURCE_CONSTRUCTION_READ_BUDGET } from "./request-language-hydration.js";
 import { conversationalActBindingId } from "./conversational-act-binding.js";
 import { DIALOGUE_ACT_IDS, type DialogueActId } from "./dialogue-pragmatics.js";
 import { CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
@@ -1338,7 +1338,7 @@ export function createSurfaceLanguageRuntime(options: {
     const cached = sourceOwnedConstructionCache.get(key), resident = cached?.bundles.deref();
     if (resident && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return resident;
     const generation = languageMemoryGeneration;
-    const patterns = (await deps.storage.languageMemory.listLanguagePatterns({ patternIds, limit: patternIds.length, maxTotalJsonBytes: 8 * 1024 * 1024 }))
+    const patterns = (await deps.storage.languageMemory.listLanguagePatterns({ patternIds, limit: patternIds.length, maxTotalJsonBytes: SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes }))
       .filter(pattern => headers.some(header => header.id === pattern.id && header.profileId === pattern.profileId)
         && conversationalConstructionBinding(pattern) === conversationalActBindingId(hasher, pattern.profileId, actId));
     const evidenceIds = [...new Set(patterns.filter(isLanguageConstructionPattern).flatMap(pattern => pattern.evidenceIds))];
@@ -1373,7 +1373,7 @@ export function createSurfaceLanguageRuntime(options: {
     const resident = cached?.bundles.deref();
     if (resident && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return resident;
     const generation = languageMemoryGeneration;
-    const patterns = (await deps.storage.languageMemory.listLanguagePatterns({ patternIds, limit: patternIds.length, maxTotalJsonBytes: 8 * 1024 * 1024 }))
+    const patterns = (await deps.storage.languageMemory.listLanguagePatterns({ patternIds, limit: patternIds.length, maxTotalJsonBytes: SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes }))
       .filter(pattern => patternIds.includes(pattern.id));
     const evidenceIds = [...new Set(patterns.filter(isLanguageConstructionPattern).flatMap(pattern => pattern.evidenceIds))];
     const evidence = evidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(evidenceIds) : [];
@@ -1400,7 +1400,7 @@ export function createSurfaceLanguageRuntime(options: {
     if (!profileIds.length) return [];
     // Read only source-owned construction artifacts. Generic models and output-role priors do not compete for this budget.
     const patterns = await deps.storage.languageMemory.listLanguagePatterns({
-      profileIds, patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA], limit: 512, maxTotalJsonBytes: 8 * 1024 * 1024
+      profileIds, patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA], ...SOURCE_CONSTRUCTION_READ_BUDGET
     });
     const constructionEvidenceIds = [...new Set(patterns.filter(isLanguageConstructionPattern)
       .flatMap(pattern => pattern.evidenceIds.map(String)))].sort().slice(0, 4096);

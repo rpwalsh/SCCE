@@ -15,6 +15,11 @@ import { jsonRecord } from "../../../kernel/src/kernel-answer-primitives.js";
 import { contextualQaForRequest, contextualQaConstructionsForRequest, type VerifiedContextualQaBinding } from "../../../kernel/src/contextual-qa-runtime.js";
 import { authorityRequirementCoefficients, projectRequestAuthority, REQUESTED_AUTHORITY_IDS } from "../../../kernel/src/request-authority.js";
 import { deriveTurnRequirementField } from "../../../kernel/src/turn-requirements.js";
+import * as kernelModule from "@scce/kernel";
+import * as sourceTrainer from "../language-corpus-trainer.js";
+import { CONTEXTUAL_QA_COMPILER_FINGERPRINT, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "@scce/kernel";
+import { SOURCE_CONSTRUCTION_READ_BUDGET } from "../../../kernel/src/request-language-hydration.js";
+import { canonicalJsonByteLength } from "../../../kernel/src/canonical-json-digest.js";
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -195,8 +200,77 @@ it("records unqualified contextual input once and skips unrelated dialogue compo
   expect(first.contextualQaConstructions?.rejected.some(row => row.reason === "independent_role_contrast_missing")).toBe(true);
   const receipt = [...f.checkpoints.values()].filter(row => jsonRecord(row.metadata).schema === "scce.dialogue_contextual_qa_compilation.v1");
   expect(receipt).toHaveLength(1);
-  expect(jsonRecord(receipt[0]!.metadata)).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_CONSTRUCTION_RECIPE, projections: [] });
+  expect(jsonRecord(receipt[0]!.metadata)).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT, projections: [] });
   const put = vi.spyOn(f.storage.ingestion, "put"), search = vi.spyOn(f.storage.evidence, "searchEvidence");
   expect((await f.train()).contextualQaConstructions?.unchanged).toBe(true);
   expect(put).not.toHaveBeenCalled(); expect(search).not.toHaveBeenCalled();
+});
+
+it("upgrades an already-complete empty v1 QA checkpoint once without recompiling source models or changing source identity", async () => {
+  const f = await fixture(); await f.train();
+  const all = await f.storage.languageMemory.listLanguagePatterns();
+  const qa = all.find(row => jsonRecord(row.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE)!;
+  const owner = f.evidence.find(span => qa.evidenceIds.includes(span.id))!;
+  const originalSources = f.evidence.map(span => [span.id, span.sourceId, span.sourceVersionId, span.contentHash, span.text]);
+  const nonQa = JSON.stringify(all.filter(row => row.id !== qa.id));
+  const projection = await f.storage.languageMemory.getLanguagePatternProjection!({ profileId: qa.profileId, sourceId: owner.sourceId,
+    sourceVersionId: owner.sourceVersionId, sourceSystem: "dialogue", patternSchema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+    componentRecipe: CONTEXTUAL_QA_CONSTRUCTION_RECIPE, informationLabel: label });
+  expect(projection).toBeDefined();
+  await f.storage.languageMemory.replaceLanguagePatternProjection!({ patterns: [], projection: { ...projection!, patternIds: [], sourceDependencies: [] } });
+  const receipt = [...f.checkpoints.values()].find(row => jsonRecord(row.metadata).schema === "scce.dialogue_contextual_qa_compilation.v1")!;
+  receipt.metadata = { ...jsonRecord(receipt.metadata), compilerFingerprint: CONTEXTUAL_QA_CONSTRUCTION_RECIPE, projections: [] };
+  const checkpointCount = f.checkpoints.size;
+  const trainBody = vi.spyOn(sourceTrainer, "trainLanguageCorpusText").mockRejectedValue(new Error("cached source must not compile again"));
+  const acquire = vi.spyOn(kernelModule, "acquireContextualQaConstructions");
+  const publish = vi.spyOn(f.storage.languageMemory, "replaceLanguagePatternProjection"), put = vi.spyOn(f.storage.ingestion, "put");
+  const upgraded = await f.train();
+  expect(upgraded.contextualQaConstructions).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
+    pairs: 4, qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false });
+  expect(CONTEXTUAL_QA_CONSTRUCTION_RECIPE).toBe("kernel.dialogue_contextual_qa.v1");
+  expect(CONTEXTUAL_QA_COMPILER_FINGERPRINT).toBe("kernel.dialogue_contextual_qa.compiler.v2");
+  expect(trainBody).not.toHaveBeenCalled(); expect(acquire).toHaveBeenCalledTimes(1);
+  expect(publish).toHaveBeenCalledTimes(1); expect(put).toHaveBeenCalledTimes(1); expect(f.checkpoints.size).toBe(checkpointCount);
+  expect(jsonRecord(f.checkpoints.get(receipt.id)!.metadata).compilerFingerprint).toBe(CONTEXTUAL_QA_COMPILER_FINGERPRINT);
+  expect(f.evidence.map(span => [span.id, span.sourceId, span.sourceVersionId, span.contentHash, span.text])).toEqual(originalSources);
+  expect(JSON.stringify((await f.storage.languageMemory.listLanguagePatterns()).filter(row => row.id !== qa.id))).toBe(nonQa);
+  expect((await f.storage.languageMemory.getLanguagePatternProjection!({ ...projection! }))?.patternIds).toEqual([qa.id]);
+  publish.mockClear(); put.mockClear(); acquire.mockClear();
+  const read = vi.spyOn(f.storage.evidence, "searchEvidence");
+  expect((await f.train()).contextualQaConstructions).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT, unchanged: true });
+  expect(trainBody).not.toHaveBeenCalled(); expect(acquire).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
+  expect(publish).not.toHaveBeenCalled(); expect(put).not.toHaveBeenCalled(); expect(f.checkpoints.size).toBe(checkpointCount);
+});
+
+it("refuses incomplete or oversized header/body windows before evidence hydration or authority", async () => {
+  const f = await fixture(); await f.train();
+  const qa = (await f.storage.languageMemory.listLanguagePatterns()).find(row => jsonRecord(row.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE)!;
+  const requestText = "\u27e1 fresh \u22b9?";
+  expect(await contextualQaConstructionsForRequest({ storage: f.storage, hasher: f.hasher, requestText, generation: 0 })).toBeDefined();
+  const evidence = vi.spyOn(f.storage.evidence, "getEvidenceBatch");
+  const window = (rows: LanguagePatternRecord[], query: NonNullable<Parameters<typeof f.storage.languageMemory.listLanguagePatterns>[0]>) => {
+    if (query.requireComplete && (rows.length > (query.limit ?? rows.length) || query.maxTotalJsonBytes !== undefined
+      && canonicalJsonByteLength(rows.map(row => row.patternJson), query.maxTotalJsonBytes) > query.maxTotalJsonBytes)) return [];
+    return rows.slice(0, query.limit ?? rows.length);
+  };
+  const metadata = jsonRecord(qa.patternJson), oversized = "x".repeat(SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes);
+  for (const mode of ["header-count", "header-bytes", "body-bytes", "body-missing"] as const) {
+    evidence.mockClear(); let bodyReads = 0;
+    f.storage.languageMemory.listLanguagePatterns = async query => {
+      if (query?.view === "request_seed") {
+        expect(query).toMatchObject({ ...SOURCE_CONSTRUCTION_READ_BUDGET, requireComplete: true });
+        let rows = [requestSeedLanguagePattern(qa)];
+        if (mode === "header-count") rows = Array.from({ length: SOURCE_CONSTRUCTION_READ_BUDGET.limit + 1 }, (_, index) => ({ ...rows[0]!, id: `${qa.id}.${index}` }));
+        if (mode === "header-bytes") rows.push({ ...rows[0]!, id: `${qa.id}.oversized`, patternJson: { ...jsonRecord(rows[0]!.patternJson), contextualQaRequestForm: [oversized] } });
+        if (mode === "body-missing") rows.push({ ...rows[0]!, id: `${qa.id}.revoked-after-header` });
+        return window(rows, query);
+      }
+      bodyReads++;
+      expect(query).toMatchObject({ requireComplete: true, maxTotalJsonBytes: SOURCE_CONSTRUCTION_READ_BUDGET.maxTotalJsonBytes });
+      return window(mode === "body-bytes" ? [{ ...qa, patternJson: { ...metadata, oversized } }] : [qa], query!);
+    };
+    expect(await contextualQaConstructionsForRequest({ storage: f.storage, hasher: f.hasher, requestText, generation: 0 })).toBeUndefined();
+    expect(bodyReads).toBe(mode.startsWith("header") ? 0 : 1);
+    expect(evidence).not.toHaveBeenCalled();
+  }
 });

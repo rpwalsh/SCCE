@@ -5,6 +5,7 @@ import { jsonRecord } from "../kernel-answer-primitives.js";
 import type { LanguageMemoryStore } from "../storage.js";
 import { REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA } from "../request-communicative-act.js";
 import { CONTEXTUAL_QA_CONSTRUCTION_RECIPE } from "../source-owned-contextual-qa.js";
+import { canonicalJsonByteLength } from "../canonical-json-digest.js";
 
 const DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID = "scce.dialogue_conversational_construction.v2";
 const independentConstructionRecipes = new Set<string>([DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, CONTEXTUAL_QA_CONSTRUCTION_RECIPE]);
@@ -27,7 +28,7 @@ export function installFixtureLanguagePatternProjection(store: LanguageMemorySto
     const scopes = active;
     if (list) store.listLanguagePatterns = async query => {
       const rows = await list(query ? { ...query, limit: undefined } : undefined);
-      return rows.filter(row => {
+      const admitted = rows.filter(row => {
         if (query?.patternIds && !query.patternIds.includes(row.id)) return false;
         const metadata = jsonRecord(row.patternJson);
         if (query?.contextualQaRequestFeatures && (!Array.isArray(metadata.contextualQaRequestFeatures)
@@ -45,7 +46,10 @@ export function installFixtureLanguagePatternProjection(store: LanguageMemorySto
           && scope.sourceSystem === metadata.sourceSystem && scope.patternIds.includes(row.id)
           && (!independentConstructionRecipes.has(String(metadata.componentRecipe)) || scope.componentRecipe === metadata.componentRecipe)
           && canonicalStringify(scope.informationLabel) === canonicalStringify(row.informationLabel));
-      }).slice(0, query?.limit ?? rows.length);
+      });
+      if (query?.requireComplete && (admitted.length > (query.limit ?? admitted.length)
+        || query.maxTotalJsonBytes !== undefined && canonicalJsonByteLength(admitted.map(row => row.patternJson), query.maxTotalJsonBytes) > query.maxTotalJsonBytes)) return [];
+      return admitted.slice(0, query?.limit ?? admitted.length);
     };
   }
 }
