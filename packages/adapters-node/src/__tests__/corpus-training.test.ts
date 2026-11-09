@@ -2379,6 +2379,71 @@ describe("multi-corpus training", () => {
     expect(read).toEqual([blobContentHash(Buffer.from(texts.get("sv-d")!))]);
   });
 
+  it("stored global replay persists compiled human-source artifacts without duplicating raw n-gram observations", async () => {
+    const train = corpusTrainer.trainLanguageCorpusText;
+    const now = vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+    const run = async (retainRaw: boolean) => {
+      const fixture = memoryStorage();
+      await train({ storage: fixture.storage, sourceSystem: "wikipedia", sourceUri: "fixture://stored-human/dolly",
+        streamUri: "fixture://stored-human/dolly", text: humanCreativePair.text, informationLabel: publicCorpusInformationLabel,
+        skipNgramObservationPersistence: true, createdAt: 1 });
+      installDurableConstructionPool(fixture);
+      fixture.storage.evidence.listEvidenceBackedSourceVersions = async (query = {}) => fixture.state.sourceVersions
+        .filter(source => !query.afterSourceVersionId || source.sourceVersionId > query.afterSourceVersionId)
+        .sort((a, b) => a.sourceVersionId.localeCompare(b.sourceVersionId)).slice(0, query.limit)
+        .map(source => ({ sourceVersionId: source.sourceVersionId, contentHash: source.contentHash, canonicalUri: source.canonicalUri,
+          byteLength: source.byteLength, maxAlpha: 1, promotedSpanCount: fixture.state.evidence.filter(span => span.sourceVersionId === source.sourceVersionId).length }));
+      fixture.storage.evidence.sourceVersionsForEvidence = async ids => fixture.state.sourceVersions.filter(source => fixture.state.evidence.some(span => ids.includes(span.id) && span.sourceVersionId === source.sourceVersionId));
+      const corpus = await rawCorpusSegmentationFixture();
+      fixture.storage.corpusSegmentation = { readActive: async () => ({ inference: corpus.model, loader: corpus.loader }),
+        consolidate: async () => { throw Error("stored replay must not refit the corpus"); } };
+      const baseline = retainRaw ? vi.spyOn(corpusTrainer, "trainLanguageCorpusText").mockImplementation(input => train({ ...input, skipNgramObservationPersistence: false })) : undefined;
+      try {
+        const options = { storage: fixture.storage, sourceSystem: "wikipedia", minArticleBytes: 0, maxTotalBytes: 65536,
+          ngramMaxOrder: 4, ngramMaxCountersPerOrder: 12000, ngramVocabularyLimit: 24000,
+          corpusSegmentation: { scope: { informationLabel: publicCorpusInformationLabel, sourceVersionIds: fixture.state.sourceVersions.map(source => String(source.sourceVersionId)) },
+            recipeId: corpusSegmentationInputRecipe(4096), normalizationContractId: corpus.model.normalizationContractId, bounds: { pageRows: 3, maxPageBytes: 65536 } } };
+        const report = await trainStoredCorpusConstructions(options);
+        expect(report.batchesFailed).toEqual([]); expect(report.articlesTrained).toBe(1);
+        expect(report.reports[0]!.ngramModels).toBeGreaterThan(0);
+        expect(report.reports[0]!.segmentation?.mode).toBe("corpus_snapshot");
+        const artifacts = { sources: fixture.state.sourceVersions, evidence: fixture.state.evidence, profiles: fixture.state.profiles,
+          models: fixture.state.models, units: fixture.state.units, patterns: fixture.state.patterns, frames: fixture.state.frames };
+        const rawRows = fixture.state.observations.length;
+        const modelCount = fixture.state.models.length;
+        const replay = await trainStoredCorpusConstructions(options);
+        expect(replay.batchesFailed).toEqual([]); expect(fixture.state.models).toHaveLength(modelCount);
+        expect(fixture.state.observations).toHaveLength(rawRows);
+        return { artifacts, rawRows, observations: report.reports[0]!.ngramObservations };
+      } finally { baseline?.mockRestore(); }
+    };
+    try {
+      const reference = await run(true), compact = await run(false);
+      expect(reference.rawRows).toBeGreaterThan(0); expect(reference.observations).toBeGreaterThan(0);
+      expect(compact.rawRows).toBe(0); expect(compact.observations).toBe(0);
+      const referenceModel = reference.artifacts.models.at(-1)!, compactModel = compact.artifacts.models.at(-1)!;
+      const referenceReceipt = recordOf(recordOf(referenceModel.modelJson).sourceCompilation);
+      const compactReceipt = recordOf(recordOf(compactModel.modelJson).sourceCompilation);
+      expect(referenceReceipt.options).toMatchObject({ retainNgramObservations: true });
+      expect(compactReceipt.options).toEqual({ ...recordOf(referenceReceipt.options), retainNgramObservations: false });
+      expect(compactReceipt.compilationId).not.toBe(referenceReceipt.compilationId);
+      const manifest = reference.artifacts.patterns.find(row => row.patternKind === "source_compilation" && recordOf(recordOf(row.patternJson).compilation).compilationId === referenceReceipt.compilationId)!;
+      const compactManifest = compact.artifacts.patterns.find(row => row.patternKind === "source_compilation" && recordOf(recordOf(row.patternJson).compilation).compilationId === compactReceipt.compilationId)!;
+      expect(manifest).toBeDefined(); expect(compactManifest).toBeDefined();
+      const normalizeCompilationIdentity = (value: JsonValue): JsonValue => {
+        if (Array.isArray(value)) return value.map(normalizeCompilationIdentity);
+        if (value === null || typeof value !== "object") return value;
+        return kernel.toJsonValue(Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
+          (key === "sourceCompilationId" || key === "compilationId") && item === compactReceipt.compilationId ? referenceReceipt.compilationId
+            : key === "id" && item === compactManifest.id ? manifest.id
+              : key === "options" && value.compilationId === compactReceipt.compilationId ? { ...recordOf(item), retainNgramObservations: true } : normalizeCompilationIdentity(item ?? null)])));
+      };
+      const hash = (value: JsonValue) => createHasher().digestHex(kernel.canonicalStringify(value));
+      expect(hash(normalizeCompilationIdentity(kernel.toJsonValue(compact.artifacts))))
+        .toBe(hash(kernel.toJsonValue(reference.artifacts)));
+    } finally { now.mockRestore(); }
+  });
+
   it.each([false, true])("relearns every selected stored source at declared full capacities through the verified corpus loader (private=%s)", async privateScope => {
     const fixture = memoryStorage();
     const acquisitionIds = createIdFactory({ hasher: createHasher(), clock: createClock({ fixedTime: 1 }), namespace: "separate-source-acquisition" });

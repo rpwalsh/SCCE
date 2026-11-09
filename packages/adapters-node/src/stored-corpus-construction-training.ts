@@ -185,6 +185,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
         persistSource: false,
         persistProfile: Boolean(input.corpusSegmentation),
         skipNgramPersistence: !input.languageOnly && !input.corpusSegmentation,
+        skipNgramObservationPersistence: true,
         ...(input.languageOnly ? { languageOnly: true } : {}),
         ...(input.corpusSegmentation || input.languageOnly ? { ngramMaxOrder: input.ngramMaxOrder, ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
           ngramVocabularyLimit: input.ngramVocabularyLimit } : { ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 4096 }),
