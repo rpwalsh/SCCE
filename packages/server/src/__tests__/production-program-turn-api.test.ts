@@ -367,7 +367,7 @@ describe("production owner program turn through the API", () => {
       const role = state.creativeEventCompatibilityModels.flatMap(model => creativeSourceUtterances(model, profile.id, hasher))
         .flatMap(utterance => utterance.requestRoles.map(role => ({ role, surface: [...utterance.request.surface].slice(role.startCodePoint, role.endCodePoint).join("") })))
         .find(row => row.surface === sourceValue)?.role;
-      expect(role?.surfaceAcquisition).toEqual({ recipe: "kernel.creative_source_surface_acquisition.v1", occurrenceCount: 6 });
+      expect(role?.surfaceAcquisition).toEqual({ recipe: "kernel.creative_source_surface_acquisition.v2", occurrenceCount: 6 });
     }
     const events: ScceEvent[] = [];
     const storage = integrationStorage({ events, workspace, sources: [], constructionEvidence: [source], languageProfiles: [profile],
