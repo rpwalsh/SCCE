@@ -16,6 +16,9 @@ import {
   type SourceVersion
 } from "@scce/kernel";
 import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { readSourceTranscriptArchive } from "./source-transcript-archive.js";
+import { persistDialogueContextualQaComponent, type DialogueContextualQaReport } from "./dialogue-contextual-qa-component.js";
+import { canonicalStringify, createHasher, type InformationLabel, type TranscriptTurn } from "@scce/kernel";
 
 export interface StoredCorpusConstructionTrainingOptions {
   storage: ScceStorage;
@@ -70,6 +73,7 @@ export interface StoredCorpusConstructionTrainingReport {
   batchesFailed: Array<{ batchIndex: number; sourceVersionId?: string; reason: string }>;
   sourcesSkipped: Array<{ sourceVersionId: string; reason: string }>;
   reports: LanguageCorpusTrainingReport[];
+  contextualQa?: { reports: DialogueContextualQaReport[]; deferred: Array<{ sourceVersionId: string; reason: string }> };
 }
 
 interface ReplaySource {
@@ -78,6 +82,8 @@ interface ReplaySource {
   evidence: EvidenceSpan[];
   text: string;
   bytes: number;
+  transcriptTurns?: readonly TranscriptTurn[];
+  transcriptRetainedBytes?: number;
 }
 
 /** Recompile existing promoted documents, keeping the graph, evidence, profile and labels under their original owners. */
@@ -124,15 +130,22 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   let bytesScheduled = 0;
   let currentBatchBytes = 0;
   const successfulBatches = new Set<number>();
+  const qaEnabled = sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue && !input.languageOnly;
+  const qaPools = new Map<string, { rootUri: string; informationLabel: InformationLabel; authorship: string; sources: Array<{
+    sourceUri: string; text: string; sourceVersionId: string; transcriptTurns: readonly TranscriptTurn[] }>; deferred: Array<{ sourceVersionId: string; reason: string }> }>();
+  const contextualQa: NonNullable<StoredCorpusConstructionTrainingReport["contextualQa"]> = { reports: [], deferred: [] };
+  let qaRetainedBytes = 0;
 
   const trainSource = async (item: ReplaySource): Promise<void> => {
+    let trainingLabel: InformationLabel | undefined;
     try {
-      const metadata = recordOf(item.source.metadata);
+      const { transcriptArchive: _archive, ...metadata } = recordOf(item.source.metadata);
       const informationLabel = joinInformationLabels([
         ...(item.source.informationLabel ? [item.source.informationLabel] : []),
         ...(item.profile.informationLabel ? [item.profile.informationLabel] : []),
         ...item.evidence.map(span => span.informationLabel!)
       ], { explicitMergeAuthority: false });
+      trainingLabel = informationLabel;
       const prefix = input.includeUriPrefixes?.find(value => item.source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(item.source.canonicalUri);
       const report = await trainLanguageCorpusText({
         storage: input.storage,
@@ -143,6 +156,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
         evidence: item.evidence,
         profile: item.profile,
         text: item.text,
+        ...(item.transcriptTurns ? { transcriptTurns: item.transcriptTurns } : {}),
         mediaType: item.source.mediaType,
         namespace: item.source.namespace,
         createdAt: item.source.observedAt,
@@ -166,7 +180,14 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
       articlesTrained++;
       bytesTrained += item.bytes;
       successfulBatches.add(batchIndex);
+      if (qaEnabled && item.transcriptTurns) {
+        qaRetainedBytes += item.transcriptRetainedBytes!;
+        qaPool(item.source, informationLabel).sources.push({ sourceUri: item.source.canonicalUri,
+          sourceVersionId: String(item.source.sourceVersionId), text: item.text, transcriptTurns: item.transcriptTurns });
+      }
     } catch (error) {
+      if (qaEnabled && item.transcriptTurns && trainingLabel) qaPool(item.source, trainingLabel).deferred.push({
+        sourceVersionId: String(item.source.sourceVersionId), reason: "base_source_training_failed" });
       batchesFailed.push({ batchIndex, sourceVersionId: String(item.source.sourceVersionId), reason: errorText(error) });
       markStorageFailure(error, String(item.source.sourceVersionId));
     }
@@ -207,13 +228,39 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   if (inventory && sourcesConsidered >= inventory.eligibleSources) exhausted = true;
   const batchesTrained = successfulBatches.size;
   const nextBatchIndex = batchIndex + (exhausted && currentBatchBytes > 0 ? 1 : 0);
+  if (qaEnabled) for (const pool of qaPools.values()) {
+    if (pool.deferred.length || storageFailure !== null || stoppedByInterruption) {
+      contextualQa.deferred.push(...pool.deferred, ...pool.sources.map(source => ({ sourceVersionId: source.sourceVersionId, reason: "incomplete_owner_pool" })));
+      continue;
+    }
+    if (pool.sources.length) {
+      try { contextualQa.reports.push(await persistDialogueContextualQaComponent({ storage: input.storage, rootUri: pool.rootUri,
+        informationLabel: pool.informationLabel, authorship: pool.authorship, sources: pool.sources })); }
+      catch (error) {
+        contextualQa.deferred.push(...pool.sources.map(source => ({ sourceVersionId: source.sourceVersionId, reason: errorText(error) })));
+        if (markStorageFailure(error, pool.sources[0]!.sourceVersionId)) batchesFailed.push({ batchIndex,
+          sourceVersionId: pool.sources[0]!.sourceVersionId, reason: errorText(error) });
+      }
+    }
+  }
   return { schema: "scce.storedCorpusConstructionTrainReport.v1", sourceSystem, recipeId: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
     startBatchIndex, startSourceVersionId: input.afterSourceVersionId ?? null, nextSourceVersionId, exhausted, sourcePageSize,
     sourcesEnumerated, sourcesConsidered, sourcesAttempted, maxSourceAttempts, legacyBatchSourcesSkipped, bytesScheduled, inventory, inventoryScope: "after_start_cursor",
     eligibleSourcesRemaining: inventory ? Math.max(0, inventory.eligibleSources - sourcesConsidered) : null,
     articleBounds: { minBytes: minArticleBytes, maxBytes: maxArticleBytes },
     batchesTrained, articlesTrained, bytesTrained, nextBatchIndex, stoppedByHeapSafetyBound,
-    heapMiBAtExit: heapMiB(), stoppedByStorageFailure: storageFailure !== null, stoppedByInterruption, storageFailure, batchesFailed, sourcesSkipped, reports };
+    heapMiBAtExit: heapMiB(), stoppedByStorageFailure: storageFailure !== null, stoppedByInterruption, storageFailure, batchesFailed, sourcesSkipped, reports,
+    ...(qaEnabled ? { contextualQa } : {}) };
+
+  function qaPool(source: SourceVersion, informationLabel: InformationLabel) {
+    const prefix = input.includeUriPrefixes?.find(value => source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(source.canonicalUri);
+    const authorship = recordOf(source.metadata).authorship;
+    const key = canonicalStringify({ prefix, informationLabel, authorship });
+    let pool = qaPools.get(key);
+    if (!pool) { pool = { rootUri: `scce://stored-dialogue-qa/${createHasher().digestHex(key)}`, informationLabel,
+      authorship: typeof authorship === "string" ? authorship : "unmeasured", sources: [], deferred: [] }; qaPools.set(key, pool); }
+    return pool;
+  }
 
   function interrupted(): boolean {
     if (input.signal?.aborted) stoppedByInterruption = true;
@@ -257,7 +304,25 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
       const points = [...text];
       if (bytes.byteLength !== source.byteLength || evidence.some(span => points.slice(span.charStart, span.charEnd).join("") !== span.text)) throw new Error("stored source/evidence coordinates do not match");
       if (!text.trim()) throw new Error("stored source is empty");
-      await trainSource({ source, profile, evidence, text, bytes: bytes.byteLength });
+      let transcriptTurns: readonly TranscriptTurn[] | undefined;
+      let transcriptRetainedBytes: number | undefined;
+      if (qaEnabled) {
+        const informationLabel = joinInformationLabels([...(source.informationLabel ? [source.informationLabel] : []),
+          ...(profile.informationLabel ? [profile.informationLabel] : []), ...evidence.map(span => span.informationLabel!)], { explicitMergeAuthority: false });
+        try { transcriptTurns = await readSourceTranscriptArchive(input.storage, source, text,
+          { maxExpandedSurfaceBytes: Math.max(0, maxTotalBytes - qaRetainedBytes - bytes.byteLength) }); }
+        catch (error) { qaPool(source, informationLabel).deferred.push({ sourceVersionId: String(source.sourceVersionId), reason: errorText(error) }); throw error; }
+        if (!transcriptTurns && metadata.transcriptSchema === "scce.dialogue_transcript.v1") {
+          qaPool(source, informationLabel).deferred.push({ sourceVersionId: String(source.sourceVersionId), reason: "transcript_annotations_unavailable" });
+          sourcesSkipped.push({ sourceVersionId: String(source.sourceVersionId), reason: "transcript_annotations_unavailable" });
+          return true;
+        }
+        if (transcriptTurns) transcriptRetainedBytes = bytes.byteLength + Number(recordOf(metadata.transcriptArchive ?? null).archiveByteLength)
+          + transcriptTurns.reduce((total, turn) => total + Buffer.byteLength(turn.surface, "utf8")
+            + (turn.supportingSourceRanges ?? []).reduce((total, range) => total + Buffer.byteLength(range.surface, "utf8"), 0), 0);
+      }
+      await trainSource({ source, profile, evidence, text, bytes: bytes.byteLength,
+        ...(transcriptTurns ? { transcriptTurns, transcriptRetainedBytes } : {}) });
       interrupted();
     } catch (error) {
       if (markStorageFailure(error, String(version.sourceVersionId))) batchesFailed.push({ batchIndex, sourceVersionId: String(version.sourceVersionId), reason: errorText(error) });

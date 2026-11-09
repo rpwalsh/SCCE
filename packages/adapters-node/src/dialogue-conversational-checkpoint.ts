@@ -11,7 +11,7 @@ export interface DialogueSourceComponentInput<T> {
   informationLabel: InformationLabel;
   authorship: string;
   sources: readonly { sourceUri: string; sourceVersionId: string; contentHash: string; byteLength: number; transcriptTurns?: readonly TranscriptTurn[]; transcriptDigest?:string }[];
-  compile: () => Promise<{ report: T; projections: readonly LanguagePatternProjection[] }>;
+  compile: () => Promise<{ report: T; projections: readonly LanguagePatternProjection[]; deferred?: boolean }>;
   unchanged: () => T;
 }
 export function runDialogueConversationalComponent<T>(input:DialogueSourceComponentInput<T>):Promise<T>{
@@ -57,7 +57,8 @@ async function runDialogueSourceComponent<T>(input:DialogueSourceComponentInput<
   if (await current()) return input.unchanged();
   return input.storage.transaction(async () => {
     if (await current()) return input.unchanged();
-    const { report, projections } = await input.compile();
+    const { report, projections, deferred } = await input.compile();
+    if (deferred) return report;
     await input.storage.ingestion.put({ id, rootUri: input.rootUri, itemUri: input.rootUri, phase: "stored", status: "complete",
       offsetBytes: byteLength, contentHash, byteLength, updatedAt: Date.now(), metadata: toJsonValue({
         schema: schema, binding, compilerFingerprint, projections

@@ -6,6 +6,7 @@ import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import { blobContentHash } from "./postgres.js";
 import { prepareCorpusSourceGraphProjection, SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "./corpus-source-graph-projection.js";
 import { sourceMetadataBoundOwner, unitSourceMetadataNormalizer } from "./unit-source-metadata.js";
+import { prepareSourceTranscriptArchive, type SourceTranscriptArchiveDescriptor } from "./source-transcript-archive.js";
 import { SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID } from "./source-code-function-learning.js";
 import {
   createClock,
@@ -217,6 +218,7 @@ export interface LanguageCorpusTrainingReport {
   sourceContentHash: string;
   /** Exact source-byte count for the same content binding. */
   sourceByteLength: number;
+  transcriptArchive?: SourceTranscriptArchiveDescriptor;
   languageProfiles: number;
   evidence: number;
   ngramObservations: number;
@@ -260,6 +262,7 @@ interface PreparedLanguageCorpusPayload {
   text: string;
   bytes: Uint8Array;
   originalBytes?: Uint8Array;
+  transcriptArchive?: ReturnType<typeof prepareSourceTranscriptArchive>;
   mediaType: string;
   source?: SourceVersion;
   originalSource?: SourceVersion;
@@ -449,7 +452,7 @@ async function prepareCorpusCheckpoint(input: LanguageCorpusTrainingInput, bindi
       throw new CorpusCheckpointConflictError(`corpus checkpoint identity mismatch for ${id}; refusing replay`);
     }
     const report = checkpointReport(existing, input, binding);
-    if (report) return report;
+    if (report) return ensureCachedTranscriptArchive(input, report, existing);
   }
   await input.storage.ingestion.put(checkpointRecord(input, binding));
   return undefined;
@@ -464,9 +467,31 @@ export async function readCompletedCorpusCheckpoint(input: LanguageCorpusTrainin
   const id = corpusCheckpointId(input);
   if (!id) return undefined;
   const existing = await input.storage.ingestion.get(id);
-  return existing?.status === "complete"
-    ? checkpointReport(existing, input, checkpointBinding(input))
-    : undefined;
+  if (existing?.status !== "complete") return undefined;
+  const report = checkpointReport(existing, input, checkpointBinding(input));
+  return report ? ensureCachedTranscriptArchive(input, report, existing) : undefined;
+}
+
+async function ensureCachedTranscriptArchive(input: LanguageCorpusTrainingInput, report: LanguageCorpusTrainingReport, checkpoint: IngestionCheckpoint): Promise<LanguageCorpusTrainingReport> {
+  if (!input.transcriptTurns || report.transcriptArchive || typeof jsonRecord(input.corpusMetadata).authorship !== "string") return report;
+  return input.storage.transaction(async () => {
+    const versions = await input.storage.evidence.sourceVersionsForEvidence(report.artifacts.evidenceIds as import("@scce/kernel").EvidenceId[]);
+    const source = versions.find(source => String(source.sourceVersionId) === report.sourceVersionId);
+    const expectedLabel = normalizeInformationLabel(input.informationLabel ?? verifiedPublicCorpusLabel(canonicalCorpusSourceSystemId(input.sourceSystem)));
+    if (!source || source.canonicalUri !== (input.sourceUri ?? input.streamUri)
+      || source.namespace !== (input.namespace ?? `corpus:${canonicalCorpusSourceSystemId(input.sourceSystem)}`)
+      || canonicalStringify(toJsonValue(source.informationLabel)) !== canonicalStringify(toJsonValue(expectedLabel))) throw Error("cached transcript archive owner is unavailable");
+    const archive = prepareSourceTranscriptArchive(source, input.text, input.transcriptTurns!);
+    if (!jsonRecord(source.metadata).transcriptArchive) {
+      if (await input.storage.blobs.put(archive.bytes, "application/json") !== archive.descriptor.archiveHash) throw Error("transcript archive publication hash mismatch");
+      await input.storage.evidence.putSourceVersion(archive.source);
+      const current = (await input.storage.evidence.sourceVersionsForEvidence(report.artifacts.evidenceIds as import("@scce/kernel").EvidenceId[])).find(owner => owner.sourceVersionId === source.sourceVersionId);
+      if (canonicalStringify(jsonRecord(current?.metadata).transcriptArchive ?? null) !== canonicalStringify(toJsonValue(archive.descriptor))) throw Error("transcript archive append was not accepted");
+    }
+    const upgraded = { ...report, transcriptArchive: archive.descriptor };
+    await input.storage.ingestion.put({ ...checkpoint, metadata: toJsonValue({ ...jsonRecord(checkpoint.metadata), report: upgraded }) });
+    return upgraded;
+  });
 }
 
 function preparationInputSnapshot(input: LanguageCorpusTrainingInput): LanguageCorpusTrainingInput {
@@ -481,6 +506,7 @@ function preparationInputSnapshot(input: LanguageCorpusTrainingInput): LanguageC
     corpusRegistry: clone(input.corpusRegistry),
     sourceAdmission: clone(input.sourceAdmission),
     corpusMetadata: clone(input.corpusMetadata),
+    transcriptTurns: clone(input.transcriptTurns),
     acquisitionProvenance: clone(input.acquisitionProvenance),
     languageAliases: clone(input.languageAliases),
     constructionSets: clone(input.constructionSets),
@@ -1096,6 +1122,10 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     const normalize = unitSourceMetadataNormalizer(owner, hasher);
     if (units.some(unit => normalize(unit) !== unit)) source = owner;
   }
+  const transcriptOwner = source ?? canonicalSource;
+  const transcriptArchive = transcriptOwner && input.transcriptTurns && typeof jsonRecord(transcriptOwner.metadata).authorship === "string"
+    ? prepareSourceTranscriptArchive(transcriptOwner, text, input.transcriptTurns) : undefined;
+  if (transcriptArchive && source) source = transcriptArchive.source;
   const activeImportVersionValue = jsonRecord(input.corpusMetadata).activeImportVersion;
   const segmentation = constructionOnly ? undefined : prepareLanguageTrainingSegmentation({
     batch: { text, createdAt },
@@ -1154,6 +1184,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     text,
     bytes,
     originalBytes,
+    transcriptArchive,
     mediaType: input.mediaType ?? "text/plain",
     source,
     originalSource,
@@ -1238,11 +1269,16 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     }
     const persistedHash = await input.storage.blobs.put(prepared.bytes, prepared.mediaType);
     if (persistedHash !== prepared.source.contentHash) throw new Error("language training source blob hash mismatch");
+    if (prepared.transcriptArchive && await input.storage.blobs.put(prepared.transcriptArchive.bytes, "application/json") !== prepared.transcriptArchive.descriptor.archiveHash) throw Error("transcript archive publication hash mismatch");
     await input.storage.quarantine.put(prepared.quarantine);
     await putSpanBlobs(input.storage.blobs, prepared.evidence, prepared.mediaType);
     await input.storage.evidence.putSourceVersion(prepared.source);
     if (input.storage.evidence.putEvidenceSpans) await input.storage.evidence.putEvidenceSpans(prepared.evidence);
     else for (const span of prepared.evidence) await input.storage.evidence.putEvidenceSpan(span);
+    if (prepared.transcriptArchive && input.storage.evidence.sourceVersionById) {
+      const current = await input.storage.evidence.sourceVersionById(prepared.source.sourceVersionId);
+      if (canonicalStringify(jsonRecord(current?.metadata).transcriptArchive ?? null) !== canonicalStringify(toJsonValue(prepared.transcriptArchive.descriptor))) throw Error("transcript archive append was not accepted");
+    }
   }
 
   if (input.persistProfile !== false) await input.storage.model.putLanguageProfile(prepared.profile);
@@ -1330,6 +1366,7 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     },
     sourceContentHash: prepared.originalSource?.contentHash ?? prepared.source?.contentHash ?? createHasher().digestHex(Buffer.from(prepared.text, "utf8")),
     sourceByteLength: prepared.originalSource?.byteLength ?? prepared.source?.byteLength ?? Buffer.byteLength(prepared.text, "utf8"),
+    ...(prepared.transcriptArchive ? { transcriptArchive: prepared.transcriptArchive.descriptor } : {}),
     languageProfiles: 1,
     evidence: prepared.evidence.length,
     ngramObservations: prepared.observations.length,

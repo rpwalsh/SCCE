@@ -3,6 +3,7 @@
 import { Pool, type PoolClient } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { languageUnitMetadataMergeSql, SOURCE_METADATA_BINDING_SCHEMA } from "./unit-source-metadata.js";
+import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js";
 import { decodeDurableJoinPrograms, encodeDurableJoinPrograms } from "./durable-join-program-storage.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "./dialogue-conversational-checkpoint.js";
 import {
@@ -1096,7 +1097,8 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
             AND EXCLUDED.metadata_json->'sourceMetadataBinding'->>'sourceVersionId'=stored.id
             AND (NOT (stored.metadata_json ? 'sourceMetadataBinding')
               OR stored.metadata_json->'sourceMetadataBinding'=EXCLUDED.metadata_json->'sourceMetadataBinding')
-            THEN jsonb_build_object('sourceMetadataBinding', EXCLUDED.metadata_json->'sourceMetadataBinding') ELSE '{}'::jsonb END`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
+            THEN jsonb_build_object('sourceMetadataBinding', EXCLUDED.metadata_json->'sourceMetadataBinding') ELSE '{}'::jsonb END
+          || ${sourceTranscriptArchiveAppendSql(storage.table("blobs"), storage.table("sources"))}`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
       });
     },
     async putEvidenceVisual(input) {

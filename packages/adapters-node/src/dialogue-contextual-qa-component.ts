@@ -17,12 +17,13 @@ export interface DialogueContextualQaReport {
   qualifiedFamilies: number;
   familyApplicability: readonly { fitBindings: number; heldOutBindings: number; outOfApplicability: number }[];
   rejected: readonly { bindingId: string; reason: string }[];
+  deferredProjections?: readonly { sourceVersionId: string; reason: "dependencies_outside_pool" }[];
   unchanged: boolean;
 }
 
 export async function persistDialogueContextualQaComponent(input: {
   storage: ScceStorage; rootUri: string; informationLabel: InformationLabel; authorship: string;
-  sources: readonly { sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[] }[];
+  sources: readonly { sourceUri: string; text: string; sourceVersionId?: string; transcriptTurns?: readonly TranscriptTurn[] }[];
 }): Promise<DialogueContextualQaReport> {
   const unchanged = (): DialogueContextualQaReport => ({ schema: "scce.dialogue_contextual_qa_report.v1", pairs: 0,
     compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
@@ -30,7 +31,7 @@ export async function persistDialogueContextualQaComponent(input: {
   const hasher = createHasher();
   const eligible = input.sources.filter(source => source.transcriptTurns?.some(turn => turn.commitmentScope === "external" && turn.supportingSourceRanges?.length));
   if (input.authorship !== "human_authored" || !eligible.length) return unchanged();
-  const sources = eligible.map(source => ({ ...source, sourceVersionId: String(corpusSourceVersionIdFor(source)),
+  const sources = eligible.map(source => ({ ...source, sourceVersionId: source.sourceVersionId ?? String(corpusSourceVersionIdFor(source)),
     contentHash: hasher.digestHex(source.text), byteLength: Buffer.byteLength(source.text, "utf8") }));
   return runDialogueContextualQaComponent({ storage: input.storage, rootUri: input.rootUri,
     informationLabel: input.informationLabel, authorship: input.authorship,
@@ -46,12 +47,13 @@ export async function persistDialogueContextualQaComponent(input: {
         const owners = profiles.filter(profile => String(profile.sourceVersionId) === source.sourceVersionId);
         if (owners.length !== 1) throw Error("Contextual QA requires one exact profile per source version");
         const spans = (await input.storage.evidence.searchEvidence({ sourceVersionId: source.sourceVersionId as SourceVersionId,
-          status: "promoted", limit: Number.MAX_SAFE_INTEGER })).map(row => row.span);
+          status: "promoted", limit: 4096 })).map(row => row.span);
         if (!spans.length || spans.some(span => String(span.sourceVersionId) !== source.sourceVersionId)) throw Error("Contextual QA requires promoted owner evidence");
         documents.push({ sourceVersionId: source.sourceVersionId, profileId: owners[0]!.id, spans, transcriptTurns: source.transcriptTurns });
       }
       const acquired = acquireContextualQaConstructions({ documents, hasher, updatedAt: Date.now(), authorship: input.authorship });
       const projections: LanguagePatternProjection[] = [], pooledVersions = new Set(versions.map(String));
+      const deferredProjections: Array<{ sourceVersionId: string; reason: "dependencies_outside_pool" }> = [];
       let persisted = 0;
       for (const document of documents) {
         const owner = document.spans[0]!;
@@ -59,6 +61,7 @@ export async function persistDialogueContextualQaComponent(input: {
           sourceSystem: SYSTEM, patternSchema: SCHEMA, componentRecipe: RECIPE, informationLabel: input.informationLabel };
         const previous = await memory.getLanguagePatternProjection?.(key);
         if (previous?.sourceDependencies?.some(dependency => !pooledVersions.has(String(dependency.sourceVersionId)))) {
+          deferredProjections.push({ sourceVersionId: String(owner.sourceVersionId), reason: "dependencies_outside_pool" });
           projections.push(previous); continue;
         }
         const families = acquired.families.filter(family => family.pattern.profileId === document.profileId);
@@ -76,8 +79,9 @@ export async function persistDialogueContextualQaComponent(input: {
         await memory.replaceLanguagePatternProjection({ patterns, projection });
         persisted += patterns.length; projections.push(projection);
       }
-      return { projections, report: { schema: "scce.dialogue_contextual_qa_report.v1" as const, pairs: acquired.pairs,
+      return { projections, ...(deferredProjections.length ? { deferred: true } : {}), report: { schema: "scce.dialogue_contextual_qa_report.v1" as const, pairs: acquired.pairs,
         compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
+        ...(deferredProjections.length ? { deferredProjections } : {}),
         patternsPersisted: persisted, qualifiedFamilies: acquired.families.length, familyApplicability: acquired.families.map(family => family.applicability), rejected: acquired.rejected, unchanged: false } };
     } });
 }
