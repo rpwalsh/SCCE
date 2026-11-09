@@ -43,10 +43,7 @@ export function encodeProgramArtifactWire(input:Record<string,unknown>):Record<s
  const output=Object.fromEntries(Object.entries(input).map(([key,value])=>[key,key==="programArtifacts"?value:visit(value)]));
  return references?{...output,artifactContents:{schema:FILE_ARTIFACT_CONTENTS_SCHEMA,additional}}:output;
 }
-/** Resolve and verify every declared content reference before any file is used.
- * Event hashes remain hashes of their original ledger payloads. Restore this
- * explicit wire envelope before checking or replaying those original payloads.
- */
+/** Restore exact ledger payloads before verifying their hashes or using files. */
 export function decodeProgramArtifactWire(input:Record<string,unknown>):Record<string,unknown>{
  const header=input.artifactContents,pool=contents(),additional=new Set<string>(),used=new Set<string>();
  if(header!==undefined&&(!object(header)||header.schema!==FILE_ARTIFACT_CONTENTS_SCHEMA||!object(header.additional)
