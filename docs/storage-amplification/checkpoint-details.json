@@ -1,0 +1,773 @@
+{
+  "schema": "scce.storage_amplification_detail_audit.v1",
+  "scope": "Available checkpoint; not Windows candidate",
+  "readOnlyApplicationData": true,
+  "startedAt": "2026-11-09T02:31:25.388Z",
+  "samples": [
+    {
+      "schema": "scce.creative_event_construction_pattern.v3",
+      "records": [
+        {
+          "id": "surface.creative_event.bundle.001e9248af58731f2cfd7d83d52cb08cd142f07409c3a698738d9f0496d6bcbe",
+          "profile_id": "language_profile_5f7dd18f80562b311e4562a34f153c23fd71c6388908afd0",
+          "stored_bytes": 265841,
+          "rendered_bytes": 1112004,
+          "member_bytes": {
+            "title": 16,
+            "bundle": 1110005,
+            "schema": 45,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "contentDigest": 66,
+            "annotatedTurns": 2,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66
+          },
+          "nested_member_bytes": {
+            "bundle": {
+              "events": 1107818,
+              "schema": 45,
+              "profileId": 67,
+              "compilerId": 39,
+              "sourcePage": 1683,
+              "evidenceIds": 66,
+              "sourceVersionIds": 75,
+              "evidenceContentHashes": 75
+            }
+          }
+        },
+        {
+          "id": "surface.creative_event.bundle.003589bca07e2ac5ffd7e3b4ddbbd457eed46ef006ac17ef201c7201ff4f3529",
+          "profile_id": "language_profile_5ae3aca05151af5e04474d1568bfd981b6228cdd528f7991",
+          "stored_bytes": 332448,
+          "rendered_bytes": 1224825,
+          "member_bytes": {
+            "pages": 1,
+            "bundle": 1224051,
+            "schema": 45,
+            "shardUri": 93,
+            "sourceUri": 93,
+            "streamUri": 93,
+            "forceClass": 24,
+            "sourceSystem": 11,
+            "contentDigest": 66,
+            "sourceSystemId": 57,
+            "inputManifestId": 73,
+            "provenanceClass": 24
+          },
+          "nested_member_bytes": {
+            "bundle": {
+              "events": 1221173,
+              "schema": 45,
+              "profileId": 67,
+              "compilerId": 39,
+              "sourcePage": 2158,
+              "evidenceIds": 132,
+              "sourceVersionIds": 150,
+              "evidenceContentHashes": 150
+            }
+          }
+        },
+        {
+          "id": "surface.creative_event.bundle.004a73e64f66ed10280668002b8f3764c83ca04cc6f5aec4e43cd413985e8b79",
+          "profile_id": "language_profile_e968f0d8632d95a8ce81398664664580f9a77a06cf45946e",
+          "stored_bytes": 275263,
+          "rendered_bytes": 1166834,
+          "member_bytes": {
+            "title": 16,
+            "bundle": 1164835,
+            "schema": 45,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "contentDigest": 66,
+            "annotatedTurns": 2,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66
+          },
+          "nested_member_bytes": {
+            "bundle": {
+              "events": 1162645,
+              "schema": 45,
+              "profileId": 67,
+              "compilerId": 39,
+              "sourcePage": 1686,
+              "evidenceIds": 66,
+              "sourceVersionIds": 75,
+              "evidenceContentHashes": 75
+            }
+          }
+        }
+      ]
+    },
+    {
+      "schema": "scce.language_construction_pattern.v1",
+      "records": [
+        {
+          "id": "surface.construction.bundle.00001255e42983e4c5ac2b340bd368f9399729d541870a627055a000014d49c8",
+          "profile_id": "language_profile_d013207b165fe67fe09fb5984151436bb0d26d3e3729951c",
+          "stored_bytes": 2352,
+          "rendered_bytes": 3611,
+          "member_bytes": {
+            "title": 16,
+            "bundle": 1506,
+            "schema": 39,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "contentDigest": 66,
+            "annotatedTurns": 2,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "storageEncoding": 47,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66,
+            "constructionQualification": 13
+          },
+          "nested_member_bytes": {
+            "bundle": {
+              "id": 94,
+              "schema": 39,
+              "bindingId": 59,
+              "evidenceIds": 66,
+              "contentDigest": 66,
+              "sourceExamples": 676,
+              "sourceProfileId": 67,
+              "targetProfileId": 67,
+              "sourceVersionIds": 75,
+              "acquisitionStatus": 17,
+              "evidenceContentHashes": 75
+            }
+          }
+        },
+        {
+          "id": "surface.construction.bundle.00001da99567ab18e291ce74a6849a80d4cc80abd22f0fe18b5441c2465d792d",
+          "profile_id": "language_profile_8180c6caecbe7270a7b51d9dc4f5dd7c2e12d853b25c18b6",
+          "stored_bytes": 2560,
+          "rendered_bytes": 4537,
+          "member_bytes": {
+            "title": 16,
+            "bundle": 2432,
+            "schema": 39,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "contentDigest": 66,
+            "annotatedTurns": 2,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "storageEncoding": 47,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66,
+            "constructionQualification": 13
+          },
+          "nested_member_bytes": {
+            "bundle": {
+              "id": 94,
+              "schema": 39,
+              "bindingId": 59,
+              "evidenceIds": 66,
+              "contentDigest": 66,
+              "sourceExamples": 1602,
+              "sourceProfileId": 67,
+              "targetProfileId": 67,
+              "sourceVersionIds": 75,
+              "acquisitionStatus": 17,
+              "evidenceContentHashes": 75
+            }
+          }
+        },
+        {
+          "id": "surface.construction.bundle.00006fa8a0911e7387453f84d4ca82b8e24c1d71b197ab775fd8c137c472a56d",
+          "profile_id": "language_profile_8e52684e49ab06d03479c910db3217711034609ac626a065",
+          "stored_bytes": 2400,
+          "rendered_bytes": 3944,
+          "member_bytes": {
+            "title": 16,
+            "bundle": 1839,
+            "schema": 39,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "contentDigest": 66,
+            "annotatedTurns": 2,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "storageEncoding": 47,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66,
+            "constructionQualification": 13
+          },
+          "nested_member_bytes": {
+            "bundle": {
+              "id": 94,
+              "schema": 39,
+              "bindingId": 59,
+              "evidenceIds": 66,
+              "contentDigest": 66,
+              "sourceExamples": 1009,
+              "sourceProfileId": 67,
+              "targetProfileId": 67,
+              "sourceVersionIds": 75,
+              "acquisitionStatus": 17,
+              "evidenceContentHashes": 75
+            }
+          }
+        }
+      ]
+    },
+    {
+      "schema": "scce.induced_language_model.semantic_memory.v1",
+      "records": [
+        {
+          "id": "induced_language_memory_pattern_001d9d499ef861557382c5c0bb55656a88c40b74584cce1ad52c38529f05f1e4",
+          "profile_id": "language_profile_e7075124463426f7e8bed7a63b3b4beaa8b4fe2c39c3db4f",
+          "stored_bytes": 504620,
+          "rendered_bytes": 1884893,
+          "member_bytes": {
+            "title": 16,
+            "counts": 1641,
+            "schema": 48,
+            "modelId": 49,
+            "profileId": 67,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "annotatedTurns": 2,
+            "lexicalClasses": 1248,
+            "semanticFrames": 1100235,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "componentRecipe": 46,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "sourceVersionId": 73,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66,
+            "graphBoundConstructions": 431520,
+            "relationHypothesisModel": 347929
+          },
+          "nested_member_bytes": {
+            "relationHypothesisModel": {
+              "id": 68,
+              "audit": 103,
+              "schema": 35,
+              "statistics": 347632,
+              "sourceCount": 1,
+              "observationCount": 4
+            }
+          }
+        },
+        {
+          "id": "induced_language_memory_pattern_002d7a937b99b169fbaf9cc84f4bd8f5a9c32f8b02b46c3f8de360d44e740af9",
+          "profile_id": "language_profile_8e52684e49ab06d03479c910db3217711034609ac626a065",
+          "stored_bytes": 358650,
+          "rendered_bytes": 1533951,
+          "member_bytes": {
+            "title": 16,
+            "counts": 1796,
+            "schema": 48,
+            "modelId": 49,
+            "profileId": 67,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "annotatedTurns": 2,
+            "lexicalClasses": 504,
+            "semanticFrames": 965680,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "componentRecipe": 46,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "sourceVersionId": 73,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66,
+            "graphBoundConstructions": 337706,
+            "relationHypothesisModel": 225945
+          },
+          "nested_member_bytes": {
+            "relationHypothesisModel": {
+              "id": 68,
+              "audit": 102,
+              "schema": 35,
+              "statistics": 225649,
+              "sourceCount": 1,
+              "observationCount": 4
+            }
+          }
+        },
+        {
+          "id": "induced_language_memory_pattern_0049aa58c471b0045093b8f014f28d543424df7f2ff053b1edbd3e8a6c5fed1a",
+          "profile_id": "language_profile_aec7030cd683bf260414708f7339a856c3c522d57112920a",
+          "stored_bytes": 372458,
+          "rendered_bytes": 1573887,
+          "member_bytes": {
+            "title": 16,
+            "counts": 1728,
+            "schema": 48,
+            "modelId": 49,
+            "profileId": 67,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "annotatedTurns": 2,
+            "lexicalClasses": 253,
+            "semanticFrames": 966873,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "componentRecipe": 46,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "sourceVersionId": 73,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66,
+            "graphBoundConstructions": 369626,
+            "relationHypothesisModel": 233087
+          },
+          "nested_member_bytes": {
+            "relationHypothesisModel": {
+              "id": 68,
+              "audit": 102,
+              "schema": 35,
+              "statistics": 232791,
+              "sourceCount": 1,
+              "observationCount": 4
+            }
+          }
+        }
+      ]
+    },
+    {
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "records": [
+        {
+          "id": "induced_language_memory_pattern_00284c6c67f14701ca847f7ff8bd5655069c37a92c6c61788fc8860eac5add79",
+          "profile_id": "language_profile_e968f0d8632d95a8ce81398664664580f9a77a06cf45946e",
+          "stored_bytes": 585540,
+          "rendered_bytes": 5838718,
+          "member_bytes": {
+            "title": 16,
+            "counts": 10065,
+            "schema": 46,
+            "modelId": 49,
+            "profileId": 67,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "templates": 94797,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "joinProgram": 5690477,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "annotatedTurns": 2,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "boundarySignals": 41106,
+            "componentRecipe": 46,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "sourceVersionId": 73,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66
+          },
+          "nested_member_bytes": {
+            "joinProgram": {
+              "schema": 38,
+              "mixture": 5690414
+            }
+          }
+        },
+        {
+          "id": "induced_language_memory_pattern_0046f6467db141b9ea8d896e86fd632d4eac65b198a50eaec435690f12c4b93c",
+          "profile_id": "language_profile_cbf83f1d09e62d201c4c4a35a74960ecfd567665fb433087",
+          "stored_bytes": 414063,
+          "rendered_bytes": 3581649,
+          "member_bytes": {
+            "title": 16,
+            "counts": 9597,
+            "schema": 46,
+            "modelId": 49,
+            "profileId": 67,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "templates": 108325,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "joinProgram": 3420842,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "annotatedTurns": 2,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "boundarySignals": 40612,
+            "componentRecipe": 46,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "sourceVersionId": 73,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66
+          },
+          "nested_member_bytes": {
+            "joinProgram": {
+              "schema": 38,
+              "mixture": 3420779
+            }
+          }
+        },
+        {
+          "id": "induced_language_memory_pattern_011981faa8580b8f6099c2b37b7995b4d95bb27f31a8ba60e9357869e55ee9ad",
+          "profile_id": "language_profile_7ba89653903465e9c7f7c2779062e951bf299959b886df08",
+          "stored_bytes": 186712,
+          "rendered_bytes": 1103214,
+          "member_bytes": {
+            "title": 16,
+            "counts": 9650,
+            "schema": 46,
+            "modelId": 49,
+            "profileId": 67,
+            "sourceUri": 106,
+            "streamUri": 77,
+            "templates": 118188,
+            "authorship": 16,
+            "corpusRole": 62,
+            "forceClass": 24,
+            "sourceHash": 66,
+            "joinProgram": 932547,
+            "relativePath": 21,
+            "sourceSystem": 10,
+            "annotatedTurns": 2,
+            "sourceMetadata": 968,
+            "sourceSystemId": 57,
+            "boundarySignals": 40556,
+            "componentRecipe": 46,
+            "languageAliases": 11,
+            "provenanceClass": 24,
+            "sourceVersionId": 73,
+            "transcriptSchema": 29,
+            "sourceCompilationId": 66
+          },
+          "nested_member_bytes": {
+            "joinProgram": {
+              "schema": 38,
+              "mixture": 932484
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "sourceBytes": [
+    {
+      "source_system": "dialogue",
+      "role": null,
+      "versions": 374,
+      "bytes": "9483834"
+    },
+    {
+      "source_system": "gutenberg",
+      "role": "evidence-derivative",
+      "versions": 1,
+      "bytes": "151094"
+    },
+    {
+      "source_system": "gutenberg",
+      "role": "original",
+      "versions": 1,
+      "bytes": "174311"
+    },
+    {
+      "source_system": "oss_docs",
+      "role": "evidence-derivative",
+      "versions": 2,
+      "bytes": "575"
+    },
+    {
+      "source_system": "oss_docs",
+      "role": "original",
+      "versions": 2,
+      "bytes": "575"
+    },
+    {
+      "source_system": "wikipedia",
+      "role": "evidence-derivative",
+      "versions": 36,
+      "bytes": "1345035"
+    },
+    {
+      "source_system": "wikipedia",
+      "role": "original",
+      "versions": 36,
+      "bytes": "3258847"
+    }
+  ],
+  "requestInventory": [
+    {
+      "rows": 2048,
+      "profiles": 1,
+      "distinct_bodies": 2048,
+      "stored_bytes": "110656200"
+    }
+  ],
+  "requestMembers": [
+    {
+      "key": "trainingSourceVersionIds",
+      "rows": 2048,
+      "distinct_values": 1,
+      "member_bytes": "57446400",
+      "max_bytes": 28050
+    },
+    {
+      "key": "trainingSourceDigests",
+      "rows": 2048,
+      "distinct_values": 1,
+      "member_bytes": "52084736",
+      "max_bytes": 25432
+    },
+    {
+      "key": "classCounts",
+      "rows": 2048,
+      "distinct_values": 1,
+      "member_bytes": "212992",
+      "max_bytes": 104
+    },
+    {
+      "key": "actCounts",
+      "rows": 2048,
+      "distinct_values": 1294,
+      "member_bytes": "110145",
+      "max_bytes": 79
+    },
+    {
+      "key": "schema",
+      "rows": 2048,
+      "distinct_values": 1,
+      "member_bytes": "88064",
+      "max_bytes": 43
+    },
+    {
+      "key": "sourceSystem",
+      "rows": 2048,
+      "distinct_values": 1,
+      "member_bytes": "55296",
+      "max_bytes": 27
+    },
+    {
+      "key": "matchMode",
+      "rows": 2048,
+      "distinct_values": 1,
+      "member_bytes": "43008",
+      "max_bytes": 21
+    },
+    {
+      "key": "learnedFrameOrPatternId",
+      "rows": 2048,
+      "distinct_values": 2048,
+      "member_bytes": "29413",
+      "max_bytes": 33
+    },
+    {
+      "key": "surface",
+      "rows": 2048,
+      "distinct_values": 1763,
+      "member_bytes": "20835",
+      "max_bytes": 27
+    },
+    {
+      "key": "anchor",
+      "rows": 2048,
+      "distinct_values": 3,
+      "member_bytes": "10626",
+      "max_bytes": 7
+    }
+  ],
+  "unitMetadataSamples": [
+    {
+      "id": "language_unit_fd173458266c118a8b55587eb13a66aad348491dcd9d653a",
+      "source_system": "dialogue",
+      "metadata_stored_bytes": 1968,
+      "member_bytes": {
+        "shape": 46,
+        "title": 16,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "profileEntropy": 18,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "language_unit_376174c6bb356c5ab27b0b30fd67524c552ae8f684379611",
+      "source_system": "dialogue",
+      "metadata_stored_bytes": 1964,
+      "member_bytes": {
+        "shape": 42,
+        "title": 16,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "profileEntropy": 17,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "language_unit_73697229a206eb677c6662c214b60453d63d3853d9e0de8b",
+      "source_system": "dialogue",
+      "metadata_stored_bytes": 1964,
+      "member_bytes": {
+        "shape": 43,
+        "title": 16,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "profileEntropy": 17,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "language_unit_a7aa1e5aa2f205000c26f16bd8419f9c61cf15bd352c86da",
+      "source_system": "dialogue",
+      "metadata_stored_bytes": 1964,
+      "member_bytes": {
+        "shape": 45,
+        "title": 16,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "profileEntropy": 18,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "language_unit_dca3f5355388d5d38531028e35b948db2fed5bf788d6ed96",
+      "source_system": "dialogue",
+      "metadata_stored_bytes": 1964,
+      "member_bytes": {
+        "shape": 42,
+        "title": 16,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "profileEntropy": 18,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    }
+  ],
+  "complete": true,
+  "finishedAt": "2026-11-09T02:31:41.016Z",
+  "qualification": "Field/member lengths are rendered JSON bytes, not measured physical savings. Legacy request lists predate current source-owned writers. No source text or lexical-count keys included."
+}

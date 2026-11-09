@@ -1,0 +1,1754 @@
+{
+  "schema": "scce.storage_amplification_audit.v2",
+  "databaseSchema": "scce_eval_fresh",
+  "scope": "Available Dolly/Alice/36 acquired Wikipedia article checkpoint; only two Wikipedia articles learned; not Windows candidate",
+  "startedAt": "2026-11-09T02:48:32.181Z",
+  "readOnlyApplicationData": true,
+  "columnBytes": {
+    "language_patterns": {
+      "rows": "249338",
+      "pattern_json_stored_bytes": "2079088165",
+      "evidence_ids_stored_bytes": "22308004",
+      "information_label_stored_bytes": "44288188"
+    },
+    "language_units": {
+      "rows": "75390",
+      "metadata_json_stored_bytes": "144741281",
+      "features_stored_bytes": "4873942",
+      "evidence_ids_stored_bytes": "6968510",
+      "competence_vector_stored_bytes": "3548371",
+      "information_label_stored_bytes": "13399360"
+    },
+    "graph_nodes": {
+      "rows": "11779",
+      "representation_json_stored_bytes": "10629104",
+      "features_stored_bytes": "3925875",
+      "evidence_ids_stored_bytes": "1869139",
+      "metadata_json_stored_bytes": "2066042",
+      "information_label_stored_bytes": "1696176"
+    },
+    "graph_edges": {
+      "rows": "15893",
+      "evidence_ids_stored_bytes": "2600189",
+      "temporal_scope_stored_bytes": "619827",
+      "metadata_json_stored_bytes": "1847008",
+      "information_label_stored_bytes": "2288592"
+    }
+  },
+  "server": {
+    "version": "18.6"
+  },
+  "relations": [
+    {
+      "table": "language_patterns",
+      "heap_bytes": "172457984",
+      "table_and_toast_bytes": "2428600320",
+      "index_bytes": "86499328",
+      "allocated_bytes": "2515099648",
+      "toast_bytes": "2256076800"
+    },
+    {
+      "table": "language_units",
+      "heap_bytes": "53043200",
+      "table_and_toast_bytes": "209485824",
+      "index_bytes": "17719296",
+      "allocated_bytes": "227205120",
+      "toast_bytes": "156409856"
+    },
+    {
+      "table": "evidence_spans",
+      "heap_bytes": "2334720",
+      "table_and_toast_bytes": "31309824",
+      "index_bytes": "59531264",
+      "allocated_bytes": "90841088",
+      "toast_bytes": "28950528"
+    },
+    {
+      "table": "ngram_models",
+      "heap_bytes": "212992",
+      "table_and_toast_bytes": "75833344",
+      "index_bytes": "581632",
+      "allocated_bytes": "76414976",
+      "toast_bytes": "75595776"
+    },
+    {
+      "table": "events",
+      "heap_bytes": "3334144",
+      "table_and_toast_bytes": "63496192",
+      "index_bytes": "1409024",
+      "allocated_bytes": "64905216",
+      "toast_bytes": "60137472"
+    },
+    {
+      "table": "graph_edges",
+      "heap_bytes": "32350208",
+      "table_and_toast_bytes": "33103872",
+      "index_bytes": "29777920",
+      "allocated_bytes": "62881792",
+      "toast_bytes": "729088"
+    },
+    {
+      "table": "evidence_anchor_index",
+      "heap_bytes": "139264",
+      "table_and_toast_bytes": "16515072",
+      "index_bytes": "43671552",
+      "allocated_bytes": "60186624",
+      "toast_bytes": "16351232"
+    },
+    {
+      "table": "graph_nodes",
+      "heap_bytes": "17375232",
+      "table_and_toast_bytes": "23887872",
+      "index_bytes": "14336000",
+      "allocated_bytes": "38223872",
+      "toast_bytes": "6488064"
+    },
+    {
+      "table": "storage_meta",
+      "heap_bytes": "122880",
+      "table_and_toast_bytes": "16056320",
+      "index_bytes": "122880",
+      "allocated_bytes": "16179200",
+      "toast_bytes": "15908864"
+    },
+    {
+      "table": "relation_observations",
+      "heap_bytes": "4898816",
+      "table_and_toast_bytes": "4931584",
+      "index_bytes": "5988352",
+      "allocated_bytes": "10919936",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "blobs",
+      "heap_bytes": "188416",
+      "table_and_toast_bytes": "9740288",
+      "index_bytes": "106496",
+      "allocated_bytes": "9846784",
+      "toast_bytes": "9527296"
+    },
+    {
+      "table": "language_profiles",
+      "heap_bytes": "524288",
+      "table_and_toast_bytes": "3735552",
+      "index_bytes": "647168",
+      "allocated_bytes": "4382720",
+      "toast_bytes": "3186688"
+    },
+    {
+      "table": "semantic_frames",
+      "heap_bytes": "270336",
+      "table_and_toast_bytes": "1949696",
+      "index_bytes": "860160",
+      "allocated_bytes": "2809856",
+      "toast_bytes": "1654784"
+    },
+    {
+      "table": "graph_hyperedges",
+      "heap_bytes": "1474560",
+      "table_and_toast_bytes": "1892352",
+      "index_bytes": "409600",
+      "allocated_bytes": "2301952",
+      "toast_bytes": "393216"
+    },
+    {
+      "table": "source_versions",
+      "heap_bytes": "352256",
+      "table_and_toast_bytes": "1859584",
+      "index_bytes": "204800",
+      "allocated_bytes": "2064384",
+      "toast_bytes": "1482752"
+    },
+    {
+      "table": "construct_graphs",
+      "heap_bytes": "114688",
+      "table_and_toast_bytes": "1835008",
+      "index_bytes": "32768",
+      "allocated_bytes": "1867776",
+      "toast_bytes": "1695744"
+    },
+    {
+      "table": "quarantine_sources",
+      "heap_bytes": "843776",
+      "table_and_toast_bytes": "1417216",
+      "index_bytes": "122880",
+      "allocated_bytes": "1540096",
+      "toast_bytes": "548864"
+    },
+    {
+      "table": "ingestion_checkpoints",
+      "heap_bytes": "24576",
+      "table_and_toast_bytes": "1236992",
+      "index_bytes": "65536",
+      "allocated_bytes": "1302528",
+      "toast_bytes": "1187840"
+    },
+    {
+      "table": "semantic_proofs",
+      "heap_bytes": "49152",
+      "table_and_toast_bytes": "1179648",
+      "index_bytes": "32768",
+      "allocated_bytes": "1212416",
+      "toast_bytes": "1105920"
+    },
+    {
+      "table": "calibration_observations",
+      "heap_bytes": "729088",
+      "table_and_toast_bytes": "917504",
+      "index_bytes": "188416",
+      "allocated_bytes": "1105920",
+      "toast_bytes": "163840"
+    },
+    {
+      "table": "language_profile_signatures",
+      "heap_bytes": "851968",
+      "table_and_toast_bytes": "884736",
+      "index_bytes": "131072",
+      "allocated_bytes": "1015808",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "language_profile_aliases",
+      "heap_bytes": "237568",
+      "table_and_toast_bytes": "270336",
+      "index_bytes": "204800",
+      "allocated_bytes": "475136",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "interaction_state_records",
+      "heap_bytes": "65536",
+      "table_and_toast_bytes": "270336",
+      "index_bytes": "49152",
+      "allocated_bytes": "319488",
+      "toast_bytes": "180224"
+    },
+    {
+      "table": "sources",
+      "heap_bytes": "114688",
+      "table_and_toast_bytes": "147456",
+      "index_bytes": "57344",
+      "allocated_bytes": "204800",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "validation_graphs",
+      "heap_bytes": "147456",
+      "table_and_toast_bytes": "180224",
+      "index_bytes": "16384",
+      "allocated_bytes": "196608",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "emission_graphs",
+      "heap_bytes": "131072",
+      "table_and_toast_bytes": "163840",
+      "index_bytes": "16384",
+      "allocated_bytes": "180224",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "dialogue_policy_decision_records",
+      "heap_bytes": "16384",
+      "table_and_toast_bytes": "139264",
+      "index_bytes": "32768",
+      "allocated_bytes": "172032",
+      "toast_bytes": "98304"
+    },
+    {
+      "table": "scce2_import_ledger",
+      "heap_bytes": "24576",
+      "table_and_toast_bytes": "57344",
+      "index_bytes": "81920",
+      "allocated_bytes": "139264",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "response_candidate_records",
+      "heap_bytes": "73728",
+      "table_and_toast_bytes": "106496",
+      "index_bytes": "32768",
+      "allocated_bytes": "139264",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "brain_import_lifecycle",
+      "heap_bytes": "8192",
+      "table_and_toast_bytes": "32768",
+      "index_bytes": "49152",
+      "allocated_bytes": "81920",
+      "toast_bytes": "24576"
+    },
+    {
+      "table": "capability_calls",
+      "heap_bytes": "16384",
+      "table_and_toast_bytes": "49152",
+      "index_bytes": "16384",
+      "allocated_bytes": "65536",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "ngram_observations",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "49152",
+      "allocated_bytes": "57344",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "task_resumption_snapshots",
+      "heap_bytes": "8192",
+      "table_and_toast_bytes": "16384",
+      "index_bytes": "32768",
+      "allocated_bytes": "49152",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "language_identities",
+      "heap_bytes": "8192",
+      "table_and_toast_bytes": "32768",
+      "index_bytes": "16384",
+      "allocated_bytes": "49152",
+      "toast_bytes": "24576"
+    },
+    {
+      "table": "model_state",
+      "heap_bytes": "8192",
+      "table_and_toast_bytes": "32768",
+      "index_bytes": "16384",
+      "allocated_bytes": "49152",
+      "toast_bytes": "24576"
+    },
+    {
+      "table": "segmentation_population_models",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "32768",
+      "allocated_bytes": "40960",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "forecast_envelopes",
+      "heap_bytes": "8192",
+      "table_and_toast_bytes": "16384",
+      "index_bytes": "16384",
+      "allocated_bytes": "32768",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "correction_rules",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "24576",
+      "allocated_bytes": "32768",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "segmentation_aggregates",
+      "heap_bytes": "8192",
+      "table_and_toast_bytes": "16384",
+      "index_bytes": "16384",
+      "allocated_bytes": "32768",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "conversation_outcome_records",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "24576",
+      "allocated_bytes": "32768",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "forecast_states",
+      "heap_bytes": "8192",
+      "table_and_toast_bytes": "16384",
+      "index_bytes": "16384",
+      "allocated_bytes": "32768",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "user_model_claims",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "24576",
+      "allocated_bytes": "32768",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "workspace_source_files",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "24576",
+      "allocated_bytes": "32768",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "translation_seeds",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "user_correction_records",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "document_generation_sessions",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "conversation_turns",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "policy_evaluations",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "policy_genomes",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "ppf_cache",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "locale_bundles",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "learning_needs",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "alpha_traces",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "induced_language_models",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "sparse_ranking_comparisons",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "style_preference_snapshots",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "target_profile_patterns",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "translation_alignments",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "translation_constructions",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "translation_corrections",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "executive_event",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "relation_potential_models",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "self_rewrite_episodes",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "sparse_ranking_models",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "workspaces",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "workspace_reports",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "16384",
+      "allocated_bytes": "24576",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "relation_potential_active_model",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "8192",
+      "allocated_bytes": "16384",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "sparse_ranking_active_model",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "8192",
+      "allocated_bytes": "16384",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "executive_episode",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "8192",
+      "allocated_bytes": "16384",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "executive_command",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "8192",
+      "allocated_bytes": "16384",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "self_rewrite_patches",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "8192",
+      "allocated_bytes": "16384",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "benchmark_runs",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "8192",
+      "allocated_bytes": "16384",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "benchmark_cases",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "8192",
+      "allocated_bytes": "16384",
+      "toast_bytes": "8192"
+    },
+    {
+      "table": "program_builds",
+      "heap_bytes": "0",
+      "table_and_toast_bytes": "8192",
+      "index_bytes": "8192",
+      "allocated_bytes": "16384",
+      "toast_bytes": "8192"
+    }
+  ],
+  "patternKinds": [
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.creative_event_construction_pattern.v3",
+      "rows": "2159",
+      "stored_json_bytes": "597942522",
+      "largest_stored_json_bytes": "326172"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.language_construction_pattern.v1",
+      "rows": "214819",
+      "stored_json_bytes": "540990441",
+      "largest_stored_json_bytes": "11107"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "rows": "745",
+      "stored_json_bytes": "342763266",
+      "largest_stored_json_bytes": "660955"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.induced_language_model.semantic_memory.v1",
+      "rows": "745",
+      "stored_json_bytes": "325576418",
+      "largest_stored_json_bytes": "582324"
+    },
+    {
+      "source_system": "request_communicative_act",
+      "pattern_kind": "discourse",
+      "schema": "scce.request_communicative_act_pattern.v1",
+      "rows": "2048",
+      "stored_json_bytes": "110656200",
+      "largest_stored_json_bytes": "54078"
+    },
+    {
+      "source_system": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.request_requirement_pattern.v1",
+      "rows": "21204",
+      "stored_json_bytes": "49439596",
+      "largest_stored_json_bytes": "3237"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.creative_event_compatibility_model.v1",
+      "rows": "366",
+      "stored_json_bytes": "41301549",
+      "largest_stored_json_bytes": "635691"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "morphology",
+      "schema": "scce.induced_language_model.morphology_memory.v1",
+      "rows": "745",
+      "stored_json_bytes": "20166479",
+      "largest_stored_json_bytes": "30855"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.creative_event_construction_pattern.v3",
+      "rows": "35",
+      "stored_json_bytes": "10452936",
+      "largest_stored_json_bytes": "304711"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "rows": "10",
+      "stored_json_bytes": "6190514",
+      "largest_stored_json_bytes": "716139"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.induced_language_model.semantic_memory.v1",
+      "rows": "10",
+      "stored_json_bytes": "5517767",
+      "largest_stored_json_bytes": "620652"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.creative_event_construction_pattern.v3",
+      "rows": "14",
+      "stored_json_bytes": "4499416",
+      "largest_stored_json_bytes": "340557"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.language_construction_pattern.v1",
+      "rows": "1512",
+      "stored_json_bytes": "3537260",
+      "largest_stored_json_bytes": "10866"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "rows": "5",
+      "stored_json_bytes": "2732121",
+      "largest_stored_json_bytes": "620514"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.induced_language_model.semantic_memory.v1",
+      "rows": "5",
+      "stored_json_bytes": "2652126",
+      "largest_stored_json_bytes": "569972"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.creative_event_source_coverage.v1",
+      "rows": "374",
+      "stored_json_bytes": "2633828",
+      "largest_stored_json_bytes": "8224"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.language_construction_pattern.v1",
+      "rows": "1099",
+      "stored_json_bytes": "2092377",
+      "largest_stored_json_bytes": "11150"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "narrative",
+      "schema": "scce.narrative_surface_pattern.v1",
+      "rows": "374",
+      "stored_json_bytes": "1792962",
+      "largest_stored_json_bytes": "5122"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "discourse",
+      "schema": "scce.long_form_discourse_pattern.v1",
+      "rows": "374",
+      "stored_json_bytes": "1553593",
+      "largest_stored_json_bytes": "5091"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.source_induction_coverage.v1",
+      "rows": "374",
+      "stored_json_bytes": "1546237",
+      "largest_stored_json_bytes": "4675"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "syntax",
+      "schema": null,
+      "rows": "374",
+      "stored_json_bytes": "1007956",
+      "largest_stored_json_bytes": "2740"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "morphology",
+      "schema": null,
+      "rows": "374",
+      "stored_json_bytes": "752201",
+      "largest_stored_json_bytes": "2365"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "segmentation",
+      "schema": null,
+      "rows": "374",
+      "stored_json_bytes": "749122",
+      "largest_stored_json_bytes": "2003"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "semantic_role",
+      "schema": null,
+      "rows": "374",
+      "stored_json_bytes": "721725",
+      "largest_stored_json_bytes": "2248"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "cadence",
+      "schema": null,
+      "rows": "374",
+      "stored_json_bytes": "609255",
+      "largest_stored_json_bytes": "1669"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.source_language_compilation_receipt.v1",
+      "rows": "374",
+      "stored_json_bytes": "551922",
+      "largest_stored_json_bytes": "1484"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "morphology",
+      "schema": "scce.induced_language_model.morphology_memory.v1",
+      "rows": "10",
+      "stored_json_bytes": "213284",
+      "largest_stored_json_bytes": "24298"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "morphology",
+      "schema": "scce.induced_language_model.morphology_memory.v1",
+      "rows": "5",
+      "stored_json_bytes": "135833",
+      "largest_stored_json_bytes": "29696"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "rows": "2",
+      "stored_json_bytes": "63713",
+      "largest_stored_json_bytes": "32713"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.creative_event_construction_pattern.v3",
+      "rows": "2",
+      "stored_json_bytes": "35271",
+      "largest_stored_json_bytes": "19380"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.induced_language_model.semantic_memory.v1",
+      "rows": "2",
+      "stored_json_bytes": "30354",
+      "largest_stored_json_bytes": "17326"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.creative_event_source_coverage.v1",
+      "rows": "1",
+      "stored_json_bytes": "28190",
+      "largest_stored_json_bytes": "28190"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.language_construction_pattern.v1",
+      "rows": "12",
+      "stored_json_bytes": "26462",
+      "largest_stored_json_bytes": "2305"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.creative_event_source_coverage.v1",
+      "rows": "1",
+      "stored_json_bytes": "19160",
+      "largest_stored_json_bytes": "19160"
+    },
+    {
+      "source_system": "dialogue",
+      "pattern_kind": "semantic_role",
+      "schema": "scce.induced_language_model.translation_seed_memory.v1",
+      "rows": "3",
+      "stored_json_bytes": "16554",
+      "largest_stored_json_bytes": "6073"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.source_induction_coverage.v1",
+      "rows": "1",
+      "stored_json_bytes": "13111",
+      "largest_stored_json_bytes": "13111"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.source_induction_coverage.v1",
+      "rows": "1",
+      "stored_json_bytes": "9868",
+      "largest_stored_json_bytes": "9868"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "discourse",
+      "schema": "scce.long_form_discourse_pattern.v1",
+      "rows": "1",
+      "stored_json_bytes": "4727",
+      "largest_stored_json_bytes": "4727"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "morphology",
+      "schema": "scce.induced_language_model.morphology_memory.v1",
+      "rows": "2",
+      "stored_json_bytes": "4514",
+      "largest_stored_json_bytes": "2292"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "narrative",
+      "schema": "scce.narrative_surface_pattern.v1",
+      "rows": "1",
+      "stored_json_bytes": "4214",
+      "largest_stored_json_bytes": "4214"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.creative_event_source_coverage.v1",
+      "rows": "2",
+      "stored_json_bytes": "4076",
+      "largest_stored_json_bytes": "2047"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "narrative",
+      "schema": "scce.narrative_surface_pattern.v1",
+      "rows": "1",
+      "stored_json_bytes": "3668",
+      "largest_stored_json_bytes": "3668"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "discourse",
+      "schema": "scce.long_form_discourse_pattern.v1",
+      "rows": "2",
+      "stored_json_bytes": "3619",
+      "largest_stored_json_bytes": "1816"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "narrative",
+      "schema": "scce.narrative_surface_pattern.v1",
+      "rows": "2",
+      "stored_json_bytes": "3602",
+      "largest_stored_json_bytes": "1821"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.source_induction_coverage.v1",
+      "rows": "2",
+      "stored_json_bytes": "3577",
+      "largest_stored_json_bytes": "1796"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "syntax",
+      "schema": null,
+      "rows": "2",
+      "stored_json_bytes": "3322",
+      "largest_stored_json_bytes": "1676"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "discourse",
+      "schema": "scce.long_form_discourse_pattern.v1",
+      "rows": "1",
+      "stored_json_bytes": "3173",
+      "largest_stored_json_bytes": "3173"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "semantic_role",
+      "schema": null,
+      "rows": "2",
+      "stored_json_bytes": "3041",
+      "largest_stored_json_bytes": "1531"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "morphology",
+      "schema": null,
+      "rows": "2",
+      "stored_json_bytes": "2959",
+      "largest_stored_json_bytes": "1481"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.source_language_compilation_receipt.v1",
+      "rows": "2",
+      "stored_json_bytes": "2928",
+      "largest_stored_json_bytes": "1466"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "segmentation",
+      "schema": null,
+      "rows": "2",
+      "stored_json_bytes": "2871",
+      "largest_stored_json_bytes": "1447"
+    },
+    {
+      "source_system": "oss_docs",
+      "pattern_kind": "cadence",
+      "schema": null,
+      "rows": "2",
+      "stored_json_bytes": "2853",
+      "largest_stored_json_bytes": "1431"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "syntax",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "2079",
+      "largest_stored_json_bytes": "2079"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "morphology",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "1643",
+      "largest_stored_json_bytes": "1643"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "syntax",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "1601",
+      "largest_stored_json_bytes": "1601"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "source_compilation",
+      "schema": "scce.source_language_compilation_receipt.v1",
+      "rows": "1",
+      "stored_json_bytes": "1485",
+      "largest_stored_json_bytes": "1485"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "morphology",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "1320",
+      "largest_stored_json_bytes": "1320"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "semantic_role",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "1281",
+      "largest_stored_json_bytes": "1281"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "segmentation",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "1144",
+      "largest_stored_json_bytes": "1144"
+    },
+    {
+      "source_system": "gutenberg",
+      "pattern_kind": "cadence",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "981",
+      "largest_stored_json_bytes": "981"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "semantic_role",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "678",
+      "largest_stored_json_bytes": "678"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "cadence",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "625",
+      "largest_stored_json_bytes": "625"
+    },
+    {
+      "source_system": "wikipedia",
+      "pattern_kind": "segmentation",
+      "schema": null,
+      "rows": "1",
+      "stored_json_bytes": "595",
+      "largest_stored_json_bytes": "595"
+    }
+  ],
+  "largestPatterns": [
+    {
+      "id": "induced_language_memory_pattern_168f7b70c7a9196b90a9e6675755cd9fd2b374b6288a8869710e2951cd7baa67",
+      "source_system": "gutenberg",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "716139",
+      "rendered_json_bytes": "6817435",
+      "member_rendered_bytes": {
+        "title": 21,
+        "counts": 10436,
+        "schema": 46,
+        "modelId": 49,
+        "identity": 200,
+        "profileId": 67,
+        "sourceUri": 87,
+        "streamUri": 81,
+        "templates": 61141,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 6703244,
+        "relativePath": 25,
+        "sourceSystem": 11,
+        "identityRecipe": 35,
+        "sourceSystemId": 57,
+        "boundarySignals": 41219,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "boilerplateStripped": 4,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_d66c54a3f6a39acabf989b85602ca80de3b6aabb1f27cef591176a3c733375ff",
+      "source_system": "gutenberg",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "705499",
+      "rendered_json_bytes": "7046951",
+      "member_rendered_bytes": {
+        "title": 21,
+        "counts": 9494,
+        "schema": 46,
+        "modelId": 49,
+        "identity": 200,
+        "profileId": 67,
+        "sourceUri": 87,
+        "streamUri": 81,
+        "templates": 51139,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 6943927,
+        "relativePath": 25,
+        "sourceSystem": 11,
+        "identityRecipe": 35,
+        "sourceSystemId": 57,
+        "boundarySignals": 40996,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "boilerplateStripped": 4,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_47f469e920ff8b4e365807aec46d2c5379454873b74938d44e4ebc685739a6c1",
+      "source_system": "gutenberg",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "695551",
+      "rendered_json_bytes": "7001658",
+      "member_rendered_bytes": {
+        "title": 21,
+        "counts": 8651,
+        "schema": 46,
+        "modelId": 49,
+        "identity": 200,
+        "profileId": 67,
+        "sourceUri": 87,
+        "streamUri": 81,
+        "templates": 47763,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 6902883,
+        "relativePath": 25,
+        "sourceSystem": 11,
+        "identityRecipe": 35,
+        "sourceSystemId": 57,
+        "boundarySignals": 40966,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "boilerplateStripped": 4,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_d6c9cd951a2eeb23410041d95b4fd5e5c121eacfe97d112af933434df06609d3",
+      "source_system": "gutenberg",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "688138",
+      "rendered_json_bytes": "6842402",
+      "member_rendered_bytes": {
+        "title": 21,
+        "counts": 8179,
+        "schema": 46,
+        "modelId": 49,
+        "identity": 200,
+        "profileId": 67,
+        "sourceUri": 87,
+        "streamUri": 81,
+        "templates": 48180,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 6743663,
+        "relativePath": 25,
+        "sourceSystem": 11,
+        "identityRecipe": 35,
+        "sourceSystemId": 57,
+        "boundarySignals": 40985,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "boilerplateStripped": 4,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_ec109ee7250980cce4e3527a6a62573ce17a2521341f7a1ec2589d955f610478",
+      "source_system": "gutenberg",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "678749",
+      "rendered_json_bytes": "6834163",
+      "member_rendered_bytes": {
+        "title": 21,
+        "counts": 10560,
+        "schema": 46,
+        "modelId": 49,
+        "identity": 200,
+        "profileId": 67,
+        "sourceUri": 87,
+        "streamUri": 81,
+        "templates": 55114,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 6726041,
+        "relativePath": 25,
+        "sourceSystem": 11,
+        "identityRecipe": 35,
+        "sourceSystemId": 57,
+        "boundarySignals": 41053,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "boilerplateStripped": 4,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_fd4d30e03591e7f8c0517ea92186b92687eed591c5d295cdfa35008e88df57c6",
+      "source_system": "gutenberg",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "667471",
+      "rendered_json_bytes": "6611372",
+      "member_rendered_bytes": {
+        "title": 21,
+        "counts": 9375,
+        "schema": 46,
+        "modelId": 49,
+        "identity": 200,
+        "profileId": 67,
+        "sourceUri": 87,
+        "streamUri": 81,
+        "templates": 51104,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 6508438,
+        "relativePath": 25,
+        "sourceSystem": 11,
+        "identityRecipe": 35,
+        "sourceSystemId": 57,
+        "boundarySignals": 41060,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "boilerplateStripped": 4,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_d915558382a7cd9ef0645ded847a838797941e21be8c97e4fb1db233688c0b19",
+      "source_system": "dialogue",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "660955",
+      "rendered_json_bytes": "6224948",
+      "member_rendered_bytes": {
+        "title": 16,
+        "counts": 10043,
+        "schema": 46,
+        "modelId": 49,
+        "profileId": 67,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "templates": 105908,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 6065929,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "boundarySignals": 40795,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_bea0391f5e36cdc1757d9e3f4a6b34bb33d280e1eeac8d8f08a3d05e58b1dd58",
+      "source_system": "gutenberg",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "660457",
+      "rendered_json_bytes": "6583685",
+      "member_rendered_bytes": {
+        "title": 21,
+        "counts": 9482,
+        "schema": 46,
+        "modelId": 49,
+        "identity": 200,
+        "profileId": 67,
+        "sourceUri": 87,
+        "streamUri": 81,
+        "templates": 48917,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 6482848,
+        "relativePath": 25,
+        "sourceSystem": 11,
+        "identityRecipe": 35,
+        "sourceSystemId": 57,
+        "boundarySignals": 41043,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "boilerplateStripped": 4,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_7d6be067762afa84c467c03e8aac5236ede5766d9e8dc989f37ec98f0fdc2634",
+      "source_system": "dialogue",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "653363",
+      "rendered_json_bytes": "6050356",
+      "member_rendered_bytes": {
+        "title": 16,
+        "counts": 10086,
+        "schema": 46,
+        "modelId": 49,
+        "profileId": 67,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "templates": 95381,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 5901805,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "boundarySignals": 40811,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_cc95a47ff94878f1e64fb4c385510d14db51caf6180a1f97341a1e8db3490a41",
+      "source_system": "dialogue",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "652547",
+      "rendered_json_bytes": "5766199",
+      "member_rendered_bytes": {
+        "title": 16,
+        "counts": 9860,
+        "schema": 46,
+        "modelId": 49,
+        "profileId": 67,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "templates": 82156,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 5630938,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "boundarySignals": 40972,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_3d4f8de49445c207f8119cfc3c275fd58bd52511742300a9331222a4d0d2a388",
+      "source_system": "dialogue",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "651156",
+      "rendered_json_bytes": "6099839",
+      "member_rendered_bytes": {
+        "title": 16,
+        "counts": 10305,
+        "schema": 46,
+        "modelId": 49,
+        "profileId": 67,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "templates": 103557,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 5942782,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "boundarySignals": 40922,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    },
+    {
+      "id": "induced_language_memory_pattern_79dd07c18a0f991fee8fcb056538e851df59ba981e16ee72a1a7f0b5ab1ad471",
+      "source_system": "dialogue",
+      "pattern_kind": "syntax",
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "stored_json_bytes": "649183",
+      "rendered_json_bytes": "6394581",
+      "member_rendered_bytes": {
+        "title": 16,
+        "counts": 10458,
+        "schema": 46,
+        "modelId": 49,
+        "profileId": 67,
+        "sourceUri": 106,
+        "streamUri": 77,
+        "templates": 107832,
+        "authorship": 16,
+        "corpusRole": 62,
+        "forceClass": 24,
+        "sourceHash": 66,
+        "joinProgram": 6232935,
+        "relativePath": 21,
+        "sourceSystem": 10,
+        "annotatedTurns": 2,
+        "sourceMetadata": 968,
+        "sourceSystemId": 57,
+        "boundarySignals": 41083,
+        "componentRecipe": 46,
+        "languageAliases": 11,
+        "provenanceClass": 24,
+        "sourceVersionId": 73,
+        "transcriptSchema": 29,
+        "sourceCompilationId": 66
+      }
+    }
+  ],
+  "nodeKinds": [
+    {
+      "type_id": "dimension_bb6c6e9b249993a51b417d94aae0316c3ead5a15aba62e9d",
+      "schema": "scce.proposition_node.v1",
+      "rows": "7743",
+      "stored_representation_bytes": "7724624",
+      "stored_feature_bytes": "1810215",
+      "stored_evidence_id_bytes": "689127"
+    },
+    {
+      "type_id": "dimension_4cb9ddaebefd081c6eccc9be5fd9f6945469e227a0bcb30b",
+      "schema": null,
+      "rows": "717",
+      "stored_representation_bytes": "1190310",
+      "stored_feature_bytes": "1090568",
+      "stored_evidence_id_bytes": "691416"
+    },
+    {
+      "type_id": "dimension_5a519b1493498cccf1a0ff4cd1a00000ffefe3c22766b106",
+      "schema": null,
+      "rows": "600",
+      "stored_representation_bytes": "1142265",
+      "stored_feature_bytes": "478962",
+      "stored_evidence_id_bytes": "136800"
+    },
+    {
+      "type_id": "dimension_896e14ea82617e78bbed6a131f582f14eb8bf7d36ddb909e",
+      "schema": null,
+      "rows": "345",
+      "stored_representation_bytes": "286577",
+      "stored_feature_bytes": "322898",
+      "stored_evidence_id_bytes": "30705"
+    },
+    {
+      "type_id": "dimension_f113a2c0b7a88ef422a9f6badf43eddfcaec848dd9561aba",
+      "schema": null,
+      "rows": "36",
+      "stored_representation_bytes": "196663",
+      "stored_feature_bytes": "50213",
+      "stored_evidence_id_bytes": "24301"
+    },
+    {
+      "type_id": "dimension_00a8b9d7b5eda1f7e0f6cdcfd97d4aa74795aa574ae1b3f4",
+      "schema": null,
+      "rows": "2278",
+      "stored_representation_bytes": "71868",
+      "stored_feature_bytes": "159570",
+      "stored_evidence_id_bytes": "295339"
+    },
+    {
+      "type_id": "dimension_93635e4ecb34a606793bbf6a38c48b69d2c775bde2e03d5e",
+      "schema": null,
+      "rows": "36",
+      "stored_representation_bytes": "7082",
+      "stored_feature_bytes": "5592",
+      "stored_evidence_id_bytes": "468"
+    },
+    {
+      "type_id": "dimension_0de7b48da26673b70abfa1bc22362b83b062c9e7a9901371",
+      "schema": null,
+      "rows": "4",
+      "stored_representation_bytes": "5311",
+      "stored_feature_bytes": "2739",
+      "stored_evidence_id_bytes": "356"
+    },
+    {
+      "type_id": "dimension_9ea5cd8f6253e8d653f907fa4a54b5c82cff942b9f4ed90f",
+      "schema": null,
+      "rows": "2",
+      "stored_representation_bytes": "2284",
+      "stored_feature_bytes": "2555",
+      "stored_evidence_id_bytes": "178"
+    },
+    {
+      "type_id": "dimension_f617d8f6b39db619aa31aeea1209322985f86c1e7f2858c9",
+      "schema": null,
+      "rows": "1",
+      "stored_representation_bytes": "1240",
+      "stored_feature_bytes": "1338",
+      "stored_evidence_id_bytes": "228"
+    },
+    {
+      "type_id": "dimension_654696e0e277e4321a242f1324cf358e086ec076e0593ae9",
+      "schema": null,
+      "rows": "11",
+      "stored_representation_bytes": "703",
+      "stored_feature_bytes": "891",
+      "stored_evidence_id_bytes": "143"
+    },
+    {
+      "type_id": "dimension_6b746f08b3d02c188cae8eee03a47a9ecce1e9fa19538c38",
+      "schema": null,
+      "rows": "2",
+      "stored_representation_bytes": "59",
+      "stored_feature_bytes": "90",
+      "stored_evidence_id_bytes": "26"
+    },
+    {
+      "type_id": "dimension_b566cfcdda8259c5c549f3bf72cc4eef8c77c29b858ec095",
+      "schema": null,
+      "rows": "2",
+      "stored_representation_bytes": "59",
+      "stored_feature_bytes": "154",
+      "stored_evidence_id_bytes": "26"
+    },
+    {
+      "type_id": "dimension_d5464844cc234f01e4cab8cfa198e2c5a1a434aa372b3de8",
+      "schema": null,
+      "rows": "2",
+      "stored_representation_bytes": "59",
+      "stored_feature_bytes": "90",
+      "stored_evidence_id_bytes": "26"
+    }
+  ],
+  "unitSourceMetadata": [
+    {
+      "source_system": "dialogue",
+      "rows": "74800",
+      "metadata_stored_bytes": "144179188",
+      "source_metadata_rendered_bytes": "72406400"
+    },
+    {
+      "source_system": "oss_docs",
+      "rows": "190",
+      "metadata_stored_bytes": "261892",
+      "source_metadata_rendered_bytes": "0"
+    },
+    {
+      "source_system": "gutenberg",
+      "rows": "200",
+      "metadata_stored_bytes": "207300",
+      "source_metadata_rendered_bytes": "0"
+    },
+    {
+      "source_system": "wikipedia",
+      "rows": "200",
+      "metadata_stored_bytes": "92901",
+      "source_metadata_rendered_bytes": "0"
+    }
+  ],
+  "legacyRequestWitnesses": [
+    {
+      "key": "trainingSourceDigests",
+      "rows": "2048",
+      "distinct_values": "1",
+      "rendered_bytes": "52084736",
+      "largest_rendered_bytes": "25432"
+    },
+    {
+      "key": "trainingSourceVersionIds",
+      "rows": "2048",
+      "distinct_values": "1",
+      "rendered_bytes": "57446400",
+      "largest_rendered_bytes": "28050"
+    }
+  ],
+  "sourceBytes": [
+    {
+      "source_system": "dialogue",
+      "role": null,
+      "versions": "374",
+      "bytes": "9483834"
+    },
+    {
+      "source_system": "gutenberg",
+      "role": "evidence-derivative",
+      "versions": "1",
+      "bytes": "151094"
+    },
+    {
+      "source_system": "gutenberg",
+      "role": "original",
+      "versions": "1",
+      "bytes": "174311"
+    },
+    {
+      "source_system": "oss_docs",
+      "role": "evidence-derivative",
+      "versions": "2",
+      "bytes": "575"
+    },
+    {
+      "source_system": "oss_docs",
+      "role": "original",
+      "versions": "2",
+      "bytes": "575"
+    },
+    {
+      "source_system": "wikipedia",
+      "role": "evidence-derivative",
+      "versions": "36",
+      "bytes": "1345035"
+    },
+    {
+      "source_system": "wikipedia",
+      "role": "original",
+      "versions": "36",
+      "bytes": "3258847"
+    }
+  ],
+  "completed": true,
+  "qualification": "Live column bytes and allocated relations differ. TOAST is already included in table/total sizes; do not add it twice. Source bytes include acquired sources that may not be learned. This audit does not measure dead space, prove a corpus expansion ratio, or change data.",
+  "finishedAt": "2026-11-09T02:48:48.140Z",
+  "backend": "PostgreSQL 18.6 / PGlite 0.5.15",
+  "sourceCodeCommit": "1ac82eac41b5f33b7f58fb1dc485c7a9fa83e2e7"
+}

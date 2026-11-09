@@ -1,0 +1,131 @@
+# SCCE storage amplification diagnosis
+
+Measured 2026-11-09. Diagnosis and proposed repair; no production migration applied.
+
+SCCE is persisting large, richly annotated language structures and repeating information across records. In the available checkpoint, most pattern-table space belongs to live JSON payload. The first repair should normalize those payloads and their shared provenance. Index maintenance cannot remove that live content.
+
+This establishes a real representation problem. It does **not** establish that the entire reported 448 MiB Windows candidate has the same breakdown, or that the prototype below eliminates its roughly 400-fold expansion.
+
+## What was actually inspected
+
+- Available checkpoint: Dolly/dialogue, Alice, small documentation fixtures, and 36 acquired Wikipedia articles. Only two Wikipedia articles have committed learned structures.
+- Local audited source checkout: `1ac82eac41b5f33b7f58fb1dc485c7a9fa83e2e7`. Stored data includes legacy records; this is not a claim that this commit originally produced every row.
+- Current `dev` source reviewed: `b5c6bc09089703f1c7c7315e9f340b695695ad22`.
+- Storage backend measured: PostgreSQL 18.6 through PGlite 0.5.15. Native PostgreSQL transport and the Windows installation were not tested here.
+- The separate Windows report of 29 articles, approximately 1 MiB of input, 448 MiB allocated, 221 MiB of patterns and 101 MiB of graph nodes was supplied in the conversation. That database was not available for direct inspection.
+
+Application tables were read in repeatable-read, read-only transactions. The normalization experiment wrote only disposable temporary tables, then rolled back. Application rows modified: **zero**. No training, schema migration, VACUUM, or index deletion was performed.
+
+## Findings
+
+### 1. Most pattern-table space is live payload
+
+| Available checkpoint measurement | Bytes | Meaning |
+| --- | ---: | --- |
+| `language_patterns` total allocation | 2,515,099,648 | Heap, TOAST and indexes |
+| Live stored `pattern_json` values | 2,079,088,165 | About 82.7% of total allocation |
+| Pattern indexes | 86,499,328 | About 3.4% of total allocation |
+| Rendered pattern JSON | 8,569,453,915 | Logical JSON text length; not disk usage |
+| Pattern rows | 249,338 | All checkpoint corpora combined |
+
+The database is already compressing the large JSON values. Rendered JSON lengths must not be added to relation sizes or presented as recoverable physical space. The table/total relation measurements already include TOAST; adding the reported TOAST allocation again double-counts it.
+
+No trustworthy dead-space measurement was obtained. PGlite's tuple statistics were zero despite populated tables, so they were not used to claim either zero bloat or extensive bloat. Even perfect removal of all non-payload allocation would leave the approximately 2.08 GB of stored pattern JSON.
+
+### 2. The committed Wikipedia patterns concentrate in three large families
+
+This subset contains 1,137 patterns from the two learned articles. Its stored `pattern_json` total is 12,152,561 bytes.
+
+| Pattern family | Rows | Stored JSON bytes | Rendered JSON bytes |
+| --- | ---: | ---: | ---: |
+| Creative events | 14 | 4,499,416 | 17,114,274 |
+| Induced syntax | 5 | 2,732,121 | 26,133,694 |
+| Induced semantics | 5 | 2,652,126 | 8,935,936 |
+| Ordinary source-example constructions | 1,099 | 2,092,377 | 4,871,190 |
+| All remaining families | 14 | 176,521 | 450,031 |
+
+The first three families account for **81.3%** of this subset's stored JSON. They are better initial targets than the n-gram structures.
+
+Field-size samples explain the shape of the payloads:
+
+- One Wikipedia creative-event pattern renders to 1,224,825 bytes. Its `bundle.events` member alone renders to 1,221,173 bytes.
+- A sampled syntax record renders to 5,838,718 bytes; `joinProgram` accounts for 5,690,477 bytes, about 97.5%.
+- A sampled semantic record renders to 1,884,893 bytes. Its semantic frames, graph-bound constructions and relation-hypothesis statistics account for nearly all of it.
+
+These samples identify storage targets; they do not prove that all the retained semantic or syntax statistics are redundant. Removing observations or changing induction thresholds would change behavior and is not a lossless storage repair.
+
+### 3. A small lossless event-normalization experiment saves 21.7%
+
+The experiment separated repeated occurrence-witness fields and lexical forms from individual event records. It retained every event ID and complete argument frame, wrote the proposed representation to temporary tables, read it back, reconstructed the original objects, and compared SCCE canonical SHA-256 digests.
+
+| Wikipedia event experiment | Result |
+| --- | ---: |
+| Bundles / events | 14 / 10,106 |
+| Unique shared witnesses / lexemes | 36 / 2,630 |
+| Original temporary-table allocation | 4,751,360 bytes |
+| Proposed tables combined allocation | 3,719,168 bytes |
+| Measured allocation reduction | 21.7% |
+| Decoded canonical SHA-256 mismatches | **0** |
+
+Both allocation measurements include their temporary primary-key indexes and TOAST. They are not measurements of production migration savings, full production indexes, read latency, or the whole database. This proves a useful lossless improvement, **not a solution to the entire 400-fold ratio**.
+
+### 4. Legacy request patterns have a separate, much larger duplication bug
+
+In this restored checkpoint, 2,048 request patterns each contain the same `trainingSourceVersionIds` and `trainingSourceDigests` arrays. Together those repeated members render to 109,531,136 bytes; their single shared values render to 53,482 bytes.
+
+A temporary-table experiment storing the shared arrays once reduced allocation from 119,422,976 to 1,859,584 bytes, with **zero decoded JSONB mismatches**.
+
+**This is legacy data.** Both the available source writer and current `dev` already avoid these fields. Current source-owned request records use a different representation. This finding calls for a verified legacy migration; it must not be presented as an ongoing current-writer defect or as the explanation of the Windows Wikipedia candidate.
+
+### 5. Shared metadata and graph projections add further overhead
+
+The 74,800 dialogue units alone contain 144,179,188 stored metadata bytes. A 968-byte `sourceMetadata` object is copied into each of them, totaling 72,406,400 rendered bytes. Current `stampUnit`, `stampPattern`, `stampModel` and `stampFrame` spread shared training metadata into each record. This is a clear normalization opportunity for dialogue training. The checkpoint's Wikipedia units do not carry that `sourceMetadata` member, so that specific finding should not be used to explain the Windows Wikipedia ratio.
+
+The available `graph_nodes` relation allocates 38,223,872 bytes, including 14,336,000 index bytes. Some observation representations repeat features and evidence IDs that also occupy dedicated columns. Large proposition representations contain substantial role and constraint objects. Canonical payloads with referenced projections are a plausible repair, but exact equivalence and query-plan effects still need measurement on the Windows candidate. Indexes are materially more significant for this checkpoint's graph than for its pattern table.
+
+## Current code already handles some earlier problems
+
+Do not reintroduce or reimplement existing fixes:
+
+- `packages/kernel/src/join-program-storage.ts` already packs JOIN structures into `scce.join_program_mixture.storage.v2`.
+- `packages/kernel/src/language-induction-memory.ts` uses that packing, and the durable adapter handles raw mixtures on persistence. An earlier dry run on this checkpoint found no remaining raw mixtures needing that migration. The syntax payload measured above is already packed.
+- Ordinary source-example construction records already have a compact storage representation.
+- Current request writers avoid the legacy repeated source lists.
+- Graph upserts already guard against unchanged writes, and shared observation-store nodes already avoid accumulating every evidence ID.
+
+The proposed repair uses ordinary PostgreSQL normalization and references. It does not require pgvector, another retrieval layer, an LLM, or an invented general-purpose compression algorithm.
+
+## Proposed repair
+
+1. **Measure the exact Windows cohort.** Run the accompanying read-only audit there. Rebuild the identical 29-article input in an isolated fresh schema and record source digests, consumed text bytes, baseline relation sizes, and per-batch growth. Compare marginal learned storage against the actual consumed text, keeping acquired-but-unlearned sources and unrelated fixtures out of the denominator. Separate live values, heap/TOAST allocation and indexes before attributing the full ratio.
+2. **Normalize the largest active structures.** Store reusable event templates, lexical forms and occurrence witnesses once; keep occurrence IDs, coordinates and bindings in compact records. For semantic and syntax records, first measure exact repeated substructures across windows and projections, then store proven shared immutable structures once. Readers reconstruct the existing logical records. Keep the current JOIN packing until a measured replacement beats it without changing decoded data.
+3. **Hoist shared compilation metadata.** Use one immutable metadata record keyed by the existing source-compilation identity. Keep record-specific fields local. References must include the necessary source, compiler and information-label scope; do not accidentally merge different access scopes. Existing filters that match fields inside `pattern_json` need equivalent indexed joins or retained query fields before any writer changes.
+4. **Normalize graph projections where equality is proved.** Reference canonical observations, roles and constraints instead of persisting independent rich copies. Preserve logical node/edge identities, evidence links, features, confidence and information labels. Retain query-critical indexes; use measured plans before changing them.
+5. **Migrate legacy records separately.** Preserve or normalize the old request witnesses with exact reconstruction. Do not simply delete them because the new writer no longer emits them. Immutable event histories remain append-only.
+6. **Reclaim physical space after validation.** A side-by-side rebuild or deliberate maintenance step may be needed after the logical migration. A smaller live payload does not by itself prove that the existing relation files immediately shrink.
+
+Ship readers before writers. Keep the old representation available until migration verification and restart tests pass. Migration should be resumable, reject concurrent changes, and emit per-record decoded digests and a byte ledger.
+
+Acceptance requires exact decoded canonical hashes; unchanged record identities, source ownership, labels, evidence coordinates, learned counts and timestamps; deterministic replay; restart and citation checks; and the same stored regression questions producing the same supported answers. Compare storage growth and query latency on identical inputs. A smaller corpus, dropped evidence, lower induction limits or reduced functionality is not the proposed fix.
+
+## Reproduce the audit
+
+With the matching SCCE build already available:
+
+```sh
+node tools/audit-storage-amplification.mjs --config=scce.config.json --out=storage-audit.json --scope="Windows 29-article candidate"
+```
+
+The tool uses one connection and a read-only repeatable-read snapshot. It does not invoke migrations or modify application data. Its output contains counts, byte totals, record identifiers and field-size summaries, rather than source text or connection settings. Exact scans can take several minutes.
+
+The exported query function was executed against the available PGlite checkpoint. It reproduced the original pattern allocation, stored pattern bytes, unit metadata bytes and all 63 pattern-family groups. Native PostgreSQL CLI transport remains unverified in this environment.
+
+Evidence:
+
+- [Initial checkpoint audit](storage-amplification/checkpoint-audit.json)
+- [Field-level details](storage-amplification/checkpoint-details.json)
+- [Temporary normalization experiment](storage-amplification/normalization-proof.json)
+- [Portable auditor execution](storage-amplification/portable-audit-receipt.json)
+- [Read-only auditor](../tools/audit-storage-amplification.mjs)
+
+PostgreSQL size semantics: [size functions](https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADMIN-DBSIZE). Space reclamation: [routine vacuuming](https://www.postgresql.org/docs/18/routine-vacuuming.html).
