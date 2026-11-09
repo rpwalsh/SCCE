@@ -7,7 +7,7 @@ import path from "node:path";
 import { canonicalStringify } from "@scce/kernel";
 import { readRemoteWikipediaSource, type RemoteWikipediaSource } from "./wikipedia-remote-source.js";
 
-const MANIFEST_SCHEMA_VERSION = 1 as const;
+const MANIFEST_SCHEMA_VERSION = 2 as const;
 const FILE_CACHE_SCHEMA_VERSION = 1 as const;
 const DEFAULT_CHUNK_SIZE = 1024 * 1024;
 const MAX_CHUNK_SIZE = 64 * 1024 * 1024;
@@ -33,6 +33,8 @@ export interface WikipediaInputManifest {
   readonly schemaVersion: typeof MANIFEST_SCHEMA_VERSION;
   readonly kind: "wikipedia-input-manifest";
   readonly identity: `sha256:${string}`;
+  /** Physical source bytes only; independent of compiler and semantic eligibility. */
+  readonly sourceSetDigest: `sha256:${string}`;
   readonly inputs: {
     readonly dump: WikipediaInputSourceFile;
     readonly index?: WikipediaInputSourceFile;
@@ -88,6 +90,8 @@ export async function hashWikipediaInputFile(filePath: string, options: { readon
  * Build a reproducible input identity for a dump and, when present, its matching index.
  * Path and stat values are retained for provenance and source-change checks, but are not
  * part of `identity`, so moving an unchanged corpus does not create a different corpus identity.
+ * `sourceSetDigest` binds physical inputs; `identity` additionally binds semantic recipes/config.
+ * The full executable compiler attestation is retained separately, never substituted for either.
  */
 export async function createWikipediaInputManifest(options: WikipediaInputManifestOptions): Promise<WikipediaInputManifest> {
   const dumpPath = resolveRequiredPath(options.dumpPath, "dumpPath");
@@ -107,21 +111,26 @@ export async function createWikipediaInputManifest(options: WikipediaInputManife
     compilerIdentity: options.compilerIdentity,
     config: sanitizeSemanticConfig(options.semanticConfig)
   } as const;
+  const inputs = {
+    dump: { sha256: dump.sha256, byteLength: dump.byteLength },
+    ...(index === undefined ? {} : { index: { sha256: index.sha256, byteLength: index.byteLength } }),
+    ...(remote === undefined ? {} : { remoteDump: remote.source })
+  };
+  const sourceSetDigest = `sha256:${createHash("sha256").update(canonicalStringify({ kind: "wikipedia-source-set.v1", inputs }), "utf8").digest("hex")}` as const;
+  // The executable attestation is provenance, not physical source identity. Explicit
+  // normalization/config/producer recipes remain resume eligibility requirements.
   const identityPayload = {
     schemaVersion: MANIFEST_SCHEMA_VERSION,
     kind: "wikipedia-input-manifest" as const,
-    inputs: {
-      dump: { sha256: dump.sha256, byteLength: dump.byteLength },
-      ...(index === undefined ? {} : { index: { sha256: index.sha256, byteLength: index.byteLength } }),
-      ...(remote === undefined ? {} : { remoteDump: remote.source })
-    },
-    semantics
+    sourceSetDigest,
+    semantics: { normalizationIdentity: semantics.normalizationIdentity, config: semantics.config }
   };
   const identity = `sha256:${createHash("sha256").update(canonicalStringify(identityPayload), "utf8").digest("hex")}` as `sha256:${string}`;
   return deepFreeze({
     schemaVersion: MANIFEST_SCHEMA_VERSION,
     kind: "wikipedia-input-manifest",
     identity,
+    sourceSetDigest,
     inputs: { dump, ...(index === undefined ? {} : { index }), ...(remote === undefined ? {} : { remoteDump: remote.source }) },
     semantics
   });

@@ -9,6 +9,7 @@ import { canonicalStringify, createClock, createEvidenceExtractor, createHasher,
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import { resolveWikipediaCorpusTarget, streamWikipediaMultistream } from "../wikipedia.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
+import * as codeIdentity from "../ingestion-code-identity.js";
 
 const blocks = [
   "QlpoOTFBWSZTWZzIxvAAACMfgEAB4AUBAAQAP+ffQDAA+AKAAaAAAoABoAAAqpo1JibSnpMam1PKIPZqfDYbHBJBY8l6UvrTWqKr/taUyzXmLd0oTh2pHJy+iTgg4LGgzLFSCTwPBjCLi5YqYGaVTI3Ugbknl7dGBiYnJienzk7GTI7LELnSno0Nz2KkDbaqnR0eCcMzQzJnuZ0NUNTWpJ3/lTLKRWuDE3LjEf4u5IpwoSE5kY3g",
@@ -383,6 +384,39 @@ describe("Wikipedia recovery boundaries", () => {
       expect(resumed.pages).toBe(2);
       expect(resumed.sources).toBe(2);
       expect(resumed.stoppedByOwner).toBe(false);
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it("resumes committed idle progress across executable changes with identical source and recipes", async () => {
+    const f = await fixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath });
+      const calls = { page: p.page.mock.calls.length, train: p.train.mock.calls.length };
+      compiler.mockResolvedValue("compiler-after-unrelated-turn-change");
+      const resumed = await p.ingestor.ingest({ dumpPath: f.dumpPath });
+      expect(resumed.pages).toBe(0);
+      expect(p.page).toHaveBeenCalledTimes(calls.page);
+      expect(p.train).toHaveBeenCalledTimes(calls.train);
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it.each(["changed", "missing"])("rejects an open journal with %s executable attestation before work or writes", async attestation => {
+    const f = await fixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      const journal = p.rows().find(row => row.itemUri.endsWith("/language-batch"))!;
+      expect((journal.metadata as any).languageBatch.state).toBe("open");
+      if (attestation === "changed") compiler.mockResolvedValue("compiler-after");
+      else delete (journal.metadata as any).compilerIdentity;
+      p.page.mockClear(); p.train.mockClear(); p.activate.mockClear();
+      p.storage.ingestion.put.mockClear(); p.storage.events.append.mockClear();
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/open language batch compiler attestation differs or is missing/);
+      expect(p.page).not.toHaveBeenCalled(); expect(p.train).not.toHaveBeenCalled(); expect(p.activate).not.toHaveBeenCalled();
+      expect(p.storage.ingestion.put).not.toHaveBeenCalled(); expect(p.storage.events.append).not.toHaveBeenCalled();
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
 

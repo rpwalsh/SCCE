@@ -96,17 +96,26 @@ describe("Wikipedia input manifest", () => {
     expect(await wikipediaInputSourcesStillMatch(first)).toBe(false);
   });
 
-  it("binds index content, compiler identity, and semantic config to the manifest identity", async () => {
+  it("separates executable attestation from physical identity and semantic resume eligibility", async () => {
     const paths = await fixture();
     const base = await createWikipediaInputManifest(options(paths));
+    let hashCalls = 0;
+    const changedCompiler = await createWikipediaInputManifest(options(paths, { compilerIdentity: "wiki-compiler/v8", hashFile: async (...args) => { hashCalls++; return hashWikipediaInputFile(args[0], { chunkSize: args[1] }); } }));
+    expect(hashCalls).toBe(0);
+    expect(changedCompiler.identity).toBe(base.identity);
+    expect(changedCompiler.sourceSetDigest).toBe(base.sourceSetDigest);
+    expect(changedCompiler.semantics.compilerIdentity).not.toBe(base.semantics.compilerIdentity);
+    const changedNormalization = await createWikipediaInputManifest(options(paths, { normalizationIdentity: "wiki-normalize/v4" }));
+    expect(changedNormalization.identity).not.toBe(base.identity);
+    expect(changedNormalization.sourceSetDigest).toBe(base.sourceSetDigest);
+    const changedConfig = await createWikipediaInputManifest(options(paths, { semanticConfig: { wikiCode: "dewiki", namespaces: [0], redirectPolicy: "follow" } }));
+    expect(changedConfig.identity).not.toBe(base.identity);
+    expect(changedConfig.sourceSetDigest).toBe(base.sourceSetDigest);
     await writeFile(paths.indexPath, "different-index-content\n", "utf8");
     const changedIndex = await createWikipediaInputManifest(options(paths));
-    const changedCompiler = await createWikipediaInputManifest(options(paths, { compilerIdentity: "wiki-compiler/v8" }));
-    const changedConfig = await createWikipediaInputManifest(options(paths, { semanticConfig: { wikiCode: "dewiki", namespaces: [0], redirectPolicy: "follow" } }));
 
     expect(changedIndex.identity).not.toBe(base.identity);
-    expect(changedCompiler.identity).not.toBe(base.identity);
-    expect(changedConfig.identity).not.toBe(base.identity);
+    expect(changedIndex.sourceSetDigest).not.toBe(base.sourceSetDigest);
   });
 
   it("does not serialize credential-like semantic config fields", async () => {

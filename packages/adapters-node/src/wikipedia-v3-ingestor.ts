@@ -349,7 +349,7 @@ export class WikipediaV3Ingestor {
     const languageBatchJournalId = wikipediaLanguageBatchJournalId(rootUri, inputManifest.identity, this.ids);
     const useStoredResume = input.startOffset === undefined && !input.fresh && input.resume !== false;
     const languageBatchJournalCheckpoint = await this.storage.ingestion.get(languageBatchJournalId) ?? null;
-    const storedLanguageBatchJournal = readWikipediaLanguageBatchJournal(languageBatchJournalCheckpoint, inputManifest.identity, shardCharBudget);
+    const storedLanguageBatchJournal = readWikipediaLanguageBatchJournal(languageBatchJournalCheckpoint, inputManifest.identity, shardCharBudget, inputManifest.semantics.compilerIdentity);
     const languageBatchJournal = storedLanguageBatchJournal?.state === "open" ? storedLanguageBatchJournal : undefined;
     if (input.finishPending && !languageBatchJournal) {
       throw new Error("Wikipedia --finish-pending requires an open language batch journal for this verified input");
@@ -454,7 +454,7 @@ export class WikipediaV3Ingestor {
         status: "complete",
         offsetBytes: currentBlockOffset,
         updatedAt: nowMs(),
-        metadata: toJsonValue({ inputManifestId: inputManifest.identity, languageBatch: journal }) ?? {}
+        metadata: toJsonValue({ inputManifestId: inputManifest.identity, compilerIdentity: inputManifest.semantics.compilerIdentity, languageBatch: journal }) ?? {}
       });
     };
     const applyLanguageShardImport = (imported: WikipediaLanguageShardImport): void => {
@@ -1010,7 +1010,7 @@ export class WikipediaV3Ingestor {
     const checkpoints = await this.storage.ingestion.list({ rootUri, status: "complete", phase: "stored", itemUriPrefix: `${rootUri}/block/`, orderBy: "offsetBytes", limit: 1 });
     for (const row of [...latest, ...checkpoints]) {
       if (objectOrEmpty(row.metadata).inputManifestId !== inputManifestId) {
-        throw new Error("Wikipedia resume input identity differs or is missing; use an empty candidate schema for this dump/compiler/configuration");
+        throw new Error("Wikipedia resume input identity differs or is missing; legacy manifests require an empty candidate schema and a fresh run; source bytes, normalization, or semantic configuration must match");
       }
     }
     return checkpoints[0];
@@ -1538,7 +1538,7 @@ function wikipediaLanguageBatchJournalId(rootUri: string, inputManifestId: strin
   return ids.semanticId("wikipedia_language_batch_journal", { rootUri, inputManifestId });
 }
 
-function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | null, inputManifestId: string, shardCharBudget: number): WikipediaLanguageBatchJournal | undefined {
+function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | null, inputManifestId: string, shardCharBudget: number, compilerIdentity: string): WikipediaLanguageBatchJournal | undefined {
   if (!checkpoint) return undefined;
   const metadata = objectOrEmpty(checkpoint.metadata);
   if (metadata.inputManifestId !== inputManifestId) throw new Error("Wikipedia language batch journal input identity differs or is missing");
@@ -1547,6 +1547,11 @@ function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | nul
   if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("Wikipedia language batch journal is malformed");
   const value = raw as Record<string, unknown>;
   if (value.version !== 1 || (value.state !== "open" && value.state !== "idle")) throw new Error("Wikipedia language batch journal version or state is invalid");
+  // Buffered semantic candidates were produced by this executable. An idle journal
+  // has no uncommitted payload and may resume under the same explicit recipes.
+  if (value.state === "open" && metadata.compilerIdentity !== compilerIdentity) {
+    throw new Error("Wikipedia open language batch compiler attestation differs or is missing; finish pending work with its original compiler before upgrading, or use an empty candidate schema for a fresh run");
+  }
   const blockOffset = typeof value.blockOffset === "number" ? value.blockOffset : NaN;
   const blockOrdinal = typeof value.blockOrdinal === "number" ? value.blockOrdinal : NaN;
   const lastProcessedPageOrdinal = typeof value.lastProcessedPageOrdinal === "number" ? value.lastProcessedPageOrdinal : NaN;

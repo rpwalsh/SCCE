@@ -7,7 +7,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-/** Fingerprint the actual adapter and kernel code being executed, including uncommitted repairs. */
+/** Full executable attestation, including uncommitted repairs; not a physical corpus or resume-eligibility identity. */
 export async function ingestionCodeIdentity(roots: readonly string[] = [
   path.dirname(fileURLToPath(import.meta.url)),
   path.dirname(createRequire(import.meta.url).resolve("@scce/kernel"))
