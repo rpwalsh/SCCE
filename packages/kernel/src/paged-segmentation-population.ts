@@ -18,10 +18,19 @@ import type { Hasher, JsonValue } from "./types.js";
 type Partition = "fit" | "modelSelection" | "mergeGuard" | "finalEvaluation";
 interface OwnedDocument { document: CorpusSegmentationDocument; rank: number }
 interface Assignment extends OwnedDocument { population: number; costs?: number[] }
-interface Candidate {
+export interface PagedPopulationCandidate {
   populationCount: number; assignments: string; estimators: BoundaryEstimatorInferenceModel[]; priors: number[];
   heldoutDataNats: number; modelNats: number; descriptionNats: number; collapsed: boolean; mergeBlocked: boolean;
   mergeDescriptionDeltaNats: number | null; heldoutRegressionPopulationIds: string[];
+}
+type Candidate = PagedPopulationCandidate;
+export interface PreparedPagedPopulationWorkspace {
+  rootPopulationId:string; namespace:string; normalizationContractId:string;
+  sourceInventory:{id:string;count:number}; collections:readonly {name:string;count:number;digest:string}[];
+}
+export interface PagedPopulationCandidateJob {populationCount:number;label:string;fit:string;holdout:string}
+export interface PagedPopulationCandidateExecution {
+  fitCandidates(prepared:PreparedPagedPopulationWorkspace,jobs:readonly PagedPopulationCandidateJob[]):Promise<readonly PagedPopulationCandidate[]>;
 }
 function object(value: JsonValue | unknown): Record<string, JsonValue> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid paged segmentation record");
@@ -253,6 +262,7 @@ export function validatePagedSegmentationInference(value: unknown, hasher: Hashe
 export async function learnPagedSegmentationPopulations(input: {
   rootPopulationId: string; source: CorpusSegmentationDocumentCursor; namespace: string; featureContextId: string;
   maxPopulations?: number; mergeDescriptionMarginNats?: number; heldoutRegressionToleranceNats?: number; hasher?: Hasher;
+  candidateExecution?:PagedPopulationCandidateExecution;
 }): Promise<PagedSegmentationPopulationResult> {
   const populationStatistics: BoundaryStatisticsCursor[] = [];
   try { return await learnPagedSegmentationPopulationsInner(input, populationStatistics); }
@@ -267,9 +277,23 @@ async function learnPagedSegmentationPopulationsInner(input: Parameters<typeof l
   const documentCount = await work.scratch.count(work.documents);
   if (!documentCount) throw new Error("corpus population fit has no measured nonempty documents");
   const maximum = segmentationMaximumPopulationCount(await work.scratch.count(work.partitions.fit), input.maxPopulations);
-  const candidates: Candidate[] = [];
-  for (let populationCount = 1; populationCount <= maximum; populationCount++) candidates.push(await work.fitCandidate(work.partitions.fit,
-    work.partitions.modelSelection, populationCount, `candidate.${populationCount}`));
+  const jobs=Array.from({length:maximum},(_,index)=>({populationCount:index+1,label:`candidate.${index+1}`,fit:work.partitions.fit,holdout:work.partitions.modelSelection}));
+  const candidates:Candidate[]=[];
+  if(input.candidateExecution){
+    if(input.hasher)throw new Error("External population candidates require the canonical hasher");
+    const results=await input.candidateExecution.fitCandidates(await work.prepared(),jobs);
+    if(results.length!==jobs.length)throw new Error("Population candidate result inventory differs");
+    results.forEach((result,index)=>{
+      const job=jobs[index]!;
+      const assignmentPrefix=`${work.prefix}.${job.label}.assignment.`;
+      if(result.populationCount!==job.populationCount||!Array.isArray(result.estimators)||!Array.isArray(result.priors)
+        ||![result.heldoutDataNats,result.modelNats,result.descriptionNats].every(Number.isFinite)
+        ||typeof result.collapsed!=="boolean"||result.mergeBlocked!==false||result.mergeDescriptionDeltaNats!==null
+        ||result.heldoutRegressionPopulationIds.length!==0
+        ||result.assignments!==""&&(!result.assignments.startsWith(assignmentPrefix)||!/^[0-9]+$/u.test(result.assignments.slice(assignmentPrefix.length))))throw new Error("Population candidate result scope differs");
+      candidates.push(result);
+    });
+  }else for(const job of jobs)candidates.push(await work.fitCandidate(job.fit,job.holdout,job.populationCount,job.label));
   const mergeGuard = `${input.namespace}.mergeGuardDocuments`;
   await joinDocumentCollections(work, [work.partitions.modelSelection, work.partitions.mergeGuard], mergeGuard, false);
   await applyPagedMergeGuards(work, candidates, mergeGuard, Math.max(0, input.mergeDescriptionMarginNats ?? 1), Math.max(0, input.heldoutRegressionToleranceNats ?? 0.01));
@@ -366,6 +390,20 @@ export class PagedPopulationWorkspace {
     this.scratch = source.scratch; this.hasher = hasher; this.prefix = namespace; this.documents = `${namespace}.documents`;
     this.partitions = { fit: `${namespace}.partition.fit`, modelSelection: `${namespace}.partition.modelSelection`,
       mergeGuard: `${namespace}.partition.mergeGuard`, finalEvaluation: `${namespace}.partition.finalEvaluation` };
+  }
+  async prepared():Promise<PreparedPagedPopulationWorkspace>{
+    const collections=[];
+    for(const name of [this.documents,...Object.values(this.partitions)]){
+      const scratch=this.scratch;let count=0;
+      const digest=await scratch.digestChunks((async function*(){for await(const row of segmentationScratchRows(scratch,name)){count++;yield new TextEncoder().encode(JSON.stringify(row)+"\n");}})());
+      collections.push({name,count,digest});
+    }
+    return {rootPopulationId:this.rootPopulationId,namespace:this.namespace,normalizationContractId:this.normalizationContractId,
+      sourceInventory:{...this.source.sourceInventory},collections};
+  }
+  async verifyPrepared(expected:PreparedPagedPopulationWorkspace):Promise<void>{
+    this.normalizationContractId=expected.normalizationContractId;
+    if(canonicalDigestHex(await this.prepared(),this.hasher)!==canonicalDigestHex(expected,this.hasher))throw new Error("Population prepared workspace changed");
   }
   async *docs(collection: string): AsyncGenerator<OwnedDocument> {
     for await (const row of segmentationScratchRows(this.scratch, collection)) yield owned(row.value);

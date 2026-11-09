@@ -17,6 +17,7 @@ export interface CorpusSegmentationRun {
   normalizationContractId: string;
   createdAt: number;
   fitPolicy?: {maxPopulations:number|null;mergeDescriptionMarginNats:number|null;heldoutRegressionToleranceNats:number|null};
+  execution?:import("@scce/kernel").CorpusSegmentationWorkerExecution;
 }
 function positive(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid segmentation ${name}`);

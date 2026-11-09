@@ -13,6 +13,7 @@ import { corpusSegmentationWindows } from "./corpus-segmentation-windows.js";
 import { prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages } from "./corpus-segmentation-membership.js";
 import { readCorpusStatisticsPages, writeCorpusStatisticsPages } from "./corpus-segmentation-statistics-pages.js";
 import { withPackedBoundaryMerges } from "./corpus-segmentation-merge-scratch.js";
+import { createPopulationCandidateExecution, validatePopulationWorkerExecution } from "./population-candidate-execution.js";
 
 interface Owner {
   evidenceId: string; sourceId: string; sourceVersionId: string; textSha256: string; codePoints: number;
@@ -201,13 +202,16 @@ export async function loadCorpusSegmentationContextSlice(input:{storage:Postgres
 /** One canonical create/resume ? complete owned statistics ? exact fit ? atomic publication workflow. */
 async function consolidateCorpusSegmentationOwned(input:{storage:PostgresStorageAdapter;scope:CorpusSegmentationScope;runId:string;createdAt:number;bounds:SegmentationPageBounds;windowUtf16:number;
   resume?:boolean;signal?:AbortSignal;onProgress?:Parameters<typeof prepareCorpusSegmentationInput>[0]["onProgress"];
+  execution?:import("@scce/kernel").CorpusSegmentationWorkerExecution;
   maxPopulations?:number;mergeDescriptionMarginNats?:number;heldoutRegressionToleranceNats?:number}){
   const {storage}=input,recipeId=corpusSegmentationInputRecipe(input.windowUtf16),normalizationContractId=canonicalNormalizationContract(createHasher()).id;
   const fitPolicy={maxPopulations:input.maxPopulations??null,mergeDescriptionMarginNats:input.mergeDescriptionMarginNats??null,heldoutRegressionToleranceNats:input.heldoutRegressionToleranceNats??null};
   if(Object.values(fitPolicy).some(value=>value!==null&&!Number.isFinite(value)))throw new Error("Invalid corpus segmentation fit policy");
+  const execution=input.execution?validatePopulationWorkerExecution(input.execution):undefined;
   const run=input.resume?await openCorpusSegmentationRun(storage,input.runId,input.bounds):await createCorpusSegmentationRun(storage,{
-    runId:input.runId,scopeId:corpusSegmentationScopeId(input.scope),scope:input.scope,recipeId,normalizationContractId,createdAt:input.createdAt,fitPolicy},input.bounds);
+    runId:input.runId,scopeId:corpusSegmentationScopeId(input.scope),scope:input.scope,recipeId,normalizationContractId,createdAt:input.createdAt,fitPolicy,...(execution?{execution}:{})},input.bounds);
   if(run.run.scopeId!==corpusSegmentationScopeId(input.scope)||run.run.recipeId!==recipeId||run.run.normalizationContractId!==normalizationContractId||canonicalStringify(run.run.fitPolicy??null)!==canonicalStringify(fitPolicy))throw new Error("Corpus segmentation resume declaration differs");
+  if(canonicalStringify(run.run.execution??null)!==canonicalStringify(execution??null))throw new Error("Corpus segmentation execution declaration differs");
   const state=await run.state();
   if(state==="complete"){
     const active=await readActiveCorpusSegmentationRun(storage,input.scope,{recipeId,normalizationContractId},input.bounds);
@@ -237,11 +241,13 @@ async function consolidateCorpusSegmentationOwned(input:{storage:PostgresStorage
       pages:async function*(query){for await(const page of source.scratch.pages(query)){check();yield page;}},
       putMany:async(collection,rows)=>{check();await source.scratch.putMany(collection,rows);}}
   }:source;
-  const fitted=await learnPagedSegmentationPopulations({rootPopulationId,source:guarded,namespace:"fit",featureContextId:source.featureContextId,
+  const candidateExecution=execution?createPopulationCandidateExecution({storage,runId:run.run.runId,bounds:input.bounds,declaration:execution,signal:input.signal}):undefined;
+  const fitted=await learnPagedSegmentationPopulations({rootPopulationId,source:guarded,namespace:"fit",featureContextId:source.featureContextId,candidateExecution:candidateExecution?.provider,
     maxPopulations:input.maxPopulations,mergeDescriptionMarginNats:input.mergeDescriptionMarginNats,heldoutRegressionToleranceNats:input.heldoutRegressionToleranceNats});
   if(input.signal?.aborted)throw input.signal.reason??new Error("Corpus segmentation publication aborted by owner");
   await activateCorpusSegmentationRun(storage,run,fitted.model);
-  return {runId:run.run.runId,alreadyComplete:false,minimumPoolConnections:CORPUS_SEGMENTATION_MIN_POOL_CONNECTIONS,model:fitted.model};
+  return {runId:run.run.runId,alreadyComplete:false,minimumPoolConnections:CORPUS_SEGMENTATION_MIN_POOL_CONNECTIONS,model:fitted.model,
+    ...(candidateExecution?{executionReceipt:candidateExecution.receipt()}:{} )};
 }
 
 
@@ -252,7 +258,7 @@ export function consolidateCorpusSegmentation(input:ConsolidationInput):Promise<
   if(input.signal?.aborted)return Promise.reject(input.signal.reason??new Error("Corpus segmentation consolidation aborted"));
   let flights=consolidationFlights.get(input.storage);if(!flights){flights=new Map();consolidationFlights.set(input.storage,flights);}
   const signature=hash({scope:input.scope,bounds:input.bounds,windowUtf16:input.windowUtf16,maxPopulations:input.maxPopulations??null,
-    mergeDescriptionMarginNats:input.mergeDescriptionMarginNats??null,heldoutRegressionToleranceNats:input.heldoutRegressionToleranceNats??null});
+    mergeDescriptionMarginNats:input.mergeDescriptionMarginNats??null,heldoutRegressionToleranceNats:input.heldoutRegressionToleranceNats??null,execution:input.execution??null});
   const existing=flights.get(input.runId);
   if(existing){if(existing.signature!==signature)return Promise.reject(new Error("In-flight corpus segmentation run declaration differs"));return existing.promise;}
   const ownedFlights=flights;

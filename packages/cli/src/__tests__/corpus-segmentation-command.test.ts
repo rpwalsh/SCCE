@@ -6,8 +6,16 @@ import { corpusSegmentationInputRecipe } from "../../../adapters-node/src/corpus
 import { prepareLanguageTrainingSegmentationInput,languageTrainingSegmentationLoader } from "../../../adapters-node/src/language-training-segmentation.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
 import { parseCorpusSegmentationPlan,runCorpusSegmentationCommand } from "../corpus-segmentation-command.js";
-vi.mock("@scce/adapters-node",async()=>({corpusSegmentationInputRecipe:(await import("../../../adapters-node/src/corpus-segmentation-producer.js")).corpusSegmentationInputRecipe}));
+vi.mock("@scce/adapters-node",async()=>({corpusSegmentationInputRecipe:(await import("../../../adapters-node/src/corpus-segmentation-producer.js")).corpusSegmentationInputRecipe,
+  validatePopulationWorkerExecution:(await import("../../../adapters-node/src/population-candidate-execution.js")).validatePopulationWorkerExecution}));
 const plan=()=>({schema:"scce.corpus_segmentation_plan.v1",runId:"owned-study",scope:{informationLabel:{tenantId:"owner",principals:["owner"],compartments:[],exportClass:"internal",mergePolicy:"same_owner"},sourceSystems:["wikipedia"],sourceVersionIds:["opaque-owned-version"]},bounds:{pageRows:3,maxPageBytes:12000},windowUtf16:128,maxPopulations:2});
+it("accepts only an explicit bounded worker declaration and forwards it without changing learned policy",()=>{
+  const execution={backend:"node_workers.v1",workers:2,workerHeapMb:384,maxNodeRssBytes:7*1024**3,totalPgConnections:12,abortGraceMs:30000};
+  const parsed=parseCorpusSegmentationPlan({...plan(),execution},1);expect(parsed.execution).toEqual(execution);
+  expect(parsed.maxPopulations).toBe(2);expect(parseCorpusSegmentationPlan(plan(),1).execution).toBeUndefined();
+  expect(()=>parseCorpusSegmentationPlan({...plan(),execution:{...execution,workers:0}},1)).toThrow("declaration");
+  expect(()=>parseCorpusSegmentationPlan({...plan(),execution:{...execution,ignoreWorkerErrors:true}},1)).toThrow("declaration");
+});
 it("retains explicit owner/source scope and bounds and refuses injected model or malformed plans",()=>{
   const input=plan(),parsed=parseCorpusSegmentationPlan(input,123,true);
   expect(parsed).toMatchObject({runId:input.runId,createdAt:123,resume:true,scope:{sourceSystems:["wikipedia"],sourceVersionIds:["opaque-owned-version"]},bounds:input.bounds,windowUtf16:128,maxPopulations:2});

@@ -36,6 +36,22 @@ pnpm scce --config scce.new-brain.local.json corpus train stored --source-system
 
 The consolidation plan uses `scce.corpus_segmentation_plan.v1`, an explicit `runId`, `scope`, `bounds`, and `windowUtf16`. Pin the actual committed cohort with `scope.sourceVersionIds` and its exact information label. Copy the complete consolidation receipt `trainingDeclaration` value into `runtime.corpusSegmentation`. It contains the exact canonical scope, current producer recipe, actual model normalization contract, and bounds; do not reconstruct a versioned recipe string by hand. Configure this declaration before the final command. A configured missing, incompatible, or stale snapshot fails training; it never selects a local fit instead. Unconfigured initial training records `local_bootstrap` explicitly.
 
+Candidate fitting remains inline unless a **new** plan explicitly declares `execution`, for example:
+
+```json
+{"backend":"node_workers.v1","workers":2,"workerHeapMb":384,"maxNodeRssBytes":4294967296,"totalPgConnections":12,"abortGraceMs":30000}
+```
+
+These are operational budgets, not learned population settings. The coordinator alone prepares, selects, fits the final model and publishes. Candidate workers execute the same fitter against digest-bound prepared partitions, then return in population-count order. Each worker reserves one PostgreSQL connection; `totalPgConnections` must also cover the coordinator pool's configured maximum. The Node RSS guard includes the coordinator and every worker thread, samples every 100 ms, and incorporates the process lifetime OS high-water mark where available. The receipt records the observed peak and reservations. Heap limits are separate from RSS; PostgreSQL memory is outside this Node measurement, and this is not an OS-wide memory quota. Failure cancels all workers without retrying inline. The execution declaration is fixed for a run and checked on resume; it does not change model identities.
+
+After building, verify against a small **already admitted**, pinned source cohort in an isolated local database before opting into another build:
+
+```sh
+node --max-old-space-size=1536 tools/verify-population-candidate-workers.mjs --config verification.local.json --plan small-segmentation-plan.json --execution candidate-execution.json --output candidate-ab.json --allow-new-runs
+```
+
+The execution file contains the object above. This command creates two new consolidation runs and changes that database's active snapshot. It ingests no sources, compares the complete canonical model and all retained rows with bounded reads, and records timing and the worker resource receipt. It needs no Wikipedia archive. Run it without concurrent ingestion or builds. Results establish parity for the supplied cohort; they do not establish a speedup or change the default backend.
+
 Stored global learning acquires missing full profiles from verified canonical source bytes and writes the full declared n-gram/profile/derived artifacts. Unconfigured construction-only replay keeps its declared limits and preserves the original profiles and n-gram structures. Explicit byte, article, source-attempt, and heap budgets remain effective: inspect `exhausted`, `nextSourceVersionId`, failures and skipped owners before declaring a cohort complete. Use `--min-article-bytes=0` when all admitted article lengths belong to the selected cohort; set total/attempt budgets large enough for that cohort and resume from the returned cursor when necessary.
 
 Source/version/ACL changes invalidate the frozen consolidation cohort. Adding owners to a source-system-wide scope also changes it; pin versions when new windows should use an existing frozen population. Changing the declaration or active snapshot creates a different derived compilation/checkpoint identity. Corpus statistics and model counts are measurements, not a fluency qualification.
