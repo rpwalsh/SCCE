@@ -1,0 +1,21 @@
+{
+  "source": {
+    "dataset": "databricks/databricks-dolly-15k",
+    "uri": "https://huggingface.co/datasets/databricks/databricks-dolly-15k/tree/bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "pinnedRevision": "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "rawJsonlFile": "databricks-dolly-15k.jsonl",
+    "rawJsonlSha256": "2df9083338b4abd6bceb5635764dab5d833b393b55759dffb0959b6fcbf794ec",
+    "rawJsonlBytes": 13085339,
+    "license": "CC-BY-SA-3.0",
+    "attribution": "Databricks, Inc. (2023); instruction records were authored by Databricks employees. Some source contexts are Wikipedia excerpts as documented by the dataset card.",
+    "shareAlikeNotice": "This preparation is adapted from material licensed CC BY-SA 3.0. Retain attribution and license notices; distribute adaptations under the same license.",
+    "changeNotice": "Instructions and responses are represented as NFC-normalized speech turns; source context is retained only through non-speech supportingSourceRanges. The source category is mapped explicitly to commitmentScope; no scope is inferred from prompt wording."
+  },
+  "extraction": {
+    "originalRecords": 16,
+    "speechTurns": 32,
+    "selection": "First 32 declared speech turns, ending at the exact final turn code-point boundary; no synthetic labels consumed.",
+    "bytes": 17248,
+    "sha256": "307c6758d4173c6dd87d0b77460c74fafe62c3e58d934eabbf5e05268de3dadc"
+  }
+}
