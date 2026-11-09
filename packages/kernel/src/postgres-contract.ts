@@ -21,8 +21,9 @@ export interface PostgresColumnContract {
   scalar: PostgresScalar;
   nullable: boolean;
   primary?: boolean;
+  collation?: "C";
   unique?: boolean;
-  references?: { table: string; column: string; onDelete: "CASCADE" | "RESTRICT" | "SET NULL" };
+  references?: { table: string; column: string; onDelete: "CASCADE" | "RESTRICT" | "SET NULL" | "NO ACTION" };
   dimensions?: number;
   encrypted?: boolean;
   description: string;
@@ -42,6 +43,7 @@ export interface PostgresTableContract {
   name: string;
   purpose: string;
   columns: PostgresColumnContract[];
+  primaryKey?: string[];
   indexes: PostgresIndexContract[];
   partition?: { by: "RANGE" | "HASH"; column: string; cadence?: "monthly" | "yearly"; shards?: number };
   retention?: { archiveAfterDays?: number; deleteAfterDays?: number };
@@ -194,7 +196,8 @@ export function renderPostgresContractSql(contract: PostgresContract): string[] 
   statements.push(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(contract.schema)};`);
   for (const extension of contract.extensions) statements.push(`CREATE EXTENSION IF NOT EXISTS ${quoteIdent(extension)};`);
   for (const table of contract.tables) {
-    const columns = table.columns.map(column => `  ${quoteIdent(column.name)} ${columnSql(column)}${column.nullable ? "" : " NOT NULL"}${column.primary ? " PRIMARY KEY" : ""}${column.unique ? " UNIQUE" : ""}${column.references ? ` REFERENCES ${quoteIdent(contract.schema)}.${quoteIdent(column.references.table)}(${quoteIdent(column.references.column)}) ON DELETE ${column.references.onDelete}` : ""}`);
+    const columns = table.columns.map(column => `  ${quoteIdent(column.name)} ${columnSql(column)}${column.collation ? ` COLLATE ${quoteIdent(column.collation)}` : ""}${column.nullable ? "" : " NOT NULL"}${column.primary ? " PRIMARY KEY" : ""}${column.unique ? " UNIQUE" : ""}${column.references ? ` REFERENCES ${quoteIdent(contract.schema)}.${quoteIdent(column.references.table)}(${quoteIdent(column.references.column)}) ON DELETE ${column.references.onDelete}` : ""}`);
+    if (table.primaryKey) columns.push(`  PRIMARY KEY (${table.primaryKey.map(quoteIdent).join(", ")})`);
     statements.push(`CREATE TABLE IF NOT EXISTS ${quoteIdent(contract.schema)}.${quoteIdent(table.name)} (\n${columns.join(",\n")}\n);`);
     if (table.partition) {
       statements.push(`COMMENT ON TABLE ${quoteIdent(contract.schema)}.${quoteIdent(table.name)} IS ${sqlString(`${table.purpose}; partition=${table.partition.by}:${table.partition.column}`)};`);
@@ -216,7 +219,10 @@ export function verifyPostgresContract(contract: PostgresContract): Array<{ id: 
   results.push({ id: "required-table-set", passed: missingRequired.length === 0, message: missingRequired.length ? `missing required tables: ${missingRequired.join(", ")}` : "all required PostgreSQL tables are in the contract" });
   for (const table of contract.tables) {
     const primary = table.columns.filter(column => column.primary);
-    results.push({ id: `primary:${table.name}`, passed: primary.length === 1, message: `${table.name} has one primary key` });
+    const key = table.primaryKey;
+    const validPrimary = key === undefined ? primary.length === 1 : primary.length === 0 && key.length > 0
+      && new Set(key).size === key.length && key.every(name => table.columns.some(column => column.name === name && !column.nullable));
+    results.push({ id: `primary:${table.name}`, passed: validPrimary, message: `${table.name} declares one complete primary key` });
     for (const column of table.columns) {
       if (column.references) results.push({ id: `reference:${table.name}.${column.name}`, passed: tableNames.has(column.references.table), message: `${table.name}.${column.name} references existing table ${column.references.table}` });
       if (column.scalar === "VECTOR") results.push({ id: `vector:${table.name}.${column.name}`, passed: Boolean(column.dimensions && column.dimensions > 0), message: `${table.name}.${column.name} declares vector dimensions` });
@@ -283,6 +289,7 @@ function tableContracts(vectorDimensions: number, capacity: CorpusCapacityEstima
       col("char_start", "BIGINT", false, "char start"),
       col("char_end", "BIGINT", false, "char end"),
       col("text", "TEXT", false, "bounded extracted text", { encrypted: true }),
+      col("text_sha256", "BYTEA", false, "actual UTF8 body digest maintained by the canonical evidence write trigger"),
       col("text_preview", "TEXT", false, "safe preview"),
       col("features", "JSONB", false, "feature list"),
       col("status", "TEXT", false, "quarantine or promoted"),
@@ -400,6 +407,46 @@ function auxiliaryTableContract(
     idx(`${name}_episode_idx`, name, ["episode_id", "created_at"], "btree", "episode inspection")
   ], rows, bytes, 0.06);
   switch (name) {
+    case "segmentation_consolidation_runs":
+      return table(name, "owned corpus segmentation run and immutable input/output snapshot headers", [
+        col("run_id", "TEXT", false, "run identity", { primary: true }),
+        col("scope_id", "TEXT", false, "exact declared source/owner scope identity"),
+        col("state", "TEXT", false, "building fitting complete or failed"),
+        col("run_json", "JSONB", false, "immutable run and resource declaration"),
+        col("snapshot_json", "JSONB", true, "complete source dependency snapshot"),
+        col("inference_json", "JSONB", true, "validated completed population inference header"),
+        col("information_label", "JSONB", false, "owned run information label"),
+        col("created_at", "TIMESTAMPTZ", false, "run creation time")
+      ], [], capacity.eventRows, 1600);
+    case "segmentation_consolidation_rows":
+      return { ...table(name, "run-owned immutable input rows and replaceable paged fit scratch", [
+        col("run_id", "TEXT", false, "owning run identity", { references: { table: "segmentation_consolidation_runs", column: "run_id", onDelete: "NO ACTION" } }),
+        col("collection", "TEXT", false, "run-local input or scratch collection"),
+        col("order_key", "TEXT", false, "canonical ASCII cursor order key", { collation: "C" }),
+        col("row_json", "JSONB", false, "bounded canonical row value")
+      ], [], capacity.evidenceRows, 1600), primaryKey: ["run_id", "collection", "order_key"] };
+    case "segmentation_consolidation_active":
+      return table(name, "atomically activated exact-scope population snapshot", [
+        col("scope_id", "TEXT", false, "exact declared source/owner scope identity", { primary: true }),
+        col("run_id", "TEXT", false, "completed owning run", { references: { table: "segmentation_consolidation_runs", column: "run_id", onDelete: "NO ACTION" } }),
+        col("header_json", "JSONB", false, "validated compact inference header"),
+        col("activated_at", "TIMESTAMPTZ", false, "activation time")
+      ], [], capacity.eventRows, 1600);
+    case "creative_event_templates":
+    case "creative_event_lexemes":
+      return table(name, name === "creative_event_templates" ? "canonical creative event template definitions" : "canonical creative event lexical forms", [
+        col("id", "TEXT", false, "immutable component identity", { primary: true }),
+        col("kind", "TEXT", false, name === "creative_event_templates" ? "template_definition" : "lexical_forms"),
+        col("value_json", "JSONB", false, "canonical reusable component value")
+      ], [], capacity.evidenceRows, 1600);
+    case "creative_event_witnesses":
+    case "creative_event_occurrences":
+      return table(name, name === "creative_event_witnesses" ? "source-owned creative event witnesses" : "source-owned canonical occurrence pages", [
+        col("id", "TEXT", false, "immutable component identity", { primary: true }),
+        col("kind", "TEXT", false, name === "creative_event_witnesses" ? "occurrence_witness" : "occurrence_page"),
+        col("value_json", "JSONB", false, "canonical owned component value"),
+        col("information_label", "JSONB", false, "source-owned component access label")
+      ], [], capacity.evidenceRows, 1600);
     case "storage_meta":
       return table(name, "schema version and storage metadata", [
         col("key", "TEXT", false, "metadata key", { primary: true }),
