@@ -151,7 +151,7 @@ describe("transactional language-memory revision", () => {
     let changed = false, blobReads = 0;
     reader.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
       if (sql.includes("pg_column_size(model.model_json) AS stored_bytes")) return [{ id: "model.cached", stream_id: "stream.owned", language_hint: "und", max_order: 1, discount: "0.75", updated_at: new Date(1), information_label: label, stored_bytes: "100" }] as T[];
-      if (sql.includes("octet_length(model.model_json::text) AS json_bytes")) { blobReads++; return [{ id: "model.cached", updated_at: new Date(1), model_json: { changed }, json_bytes: "100" }] as T[]; }
+      if (sql.includes(" AS json_bytes") && sql.includes("model.model_json")) { blobReads++; return [{ id: "model.cached", updated_at: new Date(1), model_json: { changed }, json_bytes: "100" }] as T[]; }
       return query<T>(sql, params);
     };
     await revision(reader);

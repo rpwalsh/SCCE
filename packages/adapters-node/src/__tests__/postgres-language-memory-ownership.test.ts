@@ -166,7 +166,8 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls.at(-1)!.sql).toContain("'requestConstructionCandidate'");
     expect(calls.at(-1)!.sql).toContain("'sourceConstructionCandidate'");
     expect(calls.at(-1)!.sql).toContain("jsonb_typeof(seed_role.value->'graphBinding')='object'");
-    expect(calls.at(-1)!.sql).toContain("NULL::numeric AS decoded_jsonb_bytes");
+    expect(calls.at(-1)!.sql).toContain("CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1'");
+    expect(calls.at(-1)!.sql).toContain("THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END");
     expect(calls.at(-1)!.sql).not.toContain("ELSE pattern.pattern_json END AS pattern_json");
     expect(calls.at(-1)!.sql).not.toContain("running_stored_bytes");
     expect(calls.at(-1)!.sql).toContain("jsonb_build_object('templates','[]'::jsonb)");
@@ -298,7 +299,8 @@ describe("Postgres language-memory ownership queries", () => {
       informationLabel: { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" } });
     const insertion = calls.find(call => call.sql.includes('INSERT INTO "fixture"."ngram_models"'));
     expect(insertion?.sql).toContain("AS n(id,stream_id");
-    expect(insertion?.sql).toContain("model_json=n.model_json || EXCLUDED.model_json");
+    expect(insertion?.sql).toContain("model_json=EXCLUDED.model_json");
+    expect(calls.some(call=>call.sql.includes("model_json AS value,information_label") && call.sql.includes("FOR UPDATE"))).toBe(true);
     expect(insertion?.sql).toContain("information_label=EXCLUDED.information_label");
   });
 
@@ -554,7 +556,9 @@ describe("Postgres language-memory ownership queries", () => {
     // trained_mass is a stored generated column now (carries the exact COALESCE the code used to evaluate).
     expect(modelSql).toContain("ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC");
     const unitSql = calls[1]!.sql;
-    expect(unitSql).toContain("SUM(octet_length(unit.metadata_json::text) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC");
+    expect(unitSql).toContain("SUM((CASE WHEN unit.metadata_json");
+    expect(unitSql).toContain("decodedJsonbBytes");
+    expect(unitSql).toContain("ELSE octet_length(unit.metadata_json::text) END) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC");
     expect(unitSql).toContain("running_json_bytes <=");
     expect(calls[1]?.params.at(-1)).toBe(24 * 1024 * 1024);
 
@@ -729,7 +733,7 @@ function modelFixture(models: ReadonlyArray<{ id: string; storedBytes: number; j
         stored_bytes: String(model.storedBytes)
       })) as unknown as T[];
     }
-    if (sql.includes("octet_length(model.model_json::text) AS json_bytes")) {
+    if (sql.includes(" AS json_bytes") && sql.includes("model.model_json")) {
       const wanted = new Set((params[0] as string[] | undefined) ?? []);
       return models.filter(model => wanted.has(model.id)).map(model => ({
         id: model.id,

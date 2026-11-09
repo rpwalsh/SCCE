@@ -3,7 +3,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createHasher, type LanguageUnitRecord, type SourceVersion } from "@scce/kernel";
 import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
-import { sourceMetadataBoundOwner, unitSourceMetadataNormalizer } from "../unit-source-metadata.js";
+import { sourceMetadataBoundOwner, unitSourceMetadataNormalizer, languageUnitMetadataMergeSql } from "../unit-source-metadata.js";
 
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { for (const adapter of adapters.splice(0)) await adapter.close(); });
@@ -64,15 +64,14 @@ it("uses guarded canonical equality for source binding and unit conflict removal
   const sourceSql = query.mock.calls.find(([sql]) => sql.includes("INSERT INTO") && sql.includes("source_versions"))![0];
   for (const guard of ["stored.source_id=EXCLUDED.source_id", "stored.content_hash=EXCLUDED.content_hash", "stored.information_label=EXCLUDED.information_label",
     "stored.metadata_json->'sourceMetadata'=EXCLUDED.metadata_json->'sourceMetadata'", "stored.metadata_json->'sourceMetadataBinding'=EXCLUDED.metadata_json->'sourceMetadataBinding'"]) expect(sourceSql).toContain(guard);
-  await adapter.languageMemory.putLanguageUnits!([normalized]);
-  const [sql, parameters] = mutate.mock.calls[0]!;
+  // This legacy maintenance expression is tested directly: the fixture above is
+  // deliberately not a canonical source-compilation holder.
+  const sql = languageUnitMetadataMergeSql('"unit_provenance"."source_versions"');
   for (const guard of ["lu.source_version_id=EXCLUDED.source_version_id", "lu.information_label=EXCLUDED.information_label",
     "canonical.information_label=EXCLUDED.information_label", "canonical.metadata_json->'sourceMetadata'=lu.metadata_json->'sourceMetadata'",
     "lu.metadata_json->>'sourceCompilationId'=EXCLUDED.metadata_json->>'sourceCompilationId'",
-    "canonical.metadata_json->'sourceMetadataBinding'->>'valueHash'=EXCLUDED.metadata_json->'sourceMetadataRef'->>'valueHash'"]) expect(sql.split(guard).length - 1).toBe(2);
+    "canonical.metadata_json->'sourceMetadataBinding'->>'valueHash'=EXCLUDED.metadata_json->'sourceMetadataRef'->>'valueHash'"]) expect(sql).toContain(guard);
   expect(sql).toContain("THEN (lu.metadata_json-'sourceMetadata') || EXCLUDED.metadata_json");
-  const [persisted] = JSON.parse(String(parameters?.[0]));
-  expect(persisted.metadata_json).toEqual(normalized.metadata);
-  expect(persisted.unit_text).toBe(unit.text);
-  expect(persisted.features_json).toEqual(unit.features);
+  expect(normalized.text).toBe(unit.text);
+  expect(normalized.features).toEqual(unit.features);
 });
