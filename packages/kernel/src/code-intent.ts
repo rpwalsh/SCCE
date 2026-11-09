@@ -136,6 +136,8 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
   readonly patterns: readonly { readonly patternJson: JsonValue }[];
   /** Formal caller-declared callable IDs from the already parsed request signal. */
   readonly ownerCallableIds?: readonly string[];
+  /** Formal declarations select exact source names; unlike an observed caller alias, they never rename a source callable. */
+  readonly declaredCallableIds?: readonly string[];
 }): { behaviorRequirements: ProgramBehaviorRequirement[]; statefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[]; nativeDeclarations?: ProgramNativeCallableAbi[] } {
   const nativeDeclarations:ProgramNativeCallableAbi[]=[];
   for(const pattern of input.patterns){
@@ -190,14 +192,43 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
   if (!grouped.size) return empty;
   const requestSymbols = new Set(input.intent.requestSymbols ?? []);
   const ownerCallableIds = [...new Set(input.ownerCallableIds ?? [])];
+  const explicitBindings=[...new Set([...ownerCallableIds,...input.declaredCallableIds??[]])];
   const requestedSourceGroups = [...grouped.entries()].filter(([, rows]) => {
     const sourceName = String(rows[0]?.targetName);
-    return requestSymbols.has(sourceName) || ownerCallableIds.includes(sourceName);
+    return requestSymbols.has(sourceName) || explicitBindings.includes(sourceName);
   });
-  const selectedGroups = requestedSourceGroups.length === 1 ? requestedSourceGroups : grouped.size === 1 ? [...grouped.entries()] : [];
-  // Multiple independent source symbols/families are ambiguous without a formal caller name that selects one.
-  if (selectedGroups.length !== 1) return empty;
-  const [familyKey, rows] = selectedGroups[0]!;
+  let selectedGroups = requestedSourceGroups.length === 1 ? requestedSourceGroups : grouped.size === 1 ? [...grouped.entries()] : [];
+  if (explicitBindings.length > 1) {
+    // An exact set of formal owner ports can select several providers. Mere
+    // request-word overlap cannot turn independent repositories into one program.
+    const boundGroups=[...grouped.entries()].filter(([,rows])=>explicitBindings.includes(String(rows[0]?.targetName)));
+    const names=boundGroups.map(([,rows])=>String(rows[0]?.targetName));
+    if(explicitBindings.length!==names.length || new Set(names).size!==names.length || names.some(name=>!explicitBindings.includes(name)))return empty;
+    const contexts=boundGroups.map(([key])=>{
+      const closure=matchedKeys.get(key)?.closure;
+      return closure?canonicalStringify([key.split("\u0000")[0],closure.recipe,closure.compilerVersion,closure.configPath,closure.configHash,
+        closure.snapshotCheckpointId,closure.snapshotHash,closure.scopeIdentity]):undefined;
+    });
+    if(contexts.some(context=>context===undefined)||new Set(contexts).size!==1)return empty;
+    selectedGroups=[...boundGroups].sort(([a],[b])=>a<b?-1:a>b?1:0);
+  }
+  if(!selectedGroups.length)return empty;
+  const lowered=selectedGroups.map(([familyKey,rows])=>sourceOwnedGroupRequirements({input,familyKey,rows,ownerCallableIds:selectedGroups.length>1?explicitBindings:ownerCallableIds,references}));
+  if(lowered.some(group=>!group.behaviorRequirements.length&&!group.statefulBehaviorRequirements.length))return empty;
+  const behaviorRequirements=lowered.flatMap(group=>group.behaviorRequirements),statefulBehaviorRequirements=lowered.flatMap(group=>group.statefulBehaviorRequirements);
+  // Existing planners and repair selection admit one representation per program.
+  if(behaviorRequirements.length&&statefulBehaviorRequirements.length)return empty;
+  // Distinct stateful targets also need an owned shared/independent state binding;
+  // matching project context alone does not prove their stores can be merged.
+  if(selectedGroups.length>1&&statefulBehaviorRequirements.length)return empty;
+  return {behaviorRequirements,statefulBehaviorRequirements,...(nativeDeclarations.length?{nativeDeclarations}:{})};
+}
+
+function sourceOwnedGroupRequirements({input,familyKey,rows,ownerCallableIds,references}:{
+  input:Parameters<typeof sourceOwnedProgramBehaviorFromDocumentation>[0];familyKey:string;rows:Array<Record<string,JsonValue>>;
+  ownerCallableIds:string[];references:Set<string>;
+}):{behaviorRequirements:ProgramBehaviorRequirement[];statefulBehaviorRequirements:ProgramStatefulBehaviorRequirement[]}{
+  const empty={behaviorRequirements:[],statefulBehaviorRequirements:[]};
   const ordered = rows.sort((a, b) => (a.projectClosure&&b.projectClosure?String(a.testPath).localeCompare(String(b.testPath)):0)||spanStart(a.assertionSpan) - spanStart(b.assertionSpan));
   if (ordered.length < 2) return empty;
   const [family, sourcePath, sourceVersionId, targetSymbolId] = familyKey.split("\u0000");
@@ -232,8 +263,8 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
       assertionSpan: row.assertionSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["assertionSpan"]
     }
   }));
-  return {...sourceOwnedStatefulRequirements({ ordered, behaviorRequirements, references, family, sourcePath, sourceVersionId, targetSymbolId, sourceTargetName, ownerCallableIds,
-    languageId: input.intent.languageId ?? "" }),...(nativeDeclarations.length?{nativeDeclarations}:{})};
+  return sourceOwnedStatefulRequirements({ ordered, behaviorRequirements, references, family, sourcePath, sourceVersionId, targetSymbolId, sourceTargetName, ownerCallableIds,
+    languageId: input.intent.languageId ?? "" });
 }
 
 function sourceOwnedStatefulRequirements(input: {

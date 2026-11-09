@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +10,10 @@ import { createClock,sourceOwnedProgramBehaviorFromDocumentation,searchProgramTr
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { trainOssCorpus } from "../oss-corpus.js";
 import { collectTypeScriptContractClosure, type ContractClosureBudget } from "../typescript-contract-closure.js";
+import * as kernel from "@scce/kernel";
+import { NodeBuildTestAdapter } from "../process.js";
+import type { ScceRuntimeConfig } from "../config.js";
+import { createApprovalSession } from "../approval-session.js";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -36,8 +41,80 @@ async function fixture(files = entries) {
   storage.blobs.get = async hash => { const bytes = blobs.get(hash); if (!bytes) throw new Error("canonical blob absent"); return bytes; };
   storage.ingestion = { get: async id => checkpoints.get(id) ?? null, put: async row => { checkpoints.set(row.id, structuredClone(row)); }, list: async () => [...checkpoints.values()] };
   const options = { storage, rootPath: root, includeDocs: false, maxFiles: 100, maxFilesPerRun: 1, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 16, ngramVocabularyLimit: 128 };
-  return { root, files, storage, versions, evidence, checkpoints, blobs, options };
+  return { root, files, storage, versions, evidence, checkpoints, blobs, options, events:recorded.events };
 }
+
+it("composes two formally requested source-owned structural operations in an ordinary native kernel turn", async () => {
+  const f=await fixture({
+    "package.json":JSON.stringify({name:"public-structural-operations",type:"module"}),
+    "tsconfig.json":JSON.stringify({compilerOptions:{allowJs:true,noEmit:true,target:"ES2022",module:"NodeNext",moduleResolution:"NodeNext"},include:["src/**/*.js","spec/**/*.js"]}),
+    "src/a.js":"export function f0(value){return value.filter(item=>item);}\n",
+    "src/b.js":"export function f1(value){return value.rows.map(row=>({name:row.profile.label}));}\n",
+    "src/c.js":"export function value(x){return x+1;}\n",
+    "spec/a.spec.js":"import {test} from 'node:test';import {deepStrictEqual} from 'node:assert';import {f0} from '../src/a.js';test('sequence',()=>{deepStrictEqual(f0([false,true]),[true]);deepStrictEqual(f0([true,false,true]),[true,true]);deepStrictEqual(f0([false,true,false]),[true]);});\n",
+    "spec/b.spec.js":"import {it,expect} from 'vitest';import {f1} from '../src/b.js';it('projection',()=>{expect(f1({rows:[{profile:{label:'A'}},{profile:{label:'B'}}]})).toStrictEqual([{name:'A'},{name:'B'}]);expect(f1({rows:[{profile:{label:'C'}}]})).toStrictEqual([{name:'C'}]);expect(f1({rows:[{profile:{label:'D'}},{profile:{label:'E'}},{profile:{label:'F'}}]})).toStrictEqual([{name:'D'},{name:'E'},{name:'F'}]);});\n",
+    "spec/c.spec.js":"import {it,expect} from 'vitest';import {value} from '../src/c.js';it('unselected',()=>{expect(value(2)).toBe(3);expect(value(4)).toBe(5);});\n"
+  });
+  const trained=await trainOssCorpus({...f.options,includeDocs:true,maxFilesPerRun:100});
+  expect(trained.filesSkipped).toEqual([]);expect(trained.sourceContractClosure?.complete).toBe(true);
+  const patterns=await f.storage.languageMemory.listLanguagePatterns({patternKind:"source_code_assertion_contract"});expect(patterns).toHaveLength(3);
+  const text="JavaScript function f0(value); function f1(value).";
+  const docs=f.evidence.filter(span=>(span.provenance as {sourceSystem?:string}).sourceSystem==="oss_docs");
+  const intent=kernel.codeIntentFromDocumentation({requestText:text,documentation:docs,languageId:"javascript"});
+  const declaredCallableIds=kernel.codeRequestSignal(text).declaredCallableIds;
+  const selected=()=>kernel.sourceOwnedProgramBehaviorFromDocumentation({requestText:text,intent,patterns,declaredCallableIds});
+  expect(declaredCallableIds).toEqual(["f0","f1"]);
+  for(const damage of ["scope","config","duplicate","unbound","foreign","stale"]){
+    const changed=structuredClone(patterns),body=changed[1]!.patternJson as Record<string,JsonValue>,closure=body.sourceContractClosure as Record<string,JsonValue>;
+    if(damage==="scope")closure.scopeIdentity="f".repeat(64);
+    if(damage==="config")closure.configHash="e".repeat(64);
+    if(damage==="duplicate")body.targetName="f0";
+    if(damage==="foreign")body.repositoryFamily="scce://foreign-repository";
+    if(damage==="stale")body.sourceHash="c".repeat(64);
+    expect(kernel.sourceOwnedProgramBehaviorFromDocumentation({requestText:text,intent,patterns:changed,declaredCallableIds:damage==="unbound"?[]:declaredCallableIds}).behaviorRequirements,damage).toEqual([]);
+  }
+  expect(kernel.sourceOwnedProgramBehaviorFromDocumentation({requestText:text,intent,patterns:[patterns[0]!],declaredCallableIds:["unimplemented"]}).behaviorRequirements.some(row=>row.callableId==="unimplemented")).toBe(false);
+  const clock=kernel.createClock({fixedTime:99000,stepMs:1});
+  f.storage.model.readModel=async()=>({languageProfiles:await f.storage.model.listLanguageProfiles({limit:100}),latentConcepts:[],learnedProgramPatterns:[],learningGoals:[],trainingSteps:1});
+  const native=new NodeBuildTestAdapter({runtime:{tempRoot:f.root}} as ScceRuntimeConfig),executions:Array<Awaited<ReturnType<NodeBuildTestAdapter["executeProgram"]>>>=[];
+  const runtimeStorage:kernel.ScceStorage={...f.storage,userModelClaims:{putClaim:async()=>undefined,listClaims:async()=>[]},
+    taskResumption:{putSnapshot:async()=>undefined,getLatestSnapshot:async()=>null},
+    documentGeneration:{putSession:async()=>undefined,getSession:async()=>null,compareAndPutSession:async()=>({stored:true,currentUpdatedAt:null})}};
+  const approvals=createApprovalSession();
+  const runtime=kernel.createScceKernel({storage:runtimeStorage,clock,idFactory:kernel.createIdFactory({clock,hasher:kernel.createHasher(),deterministicReplay:true}),deterministicReplay:true,
+    approvals,functionalCognitionAuthorizeCapabilities:true,policy:{allowMutation:false,dryRunByDefault:true,requireTwoPhaseCommit:true},
+    files:{streamPath:async function*(){}},buildTest:{executeProgram:async input=>{const result=await native.executeProgram(input);executions.push(result);return result;}}});
+  let turn=await runtime.turn({text,requestedAuthority:"program"});
+  for(let round=0;round<3&&!turn.buildTest?.passed;round++){
+    const pending=approvals.snapshot().pending;expect(pending.length).toBeGreaterThan(0);
+    expect(turn.constructGraph.program).toBeDefined();
+    for(const plan of pending){
+      expect(plan.capabilityId).toBe("process.build_test");
+      const descriptor=plan.input as {schema:string;provider:kernel.JsonValue;workingDirectory:string;build:kernel.JsonValue;test:kernel.JsonValue;ownerRequirementIds:string[];files:Array<{path:string;hash:string;byteLength:number}>};
+      const prior=kernel.programValidationApprovalInput(turn.constructGraph.program!) as typeof descriptor;
+      expect(descriptor).toMatchObject({schema:prior.schema,provider:prior.provider,workingDirectory:prior.workingDirectory,build:prior.build,test:prior.test,ownerRequirementIds:prior.ownerRequirementIds});
+      expect(descriptor.files.map(file=>file.path)).toEqual(prior.files.map(file=>file.path));
+      expect(descriptor.files.every(file=>/^sha256_[a-f0-9]{64}$/u.test(file.hash)&&Number.isSafeInteger(file.byteLength)&&file.byteLength>0)).toBe(true);
+      approvals.approve(plan.planId);
+      const changed=structuredClone(plan.input) as typeof descriptor;changed.files[0]!.hash=`sha256_${"0".repeat(64)}`;
+      expect(approvals.isApproved({capabilityId:plan.capabilityId,input:changed})).toBe(false);
+    }
+    expect(approvals.snapshot().operatorGrant).toBe(false);
+    turn=await runtime.turn({text,requestedAuthority:"program"});
+  }
+  expect(turn.constructGraph.program,JSON.stringify({answer:turn.answer,buildPassed:turn.buildTest?.passed})).toBeDefined();
+  expect(selected().behaviorRequirements).toHaveLength(6);
+  expect(selected().behaviorRequirements.filter(row=>row.verificationRole==="held_out")).toHaveLength(2);
+  expect(executions.length).toBeGreaterThanOrEqual(2);expect(executions[0]!.passed).toBe(false);expect(executions.at(-1)!.passed).toBe(true);
+  const program=turn.constructGraph.program!;
+  expect(program.nodes.filter(node=>node.kind==="owner_behavior_requirement")).toHaveLength(6);
+  expect(program.nodes.filter(node=>node.kind==="program.module").length).toBeGreaterThanOrEqual(3);
+  const reserved=await mkdtemp(path.join(tmpdir(),"scce-unseen-structural-"));roots.push(reserved);
+  for(const file of program.files){const target=path.join(reserved,file.path);await mkdir(path.dirname(target),{recursive:true});await writeFile(target,file.content);}
+  const unseen=path.join(reserved,"independent.test.mjs");
+  await writeFile(unseen,`import assert from 'node:assert/strict';import {f0,f1} from './${program.entrypoint}';assert.deepEqual(f0([true,false,false,true,true,false]),[true,true,true]);assert.deepEqual(f0([]),[]);assert.deepEqual(f1({rows:[{profile:{label:'雪'}},{profile:{label:'e\\u0301'}},{profile:{label:'__proto__'}}]}),[{name:'雪'},{name:'e\\u0301'},{name:'__proto__'}]);`);
+  expect(()=>execFileSync(process.execPath,[unseen],{cwd:reserved,stdio:"pipe",timeout:30000})).not.toThrow();
+},60000);
 
 it("crosses one-file ingestion windows with original bytes, extends, aliases, reexports and type declarations without clobbering roots", async () => {
   const f = await fixture(); let cursor = 0, snapshotHash: string | undefined, last: Awaited<ReturnType<typeof trainOssCorpus>> | undefined;

@@ -3515,6 +3515,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             patternKind: "source_code_assertion_contract", formalLanguage: documentationCodeIntent.languageId, limit: 4096 }):[];
       const sourceOwnedBehavior = sourceOwnedProgramBehaviorFromDocumentation({ requestText: input.text,
         intent: documentationCodeIntent, patterns: sourceOwnedContractPatterns,
+        declaredCallableIds:codeSignal.declaredCallableIds,
         ownerCallableIds: [...codeSignal.behaviorRequirements.map(requirement => requirement.callableId),
           ...codeSignal.statefulBehaviorRequirements.flatMap(requirement => requirement.invocations.map(invocation => invocation.callableId))] });
       const sourceOwnedRequirements = [...sourceOwnedBehavior.behaviorRequirements, ...sourceOwnedBehavior.statefulBehaviorRequirements];
