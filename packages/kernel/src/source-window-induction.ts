@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createLanguageInductionEngine, type LanguageInductionDocument, type InducedLanguageModel } from "./language-induction.js";
 import type { InducedLanguageMemoryModel } from "./language-induction-memory.js";
+import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { canonicalStringify } from "./primitives.js";
 import { joinProgramMixtureStorageForm } from "./join-program-storage.js";
 import { inductionCharBudget, inductionDocumentCharCap } from "./training-orchestrator.js";
@@ -10,7 +11,10 @@ import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
 import type { Hasher } from "./types.js";
 import type { CorpusSegmentationBatchLoader, VerifiedCorpusSegmentation } from "./corpus-segmentation-cursor.js";
 import { prepareCorpusSegmentationMeasurement } from "./surface-lattice.js";
-import { validateCorpusSegmentationForDocuments } from "./corpus-segmentation-input.js";
+import { corpusSegmentationInputDigest, validateCorpusSegmentationForDocuments } from "./corpus-segmentation-input.js";
+
+import type { SourceInductionBatch, SourceInductionBatchExecution, SourceInductionBatchIdentity, SourceInductionBatchJob, SourceInductionBatchProduct } from "./source-induction-execution.js";
+export type { SourceInductionBatch } from "./source-induction-execution.js";
 
 export const SOURCE_WINDOW_INDUCTION_RECIPE_ID = "kernel.source_window_induction.v1" as const;
 
@@ -53,10 +57,6 @@ export function sourceInductionInputDigest(documents: readonly LanguageInduction
     ...(corpusIdentity ? { corpusSegmentation: corpusIdentity } : {}) }));
 }
 
-interface SourceInductionBatch {
-  documents: LanguageInductionDocument[];
-  windows: SourceInductionWindow[];
-}
 export function* sourceInductionBatches(documents: readonly LanguageInductionDocument[], hasher: Hasher): Generator<SourceInductionBatch> {
   const budget = inductionCharBudget();
   const cap = Math.min(budget, inductionDocumentCharCap());
@@ -114,27 +114,11 @@ export interface SourceInductionProducts {
 }
 interface SourceInductionCompileInput { documents: readonly LanguageInductionDocument[]; hasher: Hasher; modelCache?: Map<string, InducedLanguageMemoryModel> }
 
-function createSourceInductionCompiler(input: SourceInductionCompileInput & { corpusIdentity?: CorpusSegmentationBatchLoader["identity"] }) {
-  const models: InducedLanguageMemoryModel[] = [];
-  const windows: SourceInductionWindow[] = [];
-  let first: InducedLanguageModel | undefined;
-  const corpusBindings: string[] = [];
-  return { add(batch: SourceInductionBatch, verified?: VerifiedCorpusSegmentation): void {
-    windows.push(...batch.windows);
-    if (!batch.documents.some(document => document.text.trim())) return;
-    let batchKey = sourceInductionInputDigest(batch.documents, input.hasher);
-    if (verified) {
-      const validated = validateCorpusSegmentationForDocuments(batch.documents.filter(document => document.text.trim()), verified, input.hasher);
-      corpusBindings.push(validated.inputDigest);
-      batchKey = input.hasher.digestHex(canonicalStringify([batchKey, validated.inputDigest]));
-    }
-    const cached = input.modelCache?.get(batchKey);
-    if (cached) { first = undefined; models.push(cached); return; }
-    if (models.length) first = undefined;
-    const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents: batch.documents,
-      ...(verified ? { verifiedCorpusSegmentation: verified } : {}) });
-    if (!models.length) first = model;
-    else first = undefined;
+export function sourceInductionBatchJobDigest(job: Omit<SourceInductionBatchJob, "jobDigest">, hasher: Hasher): string {
+  return hasher.digestHex(canonicalStringify({ job, streamingDigest: canonicalDigestHex(job, hasher) }));
+}
+
+function compactSourceInductionModel(model: InducedLanguageModel, batch: SourceInductionBatch): InducedLanguageMemoryModel {
     const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds } = model;
     const windowsByEvidence = new Map<string, number[]>();
@@ -146,7 +130,7 @@ function createSourceInductionCompiler(input: SourceInductionCompileInput & { co
         else windowsByEvidence.set(evidenceId, [index]);
       }
     }
-    const compact = freezeProducts({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
+    return freezeProducts({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
       joinProgram: joinProgramMixtureStorageForm(joinProgram, { immutable: true }),
       semanticFrames, graphBoundConstructions: graphBoundConstructions.map(construction => {
         const matches = new Set<number>();
@@ -159,9 +143,46 @@ function createSourceInductionCompiler(input: SourceInductionCompileInput & { co
           return { ownerDocumentId, startUtf16, endUtf16 };
         }) };
       }), lexicalClasses, relationHypothesisModel, translationSeeds });
-    models.push(compact);
-    input.modelCache?.set(batchKey, compact);
-  }, finish(): SourceInductionProducts {
+}
+
+/** Prepare/induce are the same pure producer in serial execution and worker sessions. */
+export function prepareSourceInductionBatch(input: { batch: SourceInductionBatch; hasher: Hasher; verified?: VerifiedCorpusSegmentation }):
+  SourceInductionBatchIdentity & { induce(retainFullModel?: boolean): SourceInductionBatchProduct } {
+  const { batch, hasher, verified } = input;
+  if (!batch.documents.some(document => document.text.trim())) throw new Error("source induction batch contains no language material");
+  const sourceDigest = sourceInductionInputDigest(batch.documents, hasher), windowsDigest = hasher.digestHex(canonicalStringify(batch.windows));
+  const corpusBinding = verified ? validateCorpusSegmentationForDocuments(batch.documents.filter(document => document.text.trim()), verified, hasher).inputDigest : undefined;
+  const batchKey = corpusBinding ? hasher.digestHex(canonicalStringify([sourceDigest, corpusBinding])) : sourceDigest;
+  return Object.freeze({ batchKey, ...(corpusBinding ? { corpusBinding } : {}), induce(retainFullModel = true): SourceInductionBatchProduct {
+    if (sourceInductionInputDigest(batch.documents, hasher) !== sourceDigest || hasher.digestHex(canonicalStringify(batch.windows)) !== windowsDigest
+      || verified && corpusSegmentationInputDigest(batch.documents.filter(document => document.text.trim()), verified, hasher) !== corpusBinding)
+      throw new Error("source induction batch inputs changed");
+    const model = createLanguageInductionEngine({ hasher }).induce({ documents: batch.documents, ...(verified ? { verifiedCorpusSegmentation: verified } : {}) });
+    return { compact: compactSourceInductionModel(model, batch), ...(retainFullModel ? { fullModel: model } : {}) };
+  } });
+}
+
+function createSourceInductionCompiler(input: SourceInductionCompileInput & { corpusIdentity?: CorpusSegmentationBatchLoader["identity"] }) {
+  const models: InducedLanguageMemoryModel[] = [];
+  const windows: SourceInductionWindow[] = [];
+  let first: InducedLanguageModel | undefined;
+  const corpusBindings: string[] = [];
+  const accept = (identity: SourceInductionBatchIdentity, product: SourceInductionBatchProduct): void => {
+    if (identity.corpusBinding) corpusBindings.push(identity.corpusBinding);
+    const cached = input.modelCache?.get(identity.batchKey);
+    if (cached) { first = undefined; models.push(cached); return; }
+    first = models.length ? undefined : product.fullModel;
+    const compact = freezeProducts(product.compact);
+    models.push(compact); input.modelCache?.set(identity.batchKey, compact);
+  };
+  return { observe(batch: SourceInductionBatch): void { windows.push(...batch.windows); }, accept,
+    add(batch: SourceInductionBatch, verified?: VerifiedCorpusSegmentation): void {
+      windows.push(...batch.windows);
+      if (!batch.documents.some(document => document.text.trim())) return;
+      const prepared = prepareSourceInductionBatch({ batch, hasher: input.hasher, ...(verified ? { verified } : {}) });
+      const cached = input.modelCache?.get(prepared.batchKey);
+      accept(prepared, cached ? { compact: cached } : prepared.induce());
+    }, finish(): SourceInductionProducts {
   const inputUtf16Length = input.documents.reduce((total, document) => total + document.text.length, 0);
   const coveredUtf16Length = windows.reduce((total, window) => total + window.endUtf16 - window.startUtf16, 0);
   if (coveredUtf16Length !== inputUtf16Length) throw new Error("source induction windows do not cover the complete owned input");
@@ -197,4 +218,101 @@ export async function compileSourceInductionWindowsFromCorpus(input: SourceInduc
     compiler.add(batch, verified);
   }
   return compiler.finish();
+}
+
+/** Execute independent windows of ONE captured view; cache publication and model order remain serial. */
+export async function compileSourceInductionWindowsAsync(input: SourceInductionCompileInput & {
+  execution: SourceInductionBatchExecution; corpusLoader?: CorpusSegmentationBatchLoader; signal?: AbortSignal;
+}): Promise<SourceInductionProducts> {
+  const { execution, signal } = input;
+  if (!Number.isSafeInteger(execution.concurrency) || execution.concurrency < 1) throw new Error("source induction execution concurrency must be a positive integer");
+  const source = input.corpusLoader?.identity;
+  const identity = source ? { id: source.id, featureContextId: source.featureContextId, normalizationContractId: source.normalizationContractId,
+    sourceInventory: { ...source.sourceInventory } } : undefined;
+  const compiler = createSourceInductionCompiler({ ...input, ...(identity ? { corpusIdentity: identity } : {}) });
+  type Completed = { ok: true; identity: SourceInductionBatchIdentity; product: SourceInductionBatchProduct } | { ok: false; error: unknown };
+  const queue: Array<Promise<Completed>> = [];
+  const inFlight = new Map<string, Promise<SourceInductionBatchProduct>>();
+  let ordinal = 0;
+  const aborted = () => { void execution.close(signal?.reason).catch(() => {}); };
+  const run = async (batch: SourceInductionBatch, index: number): Promise<Completed> => {
+    let session: Awaited<ReturnType<SourceInductionBatchExecution["open"]>> | undefined, primary: unknown, failed = false;
+    try {
+      signal?.throwIfAborted();
+      const sourceKey = sourceInductionInputDigest(batch.documents, input.hasher);
+      if (!input.corpusLoader) {
+        const cached = input.modelCache?.get(sourceKey);
+        if (cached) return { ok: true, identity: { batchKey: sourceKey }, product: { compact: cached } };
+        const pending = input.modelCache ? inFlight.get(sourceKey) : undefined;
+        if (pending) return { ok: true, identity: { batchKey: sourceKey }, product: await pending };
+      }
+      const body = { ordinal: index, batch, retainFullModel: index === 0, ...(identity ? { corpusIdentity: identity } : {}),
+        batchBudgetUtf16: inductionCharBudget(), windowCapUtf16: inductionDocumentCharCap() };
+      const job = { ...body, jobDigest: sourceInductionBatchJobDigest(body, input.hasher) };
+      session = await execution.open(job);
+      if (session.jobDigest !== job.jobDigest) throw new Error("source induction worker job identity changed");
+      const documents = batch.documents.filter(document => document.text.trim());
+      let verified: VerifiedCorpusSegmentation | undefined;
+      if (input.corpusLoader) {
+        if (session.preparations.length !== documents.length || session.preparations.some((preparation, slot) => preparation.documentId !== documents[slot]!.id))
+          throw new Error("source induction worker measurement scope changed");
+        verified = await input.corpusLoader.resolve(session.preparations);
+        const actual = verified.populationInference;
+        if (actual.id !== identity!.id || actual.featureContextId !== identity!.featureContextId || actual.sourceInventory.id !== identity!.sourceInventory.id
+          || actual.sourceInventory.count !== identity!.sourceInventory.count || actual.normalizationContractId !== identity!.normalizationContractId)
+          throw new Error("corpus segmentation loader snapshot changed");
+      } else if (session.preparations.length) throw new Error("source induction worker requested an undeclared corpus context");
+      const prepared = await session.verify(verified);
+      const corpusBinding = verified ? corpusSegmentationInputDigest(documents, verified, input.hasher) : undefined;
+      const expectedKey = corpusBinding ? input.hasher.digestHex(canonicalStringify([sourceKey, corpusBinding])) : sourceKey;
+      if (prepared.batchKey !== expectedKey || prepared.corpusBinding !== corpusBinding) throw new Error("source induction worker batch identity changed");
+      const cached = input.modelCache?.get(prepared.batchKey);
+      if (cached) return { ok: true, identity: prepared, product: { compact: cached } };
+      const pending = input.modelCache ? inFlight.get(prepared.batchKey) : undefined;
+      if (pending) {
+        await session.close(); session = undefined;
+        return { ok: true, identity: prepared, product: await pending };
+      }
+      const operation = session.induce();
+      if (input.modelCache) inFlight.set(prepared.batchKey, operation);
+      const product = await operation;
+      if (!product?.compact || typeof product.compact.id !== "string" || job.retainFullModel && !product.fullModel
+        || product.fullModel && product.fullModel.id !== product.compact.id) throw new Error("source induction worker omitted its complete model product");
+      return { ok: true, identity: prepared, product };
+    } catch (error) { primary = error; failed = true; return { ok: false, error }; }
+    finally {
+      try { await session?.close(); }
+      catch (cleanup) { if (failed && cleanup !== primary) throw new AggregateError([primary, cleanup], "source induction session and cleanup failed"); throw cleanup; }
+    }
+  };
+  const retire = async (): Promise<void> => {
+    const completed = await queue.shift()!;
+    signal?.throwIfAborted();
+    if (!completed.ok) throw completed.error;
+    compiler.accept(completed.identity, completed.product);
+  };
+  try {
+    signal?.throwIfAborted(); signal?.addEventListener("abort", aborted, { once: true });
+    const batches = sourceInductionBatches(input.documents, input.hasher);
+    for (;;) {
+      let next: IteratorResult<SourceInductionBatch>;
+      try { next = batches.next(); }
+      catch (error) { queue.push(Promise.resolve({ ok: false, error })); break; }
+      if (next.done) break;
+      compiler.observe(next.value);
+      if (!next.value.documents.some(document => document.text.trim())) continue;
+      // Retained completed products count toward the same bound, preventing an unbounded reorder buffer.
+      if (queue.length === execution.concurrency) await retire();
+      const promise = run(next.value, ordinal++);
+      // Even a failed cleanup is retained as an ordered outcome, never an unhandled later-batch rejection.
+      queue.push(promise.catch(error => ({ ok: false, error })));
+    }
+    while (queue.length) await retire();
+    return compiler.finish();
+  } catch (error) {
+    try { await execution.close(error); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], "source induction execution and cleanup failed"); }
+    await Promise.all(queue);
+    throw error;
+  } finally { signal?.removeEventListener("abort", aborted); }
 }

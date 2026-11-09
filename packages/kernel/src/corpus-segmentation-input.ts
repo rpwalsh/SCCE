@@ -47,6 +47,13 @@ export function validateCorpusSegmentationForDocuments(documents: readonly Langu
     first ??= context; measurements.set(doc.id, measurement);
   }
   return { measurements, featureContext: { ...first!, documentCountBySurfaceFormClass, classCountByBoundaryContext },
-    inputDigest: canonicalDigestHex({ populationInferenceId: inference.id, contextId: inference.featureContextId,
-      slices: documents.map(doc => { const slice = slices.get(doc.id)!; return { documentId: doc.id, measurementId: slice.preparation.id, valueDigest: slice.contextSlice.binding.valueDigest }; }) }, hasher) };
+    inputDigest: corpusSegmentationInputDigest(documents, verified, hasher) };
+}
+
+/** The common identity recipe; computing it alone does not validate a measurement or license inference. */
+export function corpusSegmentationInputDigest(documents: readonly Pick<LanguageInductionDocument, "id">[], verified: VerifiedCorpusSegmentation, hasher: Hasher): string {
+  const slices = new Map(verified.slices.map(slice => [slice.preparation.documentId, slice]));
+  return canonicalDigestHex({ populationInferenceId: verified.populationInference.id, contextId: verified.populationInference.featureContextId,
+    slices: documents.map(doc => { const slice = slices.get(doc.id); if (!slice) throw new Error("corpus segmentation measurement is missing");
+      return { documentId: doc.id, measurementId: slice.preparation.id, valueDigest: slice.contextSlice.binding.valueDigest }; }) }, hasher);
 }

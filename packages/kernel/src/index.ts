@@ -88,6 +88,7 @@ export * from "./language-construction-memory.js";
 export * from "./source-construction-request-binding.js";
 export * from "./graph-surface-alignment.js";
 export * from "./source-window-induction.js";
+export * from "./source-induction-execution.js";
 export * from "./sparse-alignment-candidates.js";
 export * from "./typed-null-alignment.js";
 export * from "./population-ordering.js";

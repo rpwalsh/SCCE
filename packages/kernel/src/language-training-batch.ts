@@ -14,11 +14,13 @@ import { compileCreativeSourceCorrespondences } from "./creative-source-correspo
 import { compileCreativeSourceUtterancePatterns } from "./creative-source-utterance.js";
 import { compileSourceReferenceBindingPattern, type SourceReferenceBindingDeclaration } from "./source-reference-bindings.js";
 import type { TranscriptTurn } from "./dialogue-communicative-act-learning.js";
+import type { SourceInductionBatchExecution } from "./source-induction-execution.js";
 import type { CorpusSegmentationBatchLoader } from "./corpus-segmentation-cursor.js";
 import {
   evaluateHeldOutConstructionCoverage,
   induceSourceBoundConstructionTrainingSets,
   prepareConstructionInduction,
+  prepareConstructionInductionAsync,
   prepareConstructionInductionFromCorpus,
   preparedLanguageInductionProducts,
   sourceLanguageInductionDocuments,
@@ -1183,6 +1185,17 @@ export function prepareLanguageTrainingInduction(input: LanguageTrainingInductio
   const plan = planLanguageTrainingInduction(input);
   const prepared = prepareConstructionInduction({ documents: plan.documents, hasher: input.hasher, contextDocuments: plan.sampledContext,
     additionalDocumentSets: plan.split.heldOut.length ? [plan.qualificationDocuments.train] : [], ...(input.prepared ? { prepared: input.prepared } : {}) });
+  return { prepared, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
+}
+
+export async function prepareLanguageTrainingInductionAsync(input: LanguageTrainingInductionInput & {
+  execution: SourceInductionBatchExecution; corpusLoader?: CorpusSegmentationBatchLoader; signal?: AbortSignal;
+}) {
+  const plan = planLanguageTrainingInduction(input);
+  const prepared = await prepareConstructionInductionAsync({ documents: plan.documents, hasher: input.hasher, contextDocuments: plan.sampledContext,
+    additionalDocumentSets: plan.split.heldOut.length ? [plan.qualificationDocuments.train] : [], execution: input.execution,
+    ...(input.corpusLoader ? { corpusLoader: input.corpusLoader } : {}), ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.prepared ? { prepared: input.prepared } : {}) });
   return { prepared, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
 }
 
