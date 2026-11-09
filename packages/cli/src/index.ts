@@ -679,7 +679,7 @@ async function relationPotential(configPath: string, runtime: ReturnType<typeof 
   });
 }
 
-async function corpus(
+export async function corpus(
   runtime: ReturnType<typeof createNodeRuntime> | undefined,
   args: string[],
   config?: Awaited<ReturnType<typeof readScceRuntimeConfig>>
@@ -732,7 +732,7 @@ async function corpus(
       // given, same contract as the file-based trainers.
       const options = parseCorpusTrainOptions(args.slice(2));
       const manifest = options.brainManifestPath ? await readCorpusBrainManifest(options.brainManifestPath, options.maxTotalBytes ?? 64 * 1024 * 1024) : undefined;
-      printJson(await trainStoredCorpusConstructions({
+      printCorpusTrainingReport(await trainStoredCorpusConstructions({
         storage: runtime.storage,
         corpusSegmentation: config?.runtime.corpusSegmentation,
         ...(canonicalCorpusSourceSystemId(options.sourceSystem ?? "wikipedia") === CORPUS_SOURCE_SYSTEM_IDS.wikipedia ? {
@@ -745,7 +745,7 @@ async function corpus(
           onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromStoredReport({ storage: runtime.storage, informationLabel, report, configuration: options })
         }),
         creativeEventCompiler: createUniversalCreativeEventConstructionCompiler()
-      }));
+      }), options.brainManifestPath);
       return;
     }
     const target = args[2];
@@ -759,7 +759,7 @@ async function corpus(
       const informationLabel = { tenantId: access.tenantId, principals: [access.principalId], compartments: [...access.compartments],
         exportClass: "restricted" as const, mergePolicy: "isolated" as const };
       // The transcript is labelled with the operator's own access context, never the public corpus label.
-      printJson(await trainDialogueCorpus({
+      printCorpusTrainingReport(await trainDialogueCorpus({
         corpusSegmentation: config?.runtime.corpusSegmentation,
         storage: runtime.storage,
         rootPath: path.resolve(target),
@@ -779,7 +779,7 @@ async function corpus(
         ...(manifest ? {} : { onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromDialogueReport({
           storage: runtime.storage, informationLabel, report, configuration: options
         }) })
-      }));
+      }), options.brainManifestPath);
       return;
     }
     if (kind === "oss-github") {
@@ -2041,6 +2041,15 @@ function usage(error?: string): void {
     "",
     "Config defaults to scce.config.json. SCCE_DATABASE_URL may override the complete PostgreSQL connection URL; other config values are read from the file."
   ].join("\n") + "\n");
+}
+
+/** Manifest phases with an explicit source-selection receipt must not report successful process completion for a partial run. */
+function printCorpusTrainingReport(report: unknown, brainManifestPath: string | undefined): void {
+  printJson(report);
+  if (!brainManifestPath) return;
+  const selection = report !== null && typeof report === "object" && "selection" in report ? report.selection : undefined;
+  if (selection === null || typeof selection !== "object" || Array.isArray(selection) || !("languageTrainingComplete" in selection)
+    || selection.languageTrainingComplete !== true) process.exitCode = 1;
 }
 
 function printJson(value: unknown): void {
