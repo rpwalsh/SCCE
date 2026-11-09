@@ -7,8 +7,8 @@ import type { PostgresCorpusSegmentationRun } from "./corpus-segmentation-store.
 import { durableJoinProgramJsonByteLengths } from "./durable-join-program-storage.js";
 
 export const CORPUS_MEMBERSHIP_SCHEMA = "scce.corpus_segmentation_membership_page.v1";
-export const CORPUS_COUNT_PAGE_SCHEMA = "scce.corpus_segmentation_count_page.v1";
-const RECEIPT_SCHEMA = "scce.corpus_segmentation_count_receipt.v1";
+export const CORPUS_COUNT_PAGE_SCHEMA = "scce.corpus_segmentation_count_page.v2";
+const RECEIPT_SCHEMA = "scce.corpus_segmentation_count_receipt.v2";
 export type CorpusMembershipRun = Pick<PostgresCorpusSegmentationRun, "bounds" | "scratch" | "pages" | "putInput" | "assertState">
   & { run: Pick<PostgresCorpusSegmentationRun["run"], "runId" | "recipeId"> };
 export type CorpusMembershipStorage = Pick<PostgresStorageAdapter, "table" | "query" | "informationAccessPredicate">;
@@ -42,14 +42,14 @@ export async function writeCorpusMembershipPages(run: CorpusMembershipRun, input
   await flush(); return page;
 }
 
-async function aggregate(storage: CorpusMembershipStorage, run: CorpusMembershipRun, kind: CorpusMembershipKind): Promise<void> {
+async function aggregate(storage: CorpusMembershipStorage, run: CorpusMembershipRun, kind: CorpusMembershipKind): Promise<number> {
   await run.assertState("building");
   const access = storage.informationAccessPredicate("r", 7);
   const key = kind === "class" ? "member.value #>> '{}'" : "member.value->>0";
   const distinct = kind === "class" ? "page.document_id" : "member.value->>1";
   const memberValid = kind === "class" ? "jsonb_typeof(member.value)='string'"
     : "jsonb_typeof(member.value)='array' AND jsonb_array_length(member.value)=2 AND jsonb_typeof(member.value->0)='string' AND jsonb_typeof(member.value->1)='string'";
-  const rows = await storage.query<{ authorized: boolean; valid: boolean; expected: string; matched: string }>(`
+  const rows = await storage.query<{ authorized: boolean; valid: boolean; expected: string; matched: string; leaf_byte_capacity: number }>(`
     WITH admitted_run AS MATERIALIZED (
       SELECT r.run_id FROM ${storage.table("segmentation_consolidation_runs")} r WHERE r.run_id=$1 AND r.state='building' AND ${access.sql} FOR SHARE OF r
     ), owned_pages AS MATERIALIZED (
@@ -71,27 +71,37 @@ async function aggregate(storage: CorpusMembershipStorage, run: CorpusMembership
       CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN validity.valid THEN page.entries ELSE '[]'::jsonb END) member(value)
       WHERE validity.valid GROUP BY (${key}) COLLATE "C"
     ), hash_groups AS MATERIALIZED (
-      SELECT encode(sha256(convert_to(key,'UTF8')),'hex') AS hash,jsonb_agg(jsonb_build_array(key,count) ORDER BY key COLLATE "C") AS members
+      SELECT encode(sha256(convert_to(key,'UTF8')),'hex') AS hash,jsonb_object_agg(key,count ORDER BY key COLLATE "C") AS members
       FROM exact_counts GROUP BY encode(sha256(convert_to(key,'UTF8')),'hex')
     ), sized AS MATERIALIZED (
-      SELECT hash,jsonb_build_array(hash,members) AS entry,
-        octet_length(convert_to(jsonb_build_array(hash,members)::text,'UTF8'))+2 AS bytes FROM hash_groups
-    ), capacity AS MATERIALIZED (
-      SELECT COALESCE(MAX(bytes),0) AS max_bytes,
+      SELECT hash,members,octet_length(convert_to(jsonb_build_object(hash,members)::text,'UTF8')) AS bytes FROM hash_groups
+    ), geometry AS MATERIALIZED (
+      SELECT LEAST($3,current_setting('block_size')::int) AS target_bytes,
         octet_length(convert_to(json_build_object('orderKey',repeat('0',64),'value',
-          jsonb_build_object('schema',$6::text,'endHash',repeat('0',64),'entries','[]'::jsonb))::text,'UTF8')) AS overhead FROM sized
-    ), numbered AS MATERIALIZED (
-      SELECT sized.*,FLOOR((ROW_NUMBER() OVER(ORDER BY hash COLLATE "C")-1)/GREATEST(1,FLOOR(($3-capacity.overhead)/NULLIF(capacity.max_bytes,0)))) AS page
+          jsonb_build_object('schema',$6::text,'endHash',repeat('0',64),'entries','{}'::jsonb))::text,'UTF8')) AS overhead
+    ), capacity AS MATERIALIZED (
+      SELECT geometry.*,COALESCE(MAX(bytes),0) AS max_bytes,
+        COALESCE(MAX(bytes) FILTER(WHERE bytes+geometry.overhead <= geometry.target_bytes),0) AS normal_max_bytes
+      FROM geometry LEFT JOIN sized ON TRUE GROUP BY geometry.target_bytes,geometry.overhead
+    ), marked AS MATERIALIZED (
+      SELECT sized.*,bytes+capacity.overhead > capacity.target_bytes AS large,
+        SUM(CASE WHEN bytes+capacity.overhead > capacity.target_bytes THEN 1 ELSE 0 END) OVER(ORDER BY hash COLLATE "C") AS segment
       FROM sized CROSS JOIN capacity WHERE capacity.max_bytes+capacity.overhead <= $3
+    ), numbered AS MATERIALIZED (
+      SELECT marked.*,CASE WHEN large THEN 'large.' || hash ELSE 'normal.' || segment::text || '.' ||
+        FLOOR((ROW_NUMBER() OVER(PARTITION BY segment,large ORDER BY hash COLLATE "C")-1)/
+          GREATEST(1,FLOOR((capacity.target_bytes-capacity.overhead)/NULLIF(capacity.normal_max_bytes,0))))::text END AS page
+      FROM marked CROSS JOIN capacity
     ), pages AS MATERIALIZED (
       SELECT MIN(hash COLLATE "C") AS order_key,jsonb_build_object('schema',$6::text,'endHash',MAX(hash COLLATE "C"),
-        'entries',jsonb_agg(entry ORDER BY hash COLLATE "C")) AS row_json FROM numbered GROUP BY page
+        'entries',jsonb_object_agg(hash,members ORDER BY hash COLLATE "C")) AS row_json FROM numbered GROUP BY page
     ), inserted AS (
       INSERT INTO ${storage.table("segmentation_consolidation_rows")}(run_id,collection,order_key,row_json)
       SELECT $1,'${countCollection(kind)}',order_key,row_json FROM pages CROSS JOIN validity WHERE validity.valid
       ON CONFLICT(run_id,collection,order_key) DO NOTHING RETURNING order_key
     ) SELECT EXISTS(SELECT 1 FROM admitted_run) AS authorized,
       validity.valid AND (capacity.max_bytes=0 OR capacity.max_bytes+capacity.overhead <= $3) AS valid,
+      GREATEST(capacity.target_bytes,capacity.max_bytes+capacity.overhead) AS leaf_byte_capacity,
       (SELECT COUNT(*)::text FROM pages) AS expected,
       (SELECT COUNT(*)::text FROM pages p WHERE EXISTS(SELECT 1 FROM inserted i WHERE i.order_key=p.order_key)
         OR EXISTS(SELECT 1 FROM ${storage.table("segmentation_consolidation_rows")} saved
@@ -99,30 +109,33 @@ async function aggregate(storage: CorpusMembershipStorage, run: CorpusMembership
       FROM validity CROSS JOIN capacity`,
   [run.run.runId, `scratch/${membershipCollection(kind)}`, run.bounds.maxPageBytes, CORPUS_MEMBERSHIP_SCHEMA, kind, CORPUS_COUNT_PAGE_SCHEMA, ...access.params]);
   if (rows.length !== 1 || !rows[0]!.authorized || !rows[0]!.valid || rows[0]!.expected !== rows[0]!.matched) return fail();
+  const leafBytes = Number(rows[0]!.leaf_byte_capacity);
+  if (!Number.isSafeInteger(leafBytes) || leafBytes < 1 || leafBytes > run.bounds.maxPageBytes) return fail();
+  return leafBytes;
 }
 
 export function corpusCountPageEntries(value: JsonValue): Array<{ hash: string; key: string; count: number }> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
   const page = value as Record<string, JsonValue>;
-  if (!page || page.schema !== CORPUS_COUNT_PAGE_SCHEMA || typeof page.endHash !== "string" || !Array.isArray(page.entries)) return fail();
+  if (!page || page.schema !== CORPUS_COUNT_PAGE_SCHEMA || typeof page.endHash !== "string" || !page.entries || typeof page.entries !== "object" || Array.isArray(page.entries)) return fail();
   const result: Array<{ hash: string; key: string; count: number }> = [];
   let previous = "";
-  for (const group of page.entries) {
-    if (!Array.isArray(group) || group.length !== 2 || typeof group[0] !== "string" || group[0] <= previous || !Array.isArray(group[1]) || !group[1].length) return fail();
-    const hash = group[0]; previous = hash; let previousKey: string | undefined;
-    for (const member of group[1]) {
-      if (!Array.isArray(member) || member.length !== 2 || typeof member[0] !== "string" || corpusMembershipHash(member[0]) !== hash
-        || !Number.isSafeInteger(member[1]) || Number(member[1]) < 1 || previousKey !== undefined && Buffer.compare(Buffer.from(member[0]), Buffer.from(previousKey)) <= 0) return fail();
-      previousKey = member[0]; result.push({ hash, key: member[0], count: Number(member[1]) });
+  for (const [hash, members] of Object.entries(page.entries).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    if (!members || typeof members !== "object" || Array.isArray(members) || !Object.keys(members).length) return fail();
+    previous = hash;
+    for (const [key, count] of Object.entries(members).sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
+      if (corpusMembershipHash(key) !== hash || !Number.isSafeInteger(count) || Number(count) < 1) return fail();
+      result.push({ hash, key, count: Number(count) });
     }
   }
   if (!result.length || previous !== page.endHash) return fail();
   return result;
 }
 
-async function countDigest(run: CorpusMembershipRun, kind: CorpusMembershipKind): Promise<{ id: string; count: number }> {
+async function countDigest(run: CorpusMembershipRun, kind: CorpusMembershipKind, leafByteCapacity: number): Promise<{ id: string; count: number }> {
   const digest = createHash("sha256"); let count = 0, previous = "";
-  for await (const page of run.pages(countCollection(kind), { pageRows: 1 })) for (const row of page) {
+  const pageRows = Math.min(run.bounds.pageRows, Math.max(1, Math.floor(run.bounds.maxPageBytes / leafByteCapacity)));
+  for await (const page of run.pages(countCollection(kind), { pageRows })) for (const row of page) {
     const entries = corpusCountPageEntries(row.value);
     if (row.orderKey !== entries[0]!.hash || row.orderKey <= previous) return fail();
     previous = entries.at(-1)!.hash;
@@ -137,11 +150,16 @@ export async function prepareCorpusMembershipCounts(storage: CorpusMembershipSto
   for await (const page of run.pages("input/context-count-receipt")) for (const row of page) {
     receipts.push(row.value); if (receipts.length > 1) return fail();
   }
-  if (!receipts.length) {
-    await aggregate(storage, run, "class"); await aggregate(storage, run, "context");
+  let leafByteCapacity: number;
+  if (!receipts.length) leafByteCapacity = Math.max(await aggregate(storage, run, "class"), await aggregate(storage, run, "context"));
+  else {
+    const saved = receipts[0];
+    if (!saved || typeof saved !== "object" || Array.isArray(saved) || saved.schema !== RECEIPT_SCHEMA) return fail();
+    leafByteCapacity = Number(saved.leafByteCapacity);
+    if (!Number.isSafeInteger(leafByteCapacity) || leafByteCapacity < 1 || leafByteCapacity > run.bounds.maxPageBytes) return fail();
   }
-  const classDigest = await countDigest(run, "class"), contextDigest = await countDigest(run, "context");
-  const receipt = { schema: RECEIPT_SCHEMA, dependency, recipeId: run.run.recipeId, classDigest, contextDigest };
+  const classDigest = await countDigest(run, "class", leafByteCapacity), contextDigest = await countDigest(run, "context", leafByteCapacity);
+  const receipt = { schema: RECEIPT_SCHEMA, dependency, recipeId: run.run.recipeId, leafByteCapacity, classDigest, contextDigest };
   if (receipts.length && canonicalStringify(receipts[0]) !== canonicalStringify(receipt)) return fail();
   if (!receipts.length) await run.putInput("context-count-receipt", [{ orderKey: "complete", value: toJsonValue(receipt) }]);
   for (const kind of ["class", "context"] as const) await run.scratch.deleteCollection(membershipCollection(kind));
@@ -168,14 +186,9 @@ export async function readCorpusMembershipCounts(storage: CorpusMembershipStorag
       JOIN (SELECT DISTINCT order_key FROM located WHERE order_key IS NOT NULL) needed ON needed.order_key=v.order_key
       CROSS JOIN LATERAL jsonb_to_record(v.row_json) AS payload(schema text,"endHash" text,entries jsonb)
       WHERE v.run_id=$1 AND v.collection=$2
-    ), page_members AS MATERIALIZED (
-      SELECT page.order_key,hash_group.value->>0 AS hash,member.value->>0 AS key,member.value->>1 AS count
-      FROM selected_pages page CROSS JOIN LATERAL jsonb_array_elements(page.entries) hash_group(value)
-      CROSS JOIN LATERAL jsonb_array_elements(hash_group.value->1) member(value)
-    ) SELECT q.key,COALESCE(member.count,'0') AS count,
+    ) SELECT q.key,COALESCE(page.entries->q.hash->>q.key,'0') AS count,
       q.order_key IS NULL OR (page.page_schema=$${4 + access.params.length} AND page.end_hash >= q.order_key COLLATE "C") AS valid
-      FROM located q LEFT JOIN selected_pages page ON page.order_key=q.order_key
-      LEFT JOIN page_members member ON member.order_key=q.order_key AND member.hash=q.hash AND member.key=q.key`,
+      FROM located q LEFT JOIN selected_pages page ON page.order_key=q.order_key`,
     [run.run.runId, countCollection(kind), JSON.stringify(batch), ...access.params, CORPUS_COUNT_PAGE_SCHEMA]);
     if (rows.length !== batch.length) return fail();
     for (const row of rows) {

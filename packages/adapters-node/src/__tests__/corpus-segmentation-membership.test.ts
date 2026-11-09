@@ -1,11 +1,12 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { boundaryContextKey, createHasher, measureSurfaceBoundaries, type JsonValue } from "@scce/kernel";
+import { boundaryContextKey, canonicalStringify, createHasher, measureSurfaceBoundaries, type JsonValue } from "@scce/kernel";
 import { fixtureSegmentationScratch } from "../../../kernel/src/__tests__/fixtures/corpus-segmentation-scratch.js";
 import { corpusSegmentationWindows } from "../corpus-segmentation-windows.js";
-import { corpusCountPageEntries, prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages,
+import { corpusCountPageEntries, corpusMembershipHash, prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages,
   type CorpusMembershipRun, type CorpusMembershipStorage } from "../corpus-segmentation-membership.js";
 import { durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
 import * as durableJson from "../durable-join-program-storage.js";
@@ -16,7 +17,7 @@ function fixture(pageRows = 2, maxPageBytes = 12000) {
   const writes: Array<{ collection: string; bytes: number; members: number }> = [];
   const reads: Array<{ collection: string; pageRows: number | undefined }> = [];
   const bounds = { pageRows, maxPageBytes };
-  let accessible = true;
+  let accessible = true, blockSize = 8192;
   const run: CorpusMembershipRun = { run: { runId: "owned", recipeId: "scce.corpus_segmentation_input.v2:256" }, bounds,
     scratch: { ...memory, pages: query => memory.pages({ ...query, collection: `scratch/${query.collection}` }),
       putMany: async (collection, rows) => { for (const row of rows) { const value = row.value as Record<string, JsonValue>;
@@ -32,11 +33,11 @@ function fixture(pageRows = 2, maxPageBytes = 12000) {
       const indexes = [...sql.matchAll(/\$(\d+)/gu)].map(match => Number(match[1]));
       expect(Math.max(...indexes)).toBe(params.length);
       if (!accessible) return [];
-      const result = await corpusMembershipSqlFixture(sql, params, memory);
+      const result = await corpusMembershipSqlFixture(sql, params, memory, blockSize);
       if (!result) throw Error("unimplemented membership SQL");
       return result as T[];
     } };
-  return { memory, run, storage, calls, writes, reads, deny: () => { accessible = false; } };
+  return { memory, run, storage, calls, writes, reads, deny: () => { accessible = false; }, setBlockSize: (bytes: number) => { blockSize = bytes; } };
 }
 
 it("packs genuine human Unicode memberships and preserves every exact per-pair count without permanent pair rows", async () => {
@@ -66,7 +67,16 @@ it("packs genuine human Unicode memberships and preserves every exact per-pair c
   expect(f.writes.every(write => write.bytes <= f.run.bounds.maxPageBytes)).toBe(true);
   expect(f.writes.some(write => write.members > f.run.bounds.pageRows)).toBe(true);
   expect(f.writes.length).toBeLessThan(pairCount / 8);
-  await prepareCorpusMembershipCounts(f.storage, f.run, { id: "owned.inventory", count: texts.length });
+  const digests = await prepareCorpusMembershipCounts(f.storage, f.run, { id: "owned.inventory", count: texts.length });
+  const referenceDigest = (pairs: Map<string, Set<string>>) => {
+    const digest = createHash("sha256");
+    for (const [key, members] of [...pairs].sort(([a], [b]) => {
+      const left = corpusMembershipHash(a), right = corpusMembershipHash(b);
+      return left < right ? -1 : left > right ? 1 : Buffer.compare(Buffer.from(a), Buffer.from(b));
+    })) { digest.update(canonicalStringify([key, members.size])); digest.update("\n"); }
+    return { id: `sha256:${digest.digest("hex")}`, count: pairs.size };
+  };
+  expect(digests).toEqual({ classDigest: referenceDigest(classes), contextDigest: referenceDigest(contexts) });
   expect(await readCorpusMembershipCounts(f.storage, f.run, "class", [...classes.keys(), "unseen 雪"])).toEqual({ ...Object.fromEntries([...classes].map(([key, docs]) => [key, docs.size])), "unseen 雪": 0 });
   expect(await readCorpusMembershipCounts(f.storage, f.run, "context", [...contexts.keys(), "unseen 🧭"])).toEqual({ ...Object.fromEntries([...contexts].map(([key, members]) => [key, members.size])), "unseen 🧭": 0 });
   for (const kind of ["class", "context"]) {
@@ -157,7 +167,41 @@ it("materializes page fields before member joins and collates complete text expr
     expect(sql.split("exact_counts AS MATERIALIZED (")[1]!.split("), hash_groups")[0]).not.toContain("row_json");
   }
   expect(await readCorpusMembershipCounts(f.storage, f.run, "context", ["context.🧭"])).toEqual({ "context.🧭": 1 });
-  const lookup = f.calls.find(call => call.sql.includes("page_members AS MATERIALIZED"))!.sql;
+  const lookup = f.calls.find(call => call.sql.includes("selected_pages AS MATERIALIZED"))!.sql;
   expect(lookup).toContain('jsonb_to_record(v.row_json) AS payload(schema text,"endHash" text,entries jsonb)');
-  expect(lookup.split("page_members AS MATERIALIZED (")[1]).not.toContain("row_json");
+  expect(lookup.split(") SELECT q.key")[1]).not.toContain("row_json");
+  expect(lookup).toContain("page.entries->q.hash->>q.key");
+  expect(lookup).not.toContain("jsonb_array_elements");
+  expect(lookup).not.toContain("page_members");
+});
+
+it("stores block-sized exact-key leaves and reuses their receipt capacity for bounded digest batches on another host", async () => {
+  const f = fixture(4096, 65536), keys = Array.from({ length: 1600 }, (_, index) => `class.雪🧭.${index}`);
+  await f.memory.putMany("input/inventory", [{ orderKey: "owner", value: { evidenceId: "owner", sourceVersionId: "version" } }]);
+  await writeCorpusMembershipPages(f.run, { kind: "class", windowKey: "0", documentId: "owner", sourceVersionId: "version", entries: keys });
+  const first = await prepareCorpusMembershipCounts(f.storage, f.run, { id: "inventory", count: 1 });
+  let leaves = 0;
+  for await (const page of f.memory.pages({ collection: "input/class-counts", ...f.run.bounds })) for (const row of page) {
+    expect(durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(8192); leaves++;
+  }
+  expect(leaves).toBeGreaterThan(1);
+  expect(f.reads.filter(read => read.collection === "input/class-counts").every(read => read.pageRows === 8)).toBe(true);
+  f.setBlockSize(16384); f.reads.length = 0;
+  expect(await prepareCorpusMembershipCounts(f.storage, f.run, { id: "inventory", count: 1 })).toEqual(first);
+  expect(f.reads.filter(read => read.collection === "input/class-counts").every(read => read.pageRows === 8)).toBe(true);
+  expect(f.calls.filter(call => call.sql.includes("exact_counts AS MATERIALIZED"))).toHaveLength(2);
+  expect(await readCorpusMembershipCounts(f.storage, f.run, "class", keys)).toEqual(Object.fromEntries(keys.map(key => [key, 1])));
+  const aggregate = f.calls.find(call => call.sql.includes("exact_counts AS MATERIALIZED"))!.sql;
+  expect(aggregate).toContain("LEAST($3,current_setting('block_size')::int)");
+  expect(aggregate).toContain("jsonb_object_agg(hash,members");
+});
+
+it("retains an oversized atomic full key within the declared run budget as one variable-size leaf", async () => {
+  const f = fixture(16, 65536), key = "雪".repeat(4000);
+  await f.memory.putMany("input/inventory", [{ orderKey: "owner", value: { evidenceId: "owner", sourceVersionId: "version" } }]);
+  await writeCorpusMembershipPages(f.run, { kind: "class", windowKey: "0", documentId: "owner", sourceVersionId: "version", entries: ["before", key, "after"] });
+  await prepareCorpusMembershipCounts(f.storage, f.run, { id: "inventory", count: 1 });
+  expect(await readCorpusMembershipCounts(f.storage, f.run, "class", [key, "before", "after", "unseen"])).toEqual({ [key]: 1, before: 1, after: 1, unseen: 0 });
+  for await (const page of f.memory.pages({ collection: "input/class-counts", ...f.run.bounds })) for (const row of page)
+    expect(durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
 });
