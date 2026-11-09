@@ -3,6 +3,7 @@
 import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, JOIN_PROGRAM_MIXTURE_SCHEMA, JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA,
   canonicalJsonByteLength, isJoinProgramMixture, joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "@scce/kernel";
 import { DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA, decodeDurableCreativeEvents, encodeDurableCreativeEvents } from "./durable-creative-event-storage.js";
+import { SEMANTIC_FRAME_STORAGE_SCHEMA, SEMANTIC_MEMORY_SCHEMA, decodeSemanticFrames, encodeSemanticFrames } from "./semantic-frame-storage.js";
 
 export const DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA = "scce.durable_join_program.storage.v1";
 export const DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA = "scce.durable_join_program.byte_ledger.v1";
@@ -37,6 +38,12 @@ function transform(value: unknown, encoding: boolean): unknown {
       return result;
     }
     const row = record(value);
+    if (row?.schema === SEMANTIC_FRAME_STORAGE_SCHEMA) {
+      if (encoding) return value;
+      const frames = decodeSemanticFrames(row);
+      seen.set(value, frames);
+      return frames;
+    }
     if (row?.schema === DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA) {
       if (encoding) return value;
       const events = decodeDurableCreativeEvents(row);
@@ -63,7 +70,9 @@ function transform(value: unknown, encoding: boolean): unknown {
     let changed = false;
     const entries = Object.entries(value).map(([key, child]) => {
       let next: unknown;
-      if (encoding && row?.schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA && key === "events" && Array.isArray(child)) {
+      if (encoding && row?.schema === SEMANTIC_MEMORY_SCHEMA && key === "semanticFrames" && Array.isArray(child)) {
+        next = encodeSemanticFrames(child) ?? visit(child);
+      } else if (encoding && row?.schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA && key === "events" && Array.isArray(child)) {
         const packed = encodeDurableCreativeEvents(child);
         if (packed) { packedCreativeEvents = true; next = packed; }
         else next = visit(child);
