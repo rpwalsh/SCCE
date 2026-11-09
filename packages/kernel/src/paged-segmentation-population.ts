@@ -30,6 +30,25 @@ function object(value: JsonValue | unknown): Record<string, JsonValue> {
 function text(value: unknown): string { if (typeof value !== "string" || !value || value.includes("\u0000")) throw new Error("invalid paged segmentation identity"); return value; }
 function finite(value: unknown): number { if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("invalid paged segmentation number"); return value; }
 function integer(value: unknown): number { const number = finite(value); if (!Number.isSafeInteger(number) || number < 0) throw new Error("invalid paged segmentation ordinal"); return number; }
+
+async function cleanupAll(operations: readonly (() => Promise<void>)[]): Promise<void> {
+  const errors: unknown[] = [];
+  for (const operation of operations) try { await operation(); } catch (error) { errors.push(error); }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length) throw new AggregateError(errors, "Population cursor cleanup failed");
+}
+async function cleanupFailure(error: unknown, operations: readonly (() => Promise<void>)[]): Promise<never> {
+  try { await cleanupAll(operations); }
+  catch (cleanup) { throw new AggregateError([error, cleanup], "Population fitting and cursor cleanup failed"); }
+  throw error;
+}
+async function withCleanup<T>(operation: () => Promise<T>, operations: readonly (() => Promise<void>)[]): Promise<T> {
+  let result: T;
+  try { result = await operation(); }
+  catch (error) { return cleanupFailure(error, operations); }
+  await cleanupAll(operations);
+  return result;
+}
 function owned(value: unknown): OwnedDocument {
   const row = object(value); const doc = object(row.document); const statistics = object(doc.statistics); const inventory = object(statistics.sourceInventory);
   text(statistics.id); text(statistics.populationId); text(statistics.normalizationContractId); text(inventory.id); integer(inventory.count);
@@ -92,14 +111,14 @@ async function calibrationSplit(work: PagedPopulationWorkspace, assignments: str
 
 async function fitCalibratedGroup(work: PagedPopulationWorkspace, assignments: string, population: number, populationId: string, label: string): Promise<BoundaryEstimatorInferenceModel> {
   const split = await calibrationSplit(work, assignments, population, `${label}.calibration`);
-  const training = await work.merged(split.fit, populationId, `${label}.training`);
-  const heldout = await work.scratch.count(split.holdout) ? await work.merged(split.holdout, populationId, `${label}.heldout`) : undefined;
-  try { return await fitPagedBoundaryEstimator({ statistics: training, calibrationStatistics: heldout,
-    calibrationShards: () => work.sources(split.holdout), hasher: work.hasher }); }
-  finally {
-    await training.dispose?.(); await heldout?.dispose?.();
-    await work.scratch.deleteCollection(split.fit); await work.scratch.deleteCollection(split.holdout);
-  }
+  let training: BoundaryStatisticsCursor | undefined, heldout: BoundaryStatisticsCursor | undefined;
+  return withCleanup(async () => {
+    training = await work.merged(split.fit, populationId, `${label}.training`);
+    heldout = await work.scratch.count(split.holdout) ? await work.merged(split.holdout, populationId, `${label}.heldout`) : undefined;
+    return fitPagedBoundaryEstimator({ statistics: training, calibrationStatistics: heldout,
+      calibrationShards: () => work.sources(split.holdout), hasher: work.hasher });
+  }, [() => training?.dispose?.() ?? Promise.resolve(), () => heldout?.dispose?.() ?? Promise.resolve(),
+    () => work.scratch.deleteCollection(split.fit), () => work.scratch.deleteCollection(split.holdout)]);
 }
 
 async function applyPagedMergeGuards(work: PagedPopulationWorkspace, candidates: Candidate[], holdout: string,
@@ -235,6 +254,13 @@ export async function learnPagedSegmentationPopulations(input: {
   rootPopulationId: string; source: CorpusSegmentationDocumentCursor; namespace: string; featureContextId: string;
   maxPopulations?: number; mergeDescriptionMarginNats?: number; heldoutRegressionToleranceNats?: number; hasher?: Hasher;
 }): Promise<PagedSegmentationPopulationResult> {
+  const populationStatistics: BoundaryStatisticsCursor[] = [];
+  try { return await learnPagedSegmentationPopulationsInner(input, populationStatistics); }
+  catch (error) { return cleanupFailure(error, populationStatistics.map(cursor => () => cursor.dispose?.() ?? Promise.resolve())); }
+}
+
+async function learnPagedSegmentationPopulationsInner(input: Parameters<typeof learnPagedSegmentationPopulations>[0],
+  populationStatistics: BoundaryStatisticsCursor[]): Promise<PagedSegmentationPopulationResult> {
   text(input.rootPopulationId); text(input.namespace); text(input.featureContextId);
   const work = new PagedPopulationWorkspace(input.source, input.rootPopulationId, input.namespace, input.hasher ?? createHasher());
   await work.prepare();
@@ -257,21 +283,23 @@ export async function learnPagedSegmentationPopulations(input: {
   if (finalFit.collapsed || !finalFit.estimators.length) throw new Error("selected corpus population collapsed during final fit");
   for (const candidate of candidates) if (candidate.assignments && candidate.assignments !== finalFit.assignments) await work.scratch.deleteCollection(candidate.assignments);
   const populations: SegmentationPopulationInferenceModel["populations"] = [];
-  const populationStatistics: BoundaryStatisticsCursor[] = [];
   for (let group = 0; group < finalFit.populationCount; group++) {
     let groupCount = 0; for await (const item of work.assignments(finalFit.assignments)) if (item.population === group) groupCount++;
     const provisionalId = `${input.rootPopulationId}.candidate.final.${group}`;
     const provisionalStatistics = await work.merged(finalFit.assignments, provisionalId, `population.${group}.provisional`, group);
-    const provisionalEstimator = await fitCalibratedGroup(work, finalFit.assignments, group, provisionalId, `population.${group}.provisionalFit`);
-    const prior = quantize(groupCount / Math.max(1, await work.scratch.count(finalDocuments)));
-    const contentSignature = canonicalDigestHex({ rootPopulationId: input.rootPopulationId, prior, statisticsId: provisionalStatistics.header.id,
-      weights: provisionalEstimator.weights, intercept: provisionalEstimator.intercept, calibration: provisionalEstimator.calibration }, work.hasher);
-    const id = `${input.rootPopulationId}.component.${contentSignature.slice(0, 32)}`;
-    const statistics = await work.merged(finalFit.assignments, id, `population.${group}.statistics`, group);
-    const estimator = await fitCalibratedGroup(work, finalFit.assignments, group, id, `population.${group}.finalFit`);
-    const trainingMass = (await pagedBoundaryNegativeLogLikelihood(estimator, statistics)).mass;
-    populations.push({ id, prior, statisticsId: statistics.header.id, estimator, trainingMass }); populationStatistics.push(statistics);
-    await provisionalStatistics.dispose?.();
+    await withCleanup(async () => {
+      const provisionalEstimator = await fitCalibratedGroup(work, finalFit.assignments, group, provisionalId, `population.${group}.provisionalFit`);
+      const prior = quantize(groupCount / Math.max(1, await work.scratch.count(finalDocuments)));
+      const contentSignature = canonicalDigestHex({ rootPopulationId: input.rootPopulationId, prior, statisticsId: provisionalStatistics.header.id,
+        weights: provisionalEstimator.weights, intercept: provisionalEstimator.intercept, calibration: provisionalEstimator.calibration }, work.hasher);
+      const id = `${input.rootPopulationId}.component.${contentSignature.slice(0, 32)}`;
+      const statistics = await work.merged(finalFit.assignments, id, `population.${group}.statistics`, group);
+      // Retain ownership immediately: later fitting/evaluation can fail before this becomes a returned live artifact.
+      populationStatistics.push(statistics);
+      const estimator = await fitCalibratedGroup(work, finalFit.assignments, group, id, `population.${group}.finalFit`);
+      const trainingMass = (await pagedBoundaryNegativeLogLikelihood(estimator, statistics)).mass;
+      populations.push({ id, prior, statisticsId: statistics.header.id, estimator, trainingMass });
+    }, [() => provisionalStatistics.dispose?.() ?? Promise.resolve()]);
   }
   const assignments = `${input.namespace}.finalAssignments`; await work.scratch.deleteCollection(assignments);
   for await (const item of work.docs(work.documents)) {
@@ -468,7 +496,8 @@ export class PagedPopulationWorkspace {
       estimators = []; priors = counts.map(count => count / n);
       for (let group = 0; group < populationCount; group++) {
         const statistics = await this.merged(assignments, `${this.rootPopulationId}.candidate.${populationCount}.${group}`, `${label}.fit.${group}`, group);
-        try { estimators.push(await fitPagedBoundaryEstimator({ statistics, hasher: this.hasher })); } finally { await statistics.dispose?.(); }
+        await withCleanup(async () => { estimators.push(await fitPagedBoundaryEstimator({ statistics, hasher: this.hasher })); },
+          [() => statistics.dispose?.() ?? Promise.resolve()]);
       }
       return true;
     };
