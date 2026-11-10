@@ -15,6 +15,7 @@ import {
 } from "../index.js";
 import { joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "../join-program-storage.js";
 import * as joinStorage from "../join-program-storage.js";
+import { buildSegmentationForest } from "../segmentation-forest.js";
 
 function trainedMixture(documentId: string, text: string) {
   const hasher = createHasher();
@@ -142,7 +143,7 @@ describe("learned join programs", () => {
         {
           populationId: "population.abstaining",
           weight: 0.99,
-          program: abstaining.components[0]!.program
+          program: { ...abstaining.components[0]!.program, conditionedIndex: {}, structuralIndex: {}, classIndex: {}, localShapeIndex: {}, constructionIndex: {} }
         }
       ]
     });
@@ -162,7 +163,7 @@ describe("learned join programs", () => {
     expect(taskWeighted.trace[0]?.unresolvedPopulationMass).toBeCloseTo(0.1, 10);
   });
 
-  it("conditions joins on unit classes, scales, boundary posterior, and derivation shape", () => {
+  it("conditions fully measured joins on unit classes, scales, boundary posterior, and derivation shape", () => {
     const hasher = createHasher();
     const documentId = "doc.conditioned";
     const text = "alpha beta";
@@ -173,6 +174,8 @@ describe("learned join programs", () => {
       segmentationPathLimit: 64,
       hasher
     });
+    lattice.units = lattice.units.filter(unit => unit.overlapClass === "base_partition");
+    lattice.segmentationForest = buildSegmentationForest({ latticeId: lattice.id, estimatorId: "conditioned.proof", units: lattice.units, pathLimit: 1, hasher });
     const program = compileJoinProgram({
       populationId: "population.conditioned",
       documents: [{ documentId, text, lattice }],
@@ -251,6 +254,7 @@ describe("learned join programs", () => {
         ...component,
         program: {
           ...component.program,
+          conditionedIndex: {}, structuralIndex: {}, classIndex: {}, localShapeIndex: {}, constructionIndex: {},
           exactIndex: {
             ...component.program.exactIndex,
             [exactKey]: [

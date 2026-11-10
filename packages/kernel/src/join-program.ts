@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { SurfaceLattice, SurfaceLatticeUnit } from "./surface-lattice.js";
+import { segmentationSurfaceAdjacencies } from "./segmentation-forest.js";
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 import {
@@ -143,9 +144,9 @@ interface JoinEvent {
   weight: number;
   evidenceIds: string[];
   evidenceCoordinates: JoinEvidenceCoordinate[];
-  conditionedKey: string;
+  conditionedKey?: string;
   exactKey: string;
-  structuralKey: string;
+  structuralKey?: string;
   classKey: string;
   localShapeKey: string;
   constructionKey?: string;
@@ -182,23 +183,28 @@ export function compileJoinProgram(input: {
   const classes = new Map<string, Map<string, JoinCount>>();
   const localShapes = new Map<string, Map<string, JoinCount>>();
   const constructions = new Map<string, Map<string, JoinCount>>();
+  const conditionedMass = new Map<string, number>(), structuralMass = new Map<string, number>();
   let observations = 0;
   for (const document of split.training) {
-    for (const event of joinEvents(document)) {
-      addCount(conditioned, event.conditionedKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
+    for (const event of localJoinEvents(document)) {
       addCount(exact, event.exactKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
-      addCount(structural, event.structuralKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
       addCount(classes, event.classKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
       addCount(localShapes, event.localShapeKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
       if (event.constructionKey) {
         addCount(constructions, event.constructionKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
       }
+      for (const [mass, key] of [[conditionedMass, localDerivationKey(event, document, "conditioned")],
+        [structuralMass, localDerivationKey(event, document, "structural")]] as const) mass.set(key, (mass.get(key) ?? 0) + event.weight);
       observations += event.weight;
     }
+    for (const event of joinEvents(document)) {
+      addCount(conditioned, event.conditionedKey!, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
+      addCount(structural, event.structuralKey!, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
+    }
   }
-  const conditionedIndex = compileIndex(conditioned);
+  const conditionedIndex = compileIndex(conditioned, key => conditionedMass.get(withoutDerivationShape(key)) ?? 0);
   const exactIndex = compileIndex(exact);
-  const structuralIndex = compileIndex(structural);
+  const structuralIndex = compileIndex(structural, key => structuralMass.get(withoutDerivationShape(key)) ?? 0);
   const classIndex = compileIndex(classes);
   const localShapeIndex = compileIndex(localShapes);
   const constructionIndex = compileIndex(constructions);
@@ -225,7 +231,7 @@ export function compileJoinProgram(input: {
   const canonical = {
     schema: JOIN_PROGRAM_SCHEMA,
     populationId: input.populationId,
-    observations: quantize(observations),
+    observations: positivePrecision(observations),
     minimumConfidence: learnedMinimumConfidence,
     ...indexes,
     backoffReliability,
@@ -237,7 +243,7 @@ export function compileJoinProgram(input: {
     ...canonical,
     id: `join_program.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`,
     audit: toJsonValue({
-      compiler: "kernel.join_program.v3",
+      compiler: "kernel.join_program.v4",
       conditionedContextCount: Object.keys(conditionedIndex).length,
       exactContextCount: Object.keys(exactIndex).length,
       structuralContextCount: Object.keys(structuralIndex).length,
@@ -525,20 +531,26 @@ function selectJoin(
     key: exactJoinKey(normalize(left), normalize(right)),
     source: "exact"
   });
-  for (const { key, source } of keys) {
+  const factors = keys.map(({ key, source }) => {
     const aggregate = aggregateChoices(mixture, key, source, populationPosterior);
-    if (aggregate.choices.length) {
-      return {
-        ...aggregate.choices[0]!,
-        source,
-        support: aggregate.choices[0]!.probability,
-        unresolvedPopulationMass: aggregate.unresolvedPopulationMass,
-        alternatives: aggregate.choices,
-        contextKey: key
-      };
-    }
+    return { source, alternatives: aggregate.choices, unresolvedPopulationMass: aggregate.unresolvedPopulationMass, contextKey: key };
+  });
+  const selected = strongestJoinFactor(factors, factor => factor.alternatives[0]!.probability);
+  return selected ? { ...selected.alternatives[0]!, ...selected, support: selected.alternatives[0]!.probability } : undefined;
+}
+
+function strongestJoinFactor<T extends { alternatives: JoinProgramChoice[] }>(factors: readonly T[], support: (factor: T) => number): T | undefined {
+  let selected: T | undefined, best = Number.NEGATIVE_INFINITY;
+  for (const factor of factors) {
+    if (!factor.alternatives.length) continue;
+    const score = support(factor);
+    if (score > best) { selected = factor; best = score; }
   }
-  return undefined;
+  return selected;
+}
+
+function compareJoinChoices(left: JoinProgramChoice, right: JoinProgramChoice, reliability = 1): number {
+  return (right.probability - left.probability) * reliability || left.surface.localeCompare(right.surface);
 }
 
 function aggregateChoices(
@@ -560,6 +572,7 @@ function aggregateChoices(
     }
     const reliability = clamp01(component.program.backoffReliability?.[source] ?? 1);
     unresolvedPopulationMass += weight * (1 - reliability);
+    unresolvedPopulationMass += weight * reliability * clamp01(1 - rows.reduce((sum, row) => sum + row.probability, 0));
     for (const row of rows) {
       const weighted = row.probability * weight * reliability;
       const current = probabilities.get(row.surface) ?? {
@@ -579,105 +592,102 @@ function aggregateChoices(
   const result = [...probabilities.values()]
     .map(row => ({
       surface: row.surface,
-      count: quantize(row.count),
-      probability: quantize(row.count),
+      count: row.count,
+      probability: row.count,
       evidenceIds: [...row.evidenceIds].sort(),
       evidenceCoordinates: [...row.evidenceCoordinates.values()]
         .sort(compareEvidenceCoordinates)
     }))
-    .sort((left, right) =>
-      right.probability - left.probability
-      || left.surface.localeCompare(right.surface));
+    .sort((left, right) => compareJoinChoices(left, right));
   return {
     choices: result,
-    unresolvedPopulationMass: quantize(unresolvedPopulationMass)
+    unresolvedPopulationMass: clamp01(unresolvedPopulationMass)
   };
 }
 
-function* joinEvents(document: {
-  documentId: string;
-  sourceFamilyId?: string;
-  text: string;
-  lattice: SurfaceLattice;
-  constructionId?: string;
-  discourseStateId?: string;
-}): Generator<JoinEvent> {
-  const hashes = new Map<string, string>();
-  const hasher = createHasher();
-  const unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
+type JoinDocument = Parameters<typeof compileJoinProgram>[0]["documents"][number];
+
+function joinBoundaryContext(document: JoinDocument, left: SurfaceLatticeUnit, derivationShapeId?: string): JoinBoundaryContext {
+  return { boundaryProbability: left.boundaryAfter.boundaryProbability, constructionId: document.constructionId,
+    discourseStateId: document.discourseStateId, derivationShapeId };
+}
+
+function joinEvent(document: JoinDocument, left: SurfaceLatticeUnit, right: SurfaceLatticeUnit, weight: number,
+  hashes: Map<string, string>, derivationShapeId?: string): JoinEvent {
+  const join = document.text.slice(left.utf16End, right.utf16Start);
+  let exactSurfaceHash = hashes.get(join);
+  if (exactSurfaceHash === undefined) { exactSurfaceHash = createHasher().digestHex(join); hashes.set(join, exactSurfaceHash); }
+  const evidenceIds = [...new Set([...left.evidenceIds, ...right.evidenceIds])].sort();
+  const evidenceCoordinates = evidenceIds.map(evidenceId => ({ evidenceId,
+    ...(document.lattice.sourceVersionId ? { sourceVersionId: document.lattice.sourceVersionId } : {}),
+    documentId: document.documentId, byteStart: left.byteEnd, byteEnd: right.byteStart,
+    utf16Start: left.utf16End, utf16End: right.utf16Start, exactSurfaceHash }));
+  const leftContext = unitContext(left), rightContext = unitContext(right), boundaryContext = joinBoundaryContext(document, left, derivationShapeId);
+  return { left, right, join, weight, evidenceIds, evidenceCoordinates,
+    ...(derivationShapeId === undefined ? {} : {
+      conditionedKey: conditionedJoinKey({ left: left.normalized, right: right.normalized, leftContext, rightContext, boundaryContext }),
+      structuralKey: structuralJoinKey(left.surface, right.surface, leftContext, rightContext, boundaryContext)
+    }),
+    exactKey: exactJoinKey(left.normalized, right.normalized), classKey: classJoinKey(leftContext, rightContext, boundaryContext),
+    localShapeKey: localShapeJoinKey(left.surface, right.surface),
+    ...(document.constructionId ? { constructionKey: constructionJoinKey(left.surface, right.surface, document.constructionId) } : {}),
+    crossScript: left.scriptId !== right.scriptId };
+}
+
+function localDerivationKey(event: JoinEvent, document: JoinDocument, source: "conditioned" | "structural"): string {
+  const leftContext = unitContext(event.left), rightContext = unitContext(event.right), boundaryContext = joinBoundaryContext(document, event.left);
+  return source === "conditioned"
+    ? conditionedJoinKey({ left: event.left.normalized, right: event.right.normalized, leftContext, rightContext, boundaryContext })
+    : structuralJoinKey(event.left.surface, event.right.surface, leftContext, rightContext, boundaryContext);
+}
+
+function withoutDerivationShape(key: string): string {
+  const context = JSON.parse(key) as unknown[];
+  context[context.length - 1] = "derivation.unresolved";
+  return JSON.stringify(context);
+}
+
+function* joinEvents(document: JoinDocument): Generator<JoinEvent> {
+  const hashes = new Map<string, string>(), unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
   for (const path of document.lattice.segmentationForest.paths) {
     const pathWeight = Math.max(0, path.posterior);
     if (pathWeight === 0) continue;
-    const units = path.unitIds
-      .map(unitId => requiredUnit(unitsById, unitId))
-      .filter(isSurfaceBearingUnit);
+    const units = path.unitIds.map(unitId => requiredUnit(unitsById, unitId)).filter(isSurfaceBearingUnit);
     const derivationShapeId = derivationShape(units);
-    for (let index = 1; index < units.length; index += 1) {
-      const left = units[index - 1]!;
-      const right = units[index]!;
-      const join = document.text.slice(left.utf16End, right.utf16Start);
-      let exactSurfaceHash = hashes.get(join);
-      if (exactSurfaceHash === undefined) {
-        exactSurfaceHash = hasher.digestHex(join);
-        hashes.set(join, exactSurfaceHash);
-      }
-      const evidenceIds = [...new Set([...left.evidenceIds, ...right.evidenceIds])].sort();
-      const byteStart = left.byteEnd;
-      const byteEnd = right.byteStart;
-      const coordinates = evidenceIds.map(evidenceId => ({
-        evidenceId,
-        ...(document.lattice.sourceVersionId
-          ? { sourceVersionId: document.lattice.sourceVersionId }
-          : {}),
-        documentId: document.documentId,
-        byteStart,
-        byteEnd,
-        utf16Start: left.utf16End,
-        utf16End: right.utf16Start,
-        exactSurfaceHash
-      }));
-      const leftContext = unitContext(left);
-      const rightContext = unitContext(right);
-      const boundaryContext: JoinBoundaryContext = {
-        boundaryProbability: left.boundaryAfter.boundaryProbability,
-        constructionId: document.constructionId,
-        discourseStateId: document.discourseStateId,
-        derivationShapeId
-      };
-      yield {
-        left,
-        right,
-        join,
-        weight: pathWeight,
-        evidenceIds,
-        evidenceCoordinates: coordinates,
-        conditionedKey: conditionedJoinKey({
-          left: left.normalized,
-          right: right.normalized,
-          leftContext,
-          rightContext,
-          boundaryContext
-        }),
-        exactKey: exactJoinKey(left.normalized, right.normalized),
-        structuralKey: structuralJoinKey(
-          left.surface,
-          right.surface,
-          leftContext,
-          rightContext,
-          boundaryContext
-        ),
-        classKey: classJoinKey(leftContext, rightContext, boundaryContext),
-        localShapeKey: localShapeJoinKey(left.surface, right.surface),
-        ...(document.constructionId
-          ? { constructionKey: constructionJoinKey(
-            left.surface,
-            right.surface,
-            document.constructionId
-          ) }
-          : {}),
-        crossScript: left.scriptId !== right.scriptId
-      };
+    for (let index = 1; index < units.length; index++) yield joinEvent(document, units[index - 1]!, units[index]!, pathWeight, hashes, derivationShapeId);
+  }
+}
+
+function* localJoinEvents(document: JoinDocument): Generator<JoinEvent> {
+  const hashes = new Map<string, string>(), unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
+  const bearing = new Set(document.lattice.units.filter(isSurfaceBearingUnit).map(unit => unit.id));
+  for (const pair of segmentationSurfaceAdjacencies(document.lattice.segmentationForest, bearing)) {
+    if (pair.posterior > 0) yield joinEvent(document, requiredUnit(unitsById, pair.leftUnitId), requiredUnit(unitsById, pair.rightUnitId), pair.posterior, hashes);
+  }
+}
+
+/** Retained global contexts and the remaining local mass partition the same adjacency law. */
+function* evaluationJoinEvents(document: JoinDocument): Generator<JoinEvent> {
+  const retained = new Map<string, { mass: number; scale: number }>();
+  const key = (left: string, right: string) => JSON.stringify([left, right]);
+  const unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
+  for (const path of document.lattice.segmentationForest.paths) {
+    if (path.posterior <= 0) continue;
+    const units = path.unitIds.map(id => requiredUnit(unitsById, id)).filter(isSurfaceBearingUnit);
+    for (let index = 1; index < units.length; index++) {
+      const pair = key(units[index - 1]!.id, units[index]!.id), row = retained.get(pair) ?? { mass: 0, scale: 0 };
+      row.mass += path.posterior; retained.set(pair, row);
     }
+  }
+  for (const event of localJoinEvents(document)) {
+    const row = retained.get(key(event.left.id, event.right.id));
+    if (row) row.scale = Math.min(1, event.weight / row.mass);
+    const weight = Math.max(0, event.weight - (row ? row.mass * row.scale : 0));
+    if (weight > 0) yield { ...event, weight };
+  }
+  for (const event of joinEvents(document)) {
+    const scale = retained.get(key(event.left.id, event.right.id))!.scale;
+    if (scale > 0) yield { ...event, weight: event.weight * scale };
   }
 }
 
@@ -711,8 +721,8 @@ function evaluateHeldoutJoins(input: {
   let reconstructedDocuments = 0;
   const calibrationBins = Array.from({ length: 10 }, () => ({ confidence: 0, correct: 0, mass: 0 }));
   for (const document of input.documents) {
-    for (const event of joinEvents(document)) {
-      const prediction = predictionForEvent(event, input);
+    for (const event of evaluationJoinEvents(document)) {
+      const prediction = predictionForEvent(event, input, input.backoffReliability);
       const alternatives = prediction.alternatives;
       const selected = alternatives[0];
       const reliability = input.backoffReliability[prediction.source];
@@ -731,9 +741,9 @@ function evaluateHeldoutJoins(input: {
       }
       if (!correct) {
         const predicted = selected?.surface ?? "";
-        if (/\s/u.test(predicted) && !/\s/u.test(event.join)) whitespaceInsertionErrors += 1;
-        if (!/\s/u.test(predicted) && /\s/u.test(event.join)) whitespaceDeletionErrors += 1;
-        if (punctuationSignature(predicted) !== punctuationSignature(event.join)) punctuationErrors += 1;
+        if (/\s/u.test(predicted) && !/\s/u.test(event.join)) whitespaceInsertionErrors += event.weight;
+        if (!/\s/u.test(predicted) && /\s/u.test(event.join)) whitespaceDeletionErrors += event.weight;
+        if (punctuationSignature(predicted) !== punctuationSignature(event.join)) punctuationErrors += event.weight;
       }
       const bin = calibrationBins[Math.min(9, Math.floor(confidence * 10))]!;
       bin.confidence += confidence * event.weight;
@@ -770,7 +780,7 @@ function evaluateHeldoutJoins(input: {
   return {
     heldoutDocumentIds: input.documents.map(document => document.documentId),
     selectionDocumentIds: [...(input.selectionDocumentIds ?? [])],
-    observations: quantize(mass),
+    observations: positivePrecision(mass),
     exactAccuracy: quantize(accuracy),
     negativeLogLikelihood: quantize(negativeLogLikelihood / mass),
     expectedCalibrationError: quantize(ece),
@@ -807,12 +817,13 @@ function alternativesForEvent(
 
 function predictionForEvent(
   event: JoinEvent,
-  indexes: JoinIndexes
+  indexes: JoinIndexes,
+  reliability?: JoinReliability
 ): { source: JoinBackoffSource; alternatives: JoinProgramChoice[] } {
   const levels: Array<{ source: JoinBackoffSource; alternatives: JoinProgramChoice[] }> = [
-    { source: "conditioned", alternatives: indexes.conditionedIndex[event.conditionedKey] ?? [] },
+    { source: "conditioned", alternatives: event.conditionedKey === undefined ? [] : indexes.conditionedIndex[event.conditionedKey] ?? [] },
     { source: "exact", alternatives: indexes.exactIndex[event.exactKey] ?? [] },
-    { source: "structural", alternatives: indexes.structuralIndex[event.structuralKey] ?? [] },
+    { source: "structural", alternatives: event.structuralKey === undefined ? [] : indexes.structuralIndex[event.structuralKey] ?? [] },
     { source: "class", alternatives: indexes.classIndex[event.classKey] ?? [] },
     { source: "local_shape", alternatives: indexes.localShapeIndex[event.localShapeKey] ?? [] },
     {
@@ -822,7 +833,9 @@ function predictionForEvent(
         : []
     }
   ];
-  return levels.find(level => level.alternatives.length > 0)
+  const ranked = levels.map(level => ({ ...level, alternatives: [...level.alternatives]
+    .sort((left, right) => compareJoinChoices(left, right, reliability?.[level.source] ?? 1)) }));
+  return strongestJoinFactor(ranked, level => level.alternatives[0]!.probability * (reliability?.[level.source] ?? 1))
     ?? { source: "local_shape", alternatives: [] };
 }
 
@@ -840,8 +853,8 @@ function selectConfidenceThreshold(
 ): number {
   if (!documents.length) return 1;
   const observations = documents.flatMap(document =>
-    Array.from(joinEvents(document), event => {
-      const prediction = predictionForEvent(event, indexes);
+    Array.from(evaluationJoinEvents(document), event => {
+      const prediction = predictionForEvent(event, indexes, reliability);
       return {
       event,
         selected: prediction.alternatives[0],
@@ -852,7 +865,7 @@ function selectConfidenceThreshold(
   const thresholds = [...new Set([
     0,
     1,
-    ...observations.map(row => quantize(
+    ...observations.map(row => (
       (row.selected?.probability ?? 0) * reliability[row.source]
     ))
   ])].sort((left, right) => left - right);
@@ -900,9 +913,10 @@ function learnBackoffReliability(
     sources.map(source => [source, { correct: 0, mass: 0 }])
   );
   for (const document of documents) {
-    for (const event of joinEvents(document)) {
-      for (const source of sources) {
-        const alternatives = choicesForIndexes(indexes, source, event);
+    for (const [events, measuredSources] of [[joinEvents(document), ["conditioned", "structural"]],
+      [localJoinEvents(document), ["exact", "class", "local_shape", "construction"]]] as const) for (const event of events) {
+      for (const source of measuredSources) {
+        const alternatives = [...choicesForIndexes(indexes, source, event)].sort((left, right) => compareJoinChoices(left, right));
         const selected = alternatives[0];
         if (!selected) continue;
         const row = rows.get(source)!;
@@ -924,9 +938,9 @@ function choicesForIndexes(
   source: JoinBackoffSource,
   event: JoinEvent
 ): JoinProgramChoice[] {
-  if (source === "conditioned") return indexes.conditionedIndex[event.conditionedKey] ?? [];
+  if (source === "conditioned") return event.conditionedKey === undefined ? [] : indexes.conditionedIndex[event.conditionedKey] ?? [];
   if (source === "exact") return indexes.exactIndex[event.exactKey] ?? [];
-  if (source === "structural") return indexes.structuralIndex[event.structuralKey] ?? [];
+  if (source === "structural") return event.structuralKey === undefined ? [] : indexes.structuralIndex[event.structuralKey] ?? [];
   if (source === "class") return indexes.classIndex[event.classKey] ?? [];
   if (source === "local_shape") return indexes.localShapeIndex[event.localShapeKey] ?? [];
   return event.constructionKey
@@ -999,7 +1013,7 @@ function reconstructDocument(
         : {}),
       crossScript: left.scriptId !== right.scriptId
     };
-    const prediction = predictionForEvent(event, indexes);
+    const prediction = predictionForEvent(event, indexes, indexes.backoffReliability);
     const selected = prediction.alternatives[0];
     const confidence = (selected?.probability ?? 0)
       * indexes.backoffReliability[prediction.source];
@@ -1083,26 +1097,26 @@ function isSurfaceBearingUnit(unit: SurfaceLatticeUnit): boolean {
 }
 
 function compileIndex(
-  index: ReadonlyMap<string, ReadonlyMap<string, JoinCount>>
+  index: ReadonlyMap<string, ReadonlyMap<string, JoinCount>>,
+  denominator?: (key: string) => number
 ): Record<string, JoinProgramChoice[]> {
   return Object.fromEntries([...index.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, rows]) => [key, choices(rows)]));
+    .map(([key, rows]) => [key, choices(rows, denominator?.(key))]));
 }
 
-function choices(rows: ReadonlyMap<string, JoinCount>): JoinProgramChoice[] {
-  const total = [...rows.values()].reduce((sum, row) => sum + row.count, 0);
-  return [...rows.values()]
-    .map(row => ({
-      surface: row.surface,
-      count: quantize(row.count),
-      probability: quantize(total > 0 ? row.count / total : 0),
-      evidenceIds: [...row.evidenceIds].sort(),
-      evidenceCoordinates: sortedEvidenceCoordinates(row.evidenceCoordinates)
-    }))
-    .sort((left, right) =>
-      right.count - left.count
-      || left.surface.localeCompare(right.surface));
+function choices(rows: ReadonlyMap<string, JoinCount>, denominator?: number): JoinProgramChoice[] {
+  const values = [...rows.values()], observed = values.reduce((sum, row) => sum + row.count, 0);
+  const total = Math.max(observed, denominator ?? observed);
+  const probabilities = values.map(row => total > 0 ? row.count / total : 0);
+  let mass = probabilities.reduce((sum, probability) => sum + probability, 0);
+  while (mass > 1) {
+    for (let index = 0; index < probabilities.length; index++) probabilities[index] = probabilities[index]! / mass;
+    mass = probabilities.reduce((sum, probability) => sum + probability, 0);
+  }
+  return values.map((row, index) => ({ surface: row.surface, count: positivePrecision(row.count), probability: probabilities[index]!,
+    evidenceIds: [...row.evidenceIds].sort(), evidenceCoordinates: sortedEvidenceCoordinates(row.evidenceCoordinates) }))
+    .sort((left, right) => right.count - left.count || left.surface.localeCompare(right.surface));
 }
 
 function sortedEvidenceCoordinates(coordinates: ReadonlyMap<string, JoinEvidenceCoordinate>): JoinEvidenceCoordinate[] {
@@ -1301,4 +1315,9 @@ function normalize(value: string): string {
 
 function quantize(value: number): number {
   return Math.round(value * 1_000_000_000_000) / 1_000_000_000_000;
+}
+
+function positivePrecision(value: number): number {
+  const rounded = quantize(value);
+  return rounded === 0 && value > 0 ? value : rounded;
 }
