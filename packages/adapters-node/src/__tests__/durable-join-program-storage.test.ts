@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
-import { buildSurfaceLattice, compileJoinProgram, compileJoinProgramMixture, canonicalDigestHex, canonicalStringify, CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, createHasher, hashEvent, joinProgramChoices, joinProgramMixtureStorageForm, renderJoinedSurface, type JoinProgramMixture, type JsonValue, type ScceEvent } from "@scce/kernel";
+import { JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_SCHEMA, buildSurfaceLattice, compileJoinProgram, compileJoinProgramMixture, canonicalDigestHex, canonicalStringify, CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, createHasher, hashEvent, joinProgramChoices, joinProgramMixtureStorageForm, renderJoinedSurface, type JoinProgramMixture, type JsonValue, type ScceEvent } from "@scce/kernel";
 import { decodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA,
   durableJoinProgramJsonByteLengths, encodeDurableJoinPrograms } from "../durable-join-program-storage.js";
 import { PostgresStorageAdapter } from "../postgres.js";
@@ -12,9 +12,9 @@ function fixture(): JoinProgramMixture {
   const choice = { surface: " ", count: 1, probability: 1, evidenceIds: [coordinate.evidenceId], evidenceCoordinates: [coordinate] };
   const entries = Array.from({ length: 64 }, (_, index) => [JSON.stringify([`surface.${index}`, "shared", "class.shared", "scale.shared"]), [choice]]);
   const indexes = Object.fromEntries(["conditionedIndex", "exactIndex", "structuralIndex", "classIndex", "localShapeIndex", "constructionIndex"].map(name => [name, Object.fromEntries(entries)]));
-  return JSON.parse(JSON.stringify({ schema: "scce.join_program_mixture.v3", id: "mixture.owned", populationModelId: "population.owned", minimumConfidence: 0,
+  return JSON.parse(JSON.stringify({ schema: JOIN_PROGRAM_MIXTURE_SCHEMA, id: "mixture.owned", populationModelId: "population.owned", minimumConfidence: 0,
     retainedMetadata: { text: "\u{1f600}\u0000", zero: 0, nullable: null }, components: [{ populationId: "population.owned", weight: 1, retainedMetadata: [false, "雪"], program: {
-      schema: "scce.join_program.v3", id: "program.owned", populationId: "population.owned", observations: 64, minimumConfidence: 0,
+      schema: JOIN_PROGRAM_SCHEMA, id: "program.owned", populationId: "population.owned", observations: 64, minimumConfidence: 0,
       ...indexes, backoffReliability: { conditioned: 1, exact: 1, structural: 1, class: 1, local_shape: 1, construction: 1 }, sourceDocumentIds: ["document.owned"], trainingDocumentIds: ["document.owned"],
       evaluation: { heldoutDocumentIds: [], selectionDocumentIds: [], observations: 0, exactAccuracy: null, negativeLogLikelihood: null, expectedCalibrationError: null, reconstructionAccuracy: null, whitespaceInsertionErrors: 0, whitespaceDeletionErrors: 0, punctuationErrors: 0, crossScriptAccuracy: null }, audit: { retained: true }
     } }] })) as JoinProgramMixture;

@@ -1379,12 +1379,8 @@ export interface KernelRuntimePorts {
   approvals?: ApprovalPort;
 }
 
-// Base (merge-base 5f5d1f2) was 21. Main independently bumped to 22 for
-// sparse_ranking_comparisons (plan item 32); the codex branch
-// independently bumped to 23 for its own new tables. Both are real,
-// distinct structural additions from the same base, so the merged
-// schema is one past the higher of the two, not either original value.
-export const POSTGRES_SCHEMA_VERSION = 32;
+// Includes bounded lexical pages and source-owned construction decision pages.
+export const POSTGRES_SCHEMA_VERSION = 34;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -1420,6 +1416,8 @@ export const POSTGRES_REQUIRED_TABLES = [
   "language_patterns",
   "creative_event_templates",
   "creative_event_lexemes",
+  "creative_event_lexical_pages",
+  "construction_source_decision_pages",
   "creative_event_witnesses",
   "creative_event_occurrences",
   "semantic_frames",

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import * as kernel from "@scce/kernel";
 import { canonicalDigestHex, createClock, createHasher, createIdFactory, sourceLanguageTrainingStreamId,
   stampSourceLanguageCompilation, toJsonValue, type InformationLabel, type JsonValue } from "@scce/kernel";
-import { createSourceArtifactMetadataCodec, SOURCE_ARTIFACT_METADATA_KEY } from "../source-artifact-metadata.js";
+import { createSourceArtifactMetadataCodec, SOURCE_ARTIFACT_METADATA_KEY, SOURCE_ARTIFACT_METADATA_REF_SCHEMA, SOURCE_ARTIFACT_METADATA_INDEX_REF_SCHEMA } from "../source-artifact-metadata.js";
 import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
 import type { CreativeEventStorageHost } from "../canonical-creative-event-store.js";
 
@@ -30,7 +30,7 @@ function fixture(suffix = "", inherited: Record<string, JsonValue> = {}, schema 
   const receipt = stamped.patterns.find(pattern => pattern.patternKind === "source_compilation")!;
   const row = { id: receipt.id, profile_id: receipt.profileId, pattern_json: clone(object(receipt.patternJson)), information_label: label };
   const state = { accessible: true, row }, calls: Array<{ sql: string; params: unknown[] }> = [];
-  const host: CreativeEventStorageHost = { table: name => `"fixture"."${name}"`, requireWritableInformationLabel: value => value ?? label,
+  const host: CreativeEventStorageHost = { transaction: async operation => operation(), table: name => `"fixture"."${name}"`, requireWritableInformationLabel: value => value ?? label,
     informationAccessPredicate: (alias, first) => ({ sql: `${alias}.information_label->>'tenantId'=$${first}`, params: [label.tenantId] }),
     query: async <T>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params }); return state.accessible && (params[0] as string[]).includes(state.row.id) ? [clone(state.row) as T] : []; } };
   const codec = createSourceArtifactMetadataCodec(host);
@@ -39,6 +39,38 @@ function fixture(suffix = "", inherited: Record<string, JsonValue> = {}, schema 
 }
 
 describe("canonical source artifact metadata", () => {
+  it("writes compact field indexes and reads existing named references against the same verified owner", async () => {
+    const f = fixture(), [value] = await f.codec.encodeMany([{ value: f.originals[1], informationLabel: label }]);
+    const stored = object(clone(value)), reference = object(stored[SOURCE_ARTIFACT_METADATA_KEY]);
+    expect(reference.schema).toBe(SOURCE_ARTIFACT_METADATA_INDEX_REF_SCHEMA);
+    expect(Object.keys(reference).sort()).toEqual(["fieldIndexes", "introducedLedger", "recordDigest", "schema"]);
+    const dictionary = Object.keys(f.metadata).sort(), indexes = reference.fieldIndexes as number[];
+    const named = { schema: SOURCE_ARTIFACT_METADATA_REF_SCHEMA, receiptId: f.row.id,
+      digest: object(f.row.pattern_json.inheritedMetadata).digest, keys: indexes.map(index => dictionary[index]),
+      introducedLedger: reference.introducedLedger, recordDigest: reference.recordDigest };
+    expect(Buffer.byteLength(JSON.stringify(reference))).toBeLessThan(Buffer.byteLength(JSON.stringify(named)));
+    stored[SOURCE_ARTIFACT_METADATA_KEY] = named;
+    expect(await f.codec.decodeMany([{ value: stored, informationLabel: label }])).toEqual([f.originals[1]]);
+    // The holder's own map insertion order does not change index interpretation.
+    const shared = object(f.row.pattern_json.inheritedMetadata);
+    shared.value = Object.fromEntries(Object.entries(object(shared.value)).reverse());
+    expect(await f.codec.decodeMany([{ value, informationLabel: label }])).toEqual([f.originals[1]]);
+  });
+
+  it.each(["negative", "fraction", "outside", "duplicate", "order", "empty", "reserved", "unknown"])("rejects %s field-index mutation", async mutation => {
+    const f = fixture(), [encoded] = await f.codec.encodeMany([{ value: f.originals[0], informationLabel: label }]);
+    const stored = object(clone(encoded)), ref = object(stored[SOURCE_ARTIFACT_METADATA_KEY]), indexes = ref.fieldIndexes as number[];
+    if (mutation === "negative") indexes[0] = -1;
+    if (mutation === "fraction") indexes[0] = 0.5;
+    if (mutation === "outside") indexes[0] = Object.keys(f.metadata).length;
+    if (mutation === "duplicate") indexes[1] = indexes[0]!;
+    if (mutation === "order") indexes.reverse();
+    if (mutation === "empty") ref.fieldIndexes = [];
+    if (mutation === "reserved") ref.fieldIndexes = [Object.keys(f.metadata).sort().indexOf("requirementTargets")];
+    if (mutation === "unknown") ref.keys = ["links"];
+    await expect(f.codec.decodeMany([{ value: stored, informationLabel: label }])).rejects.toThrow("metadata");
+  });
+
   it.each(["scce.language_construction_pattern.v1", "scce.induced_language_model.semantic_memory.v1"])("shares only exact allowed inherited scalar provenance in %s", async schema => {
     const provenance = { sourceUri: "fixture://human/\u96ea/e\u0301", sourceHash: "sha256:owned", sourceSystemId: "source:owned", title: "Original e\u0301 title",
       authorship: "human_authored", corpusRole: "opaque.corpus.role", forceClass: "learned_language_prior", provenanceClass: "source_owned",
@@ -57,7 +89,9 @@ describe("canonical source artifact metadata", () => {
     }
     const changed:Record<string,unknown>={...object(value),title:"locally learned override"};delete changed.sourceUri;
     const [different]=await f.codec.encodeMany([{artifactFamily:"language_pattern",value:changed,informationLabel:label}]);
-    expect(object(different).title).toBe(changed.title);expect(object(object(different)[SOURCE_ARTIFACT_METADATA_KEY]).keys).not.toContain("sourceUri");
+    expect(object(different).title).toBe(changed.title);
+    const selected = object(object(different)[SOURCE_ARTIFACT_METADATA_KEY]).fieldIndexes as number[];
+    expect(selected.map(index => Object.keys(f.metadata).sort()[index])).not.toContain("sourceUri");
     expect(await f.codec.decodeMany([{value:different,informationLabel:label}])).toEqual([changed]);
     const unbound={...object(value)};delete unbound.sourceCompilationId;
     expect((await f.codec.encodeMany([{artifactFamily:"language_pattern",value:unbound,informationLabel:label}]))[0]).toBe(unbound);

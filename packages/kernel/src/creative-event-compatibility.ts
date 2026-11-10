@@ -10,6 +10,8 @@ import type { EvidenceId, Hasher, JsonValue } from "./types.js";
 import { induceLearnedConstructions, type AlignedSurfaceExample, type LearnedConstruction } from "./language-construction.js";
 import { createLearnedSurfaceInterpreter, type LearnedSurfaceInterpreter, type InterpretedSurfaceRole } from "./learned-surface-interpretation.js";
 import { CREATIVE_SOURCE_CORRESPONDENCE_RECIPE, createCreativeSourceCorrespondenceVerifier, type CreativeSurfaceRoleBinding, type CreativeSourceCorrespondence, type CreativeSourceCorrespondenceContext, type CreativeSourceCorrespondenceVerifier } from "./creative-source-correspondence.js";
+export { CREATIVE_SOURCE_OBSERVATION_FACTORS_SCHEMA, creativeSourceObservationStorageForm, creativeSourceObservationsFromStorage,
+  type CreativeSourceObservationFactors } from "./creative-source-observation-factors.js";
 
 export const CREATIVE_REQUEST_FRAME_SCHEMA = "scce.creative_request_frame.v1" as const;
 export const CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA =

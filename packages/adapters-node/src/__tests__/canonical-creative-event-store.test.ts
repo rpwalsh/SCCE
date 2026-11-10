@@ -2,12 +2,12 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
+import { JOIN_PROGRAM_MIXTURE_SCHEMA, canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
   createUniversalCreativeEventConstructionCompiler, deriveUniversalCreativeEvent, hashEvent, hydrateLanguageConstructionPatterns,
   informationLabelAllowsRead, requestSeedLanguagePattern, type EvidenceSpan, type InformationLabel,
   type JsonValue, type LanguagePatternRecord, type ScceEvent } from "@scce/kernel";
 import { PostgresStorageAdapter } from "../postgres.js";
-import { canonicalCreativeEventSchemaStatements } from "../canonical-creative-event-store.js";
+import { canonicalCreativeEventSchemaStatements, createCanonicalCreativeEventCodec } from "../canonical-creative-event-store.js";
 import { CREATIVE_EVENT_NORMALIZATION_SCHEMA, CREATIVE_EVENT_NORMALIZATION_TABLES, CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA,
   creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage,
   type CreativeEventDomainRecord, type CreativeEventOwner } from "../creative-event-normalization.js";
@@ -44,10 +44,23 @@ function fixture() {
   const adapter = new PostgresStorageAdapter({ url: "postgres://offline.invalid/none", schema: "canonical_creative", informationAccess: access });
   adapters.push(adapter);
   const components = new Map(CREATIVE_EVENT_NORMALIZATION_TABLES.map(table => [table, new Map<string, Record<string, unknown>>()]));
+  const lexicalPages = new Map<string, { id: Buffer; kind: string; member_ids: Buffer[]; value_json: Record<string, unknown> }>();
   const rows = { patterns: [] as Record<string, unknown>[], models: [] as Record<string, unknown>[], events: [] as Record<string, unknown>[] };
   const calls: string[] = [], state = { inserted: 0, source: { ...owner }, promoted: true, sourceLabel: label, head: undefined as unknown };
   const query = async (sql: string, params: unknown[] = []) => {
     calls.push(sql);
+    if (sql.includes("lexical-page writer lock")) return { rows: [{ isolation: "read committed" }] };
+    if (sql.includes('"creative_event_lexical_pages"')) {
+      if (sql.includes("lexical-page insert")) {
+        const id = params[0] as Buffer, key = id.toString("hex");
+        if (!lexicalPages.has(key)) { lexicalPages.set(key, { id: Buffer.from(id), kind: "lexical_forms_page", member_ids: (params[1] as Buffer[]).map(value => Buffer.from(value)), value_json: JSON.parse(String(params[2])) }); state.inserted++; }
+        return { rows: [] };
+      }
+      const ids = (params[0] as Buffer[]).map(value => value.toString("hex"));
+      const selected = [...lexicalPages.values()].filter(row => sql.includes("lexical-page membership") ? row.member_ids.some(id => ids.includes(id.toString("hex"))) : ids.includes(row.id.toString("hex")));
+      return { rows: selected.map(row => sql.includes("lexical-page sizes") ? { id: row.id, stored_bytes: Buffer.byteLength(JSON.stringify(row.value_json)) }
+        : sql.includes("lexical-page membership") ? { id: row.id } : { ...row, value_json: cold(row.value_json) }) };
+    }
     if (sql.includes("SELECT profile.id AS profile_id")) {
       const requested = JSON.parse(String(params[0])) as Array<{ profileId: string; evidenceId: string }>;
       const selected = requested.filter(item => item.profileId === state.source.profileId && item.evidenceId === state.source.evidenceId
@@ -96,16 +109,27 @@ function fixture() {
   const client = { query, release() {} };
   (adapter.pool as unknown as { connect: () => Promise<unknown> }).connect = async () => client;
   (adapter.pool as unknown as { query: typeof query }).query = query;
-  return { adapter, rows, components, calls, state };
+  return { adapter, rows, components, lexicalPages, calls, state };
 }
 
 describe("canonical creative-event domain normalization", () => {
+  it("encodes and decodes values without event bundles without opening a database transaction", async () => {
+    const codec = createCanonicalCreativeEventCodec({ table: name => `"pure"."${name}"`,
+      query: async () => { throw Error("unexpected SQL query"); }, transaction: async () => { throw Error("unexpected transaction"); },
+      requireWritableInformationLabel: value => value ?? label, informationAccessPredicate: () => ({ sql: "TRUE", params: [] }) });
+    const original = { retained: { exact: "🧪é\u0000雪" }, joinProgram: { schema: JOIN_PROGRAM_MIXTURE_SCHEMA,
+      id: "join.empty", populationModelId: "population.empty", minimumConfidence: 0, components: [] } };
+    const encoded = await codec.encodeMany([{ value: original }]);
+    expect(await codec.decodeMany(cold(encoded))).toEqual([original]);
+    expect(await codec.encode({ retained: "pure" })).toEqual({ retained: "pure" });
+  });
   it("stores shared definitions once and cold-restores every genuine event through the production pattern API", async () => {
-    const { adapter, rows, components, calls, state } = fixture();
+    const { adapter, rows, components, lexicalPages, calls, state } = fixture();
     if (!adapter.languageMemory.putLanguagePatterns) throw Error("missing batch pattern writer");
     await adapter.languageMemory.putLanguagePatterns(patterns);
     expect(components.get("creative_event_templates")!.size).toBe(2);
-    expect(components.get("creative_event_lexemes")!.size).toBeGreaterThan(0);
+    expect(components.get("creative_event_lexemes")!.size).toBe(0);
+    expect(lexicalPages.size).toBeGreaterThan(0);
     expect(components.get("creative_event_witnesses")!.size).toBe(1);
     expect(components.get("creative_event_occurrences")!.size).toBe(patterns.length);
     for (const row of rows.patterns) {
@@ -133,7 +157,7 @@ describe("canonical creative-event domain normalization", () => {
   it("reuses the same canonical records in full induced models and immutable ledger payloads without changing replay hashes", async () => {
     const { adapter, components, rows, state } = fixture();
     const model = { id: "model.genuine.creative", corpusDocuments: 1, vocabularySize: 2, patterns: patterns.map(pattern => pattern.patternJson),
-      joinProgram: { schema: "scce.join_program_mixture.v3", id: "mixture.empty", populationModelId: "population.empty", minimumConfidence: 0, components: [] } };
+      joinProgram: { schema: JOIN_PROGRAM_MIXTURE_SCHEMA, id: "mixture.empty", populationModelId: "population.empty", minimumConfidence: 0, components: [] } };
     await adapter.inducedLanguageModels.putModel({ id: model.id, model: model as never, trainingPlanId: "plan.owned", createdAt: 1, informationLabel: label });
     const count = state.inserted;
     expect(JSON.stringify(rows.models[0]!.model_json).includes(CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA)).toBe(true);
@@ -162,7 +186,7 @@ describe("canonical creative-event domain normalization", () => {
       (f: ReturnType<typeof fixture>) => { f.state.source = { ...owner, evidenceContentHash: "changed.hash" }; },
       (f: ReturnType<typeof fixture>) => { f.state.source = { ...owner, sourceContentHash: "changed.raw.source.hash" }; },
       (f: ReturnType<typeof fixture>) => { f.state.sourceLabel = { ...label, tenantId: "tenant.foreign", exportClass: "restricted", principals: ["foreign"] }; },
-      (f: ReturnType<typeof fixture>) => { f.components.get("creative_event_lexemes")!.clear(); },
+      (f: ReturnType<typeof fixture>) => { f.lexicalPages.clear(); },
       (f: ReturnType<typeof fixture>) => { object(object(f.rows.patterns[0]!.pattern_json)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).decodedJsonBytes = 1; }
     ]) {
       const f = fixture(); await f.adapter.languageMemory.putLanguagePattern(patterns[0]!); mutate(f);
@@ -186,6 +210,14 @@ describe("canonical creative-event domain normalization", () => {
     expect(restored).toEqual(event);
     expect(Array.isArray(restored.payload)).toBe(true);
     expect(hashEvent(restored, [], hasher)).toBe(event.hash);
+  });
+
+  it("checks historical source ownership before hydrating shared lexical pages", async () => {
+    const f = fixture(); await f.adapter.languageMemory.putLanguagePattern(patterns[0]!);
+    f.state.source.sourceContentHash = "changed.owner";
+    const before = f.calls.length;
+    await expect(f.adapter.languageMemory.listLanguagePatterns({ patternIds: [patterns[0]!.id] })).rejects.toThrow("changed canonical source witness");
+    expect(f.calls.slice(before).some(sql => sql.includes("lexical-page read"))).toBe(false);
   });
 
   it("shares pure definitions across independent owner scopes while retaining all contextual identities", () => {
@@ -221,12 +253,13 @@ describe("canonical creative-event domain normalization", () => {
     expect(() => normalizeCreativeEventPage({ bundle: invalid, owners })).toThrow("unsupported");
   });
 
-  it("declares only four typed canonical tables and keeps their source-owned witness and occurrence labels", () => {
+  it("retains four logical domain tables and adds indexed lexical pages while keeping contextual labels", () => {
     const ddl = canonicalCreativeEventSchemaStatements('"test"');
-    expect(ddl).toHaveLength(4);
+    expect(ddl).toHaveLength(6);
     for (const table of CREATIVE_EVENT_NORMALIZATION_TABLES) expect(ddl.some(sql => sql.includes(`.${table} (`))).toBe(true);
     expect(ddl.filter(sql => sql.includes("information_label JSONB NOT NULL"))).toHaveLength(2);
-    expect(ddl.every(sql => sql.includes("PRIMARY KEY") && sql.includes("CHECK(kind="))).toBe(true);
+    expect(ddl.filter(sql => sql.includes("CREATE TABLE")).every(sql => sql.includes("PRIMARY KEY") && sql.includes("CHECK(kind="))).toBe(true);
+    expect(ddl.some(sql => sql.includes("USING GIN(member_ids)") && sql.includes("fastupdate=off"))).toBe(true);
     expect(CREATIVE_EVENT_NORMALIZATION_SCHEMA).toBe("scce.creative_event_normalization.v1");
   });
 });

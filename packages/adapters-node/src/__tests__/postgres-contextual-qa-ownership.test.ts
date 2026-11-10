@@ -131,7 +131,7 @@ it("keeps contextual QA interpretation metadata without source programs or super
 });
 
 it("declares one idempotent partial request-feature index without rewriting source programs", () => {
-  expect(POSTGRES_SCHEMA_VERSION).toBe(32);
+  expect(POSTGRES_SCHEMA_VERSION).toBe(34);
   const statements = schemaStatements('"fixture"');
   const indexes = statements.filter(sql => sql.includes("_contextual_qa_request_lookup"));
   expect(indexes).toEqual([`CREATE INDEX IF NOT EXISTS idx_fixture_contextual_qa_request_lookup ON "fixture".language_patterns USING GIN ((pattern_json->'contextualQaRequestFeatures')) WHERE pattern_kind='semantic_role' AND pattern_json->>'schema'='${schema}' AND pattern_json->>'componentRecipe'='${recipe}' AND source_system='${sourceSystem}'`]);

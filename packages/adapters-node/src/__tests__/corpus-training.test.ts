@@ -3,6 +3,7 @@
 import { captureFixtureLanguagePatternProjections, getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { readFileSync } from "node:fs";
 import { createSourceArtifactMetadataCodec } from "../source-artifact-metadata.js";
+import { decodeConstructionSourceExamples, encodeConstructionSourceExamples } from "@scce/kernel";
 import { corpusSegmentationInputRecipe } from "../corpus-segmentation-producer.js";
 import { prepareLanguageTrainingSegmentationInput } from "../language-training-segmentation.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
@@ -400,14 +401,17 @@ describe("learned rows carry the shard's provenance once", () => {
     const learnedNullPattern = fixture.state.patterns.find(row => {
       if (!isConstructionBundle(row)) return false;
       const bundle = recordOf(row.patternJson).bundle as { sourceExamples?: Array<{ nullRoles?: Array<{ graphBinding?: { roleId?: string } }> }> };
-      return bundle.sourceExamples?.some(example => example.nullRoles?.some(role => role.graphBinding?.roleId === "role.patient")) ?? false;
+      const examples = decodeConstructionSourceExamples(bundle.sourceExamples, bundle, corpusTestHasher) as typeof bundle.sourceExamples;
+      return examples?.some(example => example.nullRoles?.some(role => role.graphBinding?.roleId === "role.patient")) ?? false;
     });
     expect(learnedNullPattern).toBeDefined();
     const stalePatternJson = structuredClone(learnedNullPattern!.patternJson) as Record<string, unknown>;
     const staleBundle = stalePatternJson.bundle as { sourceExamples: Array<{ nullRoles?: Array<{ graphBinding?: { roleId?: string } }> }> };
-    for (const example of staleBundle.sourceExamples) for (const role of example.nullRoles ?? []) {
+    const staleExamples = decodeConstructionSourceExamples(staleBundle.sourceExamples, staleBundle, corpusTestHasher) as typeof staleBundle.sourceExamples;
+    for (const example of staleExamples) for (const role of example.nullRoles ?? []) {
       if (role.graphBinding?.roleId === "role.patient") delete role.graphBinding;
     }
+    (staleBundle as unknown as Record<string, unknown>).sourceExamples = encodeConstructionSourceExamples(staleExamples, staleBundle, corpusTestHasher);
     const staleIndex = fixture.state.patterns.findIndex(row => row.id === learnedNullPattern!.id);
     fixture.state.patterns[staleIndex] = { ...learnedNullPattern!, patternJson: stalePatternJson as JsonValue };
     const runtime = createLanguageMemoryRuntime({ hasher: corpusTestHasher, idFactory: corpusTestIds });
@@ -436,7 +440,8 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(fixture.state.patterns.find(row => row.id === learnedNullPattern!.id)?.patternJson).not.toEqual(stalePatternJson);
     const repaired = fixture.state.patterns.filter(isConstructionBundle).some(row => {
       const bundle = recordOf(row.patternJson).bundle as { sourceExamples?: Array<{ nullRoles?: Array<{ graphBinding?: { roleId?: string } }> }> };
-      return bundle.sourceExamples?.some(example => example.nullRoles?.some(role => role.graphBinding?.roleId === "role.patient")) ?? false;
+      const examples = decodeConstructionSourceExamples(bundle.sourceExamples, bundle, corpusTestHasher) as typeof bundle.sourceExamples;
+      return examples?.some(example => example.nullRoles?.some(role => role.graphBinding?.roleId === "role.patient")) ?? false;
     });
     expect(repaired).toBe(true);
     expect(fixture.state.patterns.map(row => row.id).sort()).toEqual(beforePatternIds);
@@ -3309,7 +3314,9 @@ describe("dialogue corpus training", () => {
     const corrupted = JSON.parse(JSON.stringify(persisted)) as LanguagePatternRecord[];
     const changed = corrupted.find(pattern => pattern.id === conversational[0]!.id)!;
     const changedBundle = (changed.patternJson as any).bundle;
-    changedBundle.sourceExamples[0].antecedent.surface = "forged preceding request";
+    const changedExamples = decodeConstructionSourceExamples(changedBundle.sourceExamples, changedBundle, createHasher()) as any[];
+    changedExamples[0].antecedent.surface = "forged preceding request";
+    changedBundle.sourceExamples = encodeConstructionSourceExamples(changedExamples, changedBundle, createHasher());
     expect(hydrateLanguageConstructionPatterns({ patterns: [changed], evidence: fixture.state.evidence, hasher: createHasher() }).bundles).toEqual([]);
     const restarted = conversationalSession({ learned: { patterns: persisted, evidence: JSON.parse(JSON.stringify(fixture.state.evidence)) } });
     const turn = await restarted.turn("the pump feed reads high");

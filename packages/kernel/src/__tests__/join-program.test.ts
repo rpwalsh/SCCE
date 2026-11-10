@@ -8,6 +8,7 @@ import {
   createHasher,
   createLanguageMemoryRuntime,
   derivationShape,
+  JOIN_PROGRAM_SCHEMA,
   renderJoinedSurface,
   renderJoinedSurfaceAlternatives,
   scopeLanguageMemoryStateToLanguage,
@@ -71,7 +72,13 @@ describe("learned join programs", () => {
     }
   });
   it("stores shared provenance once and restores the exact runtime indexes", () => {
-    const mixture = trainedMixture("repeated-provenance", "alpha beta ".repeat(24));
+    const original = trainedMixture("repeated-provenance", "alpha beta ".repeat(24)), component = original.components[0]!;
+    const { localFactors: _local, globalFactors: _global, ...program } = component.program;
+    const choices = joinProgramChoices(component.program, "exact", JSON.stringify(["alpha", "beta"]));
+    const measured = Object.fromEntries([[JSON.stringify(["alpha", "beta"]), choices],
+      ...Array.from({ length: 16 }, (_, index) => [JSON.stringify(["measured", index]), choices])]);
+    const mixture = { ...original, components: [{ ...component, program: { ...program, conditionedIndex: measured, exactIndex: measured,
+      structuralIndex: measured, classIndex: measured, localShapeIndex: measured, constructionIndex: measured } }] };
     const stored = joinProgramMixtureStorageForm(mixture);
     const restored = joinProgramMixtureFromStorage(stored);
     expect(restored).toEqual(mixture);
@@ -89,7 +96,7 @@ describe("learned join programs", () => {
 
   it("preserves special index keys and distinguishes absent from empty source-version IDs", () => {
     const mixture = trainedMixture("edge-case-provenance", "alpha beta alpha beta");
-    const { localFactors: _factors, ...program } = mixture.components[0]!.program;
+    const { localFactors: _factors, globalFactors: _global, ...program } = mixture.components[0]!.program;
     const key = JSON.stringify(["alpha", "beta"]), choices = joinProgramChoices(mixture.components[0]!.program, "exact", key);
     const first = choices[0]!;
     const coordinate = first.evidenceCoordinates[0]!;
@@ -208,7 +215,8 @@ describe("learned join programs", () => {
       }
     );
 
-    expect(Object.keys(program.conditionedIndex).length).toBeGreaterThan(0);
+    expect(program.conditionedIndex).toEqual({});
+    expect(program.globalFactors!.documents.some(document => document.paths.length > 0)).toBe(true);
     expect(rendered.status).toBe("resolved");
     expect(rendered.trace.length).toBeGreaterThan(0);
     expect(rendered.trace.every(step => step.source === "conditioned")).toBe(true);
@@ -252,7 +260,7 @@ describe("learned join programs", () => {
     const ambiguous = {
       ...base,
       components: base.components.map(component => {
-        const { localFactors: _factors, ...program } = component.program;
+        const { localFactors: _factors, globalFactors: _global, ...program } = component.program;
         return { ...component, program: {
           ...program,
           conditionedIndex: {}, structuralIndex: {}, classIndex: {}, localShapeIndex: {}, constructionIndex: {},
@@ -349,7 +357,7 @@ describe("learned join programs", () => {
       hasher
     });
 
-    expect(program.schema).toBe("scce.join_program.v3");
+    expect(program.schema).toBe(JOIN_PROGRAM_SCHEMA);
     expect(program.evaluation.heldoutDocumentIds.length).toBeGreaterThan(0);
     expect(program.evaluation.observations).toBeGreaterThan(0);
     expect(program.evaluation.exactAccuracy).not.toBeNull();

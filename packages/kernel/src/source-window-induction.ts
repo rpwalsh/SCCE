@@ -120,10 +120,11 @@ export function sourceInductionBatchJobDigest(job: Omit<SourceInductionBatchJob,
 
 function compactSourceInductionModel(model: InducedLanguageModel): InducedLanguageMemoryModel {
     const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
-      semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds } = model;
+      semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds, semanticInductionFactors } = model;
     return freezeProducts({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
       joinProgram: joinProgramMixtureStorageForm(joinProgram, { immutable: true }),
-      semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds });
+      semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds,
+      ...(semanticInductionFactors ? { semanticInductionFactors } : {}) });
 }
 
 /** Prepare/induce are the same pure producer in serial execution and worker sessions. */
@@ -138,7 +139,7 @@ export function prepareSourceInductionBatch(input: { batch: SourceInductionBatch
     if (sourceInductionInputDigest(batch.documents, hasher) !== sourceDigest || hasher.digestHex(canonicalStringify(batch.windows)) !== windowsDigest
       || verified && corpusSegmentationInputDigest(batch.documents.filter(document => document.text.trim()), verified, hasher) !== corpusBinding)
       throw new Error("source induction batch inputs changed");
-    const model = createLanguageInductionEngine({ hasher }).induce({ documents: batch.documents, ...(verified ? { verifiedCorpusSegmentation: verified } : {}) });
+    const model = createLanguageInductionEngine({ hasher }).induce({ documents: batch.documents, captureScoreFactors: true, ...(verified ? { verifiedCorpusSegmentation: verified } : {}) });
     return { compact: compactSourceInductionModel(model), ...(retainFullModel ? { fullModel: model } : {}) };
   } });
 }

@@ -368,3 +368,11 @@ export * from "./program-artifact-wire.js";
 export * from "./corpus-segmentation-storage.js";
 
 export * from "./source-program-provider.js";
+export * from "./construction-role-geometry-storage.js";
+export * from "./segmentation-adjacency-storage.js";
+export * from "./segmentation-score-factors.js";
+export { deriveCreativeSourceCorrespondence } from "./creative-source-correspondence.js";
+export * from "./relation-statistics-storage.js";
+export * from "./construction-source-example-storage.js";
+export * from "./semantic-induction-factors.js";
+export * from "./construction-source-decision-storage.js";

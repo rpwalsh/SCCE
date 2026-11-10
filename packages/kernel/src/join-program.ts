@@ -3,6 +3,7 @@
 import { buildSurfaceScalarCoordinateIndex, normalizeSurfaceLatticeSurface, type SurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { exportSegmentationAdjacencyFactors, segmentationSurfaceAdjacencies } from "./segmentation-forest.js";
 import { createSegmentationAdjacencyQuery, validateSegmentationAdjacencyFactors, type SegmentationAdjacencyFactors } from "./segmentation-adjacency-factors.js";
+import { segmentationScoreFactorsCanonicalSafe, validateSegmentationScoreFactors } from "./segmentation-score-factors.js";
 import { createNormalizedSurfaceFormIdentity, createSurfaceFormClassIdentity } from "./canonical-identity.js";
 import { dominantScriptId } from "./unicode-segmentation-v2.js";
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
@@ -15,9 +16,22 @@ import {
   type NormalizationContract
 } from "./normalization-contract.js";
 
-export const JOIN_PROGRAM_SCHEMA = "scce.join_program.v3" as const;
-export const JOIN_PROGRAM_MIXTURE_SCHEMA = "scce.join_program_mixture.v3" as const;
+export const JOIN_PROGRAM_SCHEMA = "scce.join_program.v4" as const;
+export const JOIN_PROGRAM_MIXTURE_SCHEMA = "scce.join_program_mixture.v4" as const;
 export const JOIN_PROGRAM_LOCAL_FACTORS_SCHEMA = "scce.join_program_local_factors.v1" as const;
+export const JOIN_PROGRAM_GLOBAL_FACTORS_SCHEMA = "scce.join_program_global_factors.v1" as const;
+
+export interface JoinGlobalFactorDocument {
+  constructionId?: string;
+  discourseStateId?: string;
+  normalizedOverrides?: Array<[arcIndex: number, normalized: string]>;
+  baseChoices: number[];
+  paths: Array<[posterior: number, overrides: number[]]>;
+}
+export interface JoinProgramGlobalFactors {
+  schema: typeof JOIN_PROGRAM_GLOBAL_FACTORS_SCHEMA;
+  documents: JoinGlobalFactorDocument[];
+}
 
 export interface JoinLocalFactorDocument {
   documentId: string;
@@ -27,6 +41,7 @@ export interface JoinLocalFactorDocument {
   evidenceIds: string[];
   contexts: Array<[scaleId: string] | [scaleId: string, explicitSurfaceFormClassId: string]>;
   graph: SegmentationAdjacencyFactors;
+  scoreRecipe?: import("./segmentation-score-factors.js").SegmentationScoreFactors;
   units: Array<null | [contextIndex: number, boundaryBucket: number, evidenceRefs: number[]] | [contextIndex: number, boundaryBucket: number, evidenceRefs: number[], utf16Start: number, utf16End: number]>;
 }
 export interface JoinProgramLocalFactors {
@@ -59,7 +74,7 @@ export function isJoinProgramLocalFactors(value: unknown): value is JoinProgramL
     for (const raw of Array.from(row.documents)) {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
       const doc = raw as Record<string, unknown>;
-      if (Object.keys(doc).some(key => !["documentId", "constructionId", "sourceVersionId", "text", "evidenceIds", "contexts", "graph", "units"].includes(key))
+      if (Object.keys(doc).some(key => !["documentId", "constructionId", "sourceVersionId", "text", "evidenceIds", "contexts", "graph", "units", "scoreRecipe"].includes(key))
         || typeof doc.documentId !== "string" || !doc.documentId || documentIds.has(doc.documentId) || typeof doc.text !== "string"
         || (Object.hasOwn(doc, "constructionId") && (typeof doc.constructionId !== "string" || !doc.constructionId))
         || (Object.hasOwn(doc, "sourceVersionId") && typeof doc.sourceVersionId !== "string") || !Array.isArray(doc.evidenceIds)
@@ -70,6 +85,7 @@ export function isJoinProgramLocalFactors(value: unknown): value is JoinProgramL
       const evidenceIds = doc.evidenceIds;
       documentIds.add(doc.documentId);
       validateSegmentationAdjacencyFactors(doc.graph);
+      if (Object.hasOwn(doc, "scoreRecipe")) validateSegmentationScoreFactors(doc.scoreRecipe, doc.graph);
       const geometry = sourceGeometry(doc.text);
       if (doc.graph.nodeCount !== geometry.utf16.length || doc.units.length !== doc.graph.arcs.length) return false;
       for (let index = 0; index < doc.units.length; index++) {
@@ -137,6 +153,7 @@ export interface JoinProgramModel {
   localShapeIndex: Record<string, JoinProgramChoice[]>;
   constructionIndex: Record<string, JoinProgramChoice[]>;
   localFactors?: JoinProgramLocalFactors;
+  globalFactors?: JoinProgramGlobalFactors;
   backoffReliability: Record<JoinBackoffSource, number>;
   sourceDocumentIds: string[];
   trainingDocumentIds: string[];
@@ -247,43 +264,26 @@ export function compileJoinProgram(input: {
   hasher?: Hasher;
 }): JoinProgramModel {
   const hasher = input.hasher ?? createHasher();
-  // Join events own these coordinates; the cache ends with this compilation.
-  const coordinateKeys = new WeakMap<JoinEvidenceCoordinate, string>();
-  const coordinateKey: typeof evidenceCoordinateKey = coordinate => {
-    let key = coordinateKeys.get(coordinate);
-    if (key === undefined) { key = evidenceCoordinateKey(coordinate); coordinateKeys.set(coordinate, key); }
-    return key;
-  };
   const documents = [...input.documents].sort((left, right) =>
     left.documentId.localeCompare(right.documentId));
   const split = sourceFamilyDisjointSplit(documents, hasher);
-  const conditioned = new Map<string, Map<string, JoinCount>>();
-  const structural = new Map<string, Map<string, JoinCount>>();
   const localShapes = new Map<string, Map<string, JoinCount>>();
   const constructions = new Map<string, Map<string, JoinCount>>();
   const localFactors = compileLocalFactors(split.training);
-  const conditionedMass = new Map<string, number>(), structuralMass = new Map<string, number>();
+  const globalFactors = compileGlobalFactors(split.training, localFactors.normalizationContract);
   let observations = 0;
-  for (const document of split.training) for (const event of joinEvents(document)) {
-    addCount(conditioned, event.conditionedKey!, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
-    addCount(structural, event.structuralKey!, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
-    conditionedMass.set(withoutDerivationShape(event.conditionedKey!), 0);
-    structuralMass.set(withoutDerivationShape(event.structuralKey!), 0);
-  }
   for (const document of split.training) {
     for (const event of localJoinEvents(document)) {
-      addCount(localShapes, event.localShapeKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
+      addCount(localShapes, event.localShapeKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, evidenceCoordinateKey);
       if (event.constructionKey) {
-        addCount(constructions, event.constructionKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
+        addCount(constructions, event.constructionKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, evidenceCoordinateKey);
       }
-      for (const [mass, key] of [[conditionedMass, localDerivationKey(event, document, "conditioned")],
-        [structuralMass, localDerivationKey(event, document, "structural")]] as const) if (mass.has(key)) mass.set(key, mass.get(key)! + event.weight);
       observations += event.weight;
     }
   }
-  const conditionedIndex = compileIndex(conditioned, key => conditionedMass.get(withoutDerivationShape(key)) ?? 0);
+  const conditionedIndex = {};
   const exactIndex = {};
-  const structuralIndex = compileIndex(structural, key => structuralMass.get(withoutDerivationShape(key)) ?? 0);
+  const structuralIndex = {};
   const classIndex = {};
   const localShapeIndex = compileIndex(localShapes);
   const constructionIndex = compileIndex(constructions);
@@ -294,7 +294,8 @@ export function compileJoinProgram(input: {
     classIndex,
     localShapeIndex,
     constructionIndex,
-    localFactors
+    localFactors,
+    globalFactors
   };
   const backoffReliability = learnBackoffReliability(split.selection, indexes);
   const learnedMinimumConfidence = input.minimumConfidence === undefined
@@ -321,9 +322,15 @@ export function compileJoinProgram(input: {
   };
   return {
     ...canonical,
-    id: `join_program.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`,
+    id: `join_program.${hasher.digestHex(JSON.stringify(localFactors.documents.some(document => document.scoreRecipe) ? {
+      ...canonical, localFactors: { ...localFactors, documents: localFactors.documents.map(document => {
+        const { scoreRecipe: _metadata, ...logical } = document; return logical;
+      }) }
+    } : canonical)).slice(0, 40)}`,
     audit: toJsonValue({
-      compiler: "kernel.join_program.v5",
+      compiler: "kernel.join_program.v6",
+      globalContextRepresentation: "retained_path_decisions",
+      retainedGlobalPaths: globalFactors.documents.reduce((total, document) => total + document.paths.length, 0),
       conditionedContextCount: Object.keys(conditionedIndex).length,
       exactContextCount: Object.keys(exactIndex).length,
       structuralContextCount: Object.keys(structuralIndex).length,
@@ -554,7 +561,8 @@ export function isJoinProgramMixture(value: unknown): value is JoinProgramMixtur
       const item = component as Record<string, unknown>;
       return typeof item.populationId === "string"
         && typeof item.weight === "number"
-        && Boolean(item.program && typeof item.program === "object");
+        && Boolean(item.program && typeof item.program === "object" && !Array.isArray(item.program)
+          && (item.program as Record<string, unknown>).schema === JOIN_PROGRAM_SCHEMA);
     });
 }
 
@@ -726,7 +734,7 @@ function compileLocalFactors(documents: readonly JoinDocument[]): JoinProgramLoc
     const contextKeys = [...new Set(measuredUnits.map(contextKey))].sort();
     const contexts = contextKeys.map(key => JSON.parse(key) as JoinLocalFactorDocument["contexts"][number]), contextIndex = new Map(contextKeys.map((key, index) => [key, index]));
     return { documentId: document.documentId, ...(document.constructionId ? { constructionId: document.constructionId } : {}), text: document.text, ...(document.lattice.sourceVersionId ? { sourceVersionId: document.lattice.sourceVersionId } : {}),
-      evidenceIds, contexts, graph: exported.factors, units: exported.unitIds.map((id, index): JoinLocalFactorDocument["units"][number] => {
+      evidenceIds, contexts, graph: exported.factors, ...(exported.scoreRecipe && segmentationScoreFactorsCanonicalSafe(exported.scoreRecipe) ? { scoreRecipe: exported.scoreRecipe } : {}), units: exported.unitIds.map((id, index): JoinLocalFactorDocument["units"][number] => {
         const unit = requiredUnit(byId, id);
         if (!isSurfaceBearingUnit(unit)) return null;
         const row: [number, number, number[]] = [contextIndex.get(contextKey(unit))!, boundaryBucket(unit.boundaryAfter.boundaryProbability),
@@ -735,6 +743,97 @@ function compileLocalFactors(documents: readonly JoinDocument[]): JoinProgramLoc
         return unit.utf16Start === geometry.utf16[arc[0]] && unit.utf16End === geometry.utf16[arc[1]] ? row : [...row, unit.utf16Start, unit.utf16End];
       }) };
   }) };
+}
+
+function compileGlobalFactors(documents: readonly JoinDocument[], contract: NormalizationContract): JoinProgramGlobalFactors {
+  const normalized = new Map<string, string>();
+  return { schema: JOIN_PROGRAM_GLOBAL_FACTORS_SCHEMA, documents: documents.map(document => {
+    const { factors, unitIds } = exportSegmentationAdjacencyFactors(document.lattice.segmentationForest);
+    const indices = new Map(unitIds.map((id, index) => [id, index])), degree = new Uint32Array(factors.nodeCount);
+    const byId = new Map(document.lattice.units.map(unit => [unit.id, unit])), normalizedOverrides: Array<[number, string]> = [];
+    unitIds.forEach((id, index) => {
+      const unit = requiredUnit(byId, id); if (!isSurfaceBearingUnit(unit)) return;
+      let expected = normalized.get(unit.surface);
+      if (expected === undefined) { expected = normalizeSurfaceLatticeSurface(unit.surface, contract); normalized.set(unit.surface, expected); }
+      if (unit.normalized !== expected) normalizedOverrides.push([index, unit.normalized]);
+    });
+    for (const [start] of factors.arcs) degree[start] = degree[start]! + 1;
+    const paths = document.lattice.segmentationForest.paths.filter(path => path.posterior > 0).map(path => ({
+      posterior: path.posterior, arcs: path.unitIds.map(id => { const index = indices.get(id); if (index === undefined) throw Error("global JOIN path refers to an unknown arc"); return index; })
+    }));
+    const base = new Map<number, number>();
+    for (const index of paths[0]?.arcs ?? []) { const start = factors.arcs[index]![0]; if (degree[start]! > 1) base.set(start, index); }
+    return { ...(document.constructionId !== undefined ? { constructionId: document.constructionId } : {}),
+      ...(document.discourseStateId !== undefined ? { discourseStateId: document.discourseStateId } : {}),
+      ...(normalizedOverrides.length ? { normalizedOverrides } : {}), baseChoices: [...base.values()],
+      paths: paths.map(path => [path.posterior, path.arcs.filter(index => {
+        const start = factors.arcs[index]![0]; return degree[start]! > 1 && base.get(start) !== index;
+      })] as [number, number[]]) };
+  }) };
+}
+
+function* globalFactorPaths(document: JoinGlobalFactorDocument, source: JoinLocalFactorDocument): Generator<{ weight: number; arcs: number[] }> {
+  const graph = source.graph;
+  const fail = (): never => { throw Error("invalid global JOIN path factors"); };
+  if (!document || typeof document !== "object" || Array.isArray(document)
+    || Object.keys(document).some(key => !["constructionId", "discourseStateId", "normalizedOverrides", "baseChoices", "paths"].includes(key))
+    || (Object.hasOwn(document, "constructionId") && typeof document.constructionId !== "string")
+    || (Object.hasOwn(document, "discourseStateId") && typeof document.discourseStateId !== "string")
+    || !Array.isArray(document.baseChoices) || !Array.isArray(document.paths) || (!document.paths.length && document.baseChoices.length)) return fail();
+  if (Object.hasOwn(document, "normalizedOverrides")) {
+    if (!Array.isArray(document.normalizedOverrides) || !document.normalizedOverrides.length) return fail();
+    let previous = -1;
+    for (const entry of document.normalizedOverrides) {
+      if (!Array.isArray(entry) || entry.length !== 2 || !Number.isSafeInteger(entry[0]) || entry[0] <= previous
+        || !source.units[entry[0]] || typeof entry[1] !== "string") return fail();
+      previous = entry[0];
+    }
+  }
+  const outgoing = new Map<number, number[]>();
+  graph.arcs.forEach(([start], index) => { const bucket = outgoing.get(start) ?? []; bucket.push(index); outgoing.set(start, bucket); });
+  const decisions = (values: number[]): Map<number, number> => {
+    if (!Array.isArray(values)) return fail();
+    const result = new Map<number, number>(); let previous = -1;
+    for (const index of values) {
+      if (!Number.isSafeInteger(index) || index < 0 || !graph.arcs[index]) return fail();
+      const start = graph.arcs[index]![0];
+      if (start <= previous || outgoing.get(start)!.length < 2) return fail();
+      previous = start; result.set(start, index);
+    }
+    return result;
+  };
+  const base = decisions(document.baseChoices), paths = new Set<string>();
+  for (let ordinal = 0; ordinal < document.paths.length; ordinal++) {
+    const path = document.paths[ordinal];
+    if (!Array.isArray(path) || path.length !== 2 || !Number.isFinite(path[0]) || path[0] <= 0
+      || !Array.isArray(path[1]) || (ordinal === 0 && path[1].length)) return fail();
+    const overrides = decisions(path[1]), pathKey = JSON.stringify(path[1]);
+    if (paths.has(pathKey)) return fail(); paths.add(pathKey);
+    for (const [start, index] of overrides) if (base.get(start) === index) return fail();
+    const arcs: number[] = [], usedBase = new Set<number>(); let position = 0;
+    while (position < graph.nodeCount - 1) {
+      const options = outgoing.get(position); if (!options?.length) return fail();
+      let index: number | undefined;
+      if (options.length === 1) index = options[0]!;
+      else if (overrides.has(position)) { index = overrides.get(position)!; overrides.delete(position); }
+      else { index = base.get(position); usedBase.add(position); }
+      if (index === undefined) return fail();
+      arcs.push(index); position = graph.arcs[index]![1];
+    }
+    if (overrides.size || (ordinal === 0 && usedBase.size !== base.size)) return fail();
+    yield { weight: path[0], arcs };
+  }
+}
+
+export function isJoinProgramGlobalFactors(value: unknown, localFactors: JoinProgramLocalFactors): value is JoinProgramGlobalFactors {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const factors = value as JoinProgramGlobalFactors;
+    if (factors.schema !== JOIN_PROGRAM_GLOBAL_FACTORS_SCHEMA || Object.keys(factors).some(key => !["schema", "documents"].includes(key))
+      || !Array.isArray(factors.documents) || factors.documents.length !== localFactors.documents.length) return false;
+    for (let index = 0; index < factors.documents.length; index++) for (const _path of globalFactorPaths(factors.documents[index]!, localFactors.documents[index]!)) { /* Validate each original DAG walk. */ }
+    return true;
+  } catch { return false; }
 }
 
 interface LocalFactorIndex {
@@ -752,6 +851,7 @@ interface LocalFactorIndex {
   rightClasses: ReadonlyMap<string, ReadonlySet<number>>;
   leftShapes: ReadonlyMap<string, ReadonlySet<number>>;
   rightShapes: ReadonlyMap<string, ReadonlySet<number>>;
+  attributes: ReadonlyArray<null | { normalized: string; context: JoinUnitContext; bucket: number }>;
   query: ReturnType<typeof createSegmentationAdjacencyQuery>;
 }
 const localFactorIndexes = new WeakMap<JoinProgramLocalFactors, readonly LocalFactorIndex[]>();
@@ -766,6 +866,7 @@ function indexLocalFactors(factors: JoinProgramLocalFactors): readonly LocalFact
     const geometry = sourceGeometry(document.text), bearing = new Set<number>(), sourceBounds = new Map<number, readonly [number, number, number, number]>();
     const normalized = new Map<string, Set<number>>(), leftClasses = new Map<string, Set<number>>(), rightClasses = new Map<string, Set<number>>();
     const leftShapes = new Map<string, Set<number>>(), rightShapes = new Map<string, Set<number>>();
+    const attributes: LocalFactorIndex["attributes"][number][] = document.units.map(() => null);
     const add = (index: Map<string, Set<number>>, key: string, value: number) => {
       const bucket = index.get(key) ?? new Set<number>(); bucket.add(value); index.set(key, bucket);
     };
@@ -776,6 +877,7 @@ function indexLocalFactors(factors: JoinProgramLocalFactors): readonly LocalFact
       const start = unit.length === 5 ? unit[3] : geometry.utf16[arc[0]]!, end = unit.length === 5 ? unit[4] : geometry.utf16[arc[1]]!;
       if (unit.length === 5) sourceBounds.set(index, [start, end, geometry.utf16Bytes[start]!, geometry.utf16Bytes[end]!]);
       const surface = document.text.slice(start, end), source = canonicalSurface(surface), classId = context.length === 2 ? context[1] : source.classId;
+      attributes[index] = { normalized: source.normalized, context: { surfaceFormClassId: classId, scaleId: context[0], graphemeWidth: Math.max(1, arc[1] - arc[0]) }, bucket: unit[1] };
       add(normalized, source.normalized, index);
       add(leftClasses, JSON.stringify([classId, context[0], unit[1]]), index);
       add(rightClasses, JSON.stringify([classId, context[0]]), index);
@@ -784,7 +886,7 @@ function indexLocalFactors(factors: JoinProgramLocalFactors): readonly LocalFact
     });
     return { documentId: document.documentId, ...(document.constructionId ? { constructionId: document.constructionId } : {}), ...(document.sourceVersionId ? { sourceVersionId: document.sourceVersionId } : {}), text: document.text,
       evidenceIds: [...document.evidenceIds], evidenceRefs: document.units.map(unit => unit ? [...unit[2]] : null),
-      arcs: document.graph.arcs.map(arc => [arc[0], arc[1]] as const), geometry, sourceBounds, normalized, leftClasses, rightClasses, leftShapes, rightShapes,
+      arcs: document.graph.arcs.map(arc => [arc[0], arc[1]] as const), geometry, sourceBounds, normalized, leftClasses, rightClasses, leftShapes, rightShapes, attributes,
       query: createSegmentationAdjacencyQuery(document.graph, bearing) };
   });
   localFactorIndexes.set(factors, indexes);
@@ -804,19 +906,110 @@ function queryLocalFactorChoices(factors: JoinProgramLocalFactors, source: "exac
     const right = source === "exact" ? document.normalized.get(target[1]) : (source === "local_shape" || source === "construction") ? document.rightShapes.get(target[1]) : document.rightClasses.get(JSON.stringify([target[1], target[3]]));
     if (!left?.size || !right?.size) continue;
     for (const pair of document.query.pairs({ leftArcIndices: left, rightArcIndices: right })) {
-      const leftArc = document.arcs[pair.leftArcIndex]!, rightArc = document.arcs[pair.rightArcIndex]!, geometry = document.geometry;
-      const leftBounds = document.sourceBounds.get(pair.leftArcIndex), rightBounds = document.sourceBounds.get(pair.rightArcIndex);
-      const utf16Start = leftBounds?.[1] ?? geometry.utf16[leftArc[1]]!, utf16End = rightBounds?.[0] ?? geometry.utf16[rightArc[0]]!, surface = document.text.slice(utf16Start, utf16End);
-      const ids = [...new Set([...document.evidenceRefs[pair.leftArcIndex]!, ...document.evidenceRefs[pair.rightArcIndex]!])]
-        .map(index => document.evidenceIds[index]!).sort();
-      let exactSurfaceHash: string | undefined;
-      if (proofs) { exactSurfaceHash = hashes.get(surface); if (exactSurfaceHash === undefined) { exactSurfaceHash = createHasher().digestHex(surface); hashes.set(surface, exactSurfaceHash); } }
-      const coordinates = proofs ? ids.map(evidenceId => ({ evidenceId, ...(document.sourceVersionId ? { sourceVersionId: document.sourceVersionId } : {}),
-        documentId: document.documentId, byteStart: leftBounds?.[3] ?? geometry.bytes[leftArc[1]]!, byteEnd: rightBounds?.[2] ?? geometry.bytes[rightArc[0]]!, utf16Start, utf16End, exactSurfaceHash: exactSurfaceHash! })) : [];
-      addCount(counts, key, surface, ids, coordinates, pair.posterior, evidenceCoordinateKey);
+      const boundary = factorBoundary(document, pair.leftArcIndex, pair.rightArcIndex, proofs, hashes);
+      addCount(counts, key, boundary.surface, boundary.ids, boundary.coordinates, pair.posterior, evidenceCoordinateKey);
     }
   }
   return choices(counts.get(key) ?? new Map());
+}
+
+function factorBoundary(document: LocalFactorIndex, left: number, right: number, proofs: boolean, hashes: Map<string, string>) {
+  const leftArc = document.arcs[left]!, rightArc = document.arcs[right]!, geometry = document.geometry;
+  const leftBounds = document.sourceBounds.get(left), rightBounds = document.sourceBounds.get(right);
+  const utf16Start = leftBounds?.[1] ?? geometry.utf16[leftArc[1]]!, utf16End = rightBounds?.[0] ?? geometry.utf16[rightArc[0]]!, surface = document.text.slice(utf16Start, utf16End);
+  const ids = [...new Set([...document.evidenceRefs[left]!, ...document.evidenceRefs[right]!])].map(index => document.evidenceIds[index]!).sort();
+  let exactSurfaceHash: string | undefined;
+  if (proofs) { exactSurfaceHash = hashes.get(surface); if (exactSurfaceHash === undefined) { exactSurfaceHash = createHasher().digestHex(surface); hashes.set(surface, exactSurfaceHash); } }
+  const coordinates = proofs ? ids.map(evidenceId => ({ evidenceId, ...(document.sourceVersionId ? { sourceVersionId: document.sourceVersionId } : {}),
+    documentId: document.documentId, byteStart: leftBounds?.[3] ?? geometry.bytes[leftArc[1]]!, byteEnd: rightBounds?.[2] ?? geometry.bytes[rightArc[0]]!, utf16Start, utf16End, exactSurfaceHash: exactSurfaceHash! })) : [];
+  return { surface, ids, coordinates };
+}
+
+interface GlobalFactorIndex {
+  constructionId: string;
+  discourseStateId: string;
+  normalized: ReadonlyMap<string, ReadonlySet<number>>;
+  paths: Array<{ weight: number; shape: string; bearing: number[] }>;
+  positions: ReadonlyMap<number, ReadonlyArray<readonly [path: number, position: number]>>;
+}
+const globalFactorIndexes = new WeakMap<JoinProgramGlobalFactors, WeakMap<JoinProgramLocalFactors, readonly GlobalFactorIndex[]>>();
+
+/** Numeric path positions reference source arcs; no boundary contexts, counts or proofs are expanded here. */
+function indexGlobalFactors(global: JoinProgramGlobalFactors, local: JoinProgramLocalFactors): readonly GlobalFactorIndex[] {
+  const owners = globalFactorIndexes.get(global) ?? new WeakMap<JoinProgramLocalFactors, readonly GlobalFactorIndex[]>();
+  globalFactorIndexes.set(global, owners);
+  const cached = owners.get(local); if (cached) return cached;
+  const documents = indexLocalFactors(local);
+  if (global.schema !== JOIN_PROGRAM_GLOBAL_FACTORS_SCHEMA || !Array.isArray(global.documents) || global.documents.length !== documents.length) throw Error("invalid global JOIN path factors");
+  const indexes = global.documents.map((document, ordinal) => {
+    const source = documents[ordinal]!, positions = new Map<number, Array<readonly [number, number]>>();
+    const paths: GlobalFactorIndex["paths"] = [];
+    for (const path of globalFactorPaths(document, local.documents[ordinal]!)) {
+      const pathIndex = paths.length;
+      const bearing = path.arcs.filter(index => source.attributes[index] !== null);
+      const shape = derivationShapeParts(bearing.map(index => {
+        const context = source.attributes[index]!.context; return [context.scaleId, context.graphemeWidth] as const;
+      }));
+      bearing.forEach((index, position) => { const bucket = positions.get(index) ?? []; bucket.push([pathIndex, position]); positions.set(index, bucket); });
+      paths.push({ weight: path.weight, shape, bearing });
+    }
+    let normalized = source.normalized;
+    if (document.normalizedOverrides) {
+      const overrides = new Map(document.normalizedOverrides), labels = new Map<string, Set<number>>();
+      source.attributes.forEach((attribute, index) => {
+        if (!attribute) return;
+        const label = overrides.get(index) ?? attribute.normalized, bucket = labels.get(label) ?? new Set<number>();
+        bucket.add(index); labels.set(label, bucket);
+      });
+      normalized = labels;
+    }
+    return { constructionId: document.constructionId ?? "construction.unresolved", discourseStateId: document.discourseStateId ?? "discourse.unresolved", normalized, paths, positions };
+  });
+  owners.set(local, indexes); return indexes;
+}
+
+function queryGlobalFactorChoices(global: JoinProgramGlobalFactors, local: JoinProgramLocalFactors, source: "conditioned" | "structural", key: string, proofs: boolean): JoinProgramChoice[] {
+  let context: unknown;
+  try { context = JSON.parse(key); } catch { return []; }
+  const conditioned = source === "conditioned", width = conditioned ? 12 : 10, numeric = conditioned ? [6, 7, 8] : [4, 5, 6];
+  if (!Array.isArray(context) || context.length !== width || context.some((value, index) => numeric.includes(index)
+    ? !Number.isSafeInteger(value) || value < (index === numeric[2] ? 0 : 1) || index === numeric[2] && value > boundaryBucket(1) : typeof value !== "string")) return [];
+  const target = context as Array<string | number>, localIndexes = indexLocalFactors(local), globalIndexes = indexGlobalFactors(global, local);
+  if (!globalIndexes.some(document => document.constructionId === target[width - 3] && document.discourseStateId === target[width - 2]
+    && document.paths.some(path => path.shape === target[width - 1]))) return [];
+  const counts = new Map<string, Map<string, JoinCount>>(), hashes = new Map<string, string>(); let denominator = 0;
+  const selectedDocuments: Array<{ document: LocalFactorIndex; left: Set<number>; right: Set<number> }> = [];
+  for (let ordinal = 0; ordinal < localIndexes.length; ordinal++) {
+    const document = localIndexes[ordinal]!, retained = globalIndexes[ordinal]!;
+    if (retained.constructionId !== target[width - 3] || retained.discourseStateId !== target[width - 2]) continue;
+    const leftCandidates = conditioned ? retained.normalized.get(target[0] as string) : document.leftShapes.get(target[0] as string);
+    const rightCandidates = conditioned ? retained.normalized.get(target[1] as string) : document.rightShapes.get(target[1] as string);
+    const left = new Set<number>(), right = new Set<number>();
+    const matches = (index: number, side: number): boolean => {
+      const value = document.attributes[index]!;
+      return value.context.scaleId === target[(conditioned ? 4 : 2) + side]
+        && value.context.graphemeWidth === target[(conditioned ? 6 : 4) + side]
+        && (!conditioned || value.context.surfaceFormClassId === target[2 + side])
+        && (side !== 0 || value.bucket === target[conditioned ? 8 : 6]);
+    };
+    for (const index of leftCandidates ?? []) if (matches(index, 0)) left.add(index);
+    for (const index of rightCandidates ?? []) if (matches(index, 1)) right.add(index);
+    if (!left.size || !right.size) continue;
+    selectedDocuments.push({ document, left, right });
+    const positions: Array<readonly [number, number]> = [];
+    for (const index of left) for (const [pathIndex, position] of retained.positions.get(index) ?? []) {
+      const path = retained.paths[pathIndex]!;
+      if (path.shape === target[width - 1] && right.has(path.bearing[position + 1]!)) positions.push([pathIndex, position]);
+    }
+    positions.sort(([leftPath, leftPosition], [rightPath, rightPosition]) => leftPath - rightPath || leftPosition - rightPosition);
+    for (const [pathIndex, position] of positions) {
+      const path = retained.paths[pathIndex]!, boundary = factorBoundary(document, path.bearing[position]!, path.bearing[position + 1]!, proofs, hashes);
+      addCount(counts, key, boundary.surface, boundary.ids, boundary.coordinates, path.weight, evidenceCoordinateKey);
+    }
+  }
+  if (!counts.has(key)) return [];
+  for (const { document, left, right } of selectedDocuments) for (const pair of document.query.pairs({ leftArcIndices: left, rightArcIndices: right })) denominator += pair.posterior;
+  return choices(counts.get(key) ?? new Map(), denominator);
 }
 
 function joinBoundaryContext(document: JoinDocument, left: SurfaceLatticeUnit, derivationShapeId?: string): JoinBoundaryContext {
@@ -844,19 +1037,6 @@ function joinEvent(document: JoinDocument, left: SurfaceLatticeUnit, right: Surf
     localShapeKey: localShapeJoinKey(left.surface, right.surface),
     ...(document.constructionId ? { constructionKey: constructionJoinKey(left.surface, right.surface, document.constructionId) } : {}),
     crossScript: left.scriptId !== right.scriptId };
-}
-
-function localDerivationKey(event: JoinEvent, document: JoinDocument, source: "conditioned" | "structural"): string {
-  const leftContext = unitContext(event.left), rightContext = unitContext(event.right), boundaryContext = joinBoundaryContext(document, event.left);
-  return source === "conditioned"
-    ? conditionedJoinKey({ left: event.left.normalized, right: event.right.normalized, leftContext, rightContext, boundaryContext })
-    : structuralJoinKey(event.left.surface, event.right.surface, leftContext, rightContext, boundaryContext);
-}
-
-function withoutDerivationShape(key: string): string {
-  const context = JSON.parse(key) as unknown[];
-  context[context.length - 1] = "derivation.unresolved";
-  return JSON.stringify(context);
 }
 
 function* joinEvents(document: JoinDocument, proofs = true): Generator<JoinEvent> {
@@ -920,6 +1100,7 @@ function evaluateHeldoutJoins(input: {
   constructionIndex: Record<string, JoinProgramChoice[]>;
   backoffReliability: JoinReliability;
   localFactors?: JoinProgramLocalFactors;
+  globalFactors?: JoinProgramGlobalFactors;
   minimumConfidence: number;
   selectionDocumentIds?: readonly string[];
 }): JoinProgramEvaluation {
@@ -1018,6 +1199,7 @@ type JoinIndexes = Pick<
   | "localShapeIndex"
   | "constructionIndex"
   | "localFactors"
+  | "globalFactors"
 >;
 
 type JoinReliability = Record<JoinBackoffSource, number>;
@@ -1383,8 +1565,11 @@ function inferredJoinUnitContext(surface: string): JoinUnitContext {
 // every event's key construction O(1) instead of O(path length) while
 // keeping the same uniqueness/stability guarantee real callers depend on.
 export function derivationShape(units: readonly SurfaceLatticeUnit[]): string {
-  const raw = units.map(unit =>
-    `${unit.kind}:${Math.max(1, unit.graphemeEnd - unit.graphemeStart)}`).join("");
+  return derivationShapeParts(units.map(unit => [unit.kind, Math.max(1, unit.graphemeEnd - unit.graphemeStart)] as const));
+}
+
+function derivationShapeParts(parts: ReadonlyArray<readonly [string, number]>): string {
+  const raw = parts.map(([kind, width]) => `${kind}:${width}`).join("\u001f");
   return `derivation_shape.${createHasher().digestHex(raw).slice(0, 32)}`;
 }
 
@@ -1472,6 +1657,10 @@ export function joinProgramChoices(
   options: { proofs?: boolean } = {}
 ): JoinProgramChoice[] {
   const proofs = options.proofs !== false;
+  if (program.globalFactors && (source === "conditioned" || source === "structural")) {
+    if (!program.localFactors || Object.keys(program.conditionedIndex).length || Object.keys(program.structuralIndex).length) throw Error("mixed or incomplete global JOIN factors");
+    return queryGlobalFactorChoices(program.globalFactors, program.localFactors, source, key, proofs);
+  }
   if (program.localFactors && (source === "exact" || source === "class")) return queryLocalFactorChoices(program.localFactors, source, key, proofs);
   if (program.localFactors && proofs && (source === "local_shape" || source === "construction")) {
     const measured = (source === "local_shape" ? program.localShapeIndex : program.constructionIndex)[key] ?? [];

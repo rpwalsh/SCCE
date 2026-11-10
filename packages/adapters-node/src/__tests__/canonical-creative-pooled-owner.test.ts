@@ -33,9 +33,24 @@ function fixture() {
   const state = { profile: cold({ ...pool.owned, informationLabel: label }), current: true, promoted: true, accessible: true, complete: true,
     foreignMember: false, profilePayloads: 0, inserted: 0 };
   const tables = new Map(CREATIVE_EVENT_NORMALIZATION_TABLES.map(table => [table, new Map<string, Record<string, unknown>>()]));
+  const lexicalPages = new Map<string, { id: Buffer; kind: string; member_ids: Buffer[]; value_json: Record<string, unknown> }>();
+  let transactionDepth = 0;
+  adapter.transaction = async work => { transactionDepth++; try { return await work(); } finally { transactionDepth--; } };
   const calls: string[] = [];
   adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
     calls.push(sql);
+    if (sql.includes("lexical-page writer lock")) { expect(transactionDepth).toBeGreaterThan(0); return [{ isolation: "read committed" }] as T[]; }
+    if (sql.includes('"creative_event_lexical_pages"')) {
+      if (sql.includes("lexical-page insert")) {
+        const id = params[0] as Buffer, key = id.toString("hex");
+        if (!lexicalPages.has(key)) { lexicalPages.set(key, { id: Buffer.from(id), kind: "lexical_forms_page", member_ids: (params[1] as Buffer[]).map(value => Buffer.from(value)), value_json: JSON.parse(String(params[2])) }); state.inserted++; }
+        return [];
+      }
+      const ids = (params[0] as Buffer[]).map(value => value.toString("hex"));
+      const selected = [...lexicalPages.values()].filter(row => sql.includes("lexical-page membership") ? row.member_ids.some(id => ids.includes(id.toString("hex"))) : ids.includes(row.id.toString("hex")));
+      return selected.map(row => sql.includes("lexical-page sizes") ? { id: row.id, stored_bytes: Buffer.byteLength(JSON.stringify(row.value_json)) }
+        : sql.includes("lexical-page membership") ? { id: row.id } : { ...row, value_json: cold(row.value_json) }) as T[];
+    }
     const parameters = new Set([...sql.matchAll(/\$(\d+)/gu)].map(match => Number(match[1])));
     expect(parameters.size).toBe(params.length);
     if (parameters.size) expect(Math.max(...parameters)).toBe(params.length);

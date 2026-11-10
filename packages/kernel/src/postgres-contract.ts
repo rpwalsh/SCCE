@@ -11,6 +11,7 @@ export type PostgresScalar =
   | "DOUBLE PRECISION"
   | "BOOLEAN"
   | "BYTEA"
+  | "BYTEA[]"
   | "TEXT[]"
   | "JSONB"
   | "TIMESTAMPTZ"
@@ -438,6 +439,21 @@ function auxiliaryTableContract(
         col("id", "TEXT", false, "immutable component identity", { primary: true }),
         col("kind", "TEXT", false, name === "creative_event_templates" ? "template_definition" : "lexical_forms"),
         col("value_json", "JSONB", false, "canonical reusable component value")
+      ], [], capacity.evidenceRows, 1600);
+    case "creative_event_lexical_pages":
+      return table(name, "bounded canonical lexical definitions with exact member identities", [
+        col("id", "BYTEA", false, "immutable lexical page digest", { primary: true }),
+        col("kind", "TEXT", false, "lexical_forms_page"),
+        col("member_ids", "BYTEA[]", false, "ordered immutable lexical definition digests"),
+        col("value_json", "JSONB", false, "bounded exact lexical definitions")
+      ], [idx("idx_creative_lexical_members", name, ["member_ids"], "gin", "exact lexical member lookup")], capacity.evidenceRows, 1600);
+    case "construction_source_decision_pages":
+      return table(name, "source-owned immutable construction decisions and shared coordinate definitions", [
+        col("id", "TEXT", false, "immutable owner and label namespaced page digest", { primary: true }),
+        col("owner_key", "TEXT", false, "source compilation identity"),
+        col("kind", "TEXT", false, "construction_source_decisions"),
+        col("value_json", "JSONB", false, "bounded exact source decisions"),
+        col("information_label", "JSONB", false, "source-owned access label")
       ], [], capacity.evidenceRows, 1600);
     case "creative_event_witnesses":
     case "creative_event_occurrences":

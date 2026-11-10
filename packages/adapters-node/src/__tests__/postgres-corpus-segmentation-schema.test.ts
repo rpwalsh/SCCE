@@ -4,7 +4,7 @@ import { expect,it } from "vitest";
 import { POSTGRES_REQUIRED_TABLES,POSTGRES_SCHEMA_VERSION } from "@scce/kernel";
 import { schemaStatements,requiredHydrationColumns } from "../postgres-schema.js";
 it("adds run-owned canonical segmentation spill and exact-scope activation in schema32",()=>{
-  expect(POSTGRES_SCHEMA_VERSION).toBe(32);
+  expect(POSTGRES_SCHEMA_VERSION).toBe(34);
   const names=["segmentation_consolidation_runs","segmentation_consolidation_rows","segmentation_consolidation_active"];
   const statements=schemaStatements('"fixture"').filter(sql=>names.some(name=>sql.includes(`.${name} `)));
   expect(statements).toHaveLength(3);

@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { IdFactory } from "./ids.js";
 import type { InducedLanguageModel } from "./language-induction.js";
+import { semanticInductionProjection } from "./semantic-induction-factors.js";
 import { canonicalStringify, clamp01, entropy, toJsonValue } from "./primitives.js";
 import type { JoinProgramMixture } from "./join-program.js";
 import { joinProgramMixtureStorageForm, type StoredJoinProgramMixture } from "./join-program-storage.js";
@@ -26,7 +27,7 @@ export const INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS: readonly string[] = Object
 
 export type InducedLanguageMemoryModel = Omit<Pick<InducedLanguageModel,
   "id" | "audit" | "morphology" | "morphologyClassBindings" | "syntaxTemplates" | "boundarySignals" | "joinProgram"
-  | "semanticFrames" | "graphBoundConstructions" | "lexicalClasses" | "relationHypothesisModel" | "translationSeeds">, "joinProgram">
+  | "semanticFrames" | "graphBoundConstructions" | "lexicalClasses" | "relationHypothesisModel" | "translationSeeds" | "semanticInductionFactors">, "joinProgram">
   & { joinProgram: JoinProgramMixture | StoredJoinProgramMixture };
 
 export function languageMemoryPatternsFromInducedLanguageModel(input: {
@@ -99,6 +100,7 @@ function patternsForProfile(input: {
     values: readonly number[],
     payload: Record<string, JsonValue>
   ) => {
+    const { semanticInductionProjection: projection, ...ordinaryPayload } = payload;
     rows.push({
       id: `induced_language_memory_pattern_${String(input.idFactory.contentHash(canonicalStringify({
         modelId: input.model.id,
@@ -110,11 +112,11 @@ function patternsForProfile(input: {
       patternKind,
       support: clamp01(support),
       entropy: entropy(values),
-      patternJson: toJsonValue({
+      patternJson: { ...(toJsonValue({
         schema,
         ...base,
-        ...payload
-      }),
+        ...ordinaryPayload
+      }) as Record<string, JsonValue>), ...(projection ? { semanticInductionProjection: projection } : {}) },
       evidenceIds: input.evidenceIds.slice(0, 128),
       updatedAt: input.updatedAt,
       informationLabel: input.informationLabel
@@ -154,6 +156,11 @@ function patternsForProfile(input: {
         graphBoundConstructions: input.model.graphBoundConstructions.slice(0, 256) as unknown as JsonValue,
         lexicalClasses: input.model.lexicalClasses.slice(0, 128) as unknown as JsonValue,
         relationHypothesisModel: input.model.relationHypothesisModel as unknown as JsonValue,
+        ...(input.model.semanticInductionFactors ? { semanticInductionProjection: semanticInductionProjection({
+          factors: input.model.semanticInductionFactors, semanticFrames: input.model.semanticFrames.slice(0, 256),
+          graphBoundConstructions: input.model.graphBoundConstructions.slice(0, 256), lexicalClasses: input.model.lexicalClasses.slice(0, 128),
+          relationHypothesisModel: input.model.relationHypothesisModel, hasher: { digestHex: value => String(input.idFactory.contentHash(value)).replace(/^sha256_/u, "") }
+        }) as unknown as JsonValue } : {}),
         counts: Object.fromEntries(topCounts([
           ...input.model.semanticFrames.map(frame => frame.predicate),
           ...input.model.semanticFrames.flatMap(frame => frame.roles.flatMap(role => [role.name, role.filler])),

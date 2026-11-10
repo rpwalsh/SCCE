@@ -4,6 +4,9 @@ import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 import { canonicalNormalizationContract } from "./normalization-contract.js";
 import { createSegmentationAdjacencyQuery, SEGMENTATION_ADJACENCY_FACTORS_SCHEMA, type SegmentationAdjacencyFactors } from "./segmentation-adjacency-factors.js";
+import { segmentationArcEnergy, nonBoundaryCostPrefix, quantizeEnergy, clampProbability, captureSegmentationScoreFactors,
+  type SegmentationScoreFactors, type SegmentationScoreCaptureArc } from "./segmentation-score-factors.js";
+import type { BoundaryEstimatorState, BoundaryFeatureVector } from "./boundary-estimator.js";
 export { createSegmentationAdjacencyQuery, validateSegmentationAdjacencyFactors, SEGMENTATION_ADJACENCY_FACTORS_SCHEMA,
   type SegmentationAdjacencyFactors, type SegmentationAdjacencySelection, type SegmentationFactorAdjacency } from "./segmentation-adjacency-factors.js";
 
@@ -11,6 +14,8 @@ export const SEGMENTATION_FOREST_SCHEMA = "scce.segmentation_forest.v2" as const
 
 export interface SegmentationForestBoundary {
   boundaryProbability: number;
+  features?: BoundaryFeatureVector;
+  positionCodePoint?: number;
 }
 
 export interface SegmentationForestUnit {
@@ -89,6 +94,9 @@ export interface SurfaceSegmentationForest {
 }
 
 export interface SegmentationForestBuildInput {
+  boundaryScoreState?: BoundaryEstimatorState;
+  captureScoreFactors?: boolean;
+  sourceText?: string;
   latticeId: string;
   estimatorId: string;
   units: readonly SegmentationForestUnit[];
@@ -146,11 +154,13 @@ interface WeightedArc {
   unit: Readonly<Pick<SegmentationForestUnit, "id" | "overlapClass" | "graphemeStart" | "graphemeEnd">>;
   energy: number;
   energyTrace: SegmentationEnergyComponents;
+  scoreInput?: SegmentationScoreCaptureArc;
 }
 
 interface FullDagMeasure {
   factors: SegmentationAdjacencyFactors;
   unitIds: readonly string[];
+  scoreRecipe?: SegmentationScoreFactors;
 }
 const FULL_DAG_MEASURE = Symbol("segmentation.full_dag_measure");
 
@@ -177,7 +187,7 @@ export function segmentationSurfaceAdjacencies(forest: SurfaceSegmentationForest
   })();
 }
 
-const MIN_PROBABILITY = 1e-9;
+
 const DEFAULT_LIMITS: SegmentationForestLimits = {
   maxArcsPerCoordinate: 128,
   maxTotalStates: 262_144,
@@ -198,7 +208,8 @@ function prepareSegmentationForest(input: SegmentationForestBuildInput) {
     input.pathLimit ?? input.limits?.maxRetainedDerivations ?? DEFAULT_LIMITS.maxRetainedDerivations
   ));
   const limits = normalizeLimits(input.limits, graphemeCount, requestedPathLimit);
-  const boundaryProbability = boundaryProbabilityByPosition(input.units, graphemeCount);
+  const boundaryRecords = input.captureScoreFactors ? new Map<number, SegmentationForestBoundary>([[0, { boundaryProbability: 1 }], [graphemeCount, { boundaryProbability: 1 }]]) : undefined;
+  const boundaryProbability = boundaryProbabilityByPosition(input.units, graphemeCount, boundaryRecords);
   const interiorCostPrefix = nonBoundaryCostPrefix(boundaryProbability, graphemeCount);
   const allArcsByStart = new Map<number, WeightedArc[]>();
 
@@ -209,7 +220,7 @@ function prepareSegmentationForest(input: SegmentationForestBuildInput) {
       || unit.graphemeEnd > graphemeCount) {
       continue;
     }
-    const energyTrace = segmentationArcEnergy({
+    const energyInput = {
       unit,
       interiorCostPrefix,
       graphemeCount,
@@ -217,10 +228,12 @@ function prepareSegmentationForest(input: SegmentationForestBuildInput) {
       descriptionEnergy: input.descriptionEnergyByUnitId?.[unit.id],
       populationEnergy: input.populationEnergyByUnitId?.[unit.id],
       semanticContextEnergy: input.semanticContextEnergyByUnitId?.[unit.id]
-    });
+    };
+    const energyTrace = segmentationArcEnergy(energyInput);
     const bucket = allArcsByStart.get(unit.graphemeStart) ?? [];
     bucket.push({ unit: Object.freeze({ id: unit.id, overlapClass: unit.overlapClass,
-      graphemeStart: unit.graphemeStart, graphemeEnd: unit.graphemeEnd }), energy: energyTrace.total, energyTrace });
+      graphemeStart: unit.graphemeStart, graphemeEnd: unit.graphemeEnd }), energy: energyTrace.total, energyTrace,
+      ...(input.captureScoreFactors ? { scoreInput: energyInput } : {}) });
     allArcsByStart.set(unit.graphemeStart, bucket);
   }
   for (const bucket of allArcsByStart.values()) bucket.sort(compareArcs);
@@ -237,7 +250,7 @@ function prepareSegmentationForest(input: SegmentationForestBuildInput) {
   });
 
   return { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart,
-    fullPartitionLogZ, boundaryMarginals };
+    fullPartitionLogZ, boundaryMarginals, boundaryRecords, interiorCostPrefix };
 }
 
 export function measureSegmentationBoundaries(input: SegmentationForestBuildInput): SegmentationBoundaryMeasurement {
@@ -251,7 +264,7 @@ export function measureSegmentationBoundaries(input: SegmentationForestBuildInpu
 /** Measure every valid arc before applying operational limits to path materialization. */
 export function buildSegmentationForest(input: SegmentationForestBuildInput): SurfaceSegmentationForest {
   const { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart,
-    fullPartitionLogZ, boundaryMarginals } = prepareSegmentationForest(input);
+    fullPartitionLogZ, boundaryMarginals, boundaryRecords, interiorCostPrefix } = prepareSegmentationForest(input);
 
   const pruning = pruneArcs(allArcsByStart, graphemeCount, limits);
   const arcsByStart = pruning.arcsByStart;
@@ -380,7 +393,14 @@ export function buildSegmentationForest(input: SegmentationForestBuildInput): Su
   const factors: SegmentationAdjacencyFactors = Object.freeze({ schema: SEGMENTATION_ADJACENCY_FACTORS_SCHEMA,
     nodeCount: graphemeCount + 1,
     arcs: Object.freeze(factorArcs.map(arc => Object.freeze([arc.unit.graphemeStart, arc.unit.graphemeEnd, arc.energy] as const))) });
-  Object.defineProperty(forest, FULL_DAG_MEASURE, { value: Object.freeze({ factors, unitIds: Object.freeze(factorArcs.map(arc => arc.unit.id)) }) });
+  let scoreRecipe: SegmentationScoreFactors | undefined;
+  if (input.captureScoreFactors) {
+    try { scoreRecipe = captureSegmentationScoreFactors({ graph: factors, arcs: factorArcs.map(arc => arc.scoreInput!),
+      baseBoundaries: boundaryRecords!, interiorCostPrefix, estimator: input.boundaryScoreState, sourceText: input.sourceText, hasher }); }
+    catch { /* Optional redundant metadata never changes acceptance of the original forest. */ }
+  }
+  Object.defineProperty(forest, FULL_DAG_MEASURE, { value: Object.freeze({ factors, unitIds: Object.freeze(factorArcs.map(arc => arc.unit.id)),
+    ...(scoreRecipe ? { scoreRecipe } : {}) }) });
   return forest;
 }
 
@@ -628,59 +648,23 @@ function materializePath(node: DpNode): PathState {
 
 function boundaryProbabilityByPosition(
   units: readonly SegmentationForestUnit[],
-  graphemeCount: number
+  graphemeCount: number,
+  records?: Map<number, SegmentationForestBoundary>
 ): Map<number, number> {
   const out = new Map<number, number>([[0, 1], [graphemeCount, 1]]);
   for (const unit of units) {
     if (unit.overlapClass !== "base_partition") continue;
     out.set(unit.graphemeStart, clampProbability(unit.boundaryBefore.boundaryProbability));
     out.set(unit.graphemeEnd, clampProbability(unit.boundaryAfter.boundaryProbability));
+    records?.set(unit.graphemeStart, unit.boundaryBefore);
+    records?.set(unit.graphemeEnd, unit.boundaryAfter);
   }
   return out;
 }
 
-function segmentationArcEnergy(input: {
-  unit: SegmentationForestUnit;
-  interiorCostPrefix: readonly number[];
-  graphemeCount: number;
-  anchorEnergy?: number;
-  descriptionEnergy?: number;
-  populationEnergy?: number;
-  semanticContextEnergy?: number;
-}): SegmentationEnergyComponents {
-  const selectedEndProbability = input.unit.graphemeEnd === input.graphemeCount
-    ? 1
-    : clampProbability(input.unit.boundaryAfter.boundaryProbability);
-  const internalStart = input.unit.graphemeStart + 1;
-  const continuation = (input.interiorCostPrefix[input.unit.graphemeEnd] ?? 0)
-    - (input.interiorCostPrefix[internalStart] ?? 0);
-  const components = {
-    boundary: -Math.log(selectedEndProbability),
-    continuation,
-    anchor: finiteEnergy(input.anchorEnergy),
-    description: finiteEnergy(input.descriptionEnergy),
-    population: finiteEnergy(input.populationEnergy),
-    semanticContext: finiteEnergy(input.semanticContextEnergy)
-  };
-  return quantizeEnergy({
-    ...components,
-    total: Object.values(components).reduce((sum, value) => sum + value, 0)
-  });
-}
 
-function nonBoundaryCostPrefix(
-  boundaryProbability: ReadonlyMap<number, number>,
-  graphemeCount: number
-): number[] {
-  const prefix = new Array<number>(graphemeCount + 1).fill(0);
-  for (let position = 0; position < graphemeCount; position += 1) {
-    const cost = position === 0
-      ? 0
-      : -Math.log(clampProbability(1 - (boundaryProbability.get(position) ?? 0.5)));
-    prefix[position + 1] = prefix[position]! + cost;
-  }
-  return prefix;
-}
+
+
 
 function zeroEnergy(): SegmentationEnergyComponents {
   return {
@@ -709,17 +693,7 @@ function addEnergy(
   });
 }
 
-function quantizeEnergy(energy: SegmentationEnergyComponents): SegmentationEnergyComponents {
-  return {
-    boundary: quantize(energy.boundary),
-    continuation: quantize(energy.continuation),
-    anchor: quantize(energy.anchor),
-    description: quantize(energy.description),
-    population: quantize(energy.population),
-    semanticContext: quantize(energy.semanticContext),
-    total: quantize(energy.total)
-  };
-}
+
 
 function uniqueArcs(arcs: readonly WeightedArc[]): WeightedArc[] {
   const seen = new Set<string>();
@@ -749,19 +723,13 @@ function logAddExp(left: number, right: number): number {
   return maximum + Math.log(Math.exp(left - maximum) + Math.exp(right - maximum));
 }
 
-function clampProbability(value: number): number {
-  return Math.min(1 - MIN_PROBABILITY, Math.max(MIN_PROBABILITY, clamp01(value)));
-}
+
 
 function finiteOrZero(value: number): number {
   return Number.isFinite(value) ? value : 0;
 }
 
-function finiteEnergy(value: number | undefined): number {
-  if (value === undefined) return 0;
-  if (!Number.isFinite(value)) throw new Error("segmentation energy term must be finite");
-  return value;
-}
+
 
 function boundedInteger(
   value: number | undefined,

@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { languageUnitMetadataMergeSql, SOURCE_METADATA_BINDING_SCHEMA } from "./unit-source-metadata.js";
 import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js";
 import { createCanonicalCreativeEventCodec, type CreativeEventStorageHost } from "./canonical-creative-event-store.js";
+import { createConstructionSourceDecisionStore } from "./construction-source-decision-store.js";
 import { createSourceArtifactMetadataCodec } from "./source-artifact-metadata.js";
 import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA } from "./durable-join-program-storage.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "./dialogue-conversational-checkpoint.js";
@@ -883,6 +884,7 @@ function canonicalCodecHost(storage: PostgresStorageAdapter, client?: PoolClient
     table: name => storage.table(name),
     query: async <T>(sql: string, params: unknown[] = []): Promise<T[]> => client
       ? (await client.query(sql, params)).rows as T[] : storage.query<T>(sql, params),
+    transaction: operation => client ? operation() : storage.transaction(operation),
     requireWritableInformationLabel: label => storage.requireWritableInformationLabel(label),
     informationAccessPredicate: (alias, firstParameter) => storage.informationAccessPredicate(alias, firstParameter),
     informationAccess: storage.informationAccess
@@ -890,7 +892,32 @@ function canonicalCodecHost(storage: PostgresStorageAdapter, client?: PoolClient
 }
 
 function canonicalCreativeCodec(storage: PostgresStorageAdapter, client?: PoolClient) {
-  return createCanonicalCreativeEventCodec(canonicalCodecHost(storage, client));
+  const host = canonicalCodecHost(storage, client);
+  const base = createCanonicalCreativeEventCodec(host);
+  const decisions = createConstructionSourceDecisionStore({
+    ...host,
+    evidence: ids => readEvidenceBatch(host, ids)
+  });
+  const encodeMany = async (inputs: readonly { value: unknown; informationLabel?: InformationLabel }[]): Promise<unknown[]> => {
+    const encoded = await base.encodeMany(inputs);
+    return decisions.encodeMany(encoded.map((value, index) => ({
+      value, informationLabel: inputs[index]!.informationLabel, logicalValue: inputs[index]!.value
+    })));
+  };
+  return {
+    encode: async (value: unknown, informationLabel?: InformationLabel) => (await encodeMany([{ value, informationLabel }]))[0],
+    encodeMany,
+    async decodeMany(values: readonly unknown[]): Promise<unknown[]> {
+      return base.decodeMany(await decisions.decodeMany(values));
+    }
+  };
+}
+
+async function readEvidenceBatch(host: Pick<CreativeEventStorageHost, "table" | "query" | "informationAccessPredicate">, ids: readonly string[]): Promise<EvidenceSpan[]> {
+  if (!ids.length) return [];
+  const access = host.informationAccessPredicate("evidence", 2);
+  const rows = await host.query<EvidenceRow>(`SELECT * FROM ${host.table("evidence_spans")} evidence WHERE id=ANY($1) AND ${access.sql}`, [ids, ...access.params]);
+  return rows.map(rowToEvidence);
 }
 
 function sourceArtifactMetadataCodec(storage: PostgresStorageAdapter) {
@@ -1271,10 +1298,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       return rows.map(row => ({ id: row.id, sourceVersionId: row.source_version_id }));
     },
     async getEvidenceBatch(ids) {
-      if (ids.length === 0) return [];
-      const access = storage.informationAccessPredicate("evidence", 2);
-      const rows = await storage.query<EvidenceRow>(`SELECT * FROM ${storage.table("evidence_spans")} evidence WHERE id=ANY($1) AND ${access.sql}`, [ids, ...access.params]);
-      return rows.map(rowToEvidence);
+      return readEvidenceBatch(storage, ids);
     },
     async openingEvidenceForSourceVersions(sourceVersionIds) {
       if (sourceVersionIds.length === 0) return [];
@@ -4831,18 +4855,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       appendInformationAccess(storage, "pattern", params, scopeWhere);
       let requestedOwners: LanguagePatternOwner[] | undefined;
+      let requestedOwnerProjectionBound = false;
       if (query.patternIds || query.sourceComputationBindingId !== undefined || query.contextualQaRequestFeatures !== undefined) {
         const owners = await storage.query<{ profile_id: string; source_system: string | null }>(
           `SELECT DISTINCT pattern.profile_id,pattern.source_system FROM ${storage.table("language_patterns")} pattern
            WHERE ${scopeWhere.join(" AND ")} ORDER BY pattern.profile_id,pattern.source_system`, [...params]);
         requestedOwners = owners.map(row => ({ profileId: row.profile_id, sourceSystem: row.source_system }));
         if ((query.sourceComputationBindingId !== undefined || query.contextualQaRequestFeatures !== undefined) && !requestedOwners.length) return [];
-        params.push(canonicalStringify(requestedOwners));
-        projectionScope.push(`EXISTS (
-              SELECT 1 FROM jsonb_to_recordset($${params.length}::jsonb) AS requested_projection_owner("profileId" text,"sourceSystem" text)
-              WHERE requested_projection_owner."profileId"=active_projection.value_json->>'profileId'
-                AND requested_projection_owner."sourceSystem" IS NOT DISTINCT FROM active_projection.value_json->>'sourceSystem'
-            )`);
       }
       if (query.patternKind !== "source_compilation") {
         params.push(canonicalStringify(await currentLanguagePatternCompilations(storage, query, requestedOwners)));
@@ -4886,6 +4905,18 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           params.push(patternSchema);
           where.push(`pattern.pattern_schema IS DISTINCT FROM $${params.length}`);
           continue;
+        }
+        // A scoped read may select no active-projection schema at all. Bind
+        // this parameter only when a CTE actually consumes it; an unused $n
+        // otherwise makes PostgreSQL reject the entire valid read with 42P18.
+        if (requestedOwners && !requestedOwnerProjectionBound) {
+          params.push(canonicalStringify(requestedOwners));
+          projectionScope.push(`EXISTS (
+            SELECT 1 FROM jsonb_to_recordset($${params.length}::jsonb) AS requested_projection_owner("profileId" text,"sourceSystem" text)
+            WHERE requested_projection_owner."profileId"=active_projection.value_json->>'profileId'
+              AND requested_projection_owner."sourceSystem" IS NOT DISTINCT FROM active_projection.value_json->>'sourceSystem'
+          )`);
+          requestedOwnerProjectionBound = true;
         }
         const constructionSchemaParam = params.length + 1;
         params.push(patternSchema);

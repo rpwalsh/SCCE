@@ -117,7 +117,7 @@ describe("boundary fitting repeated-work equivalence", () => {
       const nonJoinModelDigests: string[] = [];
       const outputs = batches.map(batch => {
         const model = createLanguageInductionEngine({ hasher }).induce({ documents: batch.documents });
-        const { id: _modelId, joinProgram: _joinProgram, audit: fullAudit, ...nonJoin } = model;
+        const { id: _modelId, joinProgram: _joinProgram, semanticInductionFactors: _sufficientFacts, audit: fullAudit, ...nonJoin } = model;
         const { joinProgramId: _joinId, joinProgramComponentIds: _componentIds, ...audit } = fullAudit as Record<string, unknown>;
         nonJoinModelDigests.push(hasher.digestHex(canonicalStringify({ ...nonJoin, audit })));
         return { id: model.id, boundaryEstimator: model.boundaryEstimator, statisticsId: model.boundaryStatistics.id,
@@ -148,9 +148,11 @@ describe("boundary fitting repeated-work equivalence", () => {
       expect(fitted.length).toBe(reference.convergedPopulationReuse.fits);
       expect(fitted.length).toBeLessThan(reference.fits);
       expect(outputs.length).toBe(reference.outputModels);
-      expect(hasher.digestHex(JSON.stringify(outputs))).toBe("014b786ee3ed371d51115e0259ff6f4d74ac34cf1f2b223145b7d3fdc439f581");
+      // JOIN v4 changes versioned model/program IDs; all non-JOIN fields are
+      // independently pinned to the complete original source artifacts above.
+      expect(hasher.digestHex(JSON.stringify(outputs))).toBe("6124db91d94c5d98ef319383b4270c81cb066710d7348a61047891b83bde54d6");
       expect(hasher.digestHex(JSON.stringify([...new Set(fitted.map(model => JSON.stringify(model)))].sort()))).toBe("8f7031295e4fca92b3a24b396e524f2f7d6513739be73ecdf79ef123d47a09c4");
-      expect(hasher.digestHex(JSON.stringify(result))).toBe("267774ac9f6c90d1476cf8d9394559f23592ee31ec141c91b7205f3d8329a3d6");
+      expect(hasher.digestHex(JSON.stringify(result))).toBe("904cca0719e7d31f2008114c7b470fc12ff8d3b40a4a1c5e0b7de9d03fbd7cca");
       process.stdout.write(`\nAlice 19k total=${elapsedMs.toFixed(1)}ms boundary-fit=${fittingMs.toFixed(1)}ms requested=${fitted.length} computed=${computedFits}\n`);
       expect(outputs.length).toBeGreaterThan(1);
       expect(fitted.length).toBeGreaterThan(1);

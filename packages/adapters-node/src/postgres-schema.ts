@@ -5,6 +5,7 @@ import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECI
 import { evidenceTextDigestSchemaStatements } from "./evidence-text-digest.js";
 import { LANGUAGE_PATTERN_SELECTION_HEADERS, languagePatternSelectionHeaderStatement } from "./postgres-language-pattern-headers.js";
 import { canonicalCreativeEventSchemaStatements } from "./canonical-creative-event-store.js";
+import { constructionSourceDecisionSchemaStatements } from "./construction-source-decision-store.js";
 
 export type InformationLabeledTable =
   | "source_versions"
@@ -382,6 +383,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     ...canonicalCreativeEventSchemaStatements(q),
+    ...constructionSourceDecisionSchemaStatements(q),
     // candidate_pool's scope filter reads this instead of detoasting pattern_json (5.4GB) per row.
     `ALTER TABLE ${q}.language_patterns ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (pattern_json->>'sourceSystem') STORED`,
     languagePatternSelectionHeaderStatement(q),
@@ -698,6 +700,8 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     language_units: ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json", "information_label"],
     creative_event_templates: ["id", "kind", "value_json"],
     creative_event_lexemes: ["id", "kind", "value_json"],
+    creative_event_lexical_pages: ["id", "kind", "member_ids", "value_json"],
+    construction_source_decision_pages: ["id", "owner_key", "kind", "value_json", "information_label"],
     creative_event_witnesses: ["id", "kind", "value_json", "information_label"],
     creative_event_occurrences: ["id", "kind", "value_json", "information_label"],
     language_patterns: ["id", "profile_id", "pattern_kind", "support", "entropy", "pattern_json", "evidence_ids", "information_label", ...LANGUAGE_PATTERN_SELECTION_HEADERS],

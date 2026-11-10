@@ -4,6 +4,7 @@ import { afterEach, expect, it } from "vitest";
 import { createHasher, requestSeedLanguagePattern, requestSeedSemanticFrame, type LanguagePatternRecord, type SemanticFrameRecord } from "@scce/kernel";
 import { normalizePriorKey } from "../../../kernel/src/kernel-answer-primitives.js";
 import { PostgresStorageAdapter } from "../postgres.js";
+import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
 
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });
@@ -59,6 +60,21 @@ function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRe
   return { adapter, calls };
 }
 
+it.each(["request_seed", "full"] as const)("binds only consumed parameters in a scoped %s read without active projections", async view => {
+  for (const receipt of [false, true]) {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ ...(view === "full" ? {} : { view }),
+      patternIds: ["pattern.owned"], profileIds: ["profile.owned"], sourceSystem: "dialogue",
+      patternSchemas: [receipt ? "scce.source_induction_coverage.v1" : "scce.long_form_discourse_pattern.v1"],
+      patternKind: receipt ? "source_compilation" : "discourse", limit: 8, maxTotalJsonBytes: 4096 });
+    const call = calls.find(call => call.sql.includes("pattern_headers AS MATERIALIZED"))!;
+    expect(call).toBeDefined();
+    const used = new Set([...call.sql.matchAll(/\$(\d+)/gu)].map(match => Number(match[1])));
+    expect([...used].sort((left, right) => left - right)).toEqual(call.params.map((_, index) => index + 1));
+    expect(call.sql).not.toContain("requested_projection_owner");
+  }
+});
+
 it("projects source owner headers and explicit request/declarative port flags only after checked bounded candidates", async () => {
   const { adapter, calls } = fixture();
   await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", profileIds: ["profile.owned"], sourceSystem: "workspace", languageId: "language.owned", limit: 8, maxTotalJsonBytes: 4096 });
@@ -86,11 +102,13 @@ it("projects source owner headers and explicit request/declarative port flags on
 it("budgets projected metadata rather than full physical pages or decoded-program ledgers while preserving category quotas", async () => {
   const pages = ["request", "declarative"].map((name, index) => pattern(`surface.construction.bundle.${name}`, {
     schema: "scce.language_construction_pattern.v1", sourceSystem: "workspace", sourceVersionId: "version.owned",
-    _scceJoinProgramStorage: { schema: "scce.durable_join_program.byte_ledger.v1", decodedJsonbBytes: 4_000_000 },
     bundle: { sourceExamples: [{ surface: "body".repeat(10000), roles: index ? [{ graphBinding: { relationId: "opaque" } }] : [],
       nullRoles: index ? [] : [{ graphBinding: { relationId: "opaque" } }] }], constructions: [{ body: "program".repeat(10000) }] }
   }));
-  const { adapter, calls } = fixture(pages);
+  const stored = pages.map(row => ({ ...row, patternJson: { ...(row.patternJson as Record<string, unknown>),
+    _scceJoinProgramStorage: { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(row.patternJson) }
+  } as LanguagePatternRecord["patternJson"] }));
+  const { adapter, calls } = fixture(stored);
   const seed = await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", limit: 8, maxTotalJsonBytes: 2048 });
   expect(seed).toEqual(pages.map(requestSeedLanguagePattern));
   expect(seed).toHaveLength(2);

@@ -33,6 +33,22 @@ function bridgeDocument(documentId: string, gap = " ") {
   return { documentId, text, lattice: { ...base, units, segmentationForest } };
 }
 
+function conditionedRows(program: ReturnType<typeof compileJoinProgram>, document: ReturnType<typeof binaryDocument>) {
+  const byId = new Map(document.lattice.units.map(unit => [unit.id, unit])), rows = new Map<string, ReturnType<typeof joinProgramChoices>>();
+  for (const path of document.lattice.segmentationForest.paths) {
+    if (!(path.posterior > 0)) continue;
+    const units = path.unitIds.map(id => byId.get(id)!).filter(unit => /\S/u.test(unit.surface));
+    for (let index = 1; index < units.length; index++) {
+      const left = units[index - 1]!, right = units[index]!;
+      const key = JSON.stringify([left.normalized, right.normalized, left.surfaceFormClassId, right.surfaceFormClassId, left.kind, right.kind,
+        Math.max(1, left.graphemeEnd - left.graphemeStart), Math.max(1, right.graphemeEnd - right.graphemeStart),
+        Math.min(7, Math.max(0, Math.floor(left.boundaryAfter.boundaryProbability * 8))), "construction.unresolved", "discourse.unresolved", derivationShape(units)]);
+      rows.set(key, joinProgramChoices(program, "conditioned", key));
+    }
+  }
+  return rows;
+}
+
 it("counts the exact enumerated local adjacency law once while retaining only measured global shape mass", () => {
   const document = binaryDocument(3, 8), expected = new Map<string, number>(), classes = new Map<string, number>();
   const byId = new Map(document.lattice.units.map(unit => [unit.id, unit]));
@@ -57,7 +73,7 @@ it("counts the exact enumerated local adjacency law once while retaining only me
   for (const key of classes.keys()) expect(joinProgramChoices(limited, "class", key)).toEqual(joinProgramChoices(complete, "class", key));
   expect(limited.localShapeIndex).toEqual(complete.localShapeIndex);
   expect(limited.observations).toEqual(complete.observations);
-  expect(Object.values(limited.conditionedIndex).some(choices => choices.reduce((sum, choice) => sum + choice.probability, 0) < 1)).toBe(true);
+  expect([...conditionedRows(limited, limitedDocument).values()].some(choices => choices.length > 0 && choices.reduce((sum, choice) => sum + choice.probability, 0) < 1)).toBe(true);
 });
 
 it("learns genuine local joins from 41 binary blocks even when every bounded full path has zero represented mass", () => {
@@ -83,6 +99,20 @@ it("learns genuine local joins from 41 binary blocks even when every bounded ful
   expect(forest.paths).toHaveLength(16);
 });
 
+it("includes full local mass from documents with zero retained global mass in each global context denominator", () => {
+  const positive = { ...binaryDocument(3, 1, "positive"), sourceFamilyId: "one.family" };
+  const zero = { ...binaryDocument(41, 16, "zero"), sourceFamilyId: "one.family" };
+  expect(zero.lattice.segmentationForest.paths.every(path => path.posterior === 0)).toBe(true);
+  const single = compileJoinProgram({ populationId: "mass", documents: [positive] });
+  const combined = compileJoinProgram({ populationId: "mass", documents: [positive, zero] });
+  const [key, expected] = [...conditionedRows(single, positive)][0]!;
+  expect(expected[0]!.count).toBe(0.25); expect(expected[0]!.probability).toBeCloseTo(0.5, 15);
+  const choices = joinProgramChoices(combined, "conditioned", key);
+  expect(choices[0]!.count).toBe(expected[0]!.count);
+  expect(choices[0]!.probability).toBeCloseTo(0.25 / 10.5, 15);
+  expect(choices[0]!.evidenceCoordinates).toEqual(expected[0]!.evidenceCoordinates);
+});
+
 it("chooses stronger calibrated local evidence over a weak global factor and cold-preserves unresolved shape mass", () => {
   const document = binaryDocument(3, 1), program = compileJoinProgram({ populationId: "proof", documents: [document] });
   const byId = new Map(document.lattice.units.map(unit => [unit.id, unit]));
@@ -99,10 +129,8 @@ it("chooses stronger calibrated local evidence over a weak global factor and col
     program: { ...component.program, backoffReliability: { conditioned: 0.9, exact: 0.1, structural: 0, class: 0, local_shape: 0, construction: 0 } } })) };
   const measured = renderJoinedSurface(units.map(unit => unit.surface), calibrated, context);
   expect(measured.trace.every(step => step.source === "conditioned" && step.support > 0.1)).toBe(true);
-  const globals = { ...mixture, minimumConfidence: 0, components: mixture.components.map(component => {
-    const { localFactors: _factors, ...globalProgram } = component.program;
-    return { ...component, program: { ...globalProgram, exactIndex: {}, classIndex: {}, localShapeIndex: {}, constructionIndex: {} } };
-  }) };
+  const globals = { ...mixture, minimumConfidence: 0, components: mixture.components.map(component => ({ ...component,
+    program: { ...component.program, backoffReliability: { conditioned: 1, structural: 1, exact: 0, class: 0, local_shape: 0, construction: 0 } } })) };
   const partial = renderJoinedSurface(units.map(unit => unit.surface), globals, context);
   expect(partial.trace.some(step => step.support > 0 && step.support < 1 && step.unresolvedPopulationMass > 0)).toBe(true);
   for (const step of partial.trace) expect(step.support + step.unresolvedPopulationMass).toBeCloseTo(1, 10);
@@ -136,7 +164,8 @@ it("bounds rounded retained mass by exact pair mass during evaluation and global
   expect(program.evaluation.exactAccuracy).toBe(1);
   const varied = [" ", "\t", "\n", "\r", "\u2003", "\u2009"].map((gap, index) => ({ ...bridgeDocument(`gap.${index}`, gap), sourceFamilyId: "one.family" }));
   const uncertain = compileJoinProgram({ populationId: "proof", documents: varied });
-  expect(Object.keys(uncertain.conditionedIndex)).toHaveLength(1);
-  expect(Object.values(uncertain.conditionedIndex)[0]).toHaveLength(varied.length);
-  for (const choices of Object.values(uncertain.conditionedIndex)) expect(choices.reduce((sum, choice) => sum + choice.probability, 0)).toBeLessThanOrEqual(1);
+  const rows = conditionedRows(uncertain, varied[0]!);
+  expect(rows.size).toBe(1);
+  expect([...rows.values()][0]).toHaveLength(varied.length);
+  for (const choices of rows.values()) expect(choices.reduce((sum, choice) => sum + choice.probability, 0)).toBeLessThanOrEqual(1);
 });

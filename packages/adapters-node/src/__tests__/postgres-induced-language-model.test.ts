@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import type { InducedLanguageModel, InducedLanguageModelRecord } from "@scce/kernel";
+import { JOIN_PROGRAM_MIXTURE_SCHEMA, type InducedLanguageModel, type InducedLanguageModelRecord } from "@scce/kernel";
 import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -95,7 +95,7 @@ function fakeModel(id: string): InducedLanguageModel {
       audit: {}
     },
     joinProgram: {
-      schema: "scce.join_program_mixture.v3",
+      schema: JOIN_PROGRAM_MIXTURE_SCHEMA,
       id: "join_program_mixture.fixture",
       populationModelId: "segmentation_population.fixture",
       minimumConfidence: 0.67,

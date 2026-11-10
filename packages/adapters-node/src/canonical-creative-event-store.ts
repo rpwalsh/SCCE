@@ -8,11 +8,14 @@ import { CREATIVE_EVENT_NORMALIZATION_TABLES, CREATIVE_EVENT_OCCURRENCE_REFERENC
   creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage, verifyCreativeEventDomainRecord,
   type CreativeEventDomainRecord, type CreativeEventOwner } from "./creative-event-normalization.js";
 import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, decodeDurableJoinPrograms,
-  durableJoinProgramJsonByteLengths, encodeDurableJoinPrograms } from "./durable-join-program-storage.js";
+  durableJoinProgramJsonByteLengths, encodeDurableJoinPrograms, verifyDurableJoinProgramByteLedger } from "./durable-join-program-storage.js";
+import { createCreativeLexemePageStore, creativeLexicalPageSchemaStatements, creativeLexemePageReferences,
+  CREATIVE_LEXEME_PAGE_REFS_SCHEMA, type CreativeLexemeLocation } from "./creative-lexeme-page-storage.js";
 
 export interface CreativeEventStorageHost {
   table(name: string): string;
   query<T>(sql: string, params?: unknown[]): Promise<T[]>;
+  transaction<T>(work: () => Promise<T>): Promise<T>;
   requireWritableInformationLabel(label: InformationLabel | undefined): InformationLabel;
   informationAccessPredicate(alias: string, firstParameter: number): { sql: string; params: unknown[] };
   informationAccess?: { explicitMergeAuthority?: boolean };
@@ -36,12 +39,14 @@ export function canonicalCreativeEventSchemaStatements(q: string): string[] {
     `CREATE TABLE IF NOT EXISTS ${q}.creative_event_templates (id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind='template_definition'),value_json JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.creative_event_lexemes (id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind='lexical_forms'),value_json JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.creative_event_witnesses (id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind='occurrence_witness'),value_json JSONB NOT NULL,information_label JSONB NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.creative_event_occurrences (id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind='occurrence_page'),value_json JSONB NOT NULL,information_label JSONB NOT NULL)`
+    `CREATE TABLE IF NOT EXISTS ${q}.creative_event_occurrences (id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind='occurrence_page'),value_json JSONB NOT NULL,information_label JSONB NOT NULL)`,
+    ...creativeLexicalPageSchemaStatements(q)
   ];
 }
 
 /** These records are immutable representations, never a second evidence or inference store. */
 export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost) {
+  const lexicalPages = createCreativeLexemePageStore(host);
   const mergeOptions = { explicitMergeAuthority: host.informationAccess?.explicitMergeAuthority === true };
   const join = (labels: InformationLabel[]): InformationLabel => host.requireWritableInformationLabel(joinInformationLabels(labels, mergeOptions));
   const ownersFor = async (bundles: readonly Record<string, unknown>[], requirePromoted = true): Promise<Map<string, CreativeEventOwner>> => {
@@ -116,12 +121,13 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
     if (owners.size !== requests.size) return fail("source owner missing, inaccessible or unpromoted");
     return owners;
   };
-  const persist = async (table: typeof CREATIVE_EVENT_NORMALIZATION_TABLES[number], records: CreativeEventDomainRecord[]): Promise<void> => {
+  const persist = async (table: typeof CREATIVE_EVENT_NORMALIZATION_TABLES[number], records: CreativeEventDomainRecord[], locations?: ReadonlyMap<string, CreativeLexemeLocation>): Promise<void> => {
     const labeled = table === "creative_event_witnesses" || table === "creative_event_occurrences";
     for (let offset = 0; offset < records.length; offset += PAGE_ROWS_PER_STATEMENT) {
       const batch = records.slice(offset, offset + PAGE_ROWS_PER_STATEMENT);
       batch.forEach(verifyCreativeEventDomainRecord);
-      const payload = batch.map(row => ({ id: row.id, kind: row.kind, value_json: row.value,
+      const payload = batch.map(row => ({ id: row.id, kind: row.kind, value_json: table === "creative_event_occurrences"
+        ? { ...row.value, lexemes: creativeLexemePageReferences(row.value.lexemes as string[], locations!) } : row.value,
         ...(labeled ? { information_label: host.requireWritableInformationLabel(row.informationLabel) } : {}) }));
       const serialized = JSON.stringify(payload);
       await host.query(`INSERT INTO ${host.table(table)} AS canonical(id,kind,value_json${labeled ? ",information_label" : ""})
@@ -147,7 +153,7 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
       for (const row of rows) {
         const next: CreativeEventDomainRecord = { id: row.id, kind: row.kind, value: row.value_json,
           ...(labeled ? { informationLabel: normalizeInformationLabel(row.information_label!) } : {}) };
-        verifyCreativeEventDomainRecord(next); records.push(next);
+        if (table !== "creative_event_occurrences") verifyCreativeEventDomainRecord(next); records.push(next);
       }
     }
     return records;
@@ -163,26 +169,29 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
         }
       }, input.informationLabel, join);
       if (!bundles.size) return inputs.map(input => encodeDurableJoinPrograms(input.value));
-      const owners = await ownersFor([...bundles.values()].map(row => row.value)), references = new Map<object, unknown>();
-      const pending = new Map(CREATIVE_EVENT_NORMALIZATION_TABLES.map(table => [table, new Map<string, CreativeEventDomainRecord>()]));
-      for (const [bundle, entry] of bundles) {
-        const plan = normalizeCreativeEventPage({ bundle: entry.value, owners,
-          ...(entry.labels.length ? { informationLabel: join(entry.labels) } : {}), ...mergeOptions });
-        references.set(bundle, plan.reference);
-        for (const table of CREATIVE_EVENT_NORMALIZATION_TABLES) for (const row of plan.records[table]) pending.get(table)!.set(row.id, row);
-      }
-      for (const table of CREATIVE_EVENT_NORMALIZATION_TABLES) await persist(table, [...pending.get(table)!.values()]);
-      return inputs.map(({ value }) => {
-      const normalized = replace(value, row => references.has(row) ? { ...row, events: references.get(row) } : undefined);
-      if (normalized === value) return encodeDurableJoinPrograms(value);
-      if (!Array.isArray(value) && (!record(value) || Object.hasOwn(record(value)!, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY))) return fail("reserved root storage marker");
-      const original = record(value), sizes = durableJoinProgramJsonByteLengths(value);
-      const ledger = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...sizes,
-        ...(original && Object.hasOwn(original, "joinProgram") ? { joinProgramMemberJsonbBytes: durableJoinProgramJsonByteLengths(original.joinProgram).decodedJsonbBytes
-          + Buffer.byteLength(JSON.stringify("joinProgram")) + 2 + (Object.keys(original).length > 1 ? 2 : 0) } : {}) };
-      if (Array.isArray(value)) return { schema: CANONICAL_CREATIVE_EVENT_ARRAY_SCHEMA, value: normalized, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: ledger };
-      const encoded = creativeEventRecord(encodeDurableJoinPrograms(normalized));
-      return { ...encoded, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: ledger };
+      return host.transaction(async () => {
+        const owners = await ownersFor([...bundles.values()].map(row => row.value)), references = new Map<object, unknown>();
+        const pending = new Map(CREATIVE_EVENT_NORMALIZATION_TABLES.map(table => [table, new Map<string, CreativeEventDomainRecord>()]));
+        for (const [bundle, entry] of bundles) {
+          const plan = normalizeCreativeEventPage({ bundle: entry.value, owners,
+            ...(entry.labels.length ? { informationLabel: join(entry.labels) } : {}), ...mergeOptions });
+          references.set(bundle, plan.reference);
+          for (const table of CREATIVE_EVENT_NORMALIZATION_TABLES) for (const row of plan.records[table]) pending.get(table)!.set(row.id, row);
+        }
+        const locations = await lexicalPages.putMany([...pending.get("creative_event_lexemes")!.values()]);
+        for (const table of CREATIVE_EVENT_NORMALIZATION_TABLES) if (table !== "creative_event_lexemes") await persist(table, [...pending.get(table)!.values()], locations);
+        return inputs.map(({ value }) => {
+          const normalized = replace(value, row => references.has(row) ? { ...row, events: references.get(row) } : undefined);
+          if (normalized === value) return encodeDurableJoinPrograms(value);
+          if (!Array.isArray(value) && (!record(value) || Object.hasOwn(record(value)!, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY))) return fail("reserved root storage marker");
+          const original = record(value), sizes = durableJoinProgramJsonByteLengths(value);
+          const ledger = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...sizes,
+            ...(original && Object.hasOwn(original, "joinProgram") ? { joinProgramMemberJsonbBytes: durableJoinProgramJsonByteLengths(original.joinProgram).decodedJsonbBytes
+              + Buffer.byteLength(JSON.stringify("joinProgram")) + 2 + (Object.keys(original).length > 1 ? 2 : 0) } : {}) };
+          if (Array.isArray(value)) return { schema: CANONICAL_CREATIVE_EVENT_ARRAY_SCHEMA, value: normalized, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: ledger };
+          const encoded = creativeEventRecord(encodeDurableJoinPrograms(normalized));
+          return { ...encoded, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: ledger };
+        });
       });
   };
   return {
@@ -198,9 +207,9 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
           if (typeof row.pageId !== "string") return fail("invalid page reference"); referenceIds.add(row.pageId);
         }
       });
-      if (!referenceIds.size) return decoded;
+      if (!referenceIds.size) return decoded.map((value, index) => { verifyDurableJoinProgramByteLedger(values[index], value); return value; });
       const records = new Map<string, CreativeEventDomainRecord>();
-      const pages = await read("creative_event_occurrences", [...referenceIds]); pages.forEach(row => records.set(row.id, row));
+      const pages = await read("creative_event_occurrences", [...referenceIds]);
       for (const page of pages) if (!Array.isArray(page.value.occurrences) || page.value.occurrences.length < 4 || page.value.occurrences.length > 2048) return fail("invalid source page cardinality");
       const references = (field: string): string[] => pages.flatMap(row => {
         const ids = row.value[field]; if (!Array.isArray(ids) || !ids.every((id): id is string => typeof id === "string")) return fail("invalid page components"); return ids;
@@ -213,9 +222,16 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
         if (!owner || owner.sourceId !== row.value.sourceId || owner.sourceVersionId !== row.value.sourceVersionId || owner.sourceContentHash !== row.value.sourceContentHash
           || owner.evidenceContentHash !== row.value.evidenceContentHash || owner.evidenceCharStart !== row.value.evidenceCharStart || owner.evidenceCharEnd !== row.value.evidenceCharEnd) return fail("changed canonical source witness");
       }
-      for (const [table, field] of [["creative_event_templates", "templates"], ["creative_event_lexemes", "lexemes"]] as const) {
-        (await read(table, references(field))).forEach(row => records.set(row.id, row));
+      for (const page of pages) for (const witnessId of page.value.witnesses as string[]) {
+        const scope = creativeEventRecord(records.get(witnessId)?.value.scope);
+        if (scope.profileId !== page.value.profileId || scope.compilerId !== page.value.compilerId) return fail("changed canonical page owner");
       }
+      // Source ownership is checked before any globally shared pure lexical definition is hydrated.
+      for (const page of pages) if (record(page.value.lexemes)?.schema !== CREATIVE_LEXEME_PAGE_REFS_SCHEMA) return fail("invalid lexical page reference");
+      const lexical = await lexicalPages.readReferences(pages.map(page => page.value.lexemes));
+      lexical.records.forEach(row => records.set(row.id, row));
+      pages.forEach((page, index) => { page.value = { ...page.value, lexemes: lexical.ids[index]! }; verifyCreativeEventDomainRecord(page); records.set(page.id, page); });
+      (await read("creative_event_templates", references("templates"))).forEach(row => records.set(row.id, row));
       return decoded.map((value, index) => {
         const wire = record(values[index]), envelope = wire?.schema === CANONICAL_CREATIVE_EVENT_ARRAY_SCHEMA;
         if (envelope && (Object.keys(wire!).length !== 3 || !Array.isArray(record(value)?.value))) return fail("invalid array payload envelope");
@@ -227,12 +243,14 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
           if (records.get(String(ref.pageId))?.value.bundleDigest !== bodyHash(next)) return fail("restored bundle digest mismatch");
           changed = true; return next;
         });
-        if (!changed) return envelope ? fail("unresolved array payload envelope") : value;
+        if (!changed) {
+          if (envelope) return fail("unresolved array payload envelope");
+          verifyDurableJoinProgramByteLedger(values[index], value); return value;
+        }
         const ledger = record(wire?.[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
         if (!ledger || ledger.schema !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA) return fail("missing decoded byte ledger");
         const logical = envelope ? restored : Object.fromEntries(Object.entries(creativeEventRecord(restored)).filter(([key]) => key !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY));
-        const sizes = durableJoinProgramJsonByteLengths(logical);
-        if (ledger.decodedJsonBytes !== sizes.decodedJsonBytes || ledger.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail("decoded byte ledger mismatch");
+        verifyDurableJoinProgramByteLedger(values[index], logical);
         return logical;
       });
     }

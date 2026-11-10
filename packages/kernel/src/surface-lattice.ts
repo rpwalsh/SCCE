@@ -153,6 +153,7 @@ export interface SourceAlignmentSurfaceLattice {
 }
 
 export interface SurfaceLatticeBuildOptions {
+  captureScoreFactors?: boolean;
   documentId: string;
   sourceFamilyId?: string;
   text: string;
@@ -582,7 +583,8 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
     pathLimit: options.segmentationPathLimit,
     limits: options.segmentationForestLimits,
     normalizationContractId: normalizationContract.id,
-    hasher
+    hasher,
+    ...(options.captureScoreFactors ? { captureScoreFactors: true, sourceText: text, ...(options.boundaryEstimator ? { boundaryScoreState: options.boundaryEstimator } : {}) } : {})
   };
   if (boundaryMeasurement) return { schema: "scce.surface_boundary_measurement.v1", id: latticeId, documentId: options.documentId,
     units, boundaryMeasurement: measureSegmentationBoundaries(segmentationForestBuild) };
@@ -1434,6 +1436,22 @@ function boundaryEvidenceAt(input: {
     estimatorId: input.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID,
     features
   };
+}
+
+/** The existing source-only boundary features, evaluated without proposals, fitting or corpus lookup. */
+export function createSourceBoundaryIntrinsicEvaluator(text: string): {
+  codePointCount: number; graphemeCodePoints: number[]; at(positionCodePoint: number): BoundaryFeatureVector;
+} {
+  const codePoints = [...text], transitionEntropyByPosition = localTransitionEntropyByPosition(text), scalar = buildSurfaceScalarCoordinateIndex(text);
+  const graphemeCodePoints = [0], cache = new Map<number, BoundaryFeatureVector>();
+  for (const segment of GRAPHEME_SEGMENTER.segment(text)) graphemeCodePoints.push(scalar.utf16ToCodePoint[segment.index + segment.segment.length]!);
+  return { codePointCount: codePoints.length, graphemeCodePoints, at(positionCodePoint) {
+    if (!Number.isSafeInteger(positionCodePoint) || positionCodePoint < 0 || positionCodePoint > codePoints.length) throw Error("invalid source boundary coordinate");
+    const previous = cache.get(positionCodePoint); if (previous) return previous;
+    const features = boundaryEvidenceAt({ codePoints, positionByte: 0, positionCodePoint, positionGrapheme: 0, structuralBoundary: 0,
+      transitionEntropyByPosition, repeatedContextSupport: 0, scriptForSurface: dominantScriptId }).features;
+    cache.set(positionCodePoint, features); return features;
+  } };
 }
 
 /**

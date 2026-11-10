@@ -15,7 +15,7 @@ function declaration(sql:string){
   for(const field of fields(body)){
     const key=field.match(/^PRIMARY KEY\s*\(([^)]+)\)/u);
     if(key){primary.push(...key[1]!.split(',').map(value=>value.trim().replaceAll('"','')));continue;}
-    const column=field.match(/^"?([a-z_]+)"?\s+(TEXT|JSONB|TIMESTAMPTZ|BYTEA)\b/u);
+    const column=field.match(/^"?([a-z_]+)"?\s+(TEXT\[\]|BYTEA\[\]|TEXT|JSONB|TIMESTAMPTZ|BYTEA)(?=\s|$)/u);
     if(!column)throw new Error(`Unrecognized schema field: ${field}`);
     const reference=field.match(/REFERENCES\s+"?fixture"?\."?([a-z_]+)"?\s*\("?([a-z_]+)"?\)(?:\s+ON DELETE (CASCADE|RESTRICT|SET NULL|NO ACTION))?/u);
     const inlinePrimary=field.includes('PRIMARY KEY');if(inlinePrimary)primary.push(column[1]!);
@@ -23,10 +23,10 @@ function declaration(sql:string){
   }
   return {columns,primary};
 }
-it("declares actual schema32 columns, keys and foreign keys instead of generic payload tables",()=>{
+it("declares actual source storage columns, keys and foreign keys instead of generic payload tables",()=>{
   const contract=createPostgresContract({schema:'fixture'}),actual=schemaStatements('"fixture"'),rendered=renderPostgresContractSql(contract);
-  const names=Object.keys(requiredHydrationColumns()).filter(name=>name.startsWith('segmentation_consolidation_')||name.startsWith('creative_event_'));
-  expect(names).toHaveLength(7);
+  const names=Object.keys(requiredHydrationColumns()).filter(name=>name.startsWith('segmentation_consolidation_')||name.startsWith('creative_event_')||name==='construction_source_decision_pages');
+  expect(names).toHaveLength(9);
   for(const name of names){
     const sql=actual.find(value=>value.startsWith(`CREATE TABLE IF NOT EXISTS "fixture".${name} (`));expect(sql).toBeDefined();
     const expected=declaration(sql!),table=contract.tables.find(value=>value.name===name)!;

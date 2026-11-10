@@ -8,6 +8,7 @@ import type { CreativeEventStorageHost } from "./canonical-creative-event-store.
 export const SOURCE_ARTIFACT_METADATA_KEY = "_scceSourceArtifactMetadata";
 export const SOURCE_ARTIFACT_METADATA_SCHEMA = "scce.source_artifact_metadata.v1";
 export const SOURCE_ARTIFACT_METADATA_REF_SCHEMA = "scce.source_artifact_metadata_ref.v1";
+export const SOURCE_ARTIFACT_METADATA_INDEX_REF_SCHEMA = "scce.source_artifact_metadata_ref.v2";
 const hasher = createHasher();
 const record = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const fail = (): never => { throw new Error("canonical source artifact metadata is missing, inaccessible or changed"); };
@@ -18,18 +19,23 @@ const QUERY_ROOTS = new Set<string>([...REQUEST_SEED_PATTERN_JSON_FIELDS, ...REQ
 interface Input { artifactFamily?: "language_pattern"; value: unknown; logicalValue?: unknown; profileId?: string; sourceVersionId?: string; informationLabel?: InformationLabel }
 interface Holder { id: string; profile_id: string; pattern_json: Record<string, unknown>; information_label: InformationLabel }
 interface ValidatedHolder { metadata: Record<string, unknown>; digest: string; compilationId: string; profileId: string; sourceVersionId: unknown; label: string }
-interface Reference { schema: string; receiptId: string; digest: string; keys: string[]; introducedLedger: boolean; recordDigest: string }
+interface Reference { keys: string[]; introducedLedger: boolean; recordDigest: string }
 const same = (a: unknown, b: unknown): boolean => canonicalStringify(a) === canonicalStringify(b);
 const compilationId = (value: Record<string, unknown>): string | undefined => typeof value.sourceCompilationId === "string" ? value.sourceCompilationId
   : typeof record(value.sourceCompilation)?.compilationId === "string" ? record(value.sourceCompilation)!.compilationId as string : undefined;
 
 /** Storage-only normalization. The public record is reconstructed exactly; no learned payload is inferred. */
-export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost) {
+export function createSourceArtifactMetadataCodec(host: Omit<CreativeEventStorageHost, "transaction">) {
   async function holders(inputs: readonly Input[], encoding: boolean): Promise<Map<string, Holder>> {
     const ids = [...new Set(inputs.flatMap(input => {
       const root = record(input.value); if (!root) return [];
       const reference = record(root[SOURCE_ARTIFACT_METADATA_KEY]);
-      if (reference) return typeof reference.receiptId === "string" ? [reference.receiptId] : fail();
+      if (reference) {
+        if (reference.schema === SOURCE_ARTIFACT_METADATA_INDEX_REF_SCHEMA) {
+          const id = compilationId(root); return id ? [`source.language.compilation.${id}`] : fail();
+        }
+        return typeof reference.receiptId === "string" ? [reference.receiptId] : fail();
+      }
       const id = encoding ? compilationId(root) : undefined;
       return id ? [`source.language.compilation.${id}`] : [];
     }))];
@@ -109,7 +115,13 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
         const next = { ...root }; for (const key of keys) delete next[key];
         const introducedLedger = root[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] === undefined;
         if (introducedLedger) next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(root) };
-        next[SOURCE_ARTIFACT_METADATA_KEY] = { schema: SOURCE_ARTIFACT_METADATA_REF_SCHEMA, receiptId: `source.language.compilation.${id}`, digest: shared.digest, keys, introducedLedger, recordDigest: canonicalDigestHex(root, hasher) };
+        // The compilation identity already binds its metadata digest. Store only
+        // selected field positions; repeating that identity, digest and key names
+        // on every observation costs more than the factored occurrence itself.
+        const dictionary = Object.keys(shared.metadata).sort();
+        next[SOURCE_ARTIFACT_METADATA_KEY] = { schema: SOURCE_ARTIFACT_METADATA_INDEX_REF_SCHEMA,
+          fieldIndexes: keys.map(key => dictionary.indexOf(key)).sort((a, b) => a - b),
+          introducedLedger, recordDigest: canonicalDigestHex(root, hasher) };
         return next;
       });
     },
@@ -118,12 +130,24 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
       return inputs.map(input => {
         const root = record(input.value); if (!root || !Object.hasOwn(root, SOURCE_ARTIFACT_METADATA_KEY)) return input.value;
         const raw = record(root[SOURCE_ARTIFACT_METADATA_KEY]); if (!raw) return fail();
-        if (raw.schema !== SOURCE_ARTIFACT_METADATA_REF_SCHEMA || typeof raw.receiptId !== "string" || typeof raw.digest !== "string"
-          || typeof raw.recordDigest !== "string" || typeof raw.introducedLedger !== "boolean" || !Array.isArray(raw.keys) || !raw.keys.length
-          || raw.keys.some(key => typeof key !== "string" || QUERY_ROOTS.has(key) || key === SOURCE_ARTIFACT_METADATA_KEY || key === DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)
-          || new Set(raw.keys).size !== raw.keys.length) return fail();
-        const ref = raw as unknown as Reference, id = compilationId(root); if (!id || ref.receiptId !== `source.language.compilation.${id}`) return fail();
-        const shared = validate(input, owners.get(ref.receiptId), id, validated, ref.digest)!;
+        if (typeof raw.recordDigest !== "string" || typeof raw.introducedLedger !== "boolean") return fail();
+        const id = compilationId(root); if (!id) return fail();
+        const receiptId = `source.language.compilation.${id}`;
+        const indexed = raw.schema === SOURCE_ARTIFACT_METADATA_INDEX_REF_SCHEMA;
+        if (indexed ? Object.keys(raw).sort().join(",") !== "fieldIndexes,introducedLedger,recordDigest,schema"
+          : raw.schema !== SOURCE_ARTIFACT_METADATA_REF_SCHEMA || raw.receiptId !== receiptId || typeof raw.digest !== "string") return fail();
+        const shared = validate(input, owners.get(receiptId), id, validated, indexed ? undefined : raw.digest as string)!;
+        if (!shared) return fail();
+        const dictionary = Object.keys(shared.metadata).sort();
+        let keys: unknown = raw.keys;
+        if (indexed) {
+          if (!Array.isArray(raw.fieldIndexes) || raw.fieldIndexes.some((position, index, positions) =>
+            !Number.isSafeInteger(position) || position < 0 || position >= dictionary.length || index > 0 && position <= positions[index - 1])) return fail();
+          keys = raw.fieldIndexes.map(position => dictionary[position]);
+        }
+        if (!Array.isArray(keys) || !keys.length || keys.some(key => typeof key !== "string" || QUERY_ROOTS.has(key)
+          || key === SOURCE_ARTIFACT_METADATA_KEY || key === DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY) || new Set(keys).size !== keys.length) return fail();
+        const ref: Reference = { keys: keys as string[], introducedLedger: raw.introducedLedger, recordDigest: raw.recordDigest };
         const next = { ...root }; delete next[SOURCE_ARTIFACT_METADATA_KEY];
         for (const key of ref.keys) { if (!Object.hasOwn(shared.metadata, key) || Object.hasOwn(root, key)) return fail();
           Object.defineProperty(next, key, { value: structuredClone(shared.metadata[key]), enumerable: true, writable: true, configurable: true }); }

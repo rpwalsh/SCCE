@@ -9,6 +9,7 @@ import {
   type LearnedFormClass
 } from "./language-construction.js";
 import { canonicalStringify, toJsonValue } from "./primitives.js";
+import { decodeConstructionSourceExamples, encodeConstructionSourceExamples } from "./construction-source-example-storage.js";
 import { type GraphBoundConstruction } from "./language-induction.js";
 import { preparedLanguageInductionProducts, type PreparedConstructionInduction } from "./graph-surface-alignment.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
@@ -406,8 +407,12 @@ function compileConstructionPattern(
     patternJson: {
       schema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
       contentDigest,
-      bundle: (input.storageEncoding === SOURCE_EXAMPLE_CONSTRUCTION_STORAGE ? sourceExampleStorageBundle(bundle) : bundle) as unknown as JsonValue,
-      ...(input.storageEncoding ? { storageEncoding: input.storageEncoding } : {})
+      bundle: (input.storageEncoding === SOURCE_EXAMPLE_CONSTRUCTION_STORAGE ? sourceExampleStorageBundle(bundle, input.hasher) : bundle) as unknown as JsonValue,
+      ...(input.storageEncoding ? { storageEncoding: input.storageEncoding,
+        ...(sourceExamples.some(example => example.nullRoles.some(role => role.graphBinding !== undefined)) ? { requestConstructionCandidate: true } : {}),
+        ...(sourceExamples.some(example => example.roles.some(role => role.graphBinding !== undefined)) ? { sourceConstructionCandidate: true } : {}),
+        ...(input.bindingId.startsWith("surface.conversational_act.binding.") && sourceExamples.some(example => example.antecedent)
+          ? { conversationalBindingId: input.bindingId } : {}) } : {})
     },
     evidenceIds: evidenceIds as EvidenceSpan["id"][],
     updatedAt: input.updatedAt
@@ -415,9 +420,9 @@ function compileConstructionPattern(
   return { status: "compiled", pattern, bundle, mdl };
 }
 
-function sourceExampleStorageBundle(bundle: DurableLanguageConstructionBundle): Record<string, unknown> {
+function sourceExampleStorageBundle(bundle: DurableLanguageConstructionBundle, hasher: Hasher): Record<string, unknown> {
   const { constructions: _programs, formClasses: _variants, sourceExamples, qualificationStatus: _annotation, ...header } = bundle;
-  return { ...header, sourceExamples: sourceExamples.map(example => ({
+  const examples = sourceExamples.map(example => ({
     evidenceIndex: bundle.evidenceIds.indexOf(example.evidenceId),
     surfaceStartCodePoint: example.surfaceStartCodePoint,
     surfaceEndCodePoint: example.surfaceEndCodePoint,
@@ -427,7 +432,8 @@ function sourceExampleStorageBundle(bundle: DurableLanguageConstructionBundle): 
       ...(role.graphBinding ? { graphBinding: role.graphBinding } : {}) })) } : {}),
     ...(example.antecedent ? { antecedent: { startCodePoint: example.antecedent.startCodePoint, endCodePoint: example.antecedent.endCodePoint } } : {}),
     ...(example.contextualQaSupervision ? { contextualQaSupervision: example.contextualQaSupervision } : {})
-  })) };
+  }));
+  return { ...header, sourceExamples: encodeConstructionSourceExamples(examples, header, hasher) };
 }
 
 export function createUniversalCreativeEventConstructionCompiler(): CreativeEventConstructionCompiler {
@@ -1317,7 +1323,11 @@ function verifyPersistedPattern(
     || pattern.profileId !== targetProfileId) {
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.ownership);
   }
-  const sourceExamples = arrayOfRecords(rawBundle.sourceExamples);
+  let sourceExamples: Record<string, JsonValue>[];
+  try {
+    sourceExamples = row.storageEncoding === SOURCE_EXAMPLE_CONSTRUCTION_STORAGE
+      ? decodeConstructionSourceExamples(rawBundle.sourceExamples, rawBundle, hasher) : arrayOfRecords(rawBundle.sourceExamples);
+  } catch { return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member); }
   if (sourceExamples.length === 0 || sourceExamples.length > 256) {
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   }
@@ -1379,7 +1389,11 @@ function verifyPersistedPattern(
       ? LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.identity
       : LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.digest);
   }
-  if (canonicalStringify(rawBundle) !== canonicalStringify(recordOf(expectedRow.bundle))) {
+  const expectedBundle = recordOf(expectedRow.bundle);
+  const logicalBundle = { ...rawBundle, sourceExamples };
+  const expectedLogicalBundle = row.storageEncoding === SOURCE_EXAMPLE_CONSTRUCTION_STORAGE
+    ? { ...expectedBundle, sourceExamples: decodeConstructionSourceExamples(expectedBundle.sourceExamples, expectedBundle, hasher) } : expectedBundle;
+  if (canonicalStringify(logicalBundle) !== canonicalStringify(expectedLogicalBundle)) {
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   }
   return { bundle: { ...recompiled.bundle,

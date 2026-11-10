@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { expect, it } from "vitest";
-import { compileJoinProgram, compileJoinProgramMixture, renderJoinedSurface } from "../join-program.js";
+import { compileJoinProgram, compileJoinProgramMixture, derivationShape, joinProgramChoices, renderJoinedSurface } from "../join-program.js";
 import { buildSurfaceLattice } from "../surface-lattice.js";
 import { createHasher } from "../primitives.js";
 import { buildSegmentationForest, type SurfaceSegmentationPath } from "../segmentation-forest.js";
@@ -51,7 +51,13 @@ it.each([0.25, 1e-12])("preserves every genuine positive contribution of %s with
   const actual = compile([positive, ...paths.map(path => ({ ...path, posterior: 0 }))]);
   expect(actual).toEqual(expected);
   expect(actual.observations).toBeGreaterThan(0);
-  const rows = indexes.flatMap(index => Object.values(actual[index]).flat());
+  const byId = new Map(lattice.units.map(unit => [unit.id, unit])), units = positive.unitIds.map(id => byId.get(id)!);
+  const [left, right] = units;
+  const key = JSON.stringify([left!.normalized, right!.normalized, left!.surfaceFormClassId, right!.surfaceFormClassId, left!.kind, right!.kind,
+    1, 1, Math.min(7, Math.floor(left!.boundaryAfter.boundaryProbability * 8)), "construction.unresolved", "discourse.unresolved", derivationShape(units)]);
+  expect(actual.globalFactors!.documents[0]!.paths).toHaveLength(1);
+  expect(actual.globalFactors!.documents[0]!.paths[0]![0]).toBe(posterior);
+  const rows = [...indexes.flatMap(index => Object.values(actual[index]).flat()), ...joinProgramChoices(actual, "conditioned", key)];
   expect(rows.length).toBeGreaterThan(0);
   expect(rows.every(row => row.count >= posterior && row.probability > 0)).toBe(true);
   expect(rows.flatMap(row => row.evidenceIds)).toContain("evidence.posterior");

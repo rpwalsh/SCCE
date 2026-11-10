@@ -7,6 +7,7 @@ import { canonicalStringify, createClock, createHasher, createIdFactory, createL
 import { decodeSemanticFrames, encodeSemanticFrames, SEMANTIC_FRAME_STORAGE_SCHEMA, SEMANTIC_MEMORY_SCHEMA } from "../semantic-frame-storage.js";
 import { decodeDurableJoinPrograms, durableJoinProgramJsonByteLengths, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY,
   encodeDurableJoinPrograms } from "../durable-join-program-storage.js";
+import { SEMANTIC_PROJECTION_STORAGE_KEY } from "../semantic-projection-storage.js";
 
 const cold = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const record = (value: unknown): Record<string, unknown> => {
@@ -14,7 +15,7 @@ const record = (value: unknown): Record<string, unknown> => {
   return value as Record<string, unknown>;
 };
 const hasher = createHasher(), bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
-let pattern: LanguagePatternRecord;
+let pattern: LanguagePatternRecord, projectedPattern: LanguagePatternRecord;
 beforeAll(() => {
   const text = (JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-16.json", import.meta.url), "utf8")) as { text: string }).text;
   expect(hasher.digestHex(text)).toBe("307c6758d4173c6dd87d0b77460c74fafe62c3e58d934eabbf5e05268de3dadc");
@@ -26,7 +27,20 @@ beforeAll(() => {
   const found = languageMemoryPatternsFromInducedLanguageModel({ model, profiles: [profile], idFactory: ids, updatedAt: 1, sourceSystem: "dialogue" })
     .patterns.find(candidate => record(candidate.patternJson).schema === SEMANTIC_MEMORY_SCHEMA);
   if (!found) throw Error("human source did not produce semantic memory");
-  pattern = found;
+  projectedPattern = found;
+  // Exercise the expanded-frame codec independently of the sufficient-tape codec.
+  // Both are supported authored payloads, and both must retain their tamper checks.
+  const { semanticInductionProjection: _tape, ...expanded } = record(found.patternJson);
+  pattern = { ...found, patternJson: expanded as LanguagePatternRecord["patternJson"] };
+});
+
+it("uses the sufficient tape for current genuine human-source publication and restores the complete record", () => {
+  const original = projectedPattern.patternJson, packed = record(encodeDurableJoinPrograms(original));
+  expect(packed[SEMANTIC_PROJECTION_STORAGE_KEY]).toBeDefined();
+  expect(packed.semanticFrames).toBeUndefined();
+  expect(decodeDurableJoinPrograms(cold(packed))).toEqual(original);
+  expect(requestSeedLanguagePattern({ ...projectedPattern, patternJson: packed as LanguagePatternRecord["patternJson"] }))
+    .toEqual(requestSeedLanguagePattern(projectedPattern));
 });
 
 it("normalizes genuine human-source frames through the production durable boundary with exact public digest and counters", () => {
