@@ -155,8 +155,10 @@ describe("source-owned pattern fact page host", () => {
 
   it("defines owner-bound shared pages and cascading pattern references without a parallel public pattern store", () => {
     const statements = sourcePatternFactSchemaStatements('"fixture"').join("\n");
-    expect(statements).toContain("REFERENCES \"fixture\".source_versions(id)");
+    expect(statements).toContain("profile_id TEXT NOT NULL REFERENCES \"fixture\".language_profiles(id) ON DELETE CASCADE");
+    expect(statements).toContain("source_version_id TEXT NOT NULL REFERENCES \"fixture\".source_versions(id) ON DELETE CASCADE");
     expect(statements).toContain("REFERENCES \"fixture\".language_patterns(id) ON DELETE CASCADE");
+    expect(statements).toContain("page_id TEXT NOT NULL REFERENCES \"fixture\".source_pattern_fact_pages(id) ON DELETE CASCADE");
     expect(statements).toContain("PRIMARY KEY(pattern_id,page_id)"); expect(statements).toContain("idx_source_pattern_fact_refs_page");
   });
 });
