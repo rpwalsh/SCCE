@@ -1030,7 +1030,10 @@ function generateFromLanguageMemory(input: LanguageGenerationInput, hasher?: Has
     rhetorical.plan?.assignments.find(assignment => assignment.materialId === material.id)?.priority ?? 0]));
   const candidates: Array<{ surface: ConstructionSurface; frameIds: string[]; constructionId?: string }> = [];
   const add = (surface: ConstructionSurface, frameIds: string[], constructionId?: string) => {
-    if (surface.text && constructionSurfaceComplete(surface)) candidates.push({ surface: structuredClone(surface), frameIds, constructionId });
+    if (surface.text && constructionSurfaceComplete(surface)) {
+      const boundFrames = (surface.childBindings ?? []).flatMap(binding => (input.frames ?? []).some(frame => frame.id === binding.roleId) ? [binding.roleId] : []);
+      candidates.push({ surface: structuredClone(surface), frameIds: [...new Set([...frameIds, ...boundFrames])], constructionId });
+    }
   };
   const resolve = (plans: readonly SurfaceMeaningPlan[], frameIds: string[]) => {
     if (!hasher) return;
