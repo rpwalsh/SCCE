@@ -89,6 +89,7 @@ import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as 
 import { answerCoversRequest, evidenceTitledForRequestSubject, learnedRequestScaffoldingUnits, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
 import { createCreativeEventSpeechGrammarIndex } from "./creative-event-speech-grammar.js";
+import { renderDocumentParagraphs } from "./document-plan.js";
 import { creativeSourceUtterances, realizeCreativeSourceUtterance } from "./creative-source-utterance.js";
 import { currentSourceBoundRoleValueFact } from "./source-bound-semantic-fact.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract } from "./semantic-answer-construct.js";
@@ -4580,8 +4581,8 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
     realizations.push(toJsonValue({ eventId: event.id, ...admitted }));
     audit.realizedEventCount = realizations.length;
   }
-  const text = admissibleJoinedCandidateText(renderJoinedCandidateAlternatives({ derivations: [surfaces], joinProgram: activeJoinProgram(input.languageMemory) }));
-  if (!text || !admissibleMouthSurface(text)) return reject("selected_event_join_refused");
+  const text = renderDocumentParagraphs(surfaces);
+  if (!text || !admissibleMouthSurface(text)) return reject("selected_event_document_refused");
   const id = `candidate:generated:creative:realizer:${hasher.digestHex(canonicalStringify([invention.semanticPlanId, realizations, text]))}`;
   Object.assign(audit, { status: "realized", reasonId: "selected_event_source_speech_grammar_realized", candidateId: id, realizations });
   traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {

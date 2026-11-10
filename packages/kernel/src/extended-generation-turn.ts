@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { addDocumentPlanNode, EMPTY_DOCUMENT_PLAN, type DocumentPlan, type DocumentPlanNode } from "./document-plan.js";
+import { addDocumentPlanNode, EMPTY_DOCUMENT_PLAN, renderDocumentParagraphs, type DocumentPlan, type DocumentPlanNode } from "./document-plan.js";
 import {
   completeDocumentSection,
   createDocumentGenerationSession,
@@ -265,7 +265,7 @@ export async function runExtendedGeneration(input: {
   return {
     session,
     sections,
-    answer: accepted.map(row => row.text).join("\n\n"),
+    answer: renderDocumentParagraphs(accepted.map(row => row.text)),
     audit: toJsonValue({
       source: "scce.extended_generation.run.v1",
       sectionsAttempted: sections.length,

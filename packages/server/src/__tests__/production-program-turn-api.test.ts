@@ -290,6 +290,10 @@ describe("production owner program turn through the API", () => {
     const speechAudit = speech.trace.selected.audit.candidateAudit ?? speech.trace.selected.audit;
     expect(speechAudit.source).toBe("mouth.selected_event_source_construction");
     expect(speechAudit.realizations.length).toBeGreaterThan(0);
+    const paragraphs = (first.answer as string).split("\n\n");
+    expect(paragraphs.length).toBeGreaterThanOrEqual(2);
+    expect(paragraphs).toEqual([...new Set(speechAudit.realizations.map((witness: { text: string }) => witness.text))]);
+    expect(paragraphs.every(paragraph => paragraph.includes("this graph"))).toBe(true);
     const sourceSpeech = hydrateLanguageConstructionPatterns({ patterns: trainedLanguage.constructionPatterns, evidence: [source], hasher: createHasher() }).bundles;
     for (const witness of speechAudit.realizations) {
       expect(bundle.creativeEvents.some(event => event.id === witness.eventId && declaredOperations.has(event.sourceLabel))).toBe(true);

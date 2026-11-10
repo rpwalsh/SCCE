@@ -5,10 +5,18 @@ import {
   EMPTY_DOCUMENT_PLAN,
   addDocumentPlanNode,
   completeDocumentPlanNode,
+  renderDocumentParagraphs,
   pendingDocumentPlanNodes,
   rhetoricalOrder,
   type DocumentPlan
 } from "../document-plan.js";
+
+it("lays out admitted paragraphs without changing Unicode surfaces or inventing sentence punctuation", () => {
+  const paragraphs = ["猫が跳ぶ。", "Строка\nпродолжается", "e\u0301 👩‍🔬"];
+  expect(renderDocumentParagraphs(paragraphs)).toBe("猫が跳ぶ。\n\nСтрока\nпродолжается\n\ne\u0301 👩‍🔬");
+  expect(renderDocumentParagraphs([paragraphs[2]!])).toBe(paragraphs[2]);
+  expect(renderDocumentParagraphs([])).toBe("");
+});
 
 function buildReportPlan(): DocumentPlan {
   let plan = addDocumentPlanNode(EMPTY_DOCUMENT_PLAN, {

@@ -38,6 +38,11 @@ export interface DocumentPlan {
 
 export const EMPTY_DOCUMENT_PLAN: DocumentPlan = { nodes: {} };
 
+/** Paragraph layout preserves each independently admitted block's exact surface. */
+export function renderDocumentParagraphs(contents: readonly string[]): string {
+  return contents.join("\n\n");
+}
+
 export interface AddDocumentPlanNodeInput {
   id: string;
   kind: DocumentPlanNodeKind;
