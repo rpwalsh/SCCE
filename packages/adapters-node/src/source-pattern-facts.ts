@@ -188,15 +188,9 @@ export function createSourcePatternFactsCodec(host: Host, options: { maxPageByte
       return inputs.map(input => replacements.get(input) ?? input.value);
     },
     async reconcileReferences(inputs: readonly SourcePatternFactsReference[]): Promise<void> {
-      const existing = new Set<string>();
+      const seen = new Set<string>(), admitted = await owners(inputs.map(input => input.profileId));
       for (let offset = 0; offset < inputs.length; offset += CHUNK) {
-        const rows = await host.query<{ pattern_id: string }>(`/* pattern-fact existing refs */ SELECT DISTINCT pattern_id FROM ${host.table("source_pattern_fact_refs")} WHERE pattern_id=ANY($1::text[])`, [inputs.slice(offset, offset + CHUNK).map(input => input.patternId)]);
-        rows.forEach(item => existing.add(item.pattern_id));
-      }
-      const active = inputs.filter(input => marker(input.value) || existing.has(input.patternId));
-      const seen = new Set<string>(), admitted = await owners(active.map(input => input.profileId));
-      for (let offset = 0; offset < active.length; offset += CHUNK) {
-        const chunk = active.slice(offset, offset + CHUNK);
+        const chunk = inputs.slice(offset, offset + CHUNK);
         const params: unknown[] = [chunk.map(input => input.patternId)];
         const access = host.informationAccessPredicate("pattern", params.length + 1); params.push(...access.params);
         const stored = await host.query<{ id: string; profile_id: string; pattern_json: unknown; information_label: InformationLabel }>(`/* pattern-fact patterns */ SELECT pattern.id,pattern.profile_id,pattern.pattern_json,pattern.information_label FROM ${host.table("language_patterns")} pattern WHERE pattern.id=ANY($1::text[]) AND ${access.sql}`, params);
@@ -228,7 +222,7 @@ export function createSourcePatternFactsCodec(host: Host, options: { maxPageByte
           SELECT request."patternId",request."pageId" FROM jsonb_to_recordset($1::jsonb) AS request("patternId" text,"pageId" text) ON CONFLICT DO NOTHING`,
           [exactPatternFactJson(pairs.map(({ patternId, pageId }) => ({ patternId, pageId })))]);
       }
-      await collect([...new Set(active.map(input => input.profileId))]);
+      await collect([...new Set(inputs.map(input => input.profileId))]);
     },
     async prune(profileIds: readonly string[]): Promise<void> { await owners(profileIds); await collect([...new Set(profileIds)]); }
   };
