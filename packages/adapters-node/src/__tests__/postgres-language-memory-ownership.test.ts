@@ -356,9 +356,24 @@ describe("Postgres language-memory ownership queries", () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.large-transcript", limit: 2048, maxTotalJsonBytes: 64_000_000 });
     const sql = calls.at(-1)!.sql;
-    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(6);
-    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(6);
-    expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(6);
+    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(10);
+    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(10);
+    expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(10);
+    for (const [offset, schema] of [
+      "scce.induced_language_model.morphology_memory.v1",
+      "scce.induced_language_model.syntax_memory.v1",
+      "scce.induced_language_model.semantic_memory.v1",
+      "scce.induced_language_model.translation_seed_memory.v1"
+    ].entries()) {
+      const header = sql.slice(sql.indexOf(`active_projection_ids_${offset + 6}_headers AS MATERIALIZED`),
+        sql.indexOf(`active_projection_ids_${offset + 6} AS MATERIALIZED`));
+      const schemaParameter = header.match(/active_projection\.value_json->>'patternSchema'=\$(\d+)/u);
+      const recipeParameter = header.match(/active_projection\.value_json->>'componentRecipe'=\$(\d+)/u);
+      expect(schemaParameter).not.toBeNull();
+      expect(recipeParameter).not.toBeNull();
+      expect(calls.at(-1)!.params[Number(schemaParameter![1]) - 1]).toBe(schema);
+      expect(calls.at(-1)!.params[Number(recipeParameter![1]) - 1]).toBe(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
+    }
     expect(calls.at(-1)!.params).toContain(SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA);
     const computationRecipeParameter = calls.at(-1)!.params.indexOf(SOURCE_COMPUTATION_CONSTRUCTION_RECIPE) + 1;
     expect(computationRecipeParameter).toBeGreaterThan(0);
