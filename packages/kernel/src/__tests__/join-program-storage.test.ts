@@ -64,7 +64,7 @@ describe("lossless join storage v2", () => {
       expect(joinProgramMixtureFromStorage(mixed)).toBeUndefined(); expect(() => joinProgramMixtureStorageForm(mixed)).toThrow("invalid");
       const mixedStored = structuredClone(stored), packed = mixedStored.mixture.components[0]!.program;
       const choice = packed.choiceDictionary[packed.indexes[name][0]![1][0]!]!;
-      expect(packed.evidenceCoordinateDictionary.length).toBeGreaterThan(0); choice[4] = [0];
+      packed.evidenceCoordinateDictionary.push(coordinates[0]!); choice[4] = [packed.evidenceCoordinateDictionary.length - 1];
       expect(joinProgramMixtureFromStorage(mixedStored)).toBeUndefined();
     }
   });
