@@ -7,6 +7,7 @@ import {
   deriveGenerativeStructure,
   operatorsForTargetPart,
   realizeDerivation,
+  realizeDerivationSurface,
   searchTargetConditionedDerivation,
   semanticTargetFromGraph
 } from "../generative-derivation-runtime.js";
@@ -257,7 +258,27 @@ describe("recursive generative derivation (ceiling break)", () => {
     // It expressed the requested structure, not merely something cheap.
     expect(result.coveredPartIds.length).toBeGreaterThan(0);
     expect(result.text.length).toBeGreaterThan(0);
-    expect(JSON.stringify(result.audit)).toContain("join-program");
+    expect(JSON.stringify(result.audit)).toContain("ordered-construction-program");
+    expect(result.surface?.text).toBe(result.text);
+    expect(result.surface?.trace.map(part => result.text.slice(part.outputStart, part.outputEnd))).toEqual(result.surface?.trace.map(part => part.surface));
+  });
+
+  it("preserves complete code/Unicode child programs and every repeated licensed slot without separator prediction", () => {
+    const parent = construction({ id: "code.parent", relationId: "relation.code", surface: "if {\n\tSOMEEVENT\n}\n",
+      argument: { roleId: "relation.event", start: 6, end: 15 }, evidenceIds: ["code.parent.source"] });
+    const child = construction({ id: "code.child", relationId: "relation.event", surface: "雪🧵\n  e\u0301", evidenceIds: ["code.child.source"] });
+    const algebra = buildConstructionAlgebra({ constructions: [parent, child], maxRecursionDepth: 1 });
+    const result = realizeDerivationSurface({ constructionId: algebra.composed[0]!.id, algebra })!;
+    expect(result.text).toBe("if {\n\t雪🧵\n  e\u0301\n}\n");
+    expect(result.childBindings?.[0]?.constructionId).toBe(child.id);
+    expect(result.childBindings?.[0]?.surface.text).toBe(child.surface.sourceSurface);
+    const repeated = construction({ id: "repeated", relationId: "relation.repeated", surface: "X:X", argument: { roleId: "relation.event", start: 0, end: 1 }, evidenceIds: ["repeated.source"] });
+    repeated.surface.slots.push({ ...repeated.surface.slots[0]!, id: "repeated.second", relativeUtf16Start: 2, relativeUtf16End: 3 });
+    repeated.graph.ports[0]!.surfaceSlotIds.push("repeated.second");
+    const values = construction({ id: "value", relationId: "relation.event", surface: "甲", evidenceIds: ["value.source"] });
+    const second = buildConstructionAlgebra({ constructions: [repeated, values], maxRecursionDepth: 1 });
+    const realized = realizeDerivationSurface({ constructionId: second.composed[0]!.id, algebra: second })!;
+    expect(realized.text).toBe("甲:甲"); expect(realized.childBindings).toHaveLength(2);
   });
 
   it("enumerates every type-compatible composition rather than the first one found", () => {

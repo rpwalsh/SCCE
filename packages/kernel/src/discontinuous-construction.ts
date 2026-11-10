@@ -63,12 +63,33 @@ export function validateDiscontinuousConstruction(construction: DiscontinuousCon
  * reconstruction.
  */
 export function reassembleLogicalSurface(construction: DiscontinuousConstruction, sourceText: string): string {
+  return orderedDiscontinuousSurfacePieces(construction, sourceText).map(piece => sourceText.slice(piece.utf16Start, piece.utf16End)).join("");
+}
+
+export interface OrderedDiscontinuousSurfacePiece {
+  kind: "literal" | "span";
+  spanId?: string;
+  utf16Start: number;
+  utf16End: number;
+}
+
+/** Source gaps remain literal template connectors while graph-bound spans follow their declared reading order. */
+export function orderedDiscontinuousSurfacePieces(construction: DiscontinuousConstruction, sourceText: string): OrderedDiscontinuousSurfacePiece[] {
   const validation = validateDiscontinuousConstruction(construction);
   if (!validation.valid) throw new Error(`cannot reassemble an invalid discontinuous construction: ${validation.reasons.join("; ")}`);
-  return [...construction.spans]
-    .sort((left, right) => left.order - right.order)
-    .map(span => sourceText.slice(span.utf16Start, span.utf16End))
-    .join(" ");
+  const physical = [...construction.spans].sort((a, b) => a.utf16Start - b.utf16Start), logical = [...construction.spans].sort((a, b) => a.order - b.order);
+  if (!physical.length) return [];
+  const boundary = (offset: number) => Number.isSafeInteger(offset) && offset >= 0 && offset <= sourceText.length
+    && !(sourceText.charCodeAt(offset - 1) >= 0xD800 && sourceText.charCodeAt(offset - 1) <= 0xDBFF
+      && sourceText.charCodeAt(offset) >= 0xDC00 && sourceText.charCodeAt(offset) <= 0xDFFF);
+  if (!physical.every(span => boundary(span.utf16Start) && boundary(span.utf16End))) throw Error("discontinuous source geometry splits or exceeds its source");
+  const result: OrderedDiscontinuousSurfacePiece[] = [{ kind: "literal", utf16Start: 0, utf16End: physical[0]!.utf16Start }];
+  logical.forEach((span, index) => {
+    result.push({ kind: "span", spanId: span.id, utf16Start: span.utf16Start, utf16End: span.utf16End });
+    if (index + 1 < physical.length) result.push({ kind: "literal", utf16Start: physical[index]!.utf16End, utf16End: physical[index + 1]!.utf16Start });
+  });
+  result.push({ kind: "literal", utf16Start: physical.at(-1)!.utf16End, utf16End: sourceText.length });
+  return result;
 }
 
 /**

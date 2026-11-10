@@ -62,7 +62,22 @@ describe("logical reassembly uses reading order, not byte position (plan item 97
       ]
     };
     const text = "AAAAABBBBB"; // first-in-source = "AAAAA" (0-5), second-in-source = "BBBBB" (5-10)
-    expect(reassembleLogicalSurface(construction, text)).toBe("BBBBB AAAAA");
+    expect(reassembleLogicalSurface(construction, text)).toBe("BBBBBAAAAA");
+  });
+
+  it("retains observed literal connectors and outer code whitespace when graph slots move", () => {
+    const construction: DiscontinuousConstruction = { id: "literal.geometry", spans: [
+      { id: "first", order: 1, utf16Start: 1, utf16End: 2, portIds: ["arg.first"] },
+      { id: "second", order: 0, utf16Start: 8, utf16End: 9, portIds: ["arg.second"] }
+    ] };
+    expect(reassembleLogicalSurface(construction, " 甲\t+\r\n  乙\n")).toBe(" 乙\t+\r\n  甲\n");
+    expect(reassembleLogicalSurface({ id: "no-span", spans: [] }, "unselected source")).toBe("");
+  });
+
+  it("rejects source geometry outside its text or splitting a Unicode scalar", () => {
+    const span = { id: "unicode", order: 0, utf16Start: 1, utf16End: 2, portIds: [] };
+    expect(() => reassembleLogicalSurface({ id: "split", spans: [span] }, "🧵甲")).toThrow(/source geometry/);
+    expect(() => reassembleLogicalSurface({ id: "past-end", spans: [{ ...span, utf16Start: 0, utf16End: 9 }] }, "甲")).toThrow(/source geometry/);
   });
 
   it("refuses to reassemble an invalid (overlapping) construction", () => {
