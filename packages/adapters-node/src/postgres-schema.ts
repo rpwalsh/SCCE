@@ -5,6 +5,7 @@ import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECI
 import { evidenceTextDigestSchemaStatements } from "./evidence-text-digest.js";
 import { LANGUAGE_PATTERN_SELECTION_HEADERS, languagePatternSelectionHeaderStatement } from "./postgres-language-pattern-headers.js";
 import { canonicalCreativeEventSchemaStatements } from "./canonical-creative-event-store.js";
+import { sourcePatternFactSchemaStatements } from "./source-pattern-facts.js";
 
 export type InformationLabeledTable =
   | "source_versions"
@@ -17,6 +18,7 @@ export type InformationLabeledTable =
   | "ngram_models"
   | "language_units"
   | "language_patterns"
+  | "source_pattern_fact_pages"
   | "semantic_frames"
   | "translation_alignments";
 
@@ -58,6 +60,7 @@ function informationLabelMigrationStatements(
     "ngram_models",
     "language_units",
     "language_patterns",
+    "source_pattern_fact_pages",
     "semantic_frames",
     "translation_alignments"
   ];
@@ -382,6 +385,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     ...canonicalCreativeEventSchemaStatements(q),
+    ...sourcePatternFactSchemaStatements(q),
     // candidate_pool's scope filter reads this instead of detoasting pattern_json (5.4GB) per row.
     `ALTER TABLE ${q}.language_patterns ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (pattern_json->>'sourceSystem') STORED`,
     languagePatternSelectionHeaderStatement(q),
