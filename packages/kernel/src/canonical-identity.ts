@@ -57,6 +57,24 @@ export function createCanonicalIdentity(input: {
   };
 }
 
+export function createNormalizedSurfaceFormIdentity(input: {
+  normalizedSurface: string; normalizationContract?: NormalizationContract; hasher?: Hasher;
+}): CanonicalIdentity {
+  const normalizationContract = input.normalizationContract ?? canonicalNormalizationContract(input.hasher);
+  return createCanonicalIdentity({ kind: "normalized_surface_form", fields: {
+    normalizationContractId: normalizationContract.id, normalizedSurface: input.normalizedSurface
+  }, normalizationContract, hasher: input.hasher });
+}
+
+export function createSurfaceFormClassIdentity(input: {
+  normalizedSurfaceFormId: string; unicodeScriptId: string; normalizationContract?: NormalizationContract; hasher?: Hasher;
+}): CanonicalIdentity {
+  const normalizationContract = input.normalizationContract ?? canonicalNormalizationContract(input.hasher);
+  return createCanonicalIdentity({ kind: "surface_form_class", fields: {
+    normalizationContractId: normalizationContract.id, normalizedSurfaceFormId: input.normalizedSurfaceFormId, unicodeScriptId: input.unicodeScriptId
+  }, normalizationContract, hasher: input.hasher });
+}
+
 export interface CanonicalIdentityAuditRecord {
   identity: CanonicalIdentity;
   recordId?: string;
