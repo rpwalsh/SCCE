@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { compileLanguageConstructionPattern } from "../language-construction-memory.js";
 import { describe, expect, it } from "vitest";
 import {
   createClock,
@@ -10,9 +11,6 @@ import {
   createMouth,
   createDeterministicMouth,
   createSemanticEntailmentEngine,
-  buildSurfaceLattice,
-  compileJoinProgram,
-  compileJoinProgramMixture,
   deriveTurnRequirementField,
   detectCannedAnswerSpeech,
   featureSet,
@@ -1793,7 +1791,7 @@ describe("Mouth runtime surface planning", () => {
           evidenceIds: [],
           metadata: { sourceSystem: "scce2", provenanceClass: "learned_language_prior" }
         }],
-        patterns: [joinProgramPattern(), ...semanticSourcePatterns(directEvidence(source, semanticSourceText))],
+        patterns: [sourceSyntaxTeaching().pattern, ...semanticSourcePatterns(directEvidence(source, semanticSourceText))],
         semanticFrames: [],
         constructionEvidence: [directEvidence(source, semanticSourceText)]
       }),
@@ -2522,54 +2520,30 @@ describe("Mouth runtime surface planning", () => {
       models: [ngramModel()],
       observations: [ngramObservation(source)],
       units: [languageUnit(source)],
-      patterns: [languagePattern(), joinProgramPattern(), ...(sourceTeaching ? [teaching(evidence).pattern] : []), ...(semanticTeaching ? semanticSourcePatterns(evidence) : [])],
+      patterns: [languagePattern(), sourceSyntaxTeaching().pattern, ...(sourceTeaching ? [teaching(evidence).pattern] : []), ...(semanticTeaching ? semanticSourcePatterns(evidence) : [])],
       semanticFrames: [semanticFrame(evidence)],
-      constructionEvidence: [...(sourceTeaching ? teaching(evidence).lessons : []), ...(semanticTeaching ? [evidence] : [])]
+      constructionEvidence: [sourceSyntaxTeaching().evidence, ...(sourceTeaching ? teaching(evidence).lessons : []), ...(semanticTeaching ? [evidence] : [])]
     });
+  }
+  function sourceSyntaxTeaching() {
+    const text = "alpha→beta. gamma→delta.";
+    const evidence = directEvidence(sourceVersion(text), text);
+    const values = [["alpha", "beta"], ["gamma", "delta"]];
+    const surfaces = ["alpha→beta.", "gamma→delta."];
+    const compiled = compileLanguageConstructionPattern({ bindingId: "fixture.source.syntax", profileId: "profile:greenhouse", hasher,
+      evidence: [evidence], updatedAt: 5000, observations: surfaces.map((surface, index) => {
+        const base = [...text.slice(0, text.indexOf(surface))].length;
+        return { sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id), surfaceStartCodePoint: base,
+          surfaceEndCodePoint: base + [...surface].length, roles: values[index].map((value, slotIndex) => {
+            const startCodePoint = [...surface.slice(0, surface.indexOf(value))].length;
+            return { slotIndex, startCodePoint, endCodePoint: startCodePoint + value.length,
+              graphBinding: { relationId: "fixture.source.syntax", roleId: "fixture.role." + slotIndex, valueKind: "source.lexical" } };
+          }) };
+      }) });
+    if (compiled.status !== "compiled") throw new Error("Source syntax teaching failed");
+    return { pattern: compiled.pattern, evidence };
   }
 
-  function joinProgramPattern(): LanguagePatternRecord {
-    const documentId = "doc:fixture-join-corpus";
-    const text = "alpha beta. gamma delta. one two, three four.";
-    const program = compileJoinProgram({
-      populationId: "population:fixture-join",
-      documents: [{
-        documentId,
-        sourceFamilyId: "source-family:fixture-join",
-        text,
-        lattice: buildSurfaceLattice({
-          documentId,
-          text,
-          evidenceIds: ["evidence:fixture-join"],
-          hasher
-        })
-      }],
-      hasher
-    });
-    const joinProgram = compileJoinProgramMixture({
-      populationModelId: "population-model:fixture-join",
-      components: [{
-        populationId: program.populationId,
-        weight: 1,
-        program
-      }],
-      hasher
-    });
-    return {
-      id: "pattern:fixture-join",
-      profileId: "profile:greenhouse",
-      patternKind: "syntax",
-      support: 1,
-      entropy: 0,
-      patternJson: toJsonValue({
-        sourceSystem: "scce2",
-        provenanceClass: "learned_program_prior",
-        joinProgram
-      }),
-      evidenceIds: [],
-      updatedAt: clock.now()
-    };
-  }
 
   function starTrekMemory(source: SourceVersion, importRunId: string) {
     const text = "Star Trek main characters include James T. Kirk, Spock, Leonard McCoy, Nyota Uhura, Montgomery Scott, Hikaru Sulu, and Pavel Chekov.";
@@ -2611,7 +2585,8 @@ describe("Mouth runtime surface planning", () => {
         patternJson: { sourceSystem: "scce2", provenanceClass: "learned_language_prior", counts: { [text]: 3 } },
         evidenceIds: [],
         updatedAt: clock.now()
-      }, joinProgramPattern()],
+      }, sourceSyntaxTeaching().pattern],
+      constructionEvidence: [sourceSyntaxTeaching().evidence],
       semanticFrames: []
     });
   }

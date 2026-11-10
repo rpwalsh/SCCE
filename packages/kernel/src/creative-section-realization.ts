@@ -7,10 +7,15 @@ import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { collapseSurfaceWhitespace, sourceDerivedCasingHints, surfaceContainsTerm, surfaceUnits } from "./surface-linguistics.js";
 import type { LanguageProfile } from "./types.js";
 import type { NarrativeConditioning } from "./document-generation-session.js";
+import type { SpeakInput } from "./mouth-contracts.js";
+import type { Hasher } from "./types.js";
+import { selectedCreativeConstructionSurface } from "./mouth.js";
 import { requestSubjectSegments, type TurnRequirementField } from "./turn-requirements.js";
 
 
 export interface CreativeSectionRealizationInput {
+  /** The already judged event graph; section realization cannot invent or replace its semantic selection. */
+  selectedCreativePlan?: { speakInput: SpeakInput; hasher: Hasher };
   languageMemory: LanguageMemoryRuntime;
   state: LanguageMemoryRuntimeState;
   targetLanguageProfile?: LanguageProfile;
@@ -125,7 +130,12 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
       conditioningHeads: conditioning.map(line => line.slice(0, 60))
     }
   });
+  const selectedSurface = input.selectedCreativePlan
+    && input.selectedCreativePlan.speakInput.languageMemory === input.state
+    && (input.selectedCreativePlan.speakInput.requestText ?? input.selectedCreativePlan.speakInput.entailment.claim.text) === input.requestText
+    ? selectedCreativeConstructionSurface(input.selectedCreativePlan.speakInput, input.selectedCreativePlan.hasher) : undefined;
   const generation = input.languageMemory.generate({
+    constructionSurfaces: selectedSurface ? [selectedSurface] : [],
     state: input.state,
     targetLanguageProfile: input.targetLanguageProfile,
     choiceSeed: `${sectionGoal}\u0001${Math.max(1, Math.floor(input.attempt ?? 1))}`,
