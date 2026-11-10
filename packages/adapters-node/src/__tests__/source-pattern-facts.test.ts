@@ -30,7 +30,8 @@ function fixture(options: { maxPageBytes?: number; maxReadBytes?: number } = {})
             || exactPatternFactJson(item.information_label) !== params[4]) return [];
           return [sql.includes("/* pattern-fact sizes */") ? { id, stored_bytes: Buffer.byteLength(JSON.stringify(item.value_json)) } : item];
         }) : [];
-      } else if (sql.includes("/* pattern-fact patterns */")) result = state.patternAccessible ? (params[0] as string[]).flatMap(id => patterns.has(id) ? [patterns.get(id)] : []) : [];
+      } else if (sql.includes("/* pattern-fact existing refs */")) result = (params[0] as string[]).flatMap(id => refs.has(id) ? [{ pattern_id: id }] : []);
+      else if (sql.includes("/* pattern-fact patterns */")) result = state.patternAccessible ? (params[0] as string[]).flatMap(id => patterns.has(id) ? [patterns.get(id)] : []) : [];
       else if (sql.includes("/* pattern-fact reference pages */")) result = (JSON.parse(params[0] as string) as Array<Record<string, unknown>>).flatMap(pair => {
         const page = pages.get(pair.pageId as string); return state.pageAccessible && page && page.profile_id === pair.profileId && page.owner_key === pair.ownerKey
           && page.source_version_id === pair.sourceVersionId && exactPatternFactJson(page.information_label) === exactPatternFactJson(pair.label) ? [{ pattern_id: pair.patternId, page_id: pair.pageId }] : [];
@@ -140,10 +141,16 @@ describe("source-owned pattern fact page host", () => {
     const inputs = Array.from({ length: 257 }, (_, index) => ({ value, patternId: `pattern.${index}`, profileId: "p" }));
     inputs.forEach(input => f.patterns.set(input.patternId, { id: input.patternId, profile_id: "p", pattern_json: value, information_label: label }));
     f.calls.length = 0; await f.codec.reconcileReferences(inputs);
-    for (const tag of ["patterns", "reference pages", "clear refs", "set refs"]) expect(f.calls.filter(sql => sql.includes(`/* pattern-fact ${tag} */`))).toHaveLength(3);
+    for (const tag of ["existing refs", "patterns", "reference pages", "clear refs", "set refs"]) expect(f.calls.filter(sql => sql.includes(`/* pattern-fact ${tag} */`))).toHaveLength(3);
     expect(f.refs.size).toBe(257); expect(f.pages.size).toBe(1);
     f.state.pageAccessible = false; const before = clone([...f.refs]);
     await expect(f.codec.reconcileReferences(inputs)).rejects.toThrow(); expect([...f.refs]).toEqual(before);
+  });
+
+  it("does not add a source-owner admission prerequisite to ordinary writes with no fact references", async () => {
+    const f = fixture(); f.state.ownerAccessible = false;
+    await f.codec.reconcileReferences([{ value: { schema: "ordinary.unbound" }, patternId: "ordinary", profileId: "unbound" }]);
+    expect(f.calls).toHaveLength(1); expect(f.calls[0]).toContain("/* pattern-fact existing refs */");
   });
 
   it("defines owner-bound shared pages and cascading pattern references without a parallel public pattern store", () => {
