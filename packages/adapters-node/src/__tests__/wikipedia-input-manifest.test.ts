@@ -136,9 +136,13 @@ describe("Wikipedia input manifest", () => {
   });
 });
 
-async function changeMetadataOnly(filePath: string) {
+async function changeMetadataOnly(filePath: string, mode: 0o444 | 0o666 = 0o444) {
   const before=await stat(filePath,{bigint:true});
-  await chmod(filePath,0o444);
+  await expect.poll(async()=>{
+    await chmod(filePath,mode===0o444?0o666:0o444);
+    await chmod(filePath,mode);
+    return (await stat(filePath,{bigint:true})).ctimeNs;
+  }).not.toBe(before.ctimeNs);
   const after=await stat(filePath,{bigint:true});
   expect(after.ctimeNs).not.toBe(before.ctimeNs);
   expect([after.size,after.mtimeNs,after.dev,after.ino]).toEqual([before.size,before.mtimeNs,before.dev,before.ino]);
@@ -166,7 +170,7 @@ it("refuses a metadata race during rehash and never installs its unverified refr
   const paths=await fixture(),manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));
   await changeMetadataOnly(paths.dumpPath);let calls=0;
   const raced=await wikipediaInputSourcesStillMatch(manifest,{hashFile:async(filePath,chunkSize)=>{
-    calls++;const result=await hashWikipediaInputFile(filePath,{chunkSize});await chmod(filePath,0o666);return result;
+    calls++;const result=await hashWikipediaInputFile(filePath,{chunkSize});await changeMetadataOnly(filePath,0o666);return result;
   }});
   expect(raced).toBe(false);expect(calls).toBe(1);
   expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile:async(filePath,chunkSize)=>{calls++;return hashWikipediaInputFile(filePath,{chunkSize});}})).toBe(true);
