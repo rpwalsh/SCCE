@@ -3,8 +3,6 @@
 import type { IdFactory } from "./ids.js";
 import type { InducedLanguageModel } from "./language-induction.js";
 import { canonicalStringify, clamp01, entropy, toJsonValue } from "./primitives.js";
-import type { JoinProgramMixture } from "./join-program.js";
-import { joinProgramMixtureStorageForm, type StoredJoinProgramMixture } from "./join-program-storage.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import type { EvidenceId, InformationLabel, JsonValue, LanguageProfile } from "./types.js";
 import { pooledLanguageProfileBindingFor, type PooledLanguageProfileBinding } from "./pooled-language-profile-binding.js";
@@ -17,17 +15,16 @@ export interface InducedLanguageModelMemoryProjection {
   skippedReason?: "no_matching_profiles";
 }
 
-export const INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID = "kernel.induced_language_memory_projection.v3" as const;
+export const INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID = "kernel.induced_language_memory_projection.v4" as const;
 export const INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA = "scce.induced_language_model.syntax_memory.v1" as const;
 export const INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS: readonly string[] = Object.freeze([
   "scce.induced_language_model.morphology_memory.v1", INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
   "scce.induced_language_model.semantic_memory.v1", "scce.induced_language_model.translation_seed_memory.v1"
 ]);
 
-export type InducedLanguageMemoryModel = Omit<Pick<InducedLanguageModel,
-  "id" | "audit" | "morphology" | "morphologyClassBindings" | "syntaxTemplates" | "boundarySignals" | "joinProgram"
-  | "semanticFrames" | "graphBoundConstructions" | "lexicalClasses" | "relationHypothesisModel" | "translationSeeds">, "joinProgram">
-  & { joinProgram: JoinProgramMixture | StoredJoinProgramMixture };
+export type InducedLanguageMemoryModel = Pick<InducedLanguageModel,
+  "id" | "audit" | "morphology" | "morphologyClassBindings" | "syntaxTemplates" | "boundarySignals" | "segmentationDocuments"
+  | "semanticFrames" | "graphBoundConstructions" | "lexicalClasses" | "relationHypothesisModel" | "translationSeeds">;
 
 export function languageMemoryPatternsFromInducedLanguageModel(input: {
   model: InducedLanguageMemoryModel;
@@ -131,14 +128,14 @@ function patternsForProfile(input: {
         counts: Object.fromEntries(topCounts(input.model.morphology.flatMap(rule => [rule.pattern, ...rule.examples]), 128))
       });
   }
-  if (input.model.syntaxTemplates.length || input.model.boundarySignals.length) {
+  if (input.model.syntaxTemplates.length || input.model.boundarySignals.length || input.model.segmentationDocuments.length) {
     add("syntax", INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
       Math.log2(1 + input.model.syntaxTemplates.length + input.model.boundarySignals.length) / 10,
       input.model.syntaxTemplates.map(template => template.count),
       {
         templates: input.model.syntaxTemplates.slice(0, 256) as unknown as JsonValue,
         boundarySignals: input.model.boundarySignals.slice(0, 256) as unknown as JsonValue,
-        joinProgram: joinProgramMixtureStorageForm(input.model.joinProgram) as unknown as JsonValue,
+        segmentationDocuments: input.model.segmentationDocuments as unknown as JsonValue,
         counts: Object.fromEntries(topCounts(input.model.syntaxTemplates.map(template => template.shape.join(" ")), 128))
       });
   }

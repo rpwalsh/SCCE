@@ -2,11 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { clamp01, symbolizeData, toJsonValue } from "./primitives.js";
 import type { JsonValue } from "./types.js";
-import {
-  renderJoinedSurface,
-  type JoinProgramMixture,
-  type JoinProgramTraceStep
-} from "./join-program.js";
+import { constructionSurfaceComplete, type ConstructionSurface } from "./construction-surface.js";
 
 export const KNESER_NEY_SCHEMA = "scce.kneser_ney.v2" as const;
 const MAX_SUCCESSORS_PER_CONTEXT = 256;
@@ -51,17 +47,20 @@ export interface KneserNeyDiagnostics {
   topContinuations: KneserNeyPrediction[];
 }
 
-export interface BoundedProseContinuation {
+export interface KneserNeyContinuationProposal {
+  schema: "scce.kneser_ney_symbol_proposal.v1";
   symbols: string[];
-  text: string;
   logProbability: number;
   averageLogProbability: number;
   stoppedBy: "eos" | "generationExtent" | "probabilityFloor";
   trace: KneserNeyPrediction[];
-  joinTrace: JoinProgramTraceStep[];
-  unresolvedBoundaries: number;
-  joinStatus: "resolved" | "preserved_source_span" | "unresolved";
-  joinRequiredAction?: "try_alternate_derivation" | "request_additional_evidence";
+}
+export interface BoundedProseContinuation extends KneserNeyContinuationProposal {
+  text: string;
+  surface?: ConstructionSurface;
+  realizationStatus: "realized" | "unresolved";
+  unresolvedReason?: "no_supported_construction";
+  requiredAction?: "try_alternate_construction";
 }
 
 export function trainKneserNey(text: string | readonly string[], options: { order?: number; discount?: number; vocabularyLimit?: number } = {}): KneserNeyModel {
@@ -221,7 +220,7 @@ export function summarizeKneserNey(model: KneserNeyModel, sampleText?: string): 
   };
 }
 
-export function continueBoundedProse(model: KneserNeyModel, prompt: string | readonly string[], options: {
+export interface KneserNeyContinuationOptions {
   generationExtent?: number;
   probabilityFloor?: number;
   temperature?: number;
@@ -229,8 +228,9 @@ export function continueBoundedProse(model: KneserNeyModel, prompt: string | rea
   deterministicChoiceSeed?: string;
   minSymbolsBeforeEos?: number;
   repetitionWindow?: number;
-  joinProgram?: JoinProgramMixture;
-} = {}): BoundedProseContinuation {
+}
+
+export function proposeKneserNeyContinuation(model: KneserNeyModel, prompt: string | readonly string[], options: KneserNeyContinuationOptions = {}): KneserNeyContinuationProposal {
   const context = normalizeSymbols(prompt);
   const generated: string[] = [];
   const trace: KneserNeyPrediction[] = [];
@@ -275,28 +275,23 @@ export function continueBoundedProse(model: KneserNeyModel, prompt: string | rea
     trace.push(best);
     logProbability += Math.log(Math.max(1e-300, best.probability));
   }
-  const joined = renderJoinedSurface(generated, options.joinProgram);
-  // renderJoinedSurface honestly returns "" when it has no learned join-
-  // program mixture to resolve a boundary with (join-program.ts's
-  // admissibleJoinedText applies the same "unresolved -> no fabricated
-  // joiner" policy) -- but this model's own symbols are already plain
-  // whitespace-delimited tokens (symbolizeData/normalizeSymbols), so a
-  // literal space join is not a guess here, it is what the tokens are.
-  const text = joined.status === "unresolved" && generated.length ? generated.join(" ") : joined.text;
   return {
+    schema: "scce.kneser_ney_symbol_proposal.v1",
     symbols: generated,
-    text,
     logProbability,
     averageLogProbability: generated.length ? logProbability / generated.length : logProbability,
     stoppedBy,
-    trace,
-    joinTrace: joined.trace,
-    unresolvedBoundaries: joined.unresolvedBoundaries,
-    joinStatus: joined.status,
-    ...(joined.requiredAction
-      ? { joinRequiredAction: joined.requiredAction }
-      : {})
+    trace
   };
+}
+
+export function continueBoundedProse(model: KneserNeyModel, prompt: string | readonly string[], options: KneserNeyContinuationOptions & {
+  realize?: (proposal: Readonly<KneserNeyContinuationProposal>) => ConstructionSurface | undefined;
+} = {}): BoundedProseContinuation {
+  const proposal = proposeKneserNeyContinuation(model, prompt, options);
+  const surface = options.realize?.({ ...proposal, symbols: [...proposal.symbols], trace: proposal.trace.map(item => ({ ...item })) });
+  if (surface && constructionSurfaceComplete(surface)) return { ...proposal, text: surface.text, surface, realizationStatus: "realized" };
+  return { ...proposal, text: "", realizationStatus: "unresolved", unresolvedReason: "no_supported_construction", requiredAction: "try_alternate_construction" };
 }
 
 export interface BeamSentenceContinuation {
