@@ -15,7 +15,17 @@ describe("real source join-storage equivalence", () => {
     const products = compileSourceInductionWindows({ documents: [{ id: "real-dolly-owned-window.160-193", text: source.text,
       evidenceIds: ["evidence.real-dolly.160-193" as EvidenceId] }], hasher });
     expect(products.coverage).toMatchObject({ complete: true, inputUtf16Length: 9_214, coveredUtf16Length: 9_214 });
-    expect(hasher.digestHex(canonicalStringify(products))).toBe("0ac61450d8772142a62c79def122c0d828f2aa86f3ee788ed0d69f4239856855");
-    for (const model of products.models) expect(joinProgramMixtureStorageForm(model.joinProgram)).toBe(model.joinProgram);
+    expect(hasher.digestHex(canonicalStringify(products))).toBe("82852df0dc0bd69aca0a7ddb14cabbe8bd3d80ee36d91b5ef9bb65f3c30c1f8b");
+    for (const model of products.models) {
+      const packed = joinProgramMixtureStorageForm(model.joinProgram);
+      expect(packed).toBe(model.joinProgram);
+      for (const { program } of packed.mixture.components) {
+        if (program.header.trainingDocumentIds.length) expect(program.header.observations).toBeGreaterThan(0);
+        expect(program.header.localFactors).toBeDefined();
+        expect(program.indexes.exactIndex).toEqual([]);
+        expect(program.indexes.classIndex).toEqual([]);
+        expect(program.choiceDictionary.every(([, count, probability]) => count > 0 || probability > 0)).toBe(true);
+      }
+    }
   });
 });
