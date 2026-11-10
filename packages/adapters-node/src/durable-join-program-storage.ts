@@ -41,7 +41,7 @@ function transform(value: unknown, encoding: boolean): unknown {
     if (row?.schema === JOIN_PROGRAM_MIXTURE_SCHEMA && Array.isArray(row.components)
       && row.components.some(component => { const program = record(record(component)?.program);
         return program && Object.hasOwn(program, "localFactors") && (!isJoinProgramLocalFactors(program.localFactors)
-          || !emptyIndex(program.exactIndex) || !emptyIndex(program.classIndex)); })) {
+          || !emptyIndex(program.exactIndex) || !emptyIndex(program.classIndex) || !implicitLocalProofs(program)); })) {
       throw new Error("invalid JOIN local factors");
     }
     if (row?.schema === SEMANTIC_FRAME_STORAGE_SCHEMA) {
@@ -69,7 +69,8 @@ function transform(value: unknown, encoding: boolean): unknown {
       if (Array.isArray(mixture?.components) && mixture.components.some(component => { const program = record(record(component)?.program), header = record(program?.header), indexes = record(program?.indexes);
         return header && Object.hasOwn(header, "localFactors") && (!isJoinProgramLocalFactors(header.localFactors)
           || !Array.isArray(indexes?.exactIndex) || indexes.exactIndex.length !== 0
-          || !Array.isArray(indexes?.classIndex) || indexes.classIndex.length !== 0); })) {
+          || !Array.isArray(indexes?.classIndex) || indexes.classIndex.length !== 0
+          || !packedImplicitLocalProofs(program, row.schema)); })) {
         throw new Error("invalid JOIN local factors");
       }
       return value;
@@ -159,7 +160,7 @@ function packable(value: Record<string, unknown>): value is Record<string, unkno
     const program = record(component.program);
     if (!program || program.schema !== JOIN_PROGRAM_SCHEMA
       || Object.hasOwn(program, "localFactors") && (!isJoinProgramLocalFactors(program.localFactors)
-        || !emptyIndex(program.exactIndex) || !emptyIndex(program.classIndex))) return false;
+        || !emptyIndex(program.exactIndex) || !emptyIndex(program.classIndex) || !implicitLocalProofs(program))) return false;
     return INDEXES.every(name => {
       const index = record(program[name]);
       return index !== undefined && Object.values(index).every(choices => Array.isArray(choices) && choices.every(choice => {
@@ -181,3 +182,21 @@ function packable(value: Record<string, unknown>): value is Record<string, unkno
 function record(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
 function finite(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value); }
 function emptyIndex(value: unknown): boolean { const row = record(value); return row !== undefined && Object.keys(row).length === 0; }
+function implicitLocalProofs(program: Record<string, unknown>): boolean {
+  return ["localShapeIndex", "constructionIndex"].every(name => { const index = record(program[name]);
+    return index !== undefined && Object.values(index).every(choices => Array.isArray(choices) && choices.every(choice => {
+      const coordinates = record(choice)?.evidenceCoordinates; return Array.isArray(coordinates) && coordinates.length === 0;
+    }));
+  });
+}
+function packedImplicitLocalProofs(program: Record<string, unknown> | undefined, schema: unknown): boolean {
+  const indexes = record(program?.indexes), dictionary = program?.choiceDictionary;
+  return ["localShapeIndex", "constructionIndex"].every(name => Array.isArray(indexes?.[name]) && indexes[name].every(entry => {
+    if (!Array.isArray(entry) || !Array.isArray(entry[1])) return false;
+    return entry[1].every(ref => { const coordinates = schema === JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA
+      ? Array.isArray(dictionary) && Number.isSafeInteger(ref) ? dictionary[ref]?.[4] : undefined
+      : record(ref)?.evidenceCoordinateRefs;
+      return Array.isArray(coordinates) && coordinates.length === 0;
+    });
+  }));
+}

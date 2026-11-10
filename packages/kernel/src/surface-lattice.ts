@@ -28,6 +28,8 @@ import {
 } from "./normalization-contract.js";
 import {
   createCanonicalIdentity,
+  createNormalizedSurfaceFormIdentity,
+  createSurfaceFormClassIdentity,
   type CanonicalIdentity
 } from "./canonical-identity.js";
 
@@ -379,7 +381,7 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
   const normalizedSurfaceFor = (surface: string): string => {
     const cached = normalizedSurfaceCache.get(surface);
     if (cached !== undefined) return cached;
-    const normalized = normalizeSurface(surface, normalizationContract);
+    const normalized = normalizeSurfaceLatticeSurface(surface, normalizationContract);
     normalizedSurfaceCache.set(surface, normalized);
     return normalized;
   };
@@ -393,12 +395,8 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
   const normalizedFormIdentityFor = (normalized: string): CanonicalIdentity => {
     const cached = normalizedFormIdentityCache.get(normalized);
     if (cached) return cached;
-    const identity = createCanonicalIdentity({
-      kind: "normalized_surface_form",
-      fields: {
-        normalizationContractId: normalizationContract.id,
-        normalizedSurface: normalized
-      },
+    const identity = createNormalizedSurfaceFormIdentity({
+      normalizedSurface: normalized,
       normalizationContract,
       hasher
     });
@@ -409,13 +407,9 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
     const key = `${normalizedFormIdentity.id}\u0001${script}`;
     const cached = surfaceFormClassIdentityCache.get(key);
     if (cached) return cached;
-    const identity = createCanonicalIdentity({
-      kind: "surface_form_class",
-      fields: {
-        normalizationContractId: normalizationContract.id,
-        normalizedSurfaceFormId: normalizedFormIdentity.id,
-        unicodeScriptId: script
-      },
+    const identity = createSurfaceFormClassIdentity({
+      normalizedSurfaceFormId: normalizedFormIdentity.id,
+      unicodeScriptId: script,
       normalizationContract,
       hasher
     });
@@ -1044,7 +1038,7 @@ export function validateSurfaceLattice(lattice: SurfaceLattice, text: string): S
   return { valid: issues.length === 0, issues };
 }
 
-function buildSurfaceCoordinateIndex(text: string): SurfaceCoordinateIndex {
+export function buildSurfaceScalarCoordinateIndex(text: string): Pick<SurfaceCoordinateIndex, "utf16ToByte" | "utf16ToCodePoint"> {
   const utf16ToByte = new Array<number>(text.length + 1).fill(0);
   const utf16ToCodePoint = new Array<number>(text.length + 1).fill(0);
   let codePoint = 0;
@@ -1063,6 +1057,11 @@ function buildSurfaceCoordinateIndex(text: string): SurfaceCoordinateIndex {
     utf16ToByte[utf16] = byte;
     utf16ToCodePoint[utf16] = codePoint;
   }
+  return { utf16ToByte, utf16ToCodePoint };
+}
+
+function buildSurfaceCoordinateIndex(text: string): SurfaceCoordinateIndex {
+  const { utf16ToByte, utf16ToCodePoint } = buildSurfaceScalarCoordinateIndex(text);
   const utf16ToGraphemeStart = new Array<number>(text.length + 1).fill(0);
   const utf16ToGraphemeEnd = new Array<number>(text.length + 1).fill(0);
   let grapheme = 0;
@@ -1666,7 +1665,7 @@ function recurrenceKey(
   return normalizedSurfaceFor(candidate.surface);
 }
 
-function normalizeSurface(
+export function normalizeSurfaceLatticeSurface(
   surface: string,
   normalizationContract: NormalizationContract
 ): string {

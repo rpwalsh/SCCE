@@ -18,9 +18,9 @@ describe("portable segmentation adjacency factors", () => {
     const { factors, unitIds } = exportSegmentationAdjacencyFactors(forest);
     const restored: unknown = JSON.parse(JSON.stringify(factors));
     validateSegmentationAdjacencyFactors(restored);
-    expect(Object.keys(restored).sort()).toEqual(["schema", "partitionLogZ", "nodeLogWeights", "arcs"].sort());
+    expect(Object.keys(restored).sort()).toEqual(["schema", "nodeCount", "arcs"].sort());
     expect(restored.arcs).toHaveLength(units.length);
-    expect(restored.nodeLogWeights).toHaveLength(5);
+    expect(restored.nodeCount).toBe(5);
     const bearingIds = new Set(["left", "right", "whole"]), bearing = new Set(unitIds.flatMap((id, index) => bearingIds.has(id) ? [index] : []));
     const query = createSegmentationAdjacencyQuery(restored, bearing);
     expect([...query.pairs()].map(pair => ({ leftUnitId: unitIds[pair.leftArcIndex], rightUnitId: unitIds[pair.rightArcIndex], posterior: pair.posterior })))
@@ -28,10 +28,15 @@ describe("portable segmentation adjacency factors", () => {
     const left = unitIds.indexOf("left"), right = unitIds.indexOf("right");
     expect([...query.pairs({ leftArcIndices: new Set([left]), rightArcIndices: new Set([right]) })])
       .toEqual([...query.pairs()].filter(pair => pair.leftArcIndex === left && pair.rightArcIndex === right));
-    const corrupt = JSON.parse(JSON.stringify(factors)); corrupt.nodeLogWeights[1][0] += 1;
+    const corrupt = JSON.parse(JSON.stringify(factors)); corrupt.nodeCount = 1;
     expect(() => validateSegmentationAdjacencyFactors(corrupt)).toThrow("invalid segmentation adjacency factors");
-    const changedEnergy = JSON.parse(JSON.stringify(factors)); changedEnergy.arcs[0][2] += 1;
+    const changedEnergy = JSON.parse(JSON.stringify(factors)); changedEnergy.arcs[0][2] = Number.NaN;
     expect(() => validateSegmentationAdjacencyFactors(changedEnergy)).toThrow("invalid segmentation adjacency factors");
+    const beforeMutation = [...query.pairs()];
+    const mutableArc = restored.arcs[0] as unknown as number[];
+    mutableArc[2] = mutableArc[2]! + 1;
+    restored.nodeCount += 1;
+    expect([...query.pairs()]).toEqual(beforeMutation);
   });
 
   it("directly visits requested left candidates and keeps all other bearing arcs as bridge stops", () => {
@@ -52,6 +57,7 @@ describe("portable segmentation adjacency factors", () => {
     expect(pairs![0]!.posterior).toBeCloseTo(0.5, 9);
     expect(visits).toBeLessThan(10);
     expect([...query.pairs({ leftArcIndices: new Set([left]), rightArcIndices: new Set([unitIds.indexOf("left.1")]) })]).toEqual([]);
-    expect(factors.arcs.length + factors.nodeLogWeights.length).toBe(blocks * 5 + 1);
+    expect(factors.arcs).toHaveLength(blocks * 3);
+    expect(factors.nodeCount).toBe(blocks * 2 + 1);
   });
 });

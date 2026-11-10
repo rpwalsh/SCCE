@@ -237,7 +237,7 @@ function prepareSegmentationForest(input: SegmentationForestBuildInput) {
   });
 
   return { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart,
-    fullPartitionLogZ, fullForward, fullBackward, boundaryMarginals };
+    fullPartitionLogZ, boundaryMarginals };
 }
 
 export function measureSegmentationBoundaries(input: SegmentationForestBuildInput): SegmentationBoundaryMeasurement {
@@ -251,7 +251,7 @@ export function measureSegmentationBoundaries(input: SegmentationForestBuildInpu
 /** Measure every valid arc before applying operational limits to path materialization. */
 export function buildSegmentationForest(input: SegmentationForestBuildInput): SurfaceSegmentationForest {
   const { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart,
-    fullPartitionLogZ, fullForward, fullBackward, boundaryMarginals } = prepareSegmentationForest(input);
+    fullPartitionLogZ, boundaryMarginals } = prepareSegmentationForest(input);
 
   const pruning = pruneArcs(allArcsByStart, graphemeCount, limits);
   const arcsByStart = pruning.arcsByStart;
@@ -378,10 +378,7 @@ export function buildSegmentationForest(input: SegmentationForestBuildInput): Su
   };
   const factorArcs = [...allArcsByStart.entries()].sort(([left], [right]) => left - right).flatMap(([, arcs]) => arcs);
   const factors: SegmentationAdjacencyFactors = Object.freeze({ schema: SEGMENTATION_ADJACENCY_FACTORS_SCHEMA,
-    partitionLogZ: Number.isFinite(fullPartitionLogZ) ? fullPartitionLogZ : null,
-    nodeLogWeights: Object.freeze(fullForward.map((forward, index) => Object.freeze([
-      Number.isFinite(forward) ? forward : null, Number.isFinite(fullBackward[index]!) ? fullBackward[index]! : null
-    ] as const))),
+    nodeCount: graphemeCount + 1,
     arcs: Object.freeze(factorArcs.map(arc => Object.freeze([arc.unit.graphemeStart, arc.unit.graphemeEnd, arc.energy] as const))) });
   Object.defineProperty(forest, FULL_DAG_MEASURE, { value: Object.freeze({ factors, unitIds: Object.freeze(factorArcs.map(arc => arc.unit.id)) }) });
   return forest;

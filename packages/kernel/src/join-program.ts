@@ -1,8 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { SurfaceLattice, SurfaceLatticeUnit } from "./surface-lattice.js";
+import { buildSurfaceScalarCoordinateIndex, normalizeSurfaceLatticeSurface, type SurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { exportSegmentationAdjacencyFactors, segmentationSurfaceAdjacencies } from "./segmentation-forest.js";
 import { createSegmentationAdjacencyQuery, validateSegmentationAdjacencyFactors, type SegmentationAdjacencyFactors } from "./segmentation-adjacency-factors.js";
+import { createNormalizedSurfaceFormIdentity, createSurfaceFormClassIdentity } from "./canonical-identity.js";
+import { dominantScriptId } from "./unicode-segmentation-v2.js";
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 import {
@@ -19,12 +21,13 @@ export const JOIN_PROGRAM_LOCAL_FACTORS_SCHEMA = "scce.join_program_local_factor
 
 export interface JoinLocalFactorDocument {
   documentId: string;
+  constructionId?: string;
   sourceVersionId?: string;
   text: string;
   evidenceIds: string[];
-  contexts: Array<[surfaceFormClassId: string, scaleId: string]>;
+  contexts: Array<[scaleId: string] | [scaleId: string, explicitSurfaceFormClassId: string]>;
   graph: SegmentationAdjacencyFactors;
-  units: Array<null | [contextIndex: number, boundaryBucket: number, evidenceRefs: number[]]>;
+  units: Array<null | [contextIndex: number, boundaryBucket: number, evidenceRefs: number[]] | [contextIndex: number, boundaryBucket: number, evidenceRefs: number[], utf16Start: number, utf16End: number]>;
 }
 export interface JoinProgramLocalFactors {
   schema: typeof JOIN_PROGRAM_LOCAL_FACTORS_SCHEMA;
@@ -32,13 +35,18 @@ export interface JoinProgramLocalFactors {
   documents: JoinLocalFactorDocument[];
 }
 
-function sourceGeometry(text: string): { utf16: number[]; bytes: number[] } {
-  const utf16 = [0], bytes = [0], encoder = new TextEncoder();
+function sourceGeometry(text: string): { utf16: number[]; bytes: number[]; utf16Bytes: number[] } {
+  const utf16 = [0], bytes = [0], utf16Bytes = buildSurfaceScalarCoordinateIndex(text).utf16ToByte;
   for (const segment of canonicalGraphemeSegmenter().segment(text)) {
     utf16.push(segment.index + segment.segment.length);
-    bytes.push(bytes.at(-1)! + encoder.encode(segment.segment).length);
+    bytes.push(utf16Bytes[utf16.at(-1)!]!);
   }
-  return { utf16, bytes };
+  return { utf16, bytes, utf16Bytes };
+}
+
+function splitsCodePoint(text: string, index: number): boolean {
+  const before = text.charCodeAt(index - 1), after = text.charCodeAt(index);
+  return before >= 0xD800 && before <= 0xDBFF && after >= 0xDC00 && after <= 0xDFFF;
 }
 
 export function isJoinProgramLocalFactors(value: unknown): value is JoinProgramLocalFactors {
@@ -51,23 +59,29 @@ export function isJoinProgramLocalFactors(value: unknown): value is JoinProgramL
     for (const raw of Array.from(row.documents)) {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
       const doc = raw as Record<string, unknown>;
-      if (Object.keys(doc).some(key => !["documentId", "sourceVersionId", "text", "evidenceIds", "contexts", "graph", "units"].includes(key))
+      if (Object.keys(doc).some(key => !["documentId", "constructionId", "sourceVersionId", "text", "evidenceIds", "contexts", "graph", "units"].includes(key))
         || typeof doc.documentId !== "string" || !doc.documentId || documentIds.has(doc.documentId) || typeof doc.text !== "string"
+        || (Object.hasOwn(doc, "constructionId") && (typeof doc.constructionId !== "string" || !doc.constructionId))
         || (Object.hasOwn(doc, "sourceVersionId") && typeof doc.sourceVersionId !== "string") || !Array.isArray(doc.evidenceIds)
         || !Array.from(doc.evidenceIds).every(id => typeof id === "string") || new Set(doc.evidenceIds).size !== doc.evidenceIds.length || !Array.isArray(doc.units)
-        || !Array.isArray(doc.contexts) || !Array.from(doc.contexts).every(context => Array.isArray(context) && context.length === 2
-          && typeof context[0] === "string" && context[0].length > 0 && typeof context[1] === "string" && context[1].length > 0)
+        || !Array.isArray(doc.contexts) || !Array.from(doc.contexts).every(context => Array.isArray(context) && (context.length === 1 || context.length === 2)
+          && typeof context[0] === "string" && context[0].length > 0 && (context.length === 1 || typeof context[1] === "string" && context[1].length > 0))
         || new Set(doc.contexts.map(context => JSON.stringify(context))).size !== doc.contexts.length) return false;
       const evidenceIds = doc.evidenceIds;
       documentIds.add(doc.documentId);
       validateSegmentationAdjacencyFactors(doc.graph);
       const geometry = sourceGeometry(doc.text);
-      if (doc.graph.nodeLogWeights.length !== geometry.utf16.length || doc.units.length !== doc.graph.arcs.length) return false;
+      if (doc.graph.nodeCount !== geometry.utf16.length || doc.units.length !== doc.graph.arcs.length) return false;
       for (let index = 0; index < doc.units.length; index++) {
         const unit = doc.units[index], arc = doc.graph.arcs[index]!;
-        const bearing = isSurfaceBearingText(doc.text.slice(geometry.utf16[arc[0]], geometry.utf16[arc[1]]));
+        const start = Array.isArray(unit) && unit.length === 5 ? unit[3] : geometry.utf16[arc[0]]!;
+        const end = Array.isArray(unit) && unit.length === 5 ? unit[4] : geometry.utf16[arc[1]]!;
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < geometry.utf16[arc[0]]! || start >= geometry.utf16[arc[0] + 1]!
+          || end <= geometry.utf16[arc[1] - 1]! || end > geometry.utf16[arc[1]]!
+          || start >= end || splitsCodePoint(doc.text, start) || splitsCodePoint(doc.text, end)) return false;
+        const bearing = isSurfaceBearingText(doc.text.slice(start, end));
         if (unit === null) { if (bearing) return false; continue; }
-        if (!bearing || !Array.isArray(unit) || unit.length !== 3 || !Number.isSafeInteger(unit[0]) || unit[0] < 0 || unit[0] >= doc.contexts.length
+        if (!bearing || !Array.isArray(unit) || (unit.length !== 3 && unit.length !== 5) || !Number.isSafeInteger(unit[0]) || unit[0] < 0 || unit[0] >= doc.contexts.length
           || !Number.isSafeInteger(unit[1]) || unit[1] < 0 || unit[1] > boundaryBucket(1) || !Array.isArray(unit[2])
           || !Array.from(unit[2]).every(ref => typeof ref === "number" && Number.isSafeInteger(ref) && ref >= 0 && ref < evidenceIds.length)
           || new Set(unit[2]).size !== unit[2].length) return false;
@@ -602,7 +616,9 @@ function selectJoin(
     return { source, alternatives: aggregate.choices, unresolvedPopulationMass: aggregate.unresolvedPopulationMass, contextKey: key };
   });
   const selected = strongestJoinFactor(factors, factor => factor.alternatives[0]!.probability);
-  return selected ? { ...selected.alternatives[0]!, ...selected, support: selected.alternatives[0]!.probability } : undefined;
+  if (!selected) return undefined;
+  const proven = aggregateChoices(mixture, selected.contextKey, selected.source, populationPosterior, true);
+  return { ...proven.choices[0]!, ...selected, alternatives: proven.choices, support: selected.alternatives[0]!.probability };
 }
 
 function strongestJoinFactor<T extends { alternatives: JoinProgramChoice[] }>(factors: readonly T[], support: (factor: T) => number): T | undefined {
@@ -623,7 +639,8 @@ function aggregateChoices(
   mixture: JoinProgramMixture,
   key: string,
   source: JoinBackoffSource,
-  populationPosterior?: Readonly<Record<string, number>>
+  populationPosterior?: Readonly<Record<string, number>>,
+  proofs = false
 ): { choices: JoinProgramChoice[]; unresolvedPopulationMass: number } {
   const componentWeights = normalizedComponentWeights(mixture, populationPosterior);
   const probabilities = new Map<string, JoinCount>();
@@ -631,7 +648,7 @@ function aggregateChoices(
   for (const component of mixture.components) {
     const weight = componentWeights.get(component.populationId) ?? 0;
     if (weight <= 0) continue;
-    const rows = choicesForIndex(component.program, source, key);
+    const rows = choicesForIndex(component.program, source, key, proofs);
     if (!rows.length) {
       unresolvedPopulationMass += weight;
       continue;
@@ -649,7 +666,7 @@ function aggregateChoices(
       };
       current.count += weighted;
       for (const id of row.evidenceIds) current.evidenceIds.add(id);
-      for (const coordinate of row.evidenceCoordinates ?? []) {
+      for (const coordinate of proofs ? row.evidenceCoordinates ?? [] : []) {
         current.evidenceCoordinates.set(evidenceCoordinateKey(coordinate), coordinate);
       }
       probabilities.set(row.surface, current);
@@ -673,38 +690,68 @@ function aggregateChoices(
 
 type JoinDocument = Parameters<typeof compileJoinProgram>[0]["documents"][number];
 
+function canonicalSurfaceResolver(normalizationContract: NormalizationContract): (surface: string) => { normalized: string; classId: string } {
+  const surfaces = new Map<string, { normalized: string; classId: string }>(), forms = new Map<string, string>(), classes = new Map<string, string>(), hasher = createHasher();
+  return surface => {
+    const cached = surfaces.get(surface); if (cached) return cached;
+    const normalized = normalizeSurfaceLatticeSurface(surface, normalizationContract);
+    let normalizedSurfaceFormId = forms.get(normalized);
+    if (normalizedSurfaceFormId === undefined) {
+      normalizedSurfaceFormId = createNormalizedSurfaceFormIdentity({ normalizedSurface: normalized, normalizationContract, hasher }).id;
+      forms.set(normalized, normalizedSurfaceFormId);
+    }
+    const unicodeScriptId = dominantScriptId(surface), key = JSON.stringify([normalizedSurfaceFormId, unicodeScriptId]);
+    let classId = classes.get(key);
+    if (classId === undefined) {
+      classId = createSurfaceFormClassIdentity({ normalizedSurfaceFormId, unicodeScriptId, normalizationContract, hasher }).id;
+      classes.set(key, classId);
+    }
+    const result = { normalized, classId }; surfaces.set(surface, result); return result;
+  };
+}
+
 function compileLocalFactors(documents: readonly JoinDocument[]): JoinProgramLocalFactors {
   const normalizationContract = structuredClone(documents[0]?.lattice.normalizationContract ?? canonicalNormalizationContract());
   assertNormalizationContract(normalizationContract);
   for (const document of documents) assertNormalizationContract(document.lattice.normalizationContract);
+  const canonicalSurface = canonicalSurfaceResolver(normalizationContract);
   return { schema: JOIN_PROGRAM_LOCAL_FACTORS_SCHEMA, normalizationContract, documents: documents.map(document => {
     const exported = exportSegmentationAdjacencyFactors(document.lattice.segmentationForest);
-    const byId = new Map(document.lattice.units.map(unit => [unit.id, unit]));
+    const byId = new Map(document.lattice.units.map(unit => [unit.id, unit])), geometry = sourceGeometry(document.text);
     const measuredUnits = exported.unitIds.map(id => requiredUnit(byId, id)).filter(isSurfaceBearingUnit);
     const evidenceIds = [...new Set(measuredUnits.flatMap(unit => unit.evidenceIds))].sort();
     const evidenceIndex = new Map(evidenceIds.map((id, index) => [id, index]));
-    const contextKeys = [...new Set(measuredUnits.map(unit => JSON.stringify([unit.surfaceFormClassId, unit.kind])))].sort();
-    const contexts = contextKeys.map(key => JSON.parse(key) as [string, string]), contextIndex = new Map(contextKeys.map((key, index) => [key, index]));
-    return { documentId: document.documentId, text: document.text, ...(document.lattice.sourceVersionId ? { sourceVersionId: document.lattice.sourceVersionId } : {}),
-      evidenceIds, contexts, graph: exported.factors, units: exported.unitIds.map((id): JoinLocalFactorDocument["units"][number] => {
+    const contextKey = (unit: SurfaceLatticeUnit) => JSON.stringify(canonicalSurface(unit.surface).classId === unit.surfaceFormClassId
+      ? [unit.kind] : [unit.kind, unit.surfaceFormClassId]);
+    const contextKeys = [...new Set(measuredUnits.map(contextKey))].sort();
+    const contexts = contextKeys.map(key => JSON.parse(key) as JoinLocalFactorDocument["contexts"][number]), contextIndex = new Map(contextKeys.map((key, index) => [key, index]));
+    return { documentId: document.documentId, ...(document.constructionId ? { constructionId: document.constructionId } : {}), text: document.text, ...(document.lattice.sourceVersionId ? { sourceVersionId: document.lattice.sourceVersionId } : {}),
+      evidenceIds, contexts, graph: exported.factors, units: exported.unitIds.map((id, index): JoinLocalFactorDocument["units"][number] => {
         const unit = requiredUnit(byId, id);
-        return isSurfaceBearingUnit(unit) ? [contextIndex.get(JSON.stringify([unit.surfaceFormClassId, unit.kind]))!, boundaryBucket(unit.boundaryAfter.boundaryProbability),
-          [...new Set(unit.evidenceIds.map(evidenceId => evidenceIndex.get(evidenceId)!))].sort((a, b) => a - b)] : null;
+        if (!isSurfaceBearingUnit(unit)) return null;
+        const row: [number, number, number[]] = [contextIndex.get(contextKey(unit))!, boundaryBucket(unit.boundaryAfter.boundaryProbability),
+          [...new Set(unit.evidenceIds.map(evidenceId => evidenceIndex.get(evidenceId)!))].sort((a, b) => a - b)];
+        const arc = exported.factors.arcs[index]!;
+        return unit.utf16Start === geometry.utf16[arc[0]] && unit.utf16End === geometry.utf16[arc[1]] ? row : [...row, unit.utf16Start, unit.utf16End];
       }) };
   }) };
 }
 
 interface LocalFactorIndex {
   documentId: string;
+  constructionId?: string;
   sourceVersionId?: string;
   text: string;
   evidenceIds: readonly string[];
   evidenceRefs: ReadonlyArray<readonly number[] | null>;
   arcs: ReadonlyArray<readonly [number, number]>;
   geometry: ReturnType<typeof sourceGeometry>;
+  sourceBounds: ReadonlyMap<number, readonly [number, number, number, number]>;
   normalized: ReadonlyMap<string, ReadonlySet<number>>;
   leftClasses: ReadonlyMap<string, ReadonlySet<number>>;
   rightClasses: ReadonlyMap<string, ReadonlySet<number>>;
+  leftShapes: ReadonlyMap<string, ReadonlySet<number>>;
+  rightShapes: ReadonlyMap<string, ReadonlySet<number>>;
   query: ReturnType<typeof createSegmentationAdjacencyQuery>;
 }
 const localFactorIndexes = new WeakMap<JoinProgramLocalFactors, readonly LocalFactorIndex[]>();
@@ -714,9 +761,11 @@ function indexLocalFactors(factors: JoinProgramLocalFactors): readonly LocalFact
   const cached = localFactorIndexes.get(factors);
   if (cached) return cached;
   if (!isJoinProgramLocalFactors(factors)) throw new Error("invalid join-program local factors");
+  const canonicalSurface = canonicalSurfaceResolver(factors.normalizationContract);
   const indexes = factors.documents.map(document => {
-    const geometry = sourceGeometry(document.text), bearing = new Set<number>();
+    const geometry = sourceGeometry(document.text), bearing = new Set<number>(), sourceBounds = new Map<number, readonly [number, number, number, number]>();
     const normalized = new Map<string, Set<number>>(), leftClasses = new Map<string, Set<number>>(), rightClasses = new Map<string, Set<number>>();
+    const leftShapes = new Map<string, Set<number>>(), rightShapes = new Map<string, Set<number>>();
     const add = (index: Map<string, Set<number>>, key: string, value: number) => {
       const bucket = index.get(key) ?? new Set<number>(); bucket.add(value); index.set(key, bucket);
     };
@@ -724,39 +773,46 @@ function indexLocalFactors(factors: JoinProgramLocalFactors): readonly LocalFact
       if (!unit) return;
       bearing.add(index);
       const arc = document.graph.arcs[index]!, context = document.contexts[unit[0]]!;
-      add(normalized, normalize(document.text.slice(geometry.utf16[arc[0]], geometry.utf16[arc[1]]), factors.normalizationContract), index);
-      add(leftClasses, JSON.stringify([context[0], context[1], unit[1]]), index);
-      add(rightClasses, JSON.stringify(context), index);
+      const start = unit.length === 5 ? unit[3] : geometry.utf16[arc[0]]!, end = unit.length === 5 ? unit[4] : geometry.utf16[arc[1]]!;
+      if (unit.length === 5) sourceBounds.set(index, [start, end, geometry.utf16Bytes[start]!, geometry.utf16Bytes[end]!]);
+      const surface = document.text.slice(start, end), source = canonicalSurface(surface), classId = context.length === 2 ? context[1] : source.classId;
+      add(normalized, source.normalized, index);
+      add(leftClasses, JSON.stringify([classId, context[0], unit[1]]), index);
+      add(rightClasses, JSON.stringify([classId, context[0]]), index);
+      add(leftShapes, boundaryShape([...surface].at(-1) ?? ""), index);
+      add(rightShapes, boundaryShape([...surface][0] ?? ""), index);
     });
-    return { documentId: document.documentId, ...(document.sourceVersionId ? { sourceVersionId: document.sourceVersionId } : {}), text: document.text,
+    return { documentId: document.documentId, ...(document.constructionId ? { constructionId: document.constructionId } : {}), ...(document.sourceVersionId ? { sourceVersionId: document.sourceVersionId } : {}), text: document.text,
       evidenceIds: [...document.evidenceIds], evidenceRefs: document.units.map(unit => unit ? [...unit[2]] : null),
-      arcs: document.graph.arcs.map(arc => [arc[0], arc[1]] as const), geometry, normalized, leftClasses, rightClasses,
+      arcs: document.graph.arcs.map(arc => [arc[0], arc[1]] as const), geometry, sourceBounds, normalized, leftClasses, rightClasses, leftShapes, rightShapes,
       query: createSegmentationAdjacencyQuery(document.graph, bearing) };
   });
   localFactorIndexes.set(factors, indexes);
   return indexes;
 }
 
-function queryLocalFactorChoices(factors: JoinProgramLocalFactors, source: "exact" | "class", key: string): JoinProgramChoice[] {
+function queryLocalFactorChoices(factors: JoinProgramLocalFactors, source: "exact" | "class" | "local_shape" | "construction", key: string, proofs: boolean): JoinProgramChoice[] {
   let context: unknown;
   try { context = JSON.parse(key); } catch { return []; }
-  if (!Array.isArray(context) || context.length !== (source === "exact" ? 2 : 5)
-    || !context.slice(0, source === "exact" ? 2 : 4).every(item => typeof item === "string")
+  if (!Array.isArray(context) || context.length !== (source === "class" ? 5 : source === "construction" ? 3 : 2)
+    || !context.slice(0, source === "class" ? 4 : source === "construction" ? 3 : 2).every(item => typeof item === "string")
     || (source === "class" && !Number.isSafeInteger(context[4]))) return [];
-  const target = context, counts = new Map<string, Map<string, JoinCount>>(), hashes = new Map<string, string>();
+  const target = source === "construction" ? context.slice(1) : context, counts = new Map<string, Map<string, JoinCount>>(), hashes = new Map<string, string>();
   for (const document of indexLocalFactors(factors)) {
-    const left = source === "exact" ? document.normalized.get(target[0]) : document.leftClasses.get(JSON.stringify([target[0], target[2], target[4]]));
-    const right = source === "exact" ? document.normalized.get(target[1]) : document.rightClasses.get(JSON.stringify([target[1], target[3]]));
+    if (source === "construction" && document.constructionId !== context[0]) continue;
+    const left = source === "exact" ? document.normalized.get(target[0]) : (source === "local_shape" || source === "construction") ? document.leftShapes.get(target[0]) : document.leftClasses.get(JSON.stringify([target[0], target[2], target[4]]));
+    const right = source === "exact" ? document.normalized.get(target[1]) : (source === "local_shape" || source === "construction") ? document.rightShapes.get(target[1]) : document.rightClasses.get(JSON.stringify([target[1], target[3]]));
     if (!left?.size || !right?.size) continue;
     for (const pair of document.query.pairs({ leftArcIndices: left, rightArcIndices: right })) {
       const leftArc = document.arcs[pair.leftArcIndex]!, rightArc = document.arcs[pair.rightArcIndex]!, geometry = document.geometry;
-      const utf16Start = geometry.utf16[leftArc[1]]!, utf16End = geometry.utf16[rightArc[0]]!, surface = document.text.slice(utf16Start, utf16End);
-      let exactSurfaceHash = hashes.get(surface);
-      if (exactSurfaceHash === undefined) { exactSurfaceHash = createHasher().digestHex(surface); hashes.set(surface, exactSurfaceHash); }
+      const leftBounds = document.sourceBounds.get(pair.leftArcIndex), rightBounds = document.sourceBounds.get(pair.rightArcIndex);
+      const utf16Start = leftBounds?.[1] ?? geometry.utf16[leftArc[1]]!, utf16End = rightBounds?.[0] ?? geometry.utf16[rightArc[0]]!, surface = document.text.slice(utf16Start, utf16End);
       const ids = [...new Set([...document.evidenceRefs[pair.leftArcIndex]!, ...document.evidenceRefs[pair.rightArcIndex]!])]
         .map(index => document.evidenceIds[index]!).sort();
-      const coordinates = ids.map(evidenceId => ({ evidenceId, ...(document.sourceVersionId ? { sourceVersionId: document.sourceVersionId } : {}),
-        documentId: document.documentId, byteStart: geometry.bytes[leftArc[1]]!, byteEnd: geometry.bytes[rightArc[0]]!, utf16Start, utf16End, exactSurfaceHash }));
+      let exactSurfaceHash: string | undefined;
+      if (proofs) { exactSurfaceHash = hashes.get(surface); if (exactSurfaceHash === undefined) { exactSurfaceHash = createHasher().digestHex(surface); hashes.set(surface, exactSurfaceHash); } }
+      const coordinates = proofs ? ids.map(evidenceId => ({ evidenceId, ...(document.sourceVersionId ? { sourceVersionId: document.sourceVersionId } : {}),
+        documentId: document.documentId, byteStart: leftBounds?.[3] ?? geometry.bytes[leftArc[1]]!, byteEnd: rightBounds?.[2] ?? geometry.bytes[rightArc[0]]!, utf16Start, utf16End, exactSurfaceHash: exactSurfaceHash! })) : [];
       addCount(counts, key, surface, ids, coordinates, pair.posterior, evidenceCoordinateKey);
     }
   }
@@ -769,15 +825,15 @@ function joinBoundaryContext(document: JoinDocument, left: SurfaceLatticeUnit, d
 }
 
 function joinEvent(document: JoinDocument, left: SurfaceLatticeUnit, right: SurfaceLatticeUnit, weight: number,
-  hashes: Map<string, string>, derivationShapeId?: string): JoinEvent {
+  hashes: Map<string, string>, derivationShapeId?: string, proofs = true): JoinEvent {
   const join = document.text.slice(left.utf16End, right.utf16Start);
-  let exactSurfaceHash = hashes.get(join);
-  if (exactSurfaceHash === undefined) { exactSurfaceHash = createHasher().digestHex(join); hashes.set(join, exactSurfaceHash); }
+  let exactSurfaceHash: string | undefined;
+  if (proofs) { exactSurfaceHash = hashes.get(join); if (exactSurfaceHash === undefined) { exactSurfaceHash = createHasher().digestHex(join); hashes.set(join, exactSurfaceHash); } }
   const evidenceIds = [...new Set([...left.evidenceIds, ...right.evidenceIds])].sort();
-  const evidenceCoordinates = evidenceIds.map(evidenceId => ({ evidenceId,
+  const evidenceCoordinates = proofs ? evidenceIds.map(evidenceId => ({ evidenceId,
     ...(document.lattice.sourceVersionId ? { sourceVersionId: document.lattice.sourceVersionId } : {}),
     documentId: document.documentId, byteStart: left.byteEnd, byteEnd: right.byteStart,
-    utf16Start: left.utf16End, utf16End: right.utf16Start, exactSurfaceHash }));
+    utf16Start: left.utf16End, utf16End: right.utf16Start, exactSurfaceHash: exactSurfaceHash! })) : [];
   const leftContext = unitContext(left), rightContext = unitContext(right), boundaryContext = joinBoundaryContext(document, left, derivationShapeId);
   return { left, right, join, weight, evidenceIds, evidenceCoordinates,
     ...(derivationShapeId === undefined ? {} : {
@@ -803,14 +859,14 @@ function withoutDerivationShape(key: string): string {
   return JSON.stringify(context);
 }
 
-function* joinEvents(document: JoinDocument): Generator<JoinEvent> {
+function* joinEvents(document: JoinDocument, proofs = true): Generator<JoinEvent> {
   const hashes = new Map<string, string>(), unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
   for (const path of document.lattice.segmentationForest.paths) {
     const pathWeight = Math.max(0, path.posterior);
     if (pathWeight === 0) continue;
     const units = path.unitIds.map(unitId => requiredUnit(unitsById, unitId)).filter(isSurfaceBearingUnit);
     const derivationShapeId = derivationShape(units);
-    for (let index = 1; index < units.length; index++) yield joinEvent(document, units[index - 1]!, units[index]!, pathWeight, hashes, derivationShapeId);
+    for (let index = 1; index < units.length; index++) yield joinEvent(document, units[index - 1]!, units[index]!, pathWeight, hashes, derivationShapeId, proofs);
   }
 }
 
@@ -818,7 +874,7 @@ function* localJoinEvents(document: JoinDocument): Generator<JoinEvent> {
   const hashes = new Map<string, string>(), unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
   const bearing = new Set(document.lattice.units.filter(isSurfaceBearingUnit).map(unit => unit.id));
   for (const pair of segmentationSurfaceAdjacencies(document.lattice.segmentationForest, bearing)) {
-    if (pair.posterior > 0) yield joinEvent(document, requiredUnit(unitsById, pair.leftUnitId), requiredUnit(unitsById, pair.rightUnitId), pair.posterior, hashes);
+    if (pair.posterior > 0) yield joinEvent(document, requiredUnit(unitsById, pair.leftUnitId), requiredUnit(unitsById, pair.rightUnitId), pair.posterior, hashes, undefined, false);
   }
 }
 
@@ -841,7 +897,7 @@ function* evaluationJoinEvents(document: JoinDocument): Generator<JoinEvent> {
     const weight = Math.max(0, event.weight - (row ? row.mass * row.scale : 0));
     if (weight > 0) yield { ...event, weight };
   }
-  for (const event of joinEvents(document)) {
+  for (const event of joinEvents(document, false)) {
     const scale = retained.get(key(event.left.id, event.right.id))!.scale;
     if (scale > 0) yield { ...event, weight: event.weight * scale };
   }
@@ -1069,7 +1125,7 @@ function learnBackoffReliability(
     sources.map(source => [source, { correct: 0, mass: 0 }])
   );
   for (const document of documents) {
-    for (const [events, measuredSources] of [[joinEvents(document), ["conditioned", "structural"]],
+    for (const [events, measuredSources] of [[joinEvents(document, false), ["conditioned", "structural"]],
       [localJoinEvents(document), ["exact", "class", "local_shape", "construction"]]] as const) for (const event of events) {
       for (const source of measuredSources) {
         const alternatives = [...choicesForIndexes(indexes, source, event)].sort((left, right) => compareJoinChoices(left, right));
@@ -1096,7 +1152,7 @@ function choicesForIndexes(
 ): JoinProgramChoice[] {
   const key = source === "conditioned" ? event.conditionedKey : source === "exact" ? event.exactKey
     : source === "structural" ? event.structuralKey : source === "class" ? event.classKey : source === "local_shape" ? event.localShapeKey : event.constructionKey;
-  return key === undefined ? [] : joinProgramChoices(indexes, source, key);
+  return key === undefined ? [] : joinProgramChoices(indexes, source, key, { proofs: false });
 }
 
 function reconstructDocument(
@@ -1412,9 +1468,17 @@ function constructionJoinKey(
 export function joinProgramChoices(
   program: JoinIndexes,
   source: JoinBackoffSource,
-  key: string
+  key: string,
+  options: { proofs?: boolean } = {}
 ): JoinProgramChoice[] {
-  if (program.localFactors && (source === "exact" || source === "class")) return queryLocalFactorChoices(program.localFactors, source, key);
+  const proofs = options.proofs !== false;
+  if (program.localFactors && (source === "exact" || source === "class")) return queryLocalFactorChoices(program.localFactors, source, key, proofs);
+  if (program.localFactors && proofs && (source === "local_shape" || source === "construction")) {
+    const measured = (source === "local_shape" ? program.localShapeIndex : program.constructionIndex)[key] ?? [];
+    if (!measured.length) return [];
+    const witnesses = new Map(queryLocalFactorChoices(program.localFactors, source, key, true).map(choice => [choice.surface, choice.evidenceCoordinates]));
+    return measured.map(choice => ({ ...choice, evidenceCoordinates: witnesses.get(choice.surface) ?? [] }));
+  }
   if (source === "conditioned") return program.conditionedIndex[key] ?? [];
   if (source === "exact") return program.exactIndex[key] ?? [];
   if (source === "structural") return program.structuralIndex[key] ?? [];
@@ -1423,8 +1487,8 @@ export function joinProgramChoices(
   return program.constructionIndex[key] ?? [];
 }
 
-function choicesForIndex(program: JoinProgramModel, source: JoinBackoffSource, key: string): JoinProgramChoice[] {
-  return joinProgramChoices(program, source, key);
+function choicesForIndex(program: JoinProgramModel, source: JoinBackoffSource, key: string, proofs: boolean): JoinProgramChoice[] {
+  return joinProgramChoices(program, source, key, { proofs });
 }
 
 function normalizedComponentWeights(
