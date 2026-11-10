@@ -49,7 +49,8 @@ import { OSS_CONTRACT_CLOSURE_RECIPE } from "../oss-owned-contract-closure.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
 import { MIN_WIKIPEDIA_MAX_ARTICLE_CHARS } from "../config.js";
-import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-induction-memory.js";
+import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS } from "../../../kernel/src/language-induction-memory.js";
+import { INDUCED_LANGUAGE_MEMORY_PUBLICATION_RECIPE_ID } from "../../../kernel/src/language-pattern-publication.js";
 import { LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
 import { SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-construction-memory.js";
 import { SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "../corpus-source-graph-projection.js";
@@ -88,6 +89,7 @@ import type {
 const tempRoots: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const root of tempRoots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
@@ -378,9 +380,17 @@ describe("learned rows carry the shard's provenance once", () => {
       sourceVersionId: evidence.sourceVersionId, evidence: [evidence], profile, graphSnapshotAdditions,
       corpusCheckpoint: { rootUri: "fixture://raw-forms", itemUri: "forms.txt", contentHash: blobContentHash(Buffer.from(text)), byteLength: Buffer.byteLength(text) } };
     await trainLanguageCorpusText(input);
-    expect(activeProjectionWrites).toHaveLength(2);
-    expect(activeProjectionWrites[1]!.projection.patternSchema).toBe("scce.creative_event_compatibility_model.v1");
-    expect(activeProjectionWrites[1]!.projection.patternIds).toEqual([]);
+    expect(activeProjectionWrites.map(write => write.projection.patternSchema)).toEqual([
+      LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, ...INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS, "scce.creative_event_compatibility_model.v1"
+    ]);
+    for (const write of activeProjectionWrites) {
+      expect(write.projection.profileId).toBe(profile.id);
+      expect(write.projection.sourceVersionId).toBe(evidence.sourceVersionId);
+      expect(write.projection.informationLabel).toEqual(input.informationLabel);
+      expect(write.projection.patternIds).toEqual(fixture.state.patterns.filter(row =>
+        row.profileId === profile.id && recordOf(row.patternJson).schema === write.projection.patternSchema).map(row => row.id).sort());
+    }
+    expect(activeProjectionWrites.at(-1)!.projection.patternIds).toEqual([]);
     expect(activeProjectionWrites[0]!.projection.componentRecipe).toBe(LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID);
     expect(activeProjectionWrites[0]!.projection.patternIds).toEqual(fixture.state.patterns
       .filter(row => recordOf(row.patternJson).schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA).map(row => row.id).sort());
@@ -416,8 +426,8 @@ describe("learned rows carry the shard's provenance once", () => {
     checkpoints.set(checkpoint.id, { ...checkpoint, metadata });
     const writesBeforeUpgrade = fixture.state.events.length;
     const upgraded = await trainLanguageCorpusText(input);
-    expect(activeProjectionWrites).toHaveLength(4);
-    expect(activeProjectionWrites[2]!.projection.sourceId).toBe(activeProjectionWrites[0]!.projection.sourceId);
+    expect(activeProjectionWrites).toHaveLength(12);
+    expect(activeProjectionWrites.slice(6).map(write => write.projection)).toEqual(activeProjectionWrites.slice(0, 6).map(write => write.projection));
     expect(upgraded.artifacts.ngramModelIds).toEqual(before.models.map(row => row.id));
     expect(fixture.state.events.length).toBeGreaterThan(writesBeforeUpgrade);
     expect(fixture.state.models).toEqual(before.models);
@@ -434,12 +444,13 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(checkpoints.size).toBe(1);
     expect([...checkpoints.values()][0]!.id).toBe(checkpoint.id);
     expect(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).toEqual({ inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+      inducedLanguageProjection: INDUCED_LANGUAGE_MEMORY_PUBLICATION_RECIPE_ID,
       sourceConstructionProjection: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
       sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID, sourceEntityGraph: SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID,
       constructionContext: SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID });
     const writes = fixture.state.events.length;
     await trainLanguageCorpusText(input);
-    expect(activeProjectionWrites).toHaveLength(4);
+    expect(activeProjectionWrites).toHaveLength(12);
     expect(fixture.state.events).toHaveLength(writes);
     expect(fixture.state.models.map(row => row.id)).toEqual(before.models.map(row => row.id));
   });
