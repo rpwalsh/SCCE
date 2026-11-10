@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
-import { buildSurfaceLattice, compileJoinProgram, compileJoinProgramMixture, canonicalDigestHex, canonicalStringify, CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, createHasher, hashEvent, joinProgramMixtureStorageForm, renderJoinedSurface, type JoinProgramMixture, type JsonValue, type ScceEvent } from "@scce/kernel";
+import { buildSurfaceLattice, compileJoinProgram, compileJoinProgramMixture, canonicalDigestHex, canonicalStringify, CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, createHasher, hashEvent, joinProgramChoices, joinProgramMixtureStorageForm, renderJoinedSurface, type JoinProgramMixture, type JsonValue, type ScceEvent } from "@scce/kernel";
 import { decodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA,
   durableJoinProgramJsonByteLengths, encodeDurableJoinPrograms } from "../durable-join-program-storage.js";
 import { PostgresStorageAdapter } from "../postgres.js";
@@ -24,11 +24,11 @@ const cold = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 const digest = (value: unknown): string => createHasher().digestHex(canonicalStringify(value));
 
-function factoredFixture(): JoinProgramMixture {
+function factoredFixture(constructionId?: string): JoinProgramMixture {
   const documentId = "document.factor.owned", text = "cat chased mouse. dog chased mouse.";
   const lattice = buildSurfaceLattice({ documentId, sourceVersionId: "version.factor.owned" as never,
     text, evidenceIds: ["evidence.factor.owned" as never] });
-  const program = compileJoinProgram({ populationId: "population.factor.owned", documents: [{ documentId, text, lattice }] });
+  const program = compileJoinProgram({ populationId: "population.factor.owned", documents: [{ documentId, text, lattice, ...(constructionId ? { constructionId } : {}) }] });
   return compileJoinProgramMixture({ populationModelId: "population.factor.owned", components: [{ populationId: program.populationId, weight: 1, program }] });
 }
 
@@ -69,6 +69,23 @@ describe("durable JOIN representation", () => {
     expect(() => decodeDurableJoinPrograms(cold(stored))).toThrow("invalid JOIN local factors");
     expect(() => decodeDurableJoinPrograms({ schema: DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA, mixture: stored,
       decodedJsonBytes: 1, decodedJsonbBytes: 1 })).toThrow("invalid durable JOIN storage marker");
+  });
+
+  it("rejects mixed implicit/eager local proofs without expanding or discarding a witness list", () => {
+    const mixture = factoredFixture("construction.factor.owned");
+    for (const name of ["localShapeIndex", "constructionIndex"] as const) {
+      const mixed = structuredClone(mixture), program = mixed.components[0]!.program;
+      const key = Object.keys(program[name])[0]!, source = name === "localShapeIndex" ? "local_shape" : "construction";
+      const coordinates = joinProgramChoices(program, source, key)[0]!.evidenceCoordinates;
+      expect(coordinates.length).toBeGreaterThan(0); program[name][key]![0]!.evidenceCoordinates = coordinates;
+      expect(() => encodeDurableJoinPrograms(mixed)).toThrow("invalid JOIN local factors");
+      expect(() => decodeDurableJoinPrograms(cold(mixed))).toThrow("invalid JOIN local factors");
+      const stored = structuredClone(joinProgramMixtureStorageForm(mixture)), packed = stored.mixture.components[0]!.program;
+      const ref = packed.indexes[name][0]![1][0]!;
+      packed.evidenceCoordinateDictionary.push(coordinates[0]!); packed.choiceDictionary[ref]![4] = [packed.evidenceCoordinateDictionary.length - 1];
+      expect(() => encodeDurableJoinPrograms(stored)).toThrow("invalid JOIN local factors");
+      expect(() => decodeDurableJoinPrograms(cold(stored))).toThrow("invalid JOIN local factors");
+    }
   });
   it("packs cold raw mixtures nested in aggregate payloads and restores every logical field", () => {
     const mixture = fixture();
@@ -194,7 +211,7 @@ describe("Postgres JOIN storage boundaries", () => {
 
   it("preserves factored lookup, source bindings, and ACL through ordinary pattern cold writes", async () => {
     const { adapter, rows } = offlineStorage();
-    const mixture = factoredFixture();
+    const mixture = factoredFixture("construction.factor.owned");
     const pattern = { id: "pattern.factor.owned", profileId: "profile.factor.owned", patternKind: "syntax" as const,
       support: 1, entropy: 0, evidenceIds: ["evidence.factor.owned" as never], updatedAt: 1000, informationLabel: label,
       patternJson: { schema: "scce.induced_language_model.syntax_memory.v1", sourceVersionId: "version.factor.owned", joinProgram: mixture } as unknown as JsonValue };
@@ -207,6 +224,16 @@ describe("Postgres JOIN storage boundaries", () => {
     const restored = (decoded[0]!.patternJson as unknown as { joinProgram: JoinProgramMixture }).joinProgram;
     expect(restored.components[0]!.program.localFactors).toEqual(mixture.components[0]!.program.localFactors);
     expect(renderJoinedSurface(["cat", "chased"], restored)).toEqual(renderJoinedSurface(["cat", "chased"], mixture));
+    const before = digest(restored);
+    for (const [source, name] of [["local_shape", "localShapeIndex"], ["construction", "constructionIndex"]] as const) {
+      const key = Object.keys(mixture.components[0]!.program[name])[0]!;
+      expect(restored.components[0]!.program[name][key]![0]!.evidenceCoordinates).toEqual([]);
+      const expected = joinProgramChoices(mixture.components[0]!.program, source, key);
+      expect(expected[0]!.evidenceCoordinates.length).toBeGreaterThan(0);
+      expect(joinProgramChoices(restored.components[0]!.program, source, key)).toEqual(expected);
+    }
+    expect(digest(restored)).toBe(before);
+    expect(stored[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).toMatchObject(durableJoinProgramJsonByteLengths(decoded[0]!.patternJson));
   });
 
   it("normalizes full induced model cold writes and decodes both read APIs", async () => {

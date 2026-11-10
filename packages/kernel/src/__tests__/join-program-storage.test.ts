@@ -1,10 +1,11 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
-import { JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_SCHEMA, compileJoinProgram, compileJoinProgramMixture, renderJoinedSurface, type JoinProgramModel, type JoinProgramMixture } from "../join-program.js";
+import { JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_SCHEMA, compileJoinProgram, compileJoinProgramMixture, joinProgramChoices, renderJoinedSurface, type JoinProgramModel, type JoinProgramMixture } from "../join-program.js";
 import { joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "../join-program-storage.js";
 import { buildSurfaceLattice } from "../surface-lattice.js";
 import { canonicalStringify, createHasher } from "../primitives.js";
+import { buildSegmentationForest } from "../segmentation-forest.js";
 
 const names = ["conditionedIndex", "exactIndex", "structuralIndex", "classIndex", "localShapeIndex", "constructionIndex"] as const;
 
@@ -30,6 +31,43 @@ function legacy(mixture: JoinProgramMixture) {
 }
 
 describe("lossless join storage v2", () => {
+  it("stores implicit local proofs and cold-restores every original source witness without changing the canonical payload", () => {
+    const documentId = "document.implicit", sourceVersionId = "version.implicit", text = "\u03b1 \u03b2 \u03b1 \u03b2";
+    const evidenceIds = ["evidence.implicit.a", "evidence.implicit.b"], constructionId = "construction.implicit";
+    const lattice = buildSurfaceLattice({ documentId, sourceVersionId, text, evidenceIds });
+    lattice.units = lattice.units.filter(unit => unit.overlapClass === "base_partition");
+    lattice.segmentationForest = buildSegmentationForest({ latticeId: lattice.id, estimatorId: "implicit", units: lattice.units, pathLimit: 1 });
+    const program = compileJoinProgram({ populationId: "implicit", documents: [{ documentId, constructionId, text, lattice }] });
+    expect(program.localFactors!.documents[0]!.graph.nodeCount).toBe(text.length + 1);
+    expect(program.localFactors!.documents[0]!.graph).not.toHaveProperty("nodeLogWeights");
+    expect(program.localFactors!.documents[0]!.graph).not.toHaveProperty("partitionLogZ");
+    expect(program.localFactors!.documents[0]!.contexts.every(context => context.length === 1)).toBe(true);
+    const bearing = lattice.units.filter(unit => !/^\s+$/u.test(unit.surface));
+    const coordinates = bearing.slice(1).flatMap((right, index) => evidenceIds.map(evidenceId => ({ evidenceId, sourceVersionId, documentId,
+      byteStart: bearing[index]!.byteEnd, byteEnd: right.byteStart, utf16Start: bearing[index]!.utf16End, utf16End: right.utf16Start,
+      exactSurfaceHash: createHasher().digestHex(" ") })));
+    const byCoordinate = (left: typeof coordinates[number], right: typeof coordinates[number]) => [left.evidenceId, left.sourceVersionId, left.documentId, left.byteStart, left.byteEnd, left.utf16Start, left.utf16End, left.exactSurfaceHash].join("\u001f")
+      .localeCompare([right.evidenceId, right.sourceVersionId, right.documentId, right.byteStart, right.byteEnd, right.utf16Start, right.utf16End, right.exactSurfaceHash].join("\u001f"));
+    coordinates.sort(byCoordinate);
+    const expected = [{ surface: " ", count: 3, probability: 1, evidenceIds, evidenceCoordinates: coordinates }];
+    const mixture = compileJoinProgramMixture({ populationModelId: "implicit", components: [{ populationId: "implicit", weight: 1, program }] });
+    const stored = joinProgramMixtureStorageForm(mixture), snapshot = JSON.stringify(stored), cold = joinProgramMixtureFromStorage(JSON.parse(snapshot))!;
+    for (const [source, key] of [["local_shape", JSON.stringify(["letter", "letter"])], ["construction", JSON.stringify([constructionId, "letter", "letter"])]] as const) {
+      expect(joinProgramChoices(cold.components[0]!.program, source, key, { proofs: false })).toEqual(expected.map(choice => ({ ...choice, evidenceCoordinates: [] })));
+      expect(joinProgramChoices(cold.components[0]!.program, source, key)).toEqual(expected);
+    }
+    const rendered = renderJoinedSurface(["\u03b3", "\u03b4"], cold);
+    expect(rendered.trace[0]!.source).toBe("local_shape"); expect(rendered.trace[0]!.evidenceCoordinates).toEqual(coordinates);
+    expect(joinProgramMixtureStorageForm(cold)).toEqual(stored); expect(JSON.stringify(stored)).toBe(snapshot);
+    for (const name of ["localShapeIndex", "constructionIndex"] as const) {
+      const mixed = structuredClone(mixture); Object.values(mixed.components[0]!.program[name])[0]![0]!.evidenceCoordinates = coordinates;
+      expect(joinProgramMixtureFromStorage(mixed)).toBeUndefined(); expect(() => joinProgramMixtureStorageForm(mixed)).toThrow("invalid");
+      const mixedStored = structuredClone(stored), packed = mixedStored.mixture.components[0]!.program;
+      const choice = packed.choiceDictionary[packed.indexes[name][0]![1][0]!]!;
+      expect(packed.evidenceCoordinateDictionary.length).toBeGreaterThan(0); choice[4] = [0];
+      expect(joinProgramMixtureFromStorage(mixedStored)).toBeUndefined();
+    }
+  });
   it("cold-restores one portable local law without materializing exact or class pair tables", () => {
     const documentId = "document.factor.owned", text = "cat chased mouse. dog chased mouse. \u732b\t\u{1f469}\u200d\u{1f52c}\u0000\u00e9 e\u0301.";
     const lattice = buildSurfaceLattice({ documentId, sourceVersionId: "version.factor.owned" as never,
@@ -76,6 +114,23 @@ describe("lossless join storage v2", () => {
     const stored = structuredClone(joinProgramMixtureStorageForm(fixture()));
     Object.assign(stored.mixture.components[0]!.program.header, { localFactors: { schema: "unknown.factor" } });
     expect(joinProgramMixtureFromStorage(stored)).toBeUndefined();
+  });
+
+  it("rejects malformed sparse source bounds while accepting the genuine inner-grapheme source geometry", () => {
+    const documentId = "document.bounds", text = "\u09ae\u09b2\u09cd\u09b2\u09bf z", lattice = buildSurfaceLattice({ documentId, text, evidenceIds: ["evidence.bounds"] });
+    const program = compileJoinProgram({ populationId: "bounds", documents: [{ documentId, text, lattice }] });
+    const mixture = compileJoinProgramMixture({ populationModelId: "bounds", components: [{ populationId: "bounds", weight: 1, program }] });
+    expect(program.localFactors!.documents[0]!.units.some(unit => unit?.length === 5)).toBe(true);
+    const stored = joinProgramMixtureStorageForm(mixture);
+    expect(joinProgramMixtureFromStorage(JSON.parse(JSON.stringify(stored)))).toEqual(mixture);
+    const bad = structuredClone(mixture), bounds = bad.components[0]!.program.localFactors!.documents[0]!.units.find(unit => unit?.length === 5)!;
+    if (bounds.length !== 5) throw Error("sparse bounds fixture missing");
+    bounds[3] = bounds[4];
+    expect(joinProgramMixtureFromStorage(bad)).toBeUndefined(); expect(() => joinProgramMixtureStorageForm(bad)).toThrow("invalid");
+    const badStored = structuredClone(stored), packedBounds = badStored.mixture.components[0]!.program.header.localFactors!.documents[0]!.units.find(unit => unit?.length === 5)!;
+    if (packedBounds.length !== 5) throw Error("sparse bounds fixture missing");
+    packedBounds[4] = text.length + 1;
+    expect(joinProgramMixtureFromStorage(badStored)).toBeUndefined();
   });
 
   it("serializes each distinct key atom once instead of every index occurrence", () => {

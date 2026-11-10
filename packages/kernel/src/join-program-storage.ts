@@ -165,6 +165,8 @@ function decodeJoinProgramMixture(value: unknown, shareChoices: boolean): JoinPr
             values.push(expandChoice(choice.surface, choice.count, choice.probability, choice.evidenceIdRefs, choice.evidenceCoordinateRefs, ids, coordinates));
           }
         }
+        if (Object.hasOwn(header, "localFactors") && (name === "localShapeIndex" || name === "constructionIndex")
+          && values.some(choice => choice.evidenceCoordinates.length !== 0)) return undefined;
         if (keys.has(key)) return undefined;
         keys.add(key);
         expanded.push([key, values]);
@@ -188,7 +190,10 @@ function validProgramFactors(value: unknown): boolean {
   const program = record(value);
   return program !== undefined && (!Object.hasOwn(program, "localFactors") || isJoinProgramLocalFactors(program.localFactors)
     && ["exactIndex", "classIndex"].every(name => !Object.hasOwn(program, name)
-      || record(program[name]) !== undefined && Object.keys(program[name] as object).length === 0));
+      || record(program[name]) !== undefined && Object.keys(program[name] as object).length === 0)
+    && ["localShapeIndex", "constructionIndex"].every(name => !Object.hasOwn(program, name)
+      || record(program[name]) !== undefined && Object.values(program[name] as object).every(choices => Array.isArray(choices)
+        && choices.every(choice => { const coordinates = record(choice)?.evidenceCoordinates; return Array.isArray(coordinates) && coordinates.length === 0; }))));
 }
 function finite(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value); }
 function atom(value: unknown): value is Atom { return value === null || typeof value === "string" || typeof value === "boolean" || finite(value); }
