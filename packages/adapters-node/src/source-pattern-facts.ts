@@ -32,9 +32,9 @@ const candidate = (value: unknown): boolean => { const root = row(value); return
 
 export function sourcePatternFactSchemaStatements(q: string): string[] {
   return [
-    `CREATE TABLE IF NOT EXISTS ${q}.source_pattern_fact_pages (id TEXT PRIMARY KEY,owner_key TEXT NOT NULL,profile_id TEXT NOT NULL REFERENCES ${q}.language_profiles(id) ON DELETE CASCADE,source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id) ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN ('construction_role_geometry','request_source_fact')),digest TEXT NOT NULL,value_json JSONB NOT NULL,information_label JSONB NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.source_pattern_fact_pages (id TEXT PRIMARY KEY,owner_key TEXT NOT NULL,profile_id TEXT NOT NULL REFERENCES ${q}.language_profiles(id) ON DELETE CASCADE,source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id),kind TEXT NOT NULL CHECK(kind IN ('construction_role_geometry','request_source_fact')),digest TEXT NOT NULL,value_json JSONB NOT NULL,information_label JSONB NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_source_pattern_fact_pages_profile ON ${q}.source_pattern_fact_pages(profile_id)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.source_pattern_fact_refs (pattern_id TEXT NOT NULL REFERENCES ${q}.language_patterns(id) ON DELETE CASCADE,page_id TEXT NOT NULL REFERENCES ${q}.source_pattern_fact_pages(id) ON DELETE CASCADE,PRIMARY KEY(pattern_id,page_id))`,
+    `CREATE TABLE IF NOT EXISTS ${q}.source_pattern_fact_refs (pattern_id TEXT NOT NULL REFERENCES ${q}.language_patterns(id) ON DELETE CASCADE,page_id TEXT NOT NULL REFERENCES ${q}.source_pattern_fact_pages(id),PRIMARY KEY(pattern_id,page_id))`,
     `CREATE INDEX IF NOT EXISTS idx_source_pattern_fact_refs_page ON ${q}.source_pattern_fact_refs(page_id)`
   ];
 }
