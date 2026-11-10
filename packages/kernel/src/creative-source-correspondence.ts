@@ -30,6 +30,10 @@ export interface CreativeSourceCorrespondence {
     sourceReference?: { patternId: string; referentId: string; propertyId: string } }>;
 }
 
+export function deriveCreativeSourceCorrespondence(material: Omit<CreativeSourceCorrespondence, "id">, hasher: Hasher): CreativeSourceCorrespondence {
+  return { ...material, id: digest(hasher, "creative.source.correspondence", material) };
+}
+
 interface SourceTurnWitness {
   turnIndex: number;
   evidenceId: string;
@@ -212,7 +216,7 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
           eventRoleId: port.roleId as "scce.role.patient" | "scce.role.complement", requestStart: start, requestEnd: end,
           eventStart: port.startCodePoint, eventEnd: port.endCodePoint, ...declared }))
       };
-      observations.push({ ...material, id: digest(input.hasher, "creative.source.correspondence", material) });
+      observations.push(deriveCreativeSourceCorrespondence(material, input.hasher));
     }
     if (!observations.some(row => row.requestFrameId === requestFrameId)) continue;
     const example: AlignedSurfaceExample = { id: digest(input.hasher, "creative.request.observed.example", { requestFrameId, requestWitness }),
@@ -292,7 +296,7 @@ function verifyCreativeSourceCorrespondenceIndexed(row: CreativeSourceCorrespond
       || !Number.isSafeInteger(binding.requestStart) || !Number.isSafeInteger(binding.requestEnd)
       || !Number.isSafeInteger(binding.eventStart) || !Number.isSafeInteger(binding.eventEnd))) return false;
   const { id, ...material } = row;
-  if (id !== digest(context.hasher, "creative.source.correspondence", material) || row.reply.commitmentScope !== "conversation"
+  if (id !== deriveCreativeSourceCorrespondence(material, context.hasher).id || row.reply.commitmentScope !== "conversation"
     || row.reply.replyToTurnIndex !== row.request.turnIndex || row.request.turnIndex >= row.reply.turnIndex) return false;
   const request = evidenceById.get(row.request.evidenceId);
   const reply = evidenceById.get(row.reply.evidenceId);
