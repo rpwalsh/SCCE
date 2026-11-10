@@ -172,3 +172,7 @@ The [native comparison](storage-amplification/windows-r004-metadata-normalizatio
 | All fixture tables and indexes, including identical common data | 454,344,704 B | 232,112,128 B |
 
 The paired fixture saves **222,232,576 B (48.9%)**. Existing JOIN and creative-event packing remain identical in both alternatives. This is a storage-format comparison, not a measurement of ingestion throughput or a claim that the whole R004 database shrank: unrelated graph and consolidation data were not imported, and no production migration or compaction ran. The corrected product build starts in a fresh physical database from pinned raw inputs.
+
+## Compact JOIN follow-up
+
+The [compact JOIN repair receipt](storage-amplification/compact-join-repair.md) measures one complete source and its seven syntax-component rows. Corrected local adjacency learning is retained while dense exact/class tables and eager derived coordinate proofs are removed from the canonical writer. The native temporary-table comparison uses 3,563,520 allocated bytes versus 24,018,944 for the corrected dense intermediate, with all fixture writes rolled back. This is a syntax-cohort measurement; it does not establish a whole-brain reduction or capability result.
