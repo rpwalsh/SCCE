@@ -368,3 +368,4 @@ export * from "./program-artifact-wire.js";
 export * from "./corpus-segmentation-storage.js";
 
 export * from "./source-program-provider.js";
+export * from "./construction-role-geometry-storage.js";

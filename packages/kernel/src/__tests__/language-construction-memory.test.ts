@@ -16,6 +16,7 @@ import {
 } from "../language-construction-memory.js";
 import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, peekLanguageMemoryConstructionState, scopeLanguageMemoryStateToCluster, scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
 import { estimateRetainedProgramBytes } from "../retained-program-size.js";
+import { normalizeConstructionRoleGeometry, restoreConstructionRoleGeometry } from "../construction-role-geometry-storage.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import type { LanguageProfileCluster } from "../language.js";
@@ -127,6 +128,11 @@ describe("durable language-construction memory", () => {
     expect(compactBody).not.toHaveProperty("formClasses");
     expect(hydrateLanguageConstructionPatterns({ patterns: [compact.pattern], evidence: [evidence], hasher }).bundles).toEqual([legacy.bundle]);
     expect(hydrateLanguageConstructionPatterns({ patterns: [legacy.pattern], evidence: [evidence], hasher }).bundles).toEqual([legacy.bundle]);
+    const stored = normalizeConstructionRoleGeometry([compact.pattern.patternJson], "owned.compilation", hasher, 4096);
+    const pages = new Map<string, typeof stored.pages[number]>(JSON.parse(JSON.stringify(stored.pages)).map((page: typeof stored.pages[number]) => [page.id, page]));
+    const restored = restoreConstructionRoleGeometry(JSON.parse(JSON.stringify(stored.values[0])), pages, "owned.compilation", hasher) as JsonValue;
+    expect(restored).toEqual(compact.pattern.patternJson);
+    expect(hydrateLanguageConstructionPatterns({ patterns: [{ ...compact.pattern, patternJson: restored }], evidence: [evidence], hasher }).bundles).toEqual([legacy.bundle]);
     const tampered = structuredClone(compact.pattern);
     (tampered.patternJson as { bundle: { formClasses?: JsonValue[] } }).bundle.formClasses = [];
     expect(hydrateLanguageConstructionPatterns({ patterns: [tampered], evidence: [evidence], hasher }).bundles).toEqual([]);
