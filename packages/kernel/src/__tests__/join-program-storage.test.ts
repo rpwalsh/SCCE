@@ -1,8 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
-import { JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_SCHEMA, renderJoinedSurface, type JoinProgramModel, type JoinProgramMixture } from "../join-program.js";
+import { JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_SCHEMA, compileJoinProgram, compileJoinProgramMixture, renderJoinedSurface, type JoinProgramModel, type JoinProgramMixture } from "../join-program.js";
 import { joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "../join-program-storage.js";
+import { buildSurfaceLattice } from "../surface-lattice.js";
+import { canonicalStringify, createHasher } from "../primitives.js";
 
 const names = ["conditionedIndex", "exactIndex", "structuralIndex", "classIndex", "localShapeIndex", "constructionIndex"] as const;
 
@@ -28,6 +30,54 @@ function legacy(mixture: JoinProgramMixture) {
 }
 
 describe("lossless join storage v2", () => {
+  it("cold-restores one portable local law without materializing exact or class pair tables", () => {
+    const documentId = "document.factor.owned", text = "cat chased mouse. dog chased mouse. \u732b\t\u{1f469}\u200d\u{1f52c}\u0000\u00e9 e\u0301.";
+    const lattice = buildSurfaceLattice({ documentId, sourceVersionId: "version.factor.owned" as never,
+      text, evidenceIds: ["evidence.factor.owned" as never] });
+    const program = compileJoinProgram({ populationId: "population.factor.owned", documents: [{ documentId, text, lattice }] });
+    const mixture = compileJoinProgramMixture({ populationModelId: "population.factor.owned", components: [{ populationId: program.populationId, weight: 1, program }] });
+    expect(program.localFactors).toBeDefined();
+    expect(program.exactIndex).toEqual({}); expect(program.classIndex).toEqual({});
+    const stored = joinProgramMixtureStorageForm(mixture, { immutable: true });
+    expect(stored.mixture.components[0]!.program.header.localFactors).toEqual(program.localFactors);
+    expect(stored.mixture.components[0]!.program.indexes.exactIndex).toEqual([]);
+    expect(stored.mixture.components[0]!.program.indexes.classIndex).toEqual([]);
+    expect(JSON.stringify(stored).match(/"scce.join_program_local_factors.v1"/gu)).toHaveLength(1);
+    expect(() => Object.assign(stored.mixture.components[0]!.program.header.localFactors!, { mutation: true })).toThrow();
+    const restored = joinProgramMixtureFromStorage(JSON.parse(JSON.stringify(stored)))!;
+    expect(restored).toEqual(mixture);
+    const digest = (value: unknown) => createHasher().digestHex(canonicalStringify(value));
+    expect(digest(restored)).toBe(digest(mixture));
+    const before = canonicalStringify(restored);
+    const expected = renderJoinedSurface(["cat", "chased"], mixture);
+    expect(expected).toMatchObject({ status: "resolved", text: "cat chased" });
+    for (let index = 0; index < 3; index++) expect(renderJoinedSurface(["cat", "chased"], restored)).toEqual(expected);
+    const unicode = renderJoinedSurface(["\u732b", "\u{1f469}\u200d\u{1f52c}"], restored);
+    expect(unicode).toEqual(renderJoinedSurface(["\u732b", "\u{1f469}\u200d\u{1f52c}"], mixture));
+    expect(unicode).toMatchObject({ status: "resolved", text: "\u732b\t\u{1f469}\u200d\u{1f52c}" });
+    expect(canonicalStringify(restored)).toBe(before);
+    expect(expected.trace.flatMap(step => step.evidenceIds)).toContain("evidence.factor.owned");
+    expect(expected.trace.flatMap(step => step.evidenceCoordinates)).toEqual(expect.arrayContaining([expect.objectContaining({
+      documentId, sourceVersionId: "version.factor.owned", evidenceId: "evidence.factor.owned", utf16Start: 3, utf16End: 4
+    })]));
+    const mixed = structuredClone(mixture);
+    mixed.components[0]!.program.exactIndex = fixture().components[0]!.program.exactIndex;
+    expect(joinProgramMixtureFromStorage(mixed)).toBeUndefined();
+    const mixedStored = structuredClone(stored);
+    mixedStored.mixture.components[0]!.program.indexes.classIndex.push(["forbidden", []]);
+    expect(joinProgramMixtureFromStorage(mixedStored)).toBeUndefined();
+  });
+
+  it("validates local factors on both raw and packed cold reads", () => {
+    const raw = fixture();
+    Object.assign(raw.components[0]!.program, { localFactors: { schema: "unknown.factor" } });
+    expect(joinProgramMixtureFromStorage(raw)).toBeUndefined();
+    expect(() => joinProgramMixtureStorageForm(raw)).toThrow("invalid");
+    const stored = structuredClone(joinProgramMixtureStorageForm(fixture()));
+    Object.assign(stored.mixture.components[0]!.program.header, { localFactors: { schema: "unknown.factor" } });
+    expect(joinProgramMixtureFromStorage(stored)).toBeUndefined();
+  });
+
   it("serializes each distinct key atom once instead of every index occurrence", () => {
     const stringify=vi.spyOn(JSON,"stringify");
     try {

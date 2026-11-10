@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, JOIN_PROGRAM_MIXTURE_SCHEMA, JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA,
-  canonicalJsonByteLength, isJoinProgramMixture, joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "@scce/kernel";
+  canonicalJsonByteLength, isJoinProgramLocalFactors, isJoinProgramMixture, joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "@scce/kernel";
 import { DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA, decodeDurableCreativeEvents, encodeDurableCreativeEvents } from "./durable-creative-event-storage.js";
 import { SEMANTIC_FRAME_STORAGE_SCHEMA, SEMANTIC_MEMORY_SCHEMA, decodeSemanticFrames, encodeSemanticFrames } from "./semantic-frame-storage.js";
 
@@ -38,6 +38,12 @@ function transform(value: unknown, encoding: boolean): unknown {
       return result;
     }
     const row = record(value);
+    if (row?.schema === JOIN_PROGRAM_MIXTURE_SCHEMA && Array.isArray(row.components)
+      && row.components.some(component => { const program = record(record(component)?.program);
+        return program && Object.hasOwn(program, "localFactors") && (!isJoinProgramLocalFactors(program.localFactors)
+          || !emptyIndex(program.exactIndex) || !emptyIndex(program.classIndex)); })) {
+      throw new Error("invalid JOIN local factors");
+    }
     if (row?.schema === SEMANTIC_FRAME_STORAGE_SCHEMA) {
       if (encoding) return value;
       const frames = decodeSemanticFrames(row);
@@ -58,7 +64,16 @@ function transform(value: unknown, encoding: boolean): unknown {
       seen.set(value, mixture);
       return mixture;
     }
-    if (row?.schema === JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA || row?.schema === JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA) return value;
+    if (row?.schema === JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA || row?.schema === JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA) {
+      const mixture = record(row.mixture);
+      if (Array.isArray(mixture?.components) && mixture.components.some(component => { const program = record(record(component)?.program), header = record(program?.header), indexes = record(program?.indexes);
+        return header && Object.hasOwn(header, "localFactors") && (!isJoinProgramLocalFactors(header.localFactors)
+          || !Array.isArray(indexes?.exactIndex) || indexes.exactIndex.length !== 0
+          || !Array.isArray(indexes?.classIndex) || indexes.classIndex.length !== 0); })) {
+        throw new Error("invalid JOIN local factors");
+      }
+      return value;
+    }
     if (!encoding && row?.schema === JOIN_PROGRAM_MIXTURE_SCHEMA) return value;
     if (encoding && row?.schema === JOIN_PROGRAM_MIXTURE_SCHEMA && packable(row)) {
       const stored = { schema: DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA, mixture: joinProgramMixtureStorageForm(row), ...jsonByteLengths(row, sizes) };
@@ -142,7 +157,9 @@ function packable(value: Record<string, unknown>): value is Record<string, unkno
   return value.components.every(component => {
     if (!finite(component.weight)) return false;
     const program = record(component.program);
-    if (!program || program.schema !== JOIN_PROGRAM_SCHEMA) return false;
+    if (!program || program.schema !== JOIN_PROGRAM_SCHEMA
+      || Object.hasOwn(program, "localFactors") && (!isJoinProgramLocalFactors(program.localFactors)
+        || !emptyIndex(program.exactIndex) || !emptyIndex(program.classIndex))) return false;
     return INDEXES.every(name => {
       const index = record(program[name]);
       return index !== undefined && Object.values(index).every(choices => Array.isArray(choices) && choices.every(choice => {
@@ -163,3 +180,4 @@ function packable(value: Record<string, unknown>): value is Record<string, unkno
 
 function record(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
 function finite(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value); }
+function emptyIndex(value: unknown): boolean { const row = record(value); return row !== undefined && Object.keys(row).length === 0; }

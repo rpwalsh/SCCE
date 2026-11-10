@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { JOIN_PROGRAM_MIXTURE_SCHEMA, JOIN_PROGRAM_SCHEMA, isJoinProgramMixture, type JoinEvidenceCoordinate, type JoinProgramChoice, type JoinProgramMixture, type JoinProgramModel } from "./join-program.js";
+import { JOIN_PROGRAM_MIXTURE_SCHEMA, JOIN_PROGRAM_SCHEMA, isJoinProgramLocalFactors, isJoinProgramMixture, type JoinEvidenceCoordinate, type JoinProgramChoice, type JoinProgramMixture, type JoinProgramModel } from "./join-program.js";
 
 export const JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA = "scce.join_program_mixture.storage.v1" as const;
 export const JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA = "scce.join_program_mixture.storage.v2" as const;
@@ -99,7 +99,7 @@ export function joinProgramMixtureFromStorage(value: unknown): JoinProgramMixtur
 }
 
 function decodeJoinProgramMixture(value: unknown, shareChoices: boolean): JoinProgramMixture | undefined {
-  if (isJoinProgramMixture(value)) return value;
+  if (isJoinProgramMixture(value)) return value.components.every(component => validProgramFactors(component.program)) ? value : undefined;
   const root = record(value);
   const version = root?.schema;
   if (version !== JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA && version !== JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA) return undefined;
@@ -112,7 +112,7 @@ function decodeJoinProgramMixture(value: unknown, shareChoices: boolean): JoinPr
     const program = record(component?.program);
     const header = record(program?.header);
     if (!component || typeof component.populationId !== "string" || !finite(component.weight)
-      || !program || !header || header.schema !== JOIN_PROGRAM_SCHEMA || !strings(program.evidenceIdDictionary)
+      || !program || !header || header.schema !== JOIN_PROGRAM_SCHEMA || !validProgramFactors(header) || !strings(program.evidenceIdDictionary)
       || !coordinateArray(program.evidenceCoordinateDictionary) || !record(program.indexes)) return undefined;
     const ids = program.evidenceIdDictionary;
     const coordinates = program.evidenceCoordinateDictionary;
@@ -138,6 +138,7 @@ function decodeJoinProgramMixture(value: unknown, shareChoices: boolean): JoinPr
     for (const name of INDEXES) {
       const rows = indexes[name];
       if (!Array.isArray(rows)) return undefined;
+      if (Object.hasOwn(header, "localFactors") && (name === "exactIndex" || name === "classIndex") && rows.length) return undefined;
       const expanded: Array<[string, JoinProgramChoice[]]> = [];
       const keys = new Set<string>();
       for (const entry of rows) {
@@ -183,6 +184,12 @@ function expandChoice(surface: string, count: number, probability: number, idRef
   return { surface, count, probability, evidenceIds: idRefs.map(index => ids[index]!), evidenceCoordinates: coordinateRefs.map(index => coordinates[index]!) };
 }
 function record(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
+function validProgramFactors(value: unknown): boolean {
+  const program = record(value);
+  return program !== undefined && (!Object.hasOwn(program, "localFactors") || isJoinProgramLocalFactors(program.localFactors)
+    && ["exactIndex", "classIndex"].every(name => !Object.hasOwn(program, name)
+      || record(program[name]) !== undefined && Object.keys(program[name] as object).length === 0));
+}
 function finite(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value); }
 function atom(value: unknown): value is Atom { return value === null || typeof value === "string" || typeof value === "boolean" || finite(value); }
 function ref(value: unknown, length: number): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < length; }

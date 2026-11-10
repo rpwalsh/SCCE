@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
-import { canonicalDigestHex, canonicalStringify, CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, createHasher, hashEvent, joinProgramMixtureStorageForm, type JoinProgramMixture, type JsonValue, type ScceEvent } from "@scce/kernel";
+import { buildSurfaceLattice, compileJoinProgram, compileJoinProgramMixture, canonicalDigestHex, canonicalStringify, CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, createHasher, hashEvent, joinProgramMixtureStorageForm, renderJoinedSurface, type JoinProgramMixture, type JsonValue, type ScceEvent } from "@scce/kernel";
 import { decodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA,
   durableJoinProgramJsonByteLengths, encodeDurableJoinPrograms } from "../durable-join-program-storage.js";
 import { PostgresStorageAdapter } from "../postgres.js";
@@ -24,7 +24,52 @@ const cold = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 const digest = (value: unknown): string => createHasher().digestHex(canonicalStringify(value));
 
+function factoredFixture(): JoinProgramMixture {
+  const documentId = "document.factor.owned", text = "cat chased mouse. dog chased mouse.";
+  const lattice = buildSurfaceLattice({ documentId, sourceVersionId: "version.factor.owned" as never,
+    text, evidenceIds: ["evidence.factor.owned" as never] });
+  const program = compileJoinProgram({ populationId: "population.factor.owned", documents: [{ documentId, text, lattice }] });
+  return compileJoinProgramMixture({ populationModelId: "population.factor.owned", components: [{ populationId: program.populationId, weight: 1, program }] });
+}
+
 describe("durable JOIN representation", () => {
+  it("charges and restores compact portable factors without expanding their exact/class pair law", () => {
+    const mixture = factoredFixture();
+    expect(mixture.components[0]!.program.localFactors).toBeDefined();
+    expect(mixture.components[0]!.program.exactIndex).toEqual({});
+    expect(mixture.components[0]!.program.classIndex).toEqual({});
+    const original = { schema: "scce.induced_language_model.syntax_memory.v1", sourceVersionId: "version.factor.owned", joinProgram: mixture };
+    const encoded = encodeDurableJoinPrograms(original) as Record<string, unknown>;
+    const ledger = encoded[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] as Record<string, number>;
+    expect(ledger).toMatchObject(durableJoinProgramJsonByteLengths(original));
+    const { joinProgram: _join, ...seed } = original;
+    expect(ledger.decodedJsonbBytes! - ledger.joinProgramMemberJsonbBytes!).toBe(durableJoinProgramJsonByteLengths(seed).decodedJsonbBytes);
+    expect(JSON.stringify(encoded).match(/"scce.join_program_local_factors.v1"/gu)).toHaveLength(1);
+    const decoded = decodeDurableJoinPrograms<typeof original>(cold(encoded));
+    expect(decoded).toEqual(original); expect(digest(decoded)).toBe(digest(original));
+    expect(renderJoinedSurface(["cat", "chased"], decoded.joinProgram)).toEqual(renderJoinedSurface(["cat", "chased"], mixture));
+    expect(decoded.joinProgram.components[0]!.program.exactIndex).toEqual({});
+    expect(decoded.joinProgram.components[0]!.program.classIndex).toEqual({});
+    const mixed = structuredClone(mixture);
+    mixed.components[0]!.program.classIndex = fixture().components[0]!.program.classIndex;
+    expect(() => encodeDurableJoinPrograms(mixed)).toThrow("invalid JOIN local factors");
+    expect(() => decodeDurableJoinPrograms(cold(mixed))).toThrow("invalid JOIN local factors");
+    const mixedStored = structuredClone(joinProgramMixtureStorageForm(mixture));
+    mixedStored.mixture.components[0]!.program.indexes.exactIndex.push(["forbidden", []]);
+    expect(() => decodeDurableJoinPrograms(cold(mixedStored))).toThrow("invalid JOIN local factors");
+  });
+
+  it("rejects malformed portable factors at raw, intentional packed, and durable cold boundaries", () => {
+    const raw = fixture(); Object.assign(raw.components[0]!.program, { localFactors: { schema: "unknown.factor" } });
+    expect(() => encodeDurableJoinPrograms(raw)).toThrow("invalid JOIN local factors");
+    expect(() => decodeDurableJoinPrograms(cold(raw))).toThrow("invalid JOIN local factors");
+    const stored = structuredClone(joinProgramMixtureStorageForm(fixture()));
+    Object.assign(stored.mixture.components[0]!.program.header, { localFactors: { schema: "unknown.factor" } });
+    expect(() => encodeDurableJoinPrograms(stored)).toThrow("invalid JOIN local factors");
+    expect(() => decodeDurableJoinPrograms(cold(stored))).toThrow("invalid JOIN local factors");
+    expect(() => decodeDurableJoinPrograms({ schema: DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA, mixture: stored,
+      decodedJsonBytes: 1, decodedJsonbBytes: 1 })).toThrow("invalid durable JOIN storage marker");
+  });
   it("packs cold raw mixtures nested in aggregate payloads and restores every logical field", () => {
     const mixture = fixture();
     const value = { memoryProjection: { patterns: [{ patternJson: { joinProgram: mixture } }] }, model: { joinProgram: mixture }, metadata: { retained: null } };
@@ -145,6 +190,23 @@ describe("Postgres JOIN storage boundaries", () => {
     const decoded = await adapter.languageMemory.listLanguagePatterns({ profileIds: [pattern.profileId] });
     expect(decoded[0]!.patternJson).toEqual(pattern.patternJson);
     expect(digest(decoded[0]!.patternJson)).toBe(digest(pattern.patternJson));
+  });
+
+  it("preserves factored lookup, source bindings, and ACL through ordinary pattern cold writes", async () => {
+    const { adapter, rows } = offlineStorage();
+    const mixture = factoredFixture();
+    const pattern = { id: "pattern.factor.owned", profileId: "profile.factor.owned", patternKind: "syntax" as const,
+      support: 1, entropy: 0, evidenceIds: ["evidence.factor.owned" as never], updatedAt: 1000, informationLabel: label,
+      patternJson: { schema: "scce.induced_language_model.syntax_memory.v1", sourceVersionId: "version.factor.owned", joinProgram: mixture } as unknown as JsonValue };
+    await adapter.languageMemory.putLanguagePattern(pattern);
+    const decoded = await adapter.languageMemory.listLanguagePatterns({ profileIds: [pattern.profileId] });
+    expect(decoded[0]!.patternJson).toEqual(pattern.patternJson);
+    expect(decoded[0]!.informationLabel).toEqual(label); expect(decoded[0]!.evidenceIds).toEqual(pattern.evidenceIds);
+    const stored = rows.patterns[0]!.pattern_json as Record<string, unknown>;
+    expect(stored[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).toMatchObject(durableJoinProgramJsonByteLengths(pattern.patternJson));
+    const restored = (decoded[0]!.patternJson as unknown as { joinProgram: JoinProgramMixture }).joinProgram;
+    expect(restored.components[0]!.program.localFactors).toEqual(mixture.components[0]!.program.localFactors);
+    expect(renderJoinedSurface(["cat", "chased"], restored)).toEqual(renderJoinedSurface(["cat", "chased"], mixture));
   });
 
   it("normalizes full induced model cold writes and decodes both read APIs", async () => {
