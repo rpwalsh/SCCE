@@ -1,0 +1,420 @@
+{
+  "schema": "scce.compact_join_engineering_receipt.v1",
+  "measurementAt": "2026-11-10T01:24:13.939Z",
+  "scope": "One complete source, seven syntax-component rows per variant; no whole-brain, capability, readiness, migration or broken-baseline reconstruction-parity claim.",
+  "source": {
+    "kind": "Locally supplied Dolly transcript source",
+    "documentId": "offline.dolly.dialogue-00041",
+    "sourceVersionId": "offline.source_version.dolly.dialogue-00041",
+    "evidenceIds": [
+      "offline.evidence.dolly.dialogue-00041"
+    ],
+    "fileSha256": "99902afd562b974293a0e6b5b66466235717a0e29762c2e9316c2c8c53f029e4",
+    "textSha256": "31b4d891612618901482e6a9b59634096cec7a419c2d6eb1fb70da80bab7eda0",
+    "textUtf16": 94787,
+    "textUtf8Bytes": 95088,
+    "batchBudgetUtf16": 16000,
+    "windowCapUtf16": 2000
+  },
+  "digestConventions": {
+    "nativeInputIdentity": "SHA-256 of JSON.stringify(inputIdentity), preserving producer field order.",
+    "postgresInputIdentity": "SHA-256 of canonicalStringify(inputIdentity), sorting keys. Both compare the same validated source/bounds/owners; digest values differ by serialization."
+  },
+  "nativeMeasurement": {
+    "observations": "Expected local adjacency mass, not an integer example count.",
+    "runsPerVariant": 1,
+    "contentionControlled": false,
+    "peakRssBasis": "Node native resourceUsage.maxRSS high-water KiB plus before/after RSS; synchronous compilation does not permit timer polling.",
+    "modelDigestMeaning": "Canonical native products digest; representations and corrected learning change the digest."
+  },
+  "postgresComparison": {
+    "receiptSha256": "e8c81abcdb7d8e4e6b3324afbc7746c324fc9485f7a1727ee1c27c35ee029c02",
+    "targetRole": "Dedicated native-artifact fixture",
+    "template": "scce.language_patterns INCLUDING ALL",
+    "fields": [
+      "id",
+      "profile_id",
+      "pattern_kind",
+      "support",
+      "entropy",
+      "pattern_json",
+      "evidence_ids",
+      "updated_at",
+      "information_label"
+    ],
+    "insertionOrder": "Native source-window model ordinal 0 through 6; one row per INSERT.",
+    "indexLayout": [
+      {
+        "method": "btree",
+        "unique": true,
+        "primary": true,
+        "columns": [
+          "id"
+        ],
+        "predicate": null,
+        "options": null
+      },
+      {
+        "method": "btree",
+        "unique": false,
+        "primary": false,
+        "columns": [
+          "(pattern_json ->> 'sourceSystem'::text)",
+          "support",
+          "updated_at"
+        ],
+        "predicate": null,
+        "options": null
+      },
+      {
+        "method": "btree",
+        "unique": false,
+        "primary": false,
+        "columns": [
+          "source_system",
+          "support",
+          "updated_at"
+        ],
+        "predicate": null,
+        "options": null
+      },
+      {
+        "method": "btree",
+        "unique": false,
+        "primary": false,
+        "columns": [
+          "profile_id",
+          "support",
+          "updated_at"
+        ],
+        "predicate": null,
+        "options": null
+      },
+      {
+        "method": "btree",
+        "unique": false,
+        "primary": false,
+        "columns": [
+          "source_system",
+          "(pattern_json ->> 'formalLanguage'::text)",
+          "(pattern_json ->> 'parameterCount'::text)",
+          "support",
+          "updated_at",
+          "id"
+        ],
+        "predicate": "pattern_kind = 'source_code_function'::text",
+        "options": null
+      },
+      {
+        "method": "btree",
+        "unique": false,
+        "primary": false,
+        "columns": [
+          "source_system",
+          "(pattern_json ->> 'bindingId'::text)",
+          "support",
+          "updated_at",
+          "id"
+        ],
+        "predicate": "(pattern_json ->> 'schema'::text) = 'scce.source_owned_computation_construction.v1'::text",
+        "options": null
+      },
+      {
+        "method": "gin",
+        "unique": false,
+        "primary": false,
+        "columns": [
+          "(pattern_json -> 'contextualQaRequestFeatures'::text)"
+        ],
+        "predicate": "pattern_kind = 'semantic_role'::text AND (pattern_json ->> 'schema'::text) = 'scce.language_construction_pattern.v1'::text AND (pattern_json ->> 'componentRecipe'::text) = 'kernel.dialogue_contextual_qa.v1'::text AND source_system = 'dialogue'::text",
+        "options": null
+      }
+    ],
+    "indexLayoutDigest": "3941675327ce3da6ea7388610cb5108930ad5b8deaa8196e027df25d856b3312",
+    "sameInputDigest": true,
+    "inputIdentityDigest": "caaf080eb50f97519d2d915cf8c1b957d9c6b2fbae1f6a6b4b697e05af41da70",
+    "sourceFilesReadOnly": true,
+    "fixtureRolledBack": true,
+    "nativeModules": {
+      "packages/adapters-node/dist/config.js": "4544f6700dd5c4579e255c2d7d3469d29ca9fbc109eca7967360d925f46069aa",
+      "packages/adapters-node/dist/postgres.js": "95bb1c2a1779bafda36e0ae0960dcea70e21060d3eea0ab2e0d38fb74e344fe4",
+      "packages/adapters-node/dist/durable-join-program-storage.js": "3972530dee8b514d24ef06162b29cffc720b835e0bf2c5caaf13286802d6bd95",
+      "packages/kernel/dist/language-induction-memory.js": "5297e91127b1b69fe03d9a5fb7748b6a41dfcbd9670ce0024d99ee4b1218d5b5",
+      "packages/kernel/dist/join-program-storage.js": "26202353d64c4a3d7c0b5d2d650f53b758349e690d3dba049c5892e2351f498c",
+      "packages/kernel/dist/join-program.js": "c92990999e60fa0039c616642d5151e9f396fb5b51945a2b008202f9b7c66134"
+    },
+    "accounting": "stored_json_bytes sums pg_column_size(pattern_json); table_and_toast_bytes is pg_table_size; index_bytes is pg_indexes_size; total_bytes is pg_total_relation_size. TOAST totals include its own indexes; do not add them again."
+  },
+  "variants": {
+    "baseline": {
+      "qualification": "Defective bounded-path learner; not a semantically equivalent baseline.",
+      "nativeReceiptSha256": "e463da86558a77c9f35cad5cb5f4fc947351de1f72613a349aa2910b98bfb138",
+      "nodeVersion": "v24.18.0",
+      "heapArguments": [
+        "--max-old-space-size=1536"
+      ],
+      "inputIdentityDigest": "01b894a6fd0f82bc2ed6940a08a1c4b6d6131eec45afb5285b779ed0daa581c0",
+      "completeCoverage": true,
+      "batches": 7,
+      "windows": 50,
+      "models": 7,
+      "components": 25,
+      "observations": 0.002158964837,
+      "weightedObservations": 0.001272955727,
+      "choices": 21100,
+      "zeroChoices": 19977,
+      "zeroProbabilityChoices": null,
+      "packedJoinJsonBytes": 26771926,
+      "sourceWindowReferences": 46638,
+      "elapsedMs": 45324.0305,
+      "cpuMs": 57485,
+      "peakRssBytes": 881852416,
+      "modelDigest": "ea61be40583c9c75869a5767a7890171f241db5afeb640812c24faf3e6861747",
+      "nativeModuleDigests": {
+        "source-window-induction.js": {
+          "sha256": "3c7c3027f3ca08a0b0743102644bd5791e8312fd327de77331dee738f6e14e9b",
+          "bytes": 20152
+        },
+        "language-induction.js": {
+          "sha256": "a83b4038bf718e239b9095c17ab85936b8c5f55bf71bf1689ef83f1d6b461554",
+          "bytes": 63939
+        },
+        "segmentation-forest.js": {
+          "sha256": "1354b2a2061384cea51c11910baba5424512c759b92a7c09af3c923c6a595087",
+          "bytes": 22125
+        },
+        "join-program.js": {
+          "sha256": "6214a80f5c92437d96351c6f512733911b1ad59fe07f8279455ce32b941d5dc1",
+          "bytes": 39077
+        },
+        "join-program-storage.js": {
+          "sha256": "91edd0bd6612dad44b575a6bb337af3ba9f1c1ac39d5a551a568f4da64636698",
+          "bytes": 13619
+        }
+      },
+      "compiledBuildIdentity": null,
+      "syntaxPostgres": {
+        "modelsArchiveSha256": "427f42738cb673f9759d85fca4e78c07c84310476a2dc8e8a033e594e9fcab60",
+        "archiveBytes": 54474777,
+        "inputIdentityDigest": "caaf080eb50f97519d2d915cf8c1b957d9c6b2fbae1f6a6b4b697e05af41da70",
+        "rows": 7,
+        "logicalJsonBytes": 27612982,
+        "logicalJsonbBytes": 32197933,
+        "encodedJsonBytes": 27612982,
+        "budgetLedgerRows": 0,
+        "payloads": {
+          "pattern_rows": "7",
+          "pattern_kind": "syntax",
+          "stored_json_bytes": "3445175",
+          "stored_jsonb_text_bytes": "32197933"
+        },
+        "allocation": {
+          "heap_main_bytes": "8192",
+          "table_and_toast_bytes": "3629056",
+          "index_bytes": "98304",
+          "total_bytes": "3727360",
+          "toast_total_bytes": "3620864",
+          "toast_data_bytes": "3538944",
+          "toast_index_bytes": "57344"
+        }
+      }
+    },
+    "dense": {
+      "qualification": "Corrected full local evidence with dense pair maps and eager coordinate proofs.",
+      "nativeReceiptSha256": "a5efff02b5d0380d9a9b7fc09e2a4c18dd0207db4d53a160eff4d5978b314ae5",
+      "nodeVersion": "v24.18.0",
+      "heapArguments": [
+        "--max-old-space-size=1536"
+      ],
+      "inputIdentityDigest": "01b894a6fd0f82bc2ed6940a08a1c4b6d6131eec45afb5285b779ed0daa581c0",
+      "completeCoverage": true,
+      "batches": 7,
+      "windows": 50,
+      "models": 7,
+      "components": 25,
+      "observations": 13781.697480076398,
+      "weightedObservations": 3744.558931147399,
+      "choices": 472527,
+      "zeroChoices": 0,
+      "zeroProbabilityChoices": 0,
+      "packedJoinJsonBytes": 78570679,
+      "sourceWindowReferences": 8290,
+      "elapsedMs": 54064.7562,
+      "cpuMs": 69468,
+      "peakRssBytes": 1257820160,
+      "modelDigest": "3058f6a96593a468464cee17b795d5822cf6a9b02bd5da5b1bc442d19be5003e",
+      "nativeModuleDigests": {
+        "source-window-induction.js": {
+          "sha256": "7588bfba80587f1867619354e0b7c6d122ee0489b1a4f676db80364d2e723343",
+          "bytes": 18978
+        },
+        "language-induction.js": {
+          "sha256": "24bacf65307f75b92dc94f92ee870d2132e8031bc0256153e2c1548aff0b29cc",
+          "bytes": 64806
+        },
+        "segmentation-forest.js": {
+          "sha256": "d3a33a5d61562d216bf5c30c410103583d165f432fe2daa4c0ffa2677f18d05b",
+          "bytes": 25562
+        },
+        "join-program.js": {
+          "sha256": "fd9007aa9e79b98822bdace7b6919ef6ce3ffbd05a893a4db375849955005fb6",
+          "bytes": 43837
+        },
+        "join-program-storage.js": {
+          "sha256": "91edd0bd6612dad44b575a6bb337af3ba9f1c1ac39d5a551a568f4da64636698",
+          "bytes": 13619
+        }
+      },
+      "compiledBuildIdentity": null,
+      "syntaxPostgres": {
+        "modelsArchiveSha256": "7d1e755e37423cbf0c014f1540f6adb2b57b52671fab9ffc462f30fc14530d6a",
+        "archiveBytes": 102949009,
+        "inputIdentityDigest": "caaf080eb50f97519d2d915cf8c1b957d9c6b2fbae1f6a6b4b697e05af41da70",
+        "rows": 7,
+        "logicalJsonBytes": 79411735,
+        "logicalJsonbBytes": 87814683,
+        "encodedJsonBytes": 79411735,
+        "budgetLedgerRows": 0,
+        "payloads": {
+          "pattern_rows": "7",
+          "pattern_kind": "syntax",
+          "stored_json_bytes": "23002096",
+          "stored_jsonb_text_bytes": "87814683"
+        },
+        "allocation": {
+          "heap_main_bytes": "8192",
+          "table_and_toast_bytes": "23920640",
+          "index_bytes": "98304",
+          "total_bytes": "24018944",
+          "toast_total_bytes": "23912448",
+          "toast_data_bytes": "23609344",
+          "toast_index_bytes": "278528"
+        }
+      }
+    },
+    "candidate": {
+      "qualification": "Corrected compact local law with complete selected/public proofs.",
+      "nativeReceiptSha256": "000dc0b5766fa12daf3c895177c655666398415c7ede0f89c2c6a8b31c146469",
+      "nodeVersion": "v24.18.0",
+      "heapArguments": [
+        "--max-old-space-size=1536"
+      ],
+      "inputIdentityDigest": "01b894a6fd0f82bc2ed6940a08a1c4b6d6131eec45afb5285b779ed0daa581c0",
+      "completeCoverage": true,
+      "batches": 7,
+      "windows": 50,
+      "models": 7,
+      "components": 25,
+      "observations": 13781.697480076398,
+      "weightedObservations": 3744.558931147399,
+      "choices": 1822,
+      "zeroChoices": 0,
+      "zeroProbabilityChoices": 0,
+      "packedJoinJsonBytes": 6510157,
+      "sourceWindowReferences": 8290,
+      "elapsedMs": 28402.861699999998,
+      "cpuMs": 30938,
+      "peakRssBytes": 675786752,
+      "modelDigest": "46c23bf628ed341b15da91f50ac796d09edeb51ba294b4f1126c23c97f4b4a7c",
+      "nativeModuleDigests": {
+        "source-window-induction.js": {
+          "sha256": "7588bfba80587f1867619354e0b7c6d122ee0489b1a4f676db80364d2e723343",
+          "bytes": 18978
+        },
+        "language-induction.js": {
+          "sha256": "24bacf65307f75b92dc94f92ee870d2132e8031bc0256153e2c1548aff0b29cc",
+          "bytes": 64806
+        },
+        "segmentation-forest.js": {
+          "sha256": "ab5774f9e2fbb744ec4ae860945f7bea6966dbe0ff41c3bc0c343d60085b5830",
+          "bytes": 24158
+        },
+        "segmentation-adjacency-factors.js": {
+          "sha256": "e34395902a07d2f3334002906beb62188438335ae9f80e8a741f12ce91d1c064",
+          "bytes": 5886
+        },
+        "join-program.js": {
+          "sha256": "c92990999e60fa0039c616642d5151e9f396fb5b51945a2b008202f9b7c66134",
+          "bytes": 59280
+        },
+        "join-program-storage.js": {
+          "sha256": "26202353d64c4a3d7c0b5d2d650f53b758349e690d3dba049c5892e2351f498c",
+          "bytes": 14944
+        }
+      },
+      "compiledBuildIdentity": {
+        "commit": "0a331b81768d99db4b3fa2d78c539977f28e0fab",
+        "dirty": false,
+        "compiledJavaScriptSha256": "0693fea26c2417d000a5d7144ff46bf8c060fd5483aa68220027736c0a4eef17",
+        "compiledJavaScriptFiles": 459,
+        "node": "v24.18.0"
+      },
+      "syntaxPostgres": {
+        "modelsArchiveSha256": "830a3e1290b57f7cd251c1a8a31f6f77f73c43e053df5b113b7fa1ee7bb6089e",
+        "archiveBytes": 30888487,
+        "inputIdentityDigest": "caaf080eb50f97519d2d915cf8c1b957d9c6b2fbae1f6a6b4b697e05af41da70",
+        "rows": 7,
+        "logicalJsonBytes": 7351213,
+        "logicalJsonbBytes": 8443950,
+        "encodedJsonBytes": 7351213,
+        "budgetLedgerRows": 0,
+        "payloads": {
+          "pattern_rows": "7",
+          "pattern_kind": "syntax",
+          "stored_json_bytes": "3282932",
+          "stored_jsonb_text_bytes": "8443950"
+        },
+        "allocation": {
+          "heap_main_bytes": "8192",
+          "table_and_toast_bytes": "3465216",
+          "index_bytes": "98304",
+          "total_bytes": "3563520",
+          "toast_total_bytes": "3457024",
+          "toast_data_bytes": "3375104",
+          "toast_index_bytes": "57344"
+        }
+      }
+    }
+  },
+  "derivedComparisons": {
+    "candidateVsDensePackedJoinReductionPercent": 91.7142665904669,
+    "candidateVsDenseSyntaxAllocatedBytesSaved": 20455424,
+    "candidateVsDenseSyntaxAllocationReductionPercent": 85.16371077762619,
+    "candidateVsDefectiveBaselineSyntaxAllocationReductionPercent": 4.395604395604396
+  },
+  "checks": {
+    "coldProvenanceStorage": {
+      "passed": 42,
+      "skipped": 1,
+      "qualification": "Optional external-sample check skipped."
+    },
+    "consumer": {
+      "passed": 56,
+      "files": 9
+    },
+    "finalCoordinateExtractionAffectedRerun": {
+      "passed": 17,
+      "files": 3
+    },
+    "testCountsAreOverlapping": true,
+    "strictCombinedKernelAdaptersSourceTypecheck": "passed",
+    "authenticFailBeforeControls": [
+      "redundant canonical class hashes",
+      "eager local proofs",
+      "multiline normalization",
+      "inner-grapheme source bounds",
+      "mixed implicit/eager proof storage"
+    ],
+    "sourcePolicy": {
+      "reportSha256": "2c9d151c370bb6ea61163f71d339e88b2e49ee7651f5b872a6ec4ba962f736bc",
+      "schema": "scce.no-hidden-model-check.v1",
+      "sourceCommit": "fc2e3f38a8fe8818a2bd8869da7aaeb70578bdf5",
+      "scannedFiles": 1789,
+      "status": "passed",
+      "productImportsOfDeclaredReferences": [],
+      "violations": [],
+      "limitation": "This static gate does not replace the sealed runner's network isolation and process-level traffic attestation."
+    }
+  },
+  "sanitization": "Source text, absolute/private paths, database connection settings, process IDs and private harness/config locations omitted. Raw local receipts and model archives are not committed."
+}
