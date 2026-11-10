@@ -18,7 +18,7 @@
   "packageManager": "pnpm@10.28.2",
   "type": "module",
   "scripts": {
-    "build": "tsc -b packages/kernel packages/adapters-node packages/ui packages/server packages/cli packages/vscode",
+    "build": "tsc -b packages/kernel packages/adapters-node packages/ui packages/server packages/cli packages/vscode && pnpm --filter @scce/workbench build && node tools/register-graphql-operations.mjs",
     "test": "pnpm build && pnpm test:unit && pnpm eval:validate && node tools/no-hidden-model-check.mjs && node tools/source-text-scannable-check.mjs && node tools/test-inventory.mjs",
     "hygiene:source-scannable": "node tools/source-text-scannable-check.mjs",
     "test:unit": "node tools/test-unit-sharded.mjs",

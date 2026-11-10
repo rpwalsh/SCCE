@@ -161,7 +161,14 @@ it("rejects same-size changed bytes with restored mtime rather than treating cti
   const paths=await fixture("aaaa\n"),time=new Date(1700000000000);await utimes(paths.dumpPath,time,time);
   const manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));
   await writeFile(paths.dumpPath,"bbbb\n");await utimes(paths.dumpPath,time,time);
+  // On NTFS an immediate rewrite can share the original stat timestamp tick.
+  // This case exercises changed ctime with restored mtime, so establish that
+  // precondition explicitly rather than assuming the clock advanced.
+  if ((await stat(paths.dumpPath,{bigint:true})).ctimeNs.toString() === manifest.inputs.dump.stat.ctimeNs) {
+    await changeMetadataOnly(paths.dumpPath,0o666);
+  }
   const actual=await stat(paths.dumpPath,{bigint:true});expect(actual.mtimeNs.toString()).toBe(manifest.inputs.dump.stat.mtimeNs);
+  expect(actual.ctimeNs.toString()).not.toBe(manifest.inputs.dump.stat.ctimeNs);
   let calls=0;const hashFile=async(filePath:string,chunkSize:number)=>{calls++;return hashWikipediaInputFile(filePath,{chunkSize});};
   expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile})).toBe(false);expect(calls).toBe(1);
   expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile})).toBe(false);expect(calls).toBe(2);

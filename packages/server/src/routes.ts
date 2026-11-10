@@ -24,6 +24,9 @@ import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 import { compactIngestResult, compactWorkspaceIngestResult } from "./ingestion-response.js";
 import { programResponseReadiness, unsupportedProgramResponseReadiness } from "./program-response-readiness.js";
+import { TurnApplication } from "./turn-application.js";
+import { createLocalGraphqlHandler, type LocalGraphqlHandler, type OperationDocuments } from "./graphql-transport.js";
+import { readWorkbenchAsset } from "./workbench-assets.js";
 
 export interface ApiContext {
   /** Path of scce.config.json; settings routes write back through the shared schema. */
@@ -108,6 +111,7 @@ interface ProductionTurnDeadline {
 }
 
 export const ROUTES = [
+  { method: "POST", path: "/api/graphql", label: "local GraphQL application", mutates: true, requiresDb: true },
   { method: "GET", path: "/", label: "workbench", mutates: false, requiresDb: false },
   { method: "GET", path: "/health", label: "health", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/manifest", label: "api manifest", mutates: false, requiresDb: false },
@@ -229,6 +233,21 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (!isLoopbackAddress(req.socket.localAddress)) throw new HttpError(403, "Pages connector requires a loopback SCCE server");
     }
     assertAuthorizedRequest(req, url, context);
+    if (url.pathname === "/api/graphql") {
+      if (!isLoopbackAddress(url.hostname.replace(/^\[|\]$/gu, "")) && !bearerAuthorized(req, context.config)) throw new HttpError(403, "GraphQL host must be loopback or authenticated");
+      if (req.method !== "POST") throw new HttpError(405, "GraphQL uses POST");
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) throw new HttpError(415, "GraphQL requires application/json");
+      const body = await readBody(req, Math.min(context.maxBodyBytes ?? 65_536, 65_536));
+      const handler = await localGraphqlHandler(context);
+      await handler(req, res, body, requestId);
+      return;
+    }
+    if (req.method === "GET" && (url.pathname.startsWith("/workbench/") || url.pathname.startsWith("/scce/workbench/"))) {
+      const asset = await readWorkbenchAsset(url.pathname);
+      res.writeHead(asset.status, { "content-type": asset.contentType, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      res.end(asset.body);
+      return;
+    }
     const readinessMutation = invalidatesHydratedRuntimeReadiness(req.method, url.pathname);
     if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
     if (reconnectingTurnStreamRequested(req, url)) {
@@ -268,6 +287,39 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     send(res, status, JSON.stringify(body, null, 2), "application/json; charset=utf-8", { requestId, started });
     if (trace) traceEvent(trace, { stage: 'runtime.error', label: `${status} ${req.method} ${req.url}`, durationMs: Date.now() - started, warnings: [String(error)] });
   }
+}
+
+const localGraphqlHandlers = new WeakMap<object, Promise<LocalGraphqlHandler>>();
+function localGraphqlHandler(context: ApiContext): Promise<LocalGraphqlHandler> {
+  const key = context.runtime;
+  let handler = localGraphqlHandlers.get(key);
+  if (!handler) {
+    handler = (async () => {
+      const documents = JSON.parse(await readFile(new URL("../operations.json", import.meta.url), "utf8")) as OperationDocuments;
+      const database = new URL(context.config.database.url);
+      const scope = createHash("sha256").update(JSON.stringify([database.hostname, database.port, database.pathname, context.config.database.schema])).digest("hex");
+      const turns = new TurnApplication({ scope, registry: turnTaskRegistryFor(context.runtime.storage),
+        async execute(input, control) {
+          try {
+            const response = await executeApplicationTurn(context, input, {
+              startedMonotonicMs: performance.now(), turnExecution: control
+            });
+            return { status: response.status, value: JSON.parse(response.body) as JsonValue };
+          } catch (error) { throw domainHttpError(error); }
+        }
+      });
+      return createLocalGraphqlHandler({ scope, generation: randomUUID(), turns,
+        storage: context.runtime.storage, async readiness() {
+          const warmup = context.startupReadiness.snapshot();
+          if (!warmupSatisfied(warmup)) return { phase: warmup.phase, ok: false };
+          const status = await loadPostgresStatus(context.runtime);
+          return { phase: warmup.phase, ok: healthOk(status) && hasRequestedPostgresDetail(status, { detail: "readiness" }) && rememberHydratedRuntimeMarker(context, status) };
+        } }, documents);
+    })();
+    localGraphqlHandlers.set(key, handler);
+    void handler.catch(() => { localGraphqlHandlers.delete(key); });
+  }
+  return handler;
 }
 
 function assertAuthorizedRequest(req: http.IncomingMessage, url: URL, context: ApiContext): void {
@@ -871,381 +923,7 @@ async function dispatch(
     return json({ schema: "scce.models.remove.v1", modelId, removed });
   }
   if (req.method === "POST" && url.pathname === "/api/turn") {
-    const trace = (globalThis as any).__sccTrace;
-    const turnStarted = Date.now();
-    try {
-      const body = preloadedBody ?? await readBody(req, context.maxBodyBytes);
-      const turn = validateTurn(body);
-      const originalMetadata = isRecord(turn.metadata) ? turn.metadata as Record<string, JsonValue> : {};
-      const originalRuntime = isRecord(originalMetadata.runtime) ? originalMetadata.runtime as Record<string, JsonValue> : {};
-      const productionDeadline = createProductionTurnDeadline(requestTiming.startedMonotonicMs);
-      const productionDeadlineRuntime = productionTurnDeadlineMetadata(productionDeadline);
-      const workspaceCodingInput = parseTurnWorkspaceCodingRequest(
-        isRecord(body) ? body.workspaceCoding : undefined,
-        turn.text,
-        { resolveValidationPolicy: id => resolveWorkspacePatchValidationPolicy(context, id) }
-      );
-      const sessionId = conversationSessionId(body);
-      const conversationId = dialogueConversationId(body, sessionId);
-      // A response's dialogue shadow is queued so the first visible frame stays
-      // fast.  The next turn must nevertheless observe that shadow before it
-      // hydrates prior state; otherwise an immediate follow-up can race the
-      // write and lose the owner's newly learned referent correction.
-      await awaitDialoguePersistence(conversationId);
-      const readinessStarted = Date.now();
-      const [
-        recentTurns,
-        hydratedRuntime,
-        workspaceCoding,
-        learnedDialogueProfile,
-        dialogueOutcomeMemory,
-        previousDialogue,
-        previousDialogueCognitiveState,
-        dialogueInterpretationAdjustments,
-        repoCognitionFiles
-      ] = await Promise.all([
-        sessionId
-          ? context.runtime.storage.conversation.listTurns({ sessionId, limit: conversationContextLimit(body) })
-          : Promise.resolve([]),
-        hydratedRuntimeForTurn(context),
-        workspaceCodingInput
-          ? planWorkspaceCodingPatchApiRequest(context, {
-            schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
-            input: workspaceCodingInput
-          })
-          : Promise.resolve(undefined),
-        latestDialogueStyleProfile(context.runtime.storage.dialogueMemory, conversationId),
-        dialogueOutcomeMemoryForConversation(context.runtime.storage.dialogueMemory, conversationId),
-        latestDialoguePragmaticsFromMemory(context.runtime.storage.dialogueMemory, { conversationId }),
-        createDialogueCognitiveMemoryV2({
-          store: context.runtime.storage.dialogueMemory,
-          hasher: createHasher()
-        }).latest(conversationId).catch(() => undefined),
-        dialogueInterpretationAdjustmentsForConversation(
-          context.runtime.storage.dialogueMemory,
-          conversationId
-        ),
-        // Phase 15: real repo cognition (issue localization, affected-test
-        // prediction, tree-sitter-backed symbol/call cross-referencing) for
-        // the same explicit, bounded requestedPaths the client already
-        // named for coding-patch planning -- never a repo-wide scan, and
-        // any failure here silently yields no repo context rather than
-        // failing the turn.
-        workspaceCodingInput?.requestedPaths.length
-          ? createWorkspaceRuntime(context).resolveRoot()
-            .then(root => collectRepoFilesForCognition(root, workspaceCodingInput.requestedPaths))
-            .catch(() => [])
-          : Promise.resolve([])
-      ]);
-      traceEvent(trace, {
-        stage: "turn.runtime.readiness",
-        label: "api.turn",
-        durationMs: Date.now() - readinessStarted,
-        counts: { cached: hydratedRuntime.source === "startup_verified_cache" ? 1 : 0 },
-        support: { source: hydratedRuntime.source }
-      });
-      const recentTurnsForMetadata = recentTurns.map(conversationTurnForMetadata);
-      const recentEvidenceIds = uniqueServerStrings(recentTurns.flatMap(record => record.evidenceIds.map(String)));
-      // Whether this request names a subject of its own, measured against the corpus rather than read off its
-      // orthography. Asked here because the primed signal a discourse object would otherwise read is the previous
-      // request's, which is how a lowercase request naming its own subject inherited the last turn's evidence.
-      const requestSubject = await measureRequestCorpusSubject({ requestText: turn.text, evidence: context.runtime.storage.evidence });
-      const requestNamesOwnSubject = requestSubject.measured
-        ? requestSubject.identities.length > 0
-        : requestSubject.contentRuns.length > 0;
-      traceEvent(trace, {
-        stage: "turn.request.corpus_subject",
-        label: "api.turn",
-        counts: { identities: requestSubject.identities.length, contentRuns: requestSubject.contentRuns.length },
-        support: { measured: requestSubject.measured, identities: requestSubject.identities.slice(0, 4) }
-      });
-      const discourseObject = sessionId && !requestNamesOwnSubject
-        ? buildDiscourseObjectState({ sessionId, currentText: turn.text, recentTurns: recentTurnsForMetadata, requestSubject, now: Date.now() })
-        : undefined;
-      const sparseSessionFollowup = Boolean(discourseObject) && recentEvidenceIds.length > 0;
-      const active = hydratedRuntime.marker;
-      const workspacePlans = workspaceCoding ? verifiedCompilerPlansForTurn(workspaceCoding) : [];
-      const webRequested = webLearningRequested(body);
-      traceEvent(trace, { stage: "turn.input", label: "api.turn", input: previewText(turn.text), counts: { textChars: turn.text.length } });
-      traceEvent(trace, { stage: "turn.runtime.start", label: "api.turn" });
-      const {
-        workspacePlans: _untrustedWorkspacePlans,
-        deadline: _untrustedDeadline,
-        initialResponseDeadline: _untrustedInitialResponseDeadline,
-        ...trustedOriginalRuntime
-      } = originalRuntime;
-      const originalDialogue = isRecord(originalMetadata.dialogue) ? originalMetadata.dialogue as Record<string, JsonValue> : {};
-      const { interpretationAdjustments: _untrustedInterpretationAdjustments, cognitiveState: _untrustedCognitiveState, previousState: _untrustedPreviousState, ...trustedOriginalDialogue } = originalDialogue;
-      const discourseEvidenceIds = discourseObject ? uniqueServerStrings(discourseObject.evidenceIds) : [];
-      const runtimeEvidenceIds = uniqueServerStrings([
-        ...optionalStringArray(originalMetadata.runtimeEvidenceIds),
-        ...optionalStringArray(originalMetadata.evidenceIds),
-        ...discourseEvidenceIds,
-        ...(sparseSessionFollowup ? recentEvidenceIds : [])
-      ]);
-      const turnInput = {
-        ...turn,
-        metadata: {
-          ...originalMetadata,
-          ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
-          runtime: {
-            ...trustedOriginalRuntime,
-            fastLocalEvidenceAnswer: true,
-            productionBoundedAnswer: true,
-            initialResponseDeadline: productionDeadlineRuntime,
-            ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
-            workspacePlans: workspacePlans.map(plan => toJsonValue(plan))
-          },
-          runtimeEvidenceIds,
-          dialogue: {
-            ...trustedOriginalDialogue,
-            conversationId,
-            ...(previousDialogue ? { previousState: toJsonValue(previousDialogue.result.state) } : {}),
-            ...(previousDialogueCognitiveState ? { cognitiveState: toJsonValue(previousDialogueCognitiveState) } : {}),
-            ...(dialogueInterpretationAdjustments.length ? { interpretationAdjustments: toJsonValue(dialogueInterpretationAdjustments) } : {})
-          },
-          ...(sessionId ? { session: { sessionId, recentTurns: recentTurnsForMetadata } } : {}),
-          ...(discourseObject ? { discourse: { schema: "scce.discourse_runtime_state.v1", activeObject: toJsonValue(discourseObject), queryConcatenationUsed: false } } : {}),
-          runtimePath: { hydratedRuntime: true, serverPath: true, sourceOnlySimulation: false },
-          activeBrainVersion: active.activeBrainVersion,
-          activeImportRunIds: active.activeImportRunIds,
-          ...(repoCognitionFiles.length ? { repoFiles: toJsonValue(repoCognitionFiles) } : {})
-        }
-      };
-      const result = await context.runtime.kernel.turn({
-        ...turnInput,
-        ...(requestTiming.turnExecution ? {
-          runtimeControl: requestTiming.turnExecution
-        } : {})
-      });
-      traceEvent(trace, { stage: "turn.kernel.returned", label: "api.turn", durationMs: Date.now() - turnStarted, counts: { evidence: result.evidence.length } });
-      const programReadiness = (result.requestedAuthority === "program" || turn.requestedAuthority === "program") && !workspaceCodingInput
-        ? programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest,construct:result.constructGraph })
-        : undefined;
-      if (programReadiness && programReadiness.status !== "ready") {
-        const session=context.runtime.approvals?.snapshot();
-        const pending=session?pendingProgramValidationApproval({events:result.events??[],pending:session.pending}):undefined;
-        if(pending)return json({ok:false,pendingApproval:pending,programReadiness,session},202);
-        traceEvent(trace, {
-          stage: "turn.withheld",
-          label: "api.turn.program",
-          support: programReadiness
-        });
-        throw new HttpError(422, "runtime.declined.program_not_ready", toJsonValue(programReadiness));
-      }
-      // A verified program artifact can answer without a separate prose realization.
-      const programProposalTurn = programReadiness?.status === "ready"
-        || Boolean(result.constructGraph.program && workspaceCodingInput);
-      // The decline carries the turn's own typed withholding record, so a surface renders a reason instead of "".
-      if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn) {
-        const withheld = result.withheld ?? withheldSurfaceForTurn(result);
-        // The decline's typed reason, in the trace: a warning string cannot say which stage withheld.
-        traceEvent(trace, {
-          stage: "turn.withheld",
-          label: "api.turn",
-          counts: {
-            evidence: result.evidence.length,
-            unresolvedRequirements: withheld?.unresolvedRequirementIds.length ?? 0,
-            learningNeeds: withheld?.learningNeeds.length ?? 0
-          },
-          support: {
-            episodeId: String(result.episodeId),
-            reasonId: withheld?.reasonId ?? null,
-            basisReasonIds: withheld?.basisReasonIds ?? [],
-            truthStateId: withheld?.truthStateId ?? null,
-            entailmentVerdict: withheld?.entailmentVerdict ?? null,
-            epistemicForce: withheld?.epistemicForce ?? null,
-            requestedAuthority: withheld?.requestedAuthority ?? null,
-            unresolvedRequirementIds: withheld?.unresolvedRequirementIds ?? [],
-            learningNeedIds: (withheld?.learningNeeds ?? []).map(need => need.needId),
-            components: withheld?.components ?? []
-          }
-        });
-        throw new HttpError(422, "runtime.declined.no_admissible_surface", toJsonValue(withheld ?? null));
-      }
-      const turnProgramCodingInput = workspaceCodingInput
-        ? workspaceCodingInputForProgramGraph(workspaceCodingInput, result.constructGraph.program)
-        : undefined;
-      const completedWorkspaceCoding = turnProgramCodingInput
-        ? await planWorkspaceCodingPatchApiRequest(context, {
-          schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
-          input: turnProgramCodingInput
-        })
-        : workspaceCoding;
-      const calibrationStarted = Date.now();
-      const calibrationCache = calibrationModelsCache(context);
-      const calibrationModels = await calibrationCache.get();
-      const calibrationState = calibrationCache.state();
-      traceEvent(trace, {
-        stage: "turn.calibration.loaded",
-        label: "api.turn",
-        durationMs: Date.now() - calibrationStarted,
-        counts: { observations: calibrationModels.observationCount, artifactAgeMs: calibrationState.ageMs },
-        support: { compiled: calibrationState.compiled, refreshing: calibrationState.refreshing, calibrationModelSetId: calibrationModels.id }
-      });
-      const bridgeStarted = Date.now();
-      const dialogue = buildTurnDialogueBridge({
-        requestText: turn.text,
-        result,
-        conversationId,
-        turnId: String(result.episodeId),
-        previousState: previousDialogue?.result.state,
-        targetLanguage: turnTargetLanguage(body),
-        userStyleProfile: learnedDialogueProfile,
-        calibrationModels,
-        calibrationTaskClass: result.calibrationTaskClass ?? CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
-        outcomeMemory: dialogueOutcomeMemory
-      });
-      traceEvent(trace, { stage: "turn.dialogue.bridged", label: "api.turn", durationMs: Date.now() - bridgeStarted });
-      // Keep the real creative offer available for a later owner outcome.
-      // This is an offer ledger row, never a preference: it carries only
-      // typed structural ids/features and is written on the deferred dialogue
-      // tail so an immediate outcome cannot race it.
-      const creativeDecision = creativeContinuationDecisionFromJson(result.creativeContinuation);
-      const creditRecord = buildCognitiveCreditRecord({
-        episodeId: String(result.episodeId),
-        conversationId,
-        taskClass: result.calibrationTaskClass ?? CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
-        requestedAuthority: result.requestedAuthority,
-        answer: result.answer,
-        requirementField: result.requirementField,
-        operatorActivations: result.operatorActivations,
-        cognitiveProposals: result.cognitiveProposals,
-        selectedCandidate: result.selectedCandidate,
-        judge: result.judge,
-        mouth: result.mouth,
-        entailment: toJsonValue(result.entailment as unknown as JsonValue),
-        field: toJsonValue(result.field as unknown as JsonValue),
-        retrievalRoles: toJsonValue((result.retrievalRoles ?? []) as unknown as JsonValue),
-        evidenceIds: result.evidence.map(span => String(span.id)),
-        withheld: result.withheld ? toJsonValue(result.withheld as unknown as JsonValue) : undefined,
-        runtimeMotion: result.runtimeMotion,
-        answerRevision: result.answerRevision,
-        corrections: result.corrections,
-        timing: result.timing ? toJsonValue(result.timing as unknown as JsonValue) : undefined,
-        calibrationModelSetId: calibrationModels.id,
-        createdAt: Date.now()
-      });
-      const dialoguePersistence = enqueueDialoguePersistence(conversationId, async () => {
-        // Elapsed ms until each write settles, from the moment this turn's persistence starts.
-        const persistenceStarted = Date.now();
-        const timing: Record<string, number> = {};
-        const timed = <T>(step: string, work: Promise<T>): Promise<T> => work.then(value => { timing[step] = Date.now() - persistenceStarted; return value; });
-        const [, cognitiveShadow, storedSession, creativeOffer] = await Promise.all([
-          timed("dialogueTurnMs", persistDialogueTurn({
-            store: context.runtime.storage.dialogueMemory,
-            result: dialogue.pragmatics,
-            answerGraphHash: dialogue.answerGraphHash,
-            now: Date.now()
-          })),
-          timed("cognitiveShadowMs", persistDialogueCognitiveShadowV2({
-            context,
-            conversationId,
-            sessionId,
-            requestText: turn.text,
-            result,
-            now: Date.now()
-          })),
-          timed("sessionPairMs", sessionId
-            ? persistConversationTurnPair(context, sessionId, turn, result)
-            : Promise.resolve(undefined)),
-          timed("creativeOfferMs", creativeDecision
-            ? persistCreativeContinuationOffer({
-              store: context.runtime.storage.dialogueMemory,
-              decision: creativeDecision,
-              sourceRecordId: String(result.episodeId),
-              sourceTraceId: String(result.episodeId),
-              createdAt: Date.now()
-            })
-            : Promise.resolve(undefined)),
-          // The credit chain: one record plus one row per stage, keyed by the episode id, in one insert.
-          timed("cognitiveCreditMs", persistCognitiveCredit(context, creditRecord))
-        ]);
-        return {
-          cognitiveShadow,
-          timing,
-          ...(creativeOffer ? { creativeOfferId: creativeOffer.id } : {}),
-          ...(storedSession === undefined ? {} : { sessionAudit: storedSession })
-        };
-      });
-      traceEvent(trace, {
-        stage: "dialogue.persistence.queued",
-        label: "api.turn.dialogue",
-        counts: { queued: 1 },
-        support: { status: "queued", mode: "deferred_ordered", ordering: "conversation", sessionIncluded: Boolean(sessionId) }
-      });
-      observeDeferredDialoguePersistence(trace, dialoguePersistence);
-      traceEvent(trace, {
-        stage: "turn.runtime.end",
-        label: "api.turn",
-        durationMs: Date.now() - turnStarted,
-        counts: {
-          evidence: result.evidence.length,
-          artifacts: result.emissionGraph.artifacts.length
-        }
-      });
-      traceEvent(trace, {
-        stage: "turn.output",
-        label: "api.turn",
-        output: previewText(result.answer),
-        counts: {
-          answerChars: result.answer.length,
-          evidence: result.evidence.length,
-          artifacts: result.emissionGraph.artifacts.length
-        }
-      });
-      const webLearning = webRequested
-        ? { schema: "scce.web_learning.disabled.v1", enabled: false, triggered: false, disabledReason: "local_mouth_focus" }
-        : undefined;
-      const turnResponse = url.searchParams.get("full") === "1" ? result : compactTurnResult(result);
-      const dialogueResponse = compactTurnDialogue(dialogue);
-      const deadlineStatus = productionTurnDeadlineStatus(
-        productionDeadline,
-        requestTiming.firstVisibleFrameMonotonicMs ?? performance.now()
-      );
-      // Only turns that answered teach the budget. A turn that produced nothing says what failure costs, and
-      // fitting to failure would widen the deadline every time the system could not answer.
-      observeAnsweringTurnDuration(Number(deadlineStatus.elapsedMs), Boolean(String(result.answer ?? "").trim()));
-      traceEvent(trace, {
-        stage: "turn.deadline.observed",
-        label: "api.turn",
-        durationMs: Number(deadlineStatus.elapsedMs),
-        support: deadlineStatus,
-        ...(deadlineStatus.status === "exceeded" ? { warnings: ["production turn exceeded its first-visible-frame deadline"] } : {})
-      });
-      const baseResponse = {
-        ...turnResponse,
-        ...(programReadiness ? {
-          programReadiness: toJsonValue(programReadiness),
-          programArtifacts: programReadiness.status === "ready" ? result.buildTest?.artifacts ?? [] : []
-        } : {}),
-        dialogue: dialogueResponse,
-        deadline: deadlineStatus,
-        persistence: {
-          schema: "scce.turn_persistence.v1",
-          dialogue: {
-            status: "queued",
-            mode: "deferred_ordered",
-            durableWritesPending: true,
-            ordering: "conversation"
-          },
-          ...(sessionId ? {
-            session: {
-              status: "queued",
-              mode: "deferred_ordered",
-              durableWritesPending: true,
-              ordering: "conversation"
-            }
-          } : {})
-        },
-        ...(completedWorkspaceCoding ? { workspaceCoding: toJsonValue(completedWorkspaceCoding) } : {})
-      };
-      const response=webLearning ? { ...baseResponse, webLearning } : baseResponse;
-      return json(url.searchParams.get("full")==="1"?response:encodeProgramArtifactWire(response));
-    } catch (error) {
-      traceEvent(trace, { stage: "turn.error", label: "api.turn", durationMs: Date.now() - turnStarted, warnings: [String(error)] });
-      throw error;
-    }
+    return executeApplicationTurn(context, preloadedBody ?? await readBody(req, context.maxBodyBytes), requestTiming, url.searchParams.get("full") === "1");
   }
   // A graded run's verdict is an EXTERNAL judgement, kept separate from accepted/rejected/corrected, which mean
   // a person said so. Re-stamps the persisted credit record and its per-stage rows with source outcome.source.graded.
@@ -1740,6 +1418,389 @@ function validateCausalAssumptionEdge(value: unknown, label: string): CausalAssu
     effect: boundedString(value.effect, `${label}.effect`, 256) as NodeId,
     evidenceIds: boundedStringArray(value.evidenceIds, `${label}.evidenceIds`, 64, 256)
   };
+}
+
+/** Shared turn application boundary: identical validation, readiness, dialogue and approvals for both transports. */
+export async function executeApplicationTurn(
+  context: ApiContext,
+  body: unknown,
+  requestTiming: RequestTiming,
+  full = false
+): Promise<{ status: number; body: string; contentType: string }> {
+    const trace = (globalThis as any).__sccTrace;
+    const turnStarted = Date.now();
+    try {
+      const turn = validateTurn(body);
+      const originalMetadata = isRecord(turn.metadata) ? turn.metadata as Record<string, JsonValue> : {};
+      const originalRuntime = isRecord(originalMetadata.runtime) ? originalMetadata.runtime as Record<string, JsonValue> : {};
+      const productionDeadline = createProductionTurnDeadline(requestTiming.startedMonotonicMs);
+      const productionDeadlineRuntime = productionTurnDeadlineMetadata(productionDeadline);
+      const workspaceCodingInput = parseTurnWorkspaceCodingRequest(
+        isRecord(body) ? body.workspaceCoding : undefined,
+        turn.text,
+        { resolveValidationPolicy: id => resolveWorkspacePatchValidationPolicy(context, id) }
+      );
+      const sessionId = conversationSessionId(body);
+      const conversationId = dialogueConversationId(body, sessionId);
+      // A response's dialogue shadow is queued so the first visible frame stays
+      // fast.  The next turn must nevertheless observe that shadow before it
+      // hydrates prior state; otherwise an immediate follow-up can race the
+      // write and lose the owner's newly learned referent correction.
+      await awaitDialoguePersistence(conversationId);
+      const readinessStarted = Date.now();
+      const [
+        recentTurns,
+        hydratedRuntime,
+        workspaceCoding,
+        learnedDialogueProfile,
+        dialogueOutcomeMemory,
+        previousDialogue,
+        previousDialogueCognitiveState,
+        dialogueInterpretationAdjustments,
+        repoCognitionFiles
+      ] = await Promise.all([
+        sessionId
+          ? context.runtime.storage.conversation.listTurns({ sessionId, limit: conversationContextLimit(body) })
+          : Promise.resolve([]),
+        hydratedRuntimeForTurn(context),
+        workspaceCodingInput
+          ? planWorkspaceCodingPatchApiRequest(context, {
+            schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+            input: workspaceCodingInput
+          })
+          : Promise.resolve(undefined),
+        latestDialogueStyleProfile(context.runtime.storage.dialogueMemory, conversationId),
+        dialogueOutcomeMemoryForConversation(context.runtime.storage.dialogueMemory, conversationId),
+        latestDialoguePragmaticsFromMemory(context.runtime.storage.dialogueMemory, { conversationId }),
+        createDialogueCognitiveMemoryV2({
+          store: context.runtime.storage.dialogueMemory,
+          hasher: createHasher()
+        }).latest(conversationId).catch(() => undefined),
+        dialogueInterpretationAdjustmentsForConversation(
+          context.runtime.storage.dialogueMemory,
+          conversationId
+        ),
+        // Phase 15: real repo cognition (issue localization, affected-test
+        // prediction, tree-sitter-backed symbol/call cross-referencing) for
+        // the same explicit, bounded requestedPaths the client already
+        // named for coding-patch planning -- never a repo-wide scan, and
+        // any failure here silently yields no repo context rather than
+        // failing the turn.
+        workspaceCodingInput?.requestedPaths.length
+          ? createWorkspaceRuntime(context).resolveRoot()
+            .then(root => collectRepoFilesForCognition(root, workspaceCodingInput.requestedPaths))
+            .catch(() => [])
+          : Promise.resolve([])
+      ]);
+      traceEvent(trace, {
+        stage: "turn.runtime.readiness",
+        label: "api.turn",
+        durationMs: Date.now() - readinessStarted,
+        counts: { cached: hydratedRuntime.source === "startup_verified_cache" ? 1 : 0 },
+        support: { source: hydratedRuntime.source }
+      });
+      const recentTurnsForMetadata = recentTurns.map(conversationTurnForMetadata);
+      const recentEvidenceIds = uniqueServerStrings(recentTurns.flatMap(record => record.evidenceIds.map(String)));
+      // Whether this request names a subject of its own, measured against the corpus rather than read off its
+      // orthography. Asked here because the primed signal a discourse object would otherwise read is the previous
+      // request's, which is how a lowercase request naming its own subject inherited the last turn's evidence.
+      const requestSubject = await measureRequestCorpusSubject({ requestText: turn.text, evidence: context.runtime.storage.evidence });
+      const requestNamesOwnSubject = requestSubject.measured
+        ? requestSubject.identities.length > 0
+        : requestSubject.contentRuns.length > 0;
+      traceEvent(trace, {
+        stage: "turn.request.corpus_subject",
+        label: "api.turn",
+        counts: { identities: requestSubject.identities.length, contentRuns: requestSubject.contentRuns.length },
+        support: { measured: requestSubject.measured, identities: requestSubject.identities.slice(0, 4) }
+      });
+      const discourseObject = sessionId && !requestNamesOwnSubject
+        ? buildDiscourseObjectState({ sessionId, currentText: turn.text, recentTurns: recentTurnsForMetadata, requestSubject, now: Date.now() })
+        : undefined;
+      const sparseSessionFollowup = Boolean(discourseObject) && recentEvidenceIds.length > 0;
+      const active = hydratedRuntime.marker;
+      const workspacePlans = workspaceCoding ? verifiedCompilerPlansForTurn(workspaceCoding) : [];
+      const webRequested = webLearningRequested(body);
+      traceEvent(trace, { stage: "turn.input", label: "api.turn", input: previewText(turn.text), counts: { textChars: turn.text.length } });
+      traceEvent(trace, { stage: "turn.runtime.start", label: "api.turn" });
+      const {
+        workspacePlans: _untrustedWorkspacePlans,
+        deadline: _untrustedDeadline,
+        initialResponseDeadline: _untrustedInitialResponseDeadline,
+        ...trustedOriginalRuntime
+      } = originalRuntime;
+      const originalDialogue = isRecord(originalMetadata.dialogue) ? originalMetadata.dialogue as Record<string, JsonValue> : {};
+      const { interpretationAdjustments: _untrustedInterpretationAdjustments, cognitiveState: _untrustedCognitiveState, previousState: _untrustedPreviousState, ...trustedOriginalDialogue } = originalDialogue;
+      const discourseEvidenceIds = discourseObject ? uniqueServerStrings(discourseObject.evidenceIds) : [];
+      const runtimeEvidenceIds = uniqueServerStrings([
+        ...optionalStringArray(originalMetadata.runtimeEvidenceIds),
+        ...optionalStringArray(originalMetadata.evidenceIds),
+        ...discourseEvidenceIds,
+        ...(sparseSessionFollowup ? recentEvidenceIds : [])
+      ]);
+      const turnInput = {
+        ...turn,
+        metadata: {
+          ...originalMetadata,
+          ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
+          runtime: {
+            ...trustedOriginalRuntime,
+            fastLocalEvidenceAnswer: true,
+            productionBoundedAnswer: true,
+            initialResponseDeadline: productionDeadlineRuntime,
+            ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
+            workspacePlans: workspacePlans.map(plan => toJsonValue(plan))
+          },
+          runtimeEvidenceIds,
+          dialogue: {
+            ...trustedOriginalDialogue,
+            conversationId,
+            ...(previousDialogue ? { previousState: toJsonValue(previousDialogue.result.state) } : {}),
+            ...(previousDialogueCognitiveState ? { cognitiveState: toJsonValue(previousDialogueCognitiveState) } : {}),
+            ...(dialogueInterpretationAdjustments.length ? { interpretationAdjustments: toJsonValue(dialogueInterpretationAdjustments) } : {})
+          },
+          ...(sessionId ? { session: { sessionId, recentTurns: recentTurnsForMetadata } } : {}),
+          ...(discourseObject ? { discourse: { schema: "scce.discourse_runtime_state.v1", activeObject: toJsonValue(discourseObject), queryConcatenationUsed: false } } : {}),
+          runtimePath: { hydratedRuntime: true, serverPath: true, sourceOnlySimulation: false },
+          activeBrainVersion: active.activeBrainVersion,
+          activeImportRunIds: active.activeImportRunIds,
+          ...(repoCognitionFiles.length ? { repoFiles: toJsonValue(repoCognitionFiles) } : {})
+        }
+      };
+      const result = await context.runtime.kernel.turn({
+        ...turnInput,
+        ...(requestTiming.turnExecution ? {
+          runtimeControl: requestTiming.turnExecution
+        } : {})
+      });
+      traceEvent(trace, { stage: "turn.kernel.returned", label: "api.turn", durationMs: Date.now() - turnStarted, counts: { evidence: result.evidence.length } });
+      const programReadiness = (result.requestedAuthority === "program" || turn.requestedAuthority === "program") && !workspaceCodingInput
+        ? programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest,construct:result.constructGraph })
+        : undefined;
+      if (programReadiness && programReadiness.status !== "ready") {
+        const session=context.runtime.approvals?.snapshot();
+        const pending=session?pendingProgramValidationApproval({events:result.events??[],pending:session.pending}):undefined;
+        if(pending)return json({ok:false,pendingApproval:pending,programReadiness,session},202);
+        traceEvent(trace, {
+          stage: "turn.withheld",
+          label: "api.turn.program",
+          support: programReadiness
+        });
+        throw new HttpError(422, "runtime.declined.program_not_ready", toJsonValue(programReadiness));
+      }
+      // A verified program artifact can answer without a separate prose realization.
+      const programProposalTurn = programReadiness?.status === "ready"
+        || Boolean(result.constructGraph.program && workspaceCodingInput);
+      // The decline carries the turn's own typed withholding record, so a surface renders a reason instead of "".
+      if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn) {
+        const withheld = result.withheld ?? withheldSurfaceForTurn(result);
+        // The decline's typed reason, in the trace: a warning string cannot say which stage withheld.
+        traceEvent(trace, {
+          stage: "turn.withheld",
+          label: "api.turn",
+          counts: {
+            evidence: result.evidence.length,
+            unresolvedRequirements: withheld?.unresolvedRequirementIds.length ?? 0,
+            learningNeeds: withheld?.learningNeeds.length ?? 0
+          },
+          support: {
+            episodeId: String(result.episodeId),
+            reasonId: withheld?.reasonId ?? null,
+            basisReasonIds: withheld?.basisReasonIds ?? [],
+            truthStateId: withheld?.truthStateId ?? null,
+            entailmentVerdict: withheld?.entailmentVerdict ?? null,
+            epistemicForce: withheld?.epistemicForce ?? null,
+            requestedAuthority: withheld?.requestedAuthority ?? null,
+            unresolvedRequirementIds: withheld?.unresolvedRequirementIds ?? [],
+            learningNeedIds: (withheld?.learningNeeds ?? []).map(need => need.needId),
+            components: withheld?.components ?? []
+          }
+        });
+        throw new HttpError(422, "runtime.declined.no_admissible_surface", toJsonValue(withheld ?? null));
+      }
+      const turnProgramCodingInput = workspaceCodingInput
+        ? workspaceCodingInputForProgramGraph(workspaceCodingInput, result.constructGraph.program)
+        : undefined;
+      const completedWorkspaceCoding = turnProgramCodingInput
+        ? await planWorkspaceCodingPatchApiRequest(context, {
+          schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+          input: turnProgramCodingInput
+        })
+        : workspaceCoding;
+      const calibrationStarted = Date.now();
+      const calibrationCache = calibrationModelsCache(context);
+      const calibrationModels = await calibrationCache.get();
+      const calibrationState = calibrationCache.state();
+      traceEvent(trace, {
+        stage: "turn.calibration.loaded",
+        label: "api.turn",
+        durationMs: Date.now() - calibrationStarted,
+        counts: { observations: calibrationModels.observationCount, artifactAgeMs: calibrationState.ageMs },
+        support: { compiled: calibrationState.compiled, refreshing: calibrationState.refreshing, calibrationModelSetId: calibrationModels.id }
+      });
+      const bridgeStarted = Date.now();
+      const dialogue = buildTurnDialogueBridge({
+        requestText: turn.text,
+        result,
+        conversationId,
+        turnId: String(result.episodeId),
+        previousState: previousDialogue?.result.state,
+        targetLanguage: turnTargetLanguage(body),
+        userStyleProfile: learnedDialogueProfile,
+        calibrationModels,
+        calibrationTaskClass: result.calibrationTaskClass ?? CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
+        outcomeMemory: dialogueOutcomeMemory
+      });
+      traceEvent(trace, { stage: "turn.dialogue.bridged", label: "api.turn", durationMs: Date.now() - bridgeStarted });
+      // Keep the real creative offer available for a later owner outcome.
+      // This is an offer ledger row, never a preference: it carries only
+      // typed structural ids/features and is written on the deferred dialogue
+      // tail so an immediate outcome cannot race it.
+      const creativeDecision = creativeContinuationDecisionFromJson(result.creativeContinuation);
+      const creditRecord = buildCognitiveCreditRecord({
+        episodeId: String(result.episodeId),
+        conversationId,
+        taskClass: result.calibrationTaskClass ?? CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
+        requestedAuthority: result.requestedAuthority,
+        answer: result.answer,
+        requirementField: result.requirementField,
+        operatorActivations: result.operatorActivations,
+        cognitiveProposals: result.cognitiveProposals,
+        selectedCandidate: result.selectedCandidate,
+        judge: result.judge,
+        mouth: result.mouth,
+        entailment: toJsonValue(result.entailment as unknown as JsonValue),
+        field: toJsonValue(result.field as unknown as JsonValue),
+        retrievalRoles: toJsonValue((result.retrievalRoles ?? []) as unknown as JsonValue),
+        evidenceIds: result.evidence.map(span => String(span.id)),
+        withheld: result.withheld ? toJsonValue(result.withheld as unknown as JsonValue) : undefined,
+        runtimeMotion: result.runtimeMotion,
+        answerRevision: result.answerRevision,
+        corrections: result.corrections,
+        timing: result.timing ? toJsonValue(result.timing as unknown as JsonValue) : undefined,
+        calibrationModelSetId: calibrationModels.id,
+        createdAt: Date.now()
+      });
+      const dialoguePersistence = enqueueDialoguePersistence(conversationId, async () => {
+        // Elapsed ms until each write settles, from the moment this turn's persistence starts.
+        const persistenceStarted = Date.now();
+        const timing: Record<string, number> = {};
+        const timed = <T>(step: string, work: Promise<T>): Promise<T> => work.then(value => { timing[step] = Date.now() - persistenceStarted; return value; });
+        const [, cognitiveShadow, storedSession, creativeOffer] = await Promise.all([
+          timed("dialogueTurnMs", persistDialogueTurn({
+            store: context.runtime.storage.dialogueMemory,
+            result: dialogue.pragmatics,
+            answerGraphHash: dialogue.answerGraphHash,
+            now: Date.now()
+          })),
+          timed("cognitiveShadowMs", persistDialogueCognitiveShadowV2({
+            context,
+            conversationId,
+            sessionId,
+            requestText: turn.text,
+            result,
+            now: Date.now()
+          })),
+          timed("sessionPairMs", sessionId
+            ? persistConversationTurnPair(context, sessionId, turn, result)
+            : Promise.resolve(undefined)),
+          timed("creativeOfferMs", creativeDecision
+            ? persistCreativeContinuationOffer({
+              store: context.runtime.storage.dialogueMemory,
+              decision: creativeDecision,
+              sourceRecordId: String(result.episodeId),
+              sourceTraceId: String(result.episodeId),
+              createdAt: Date.now()
+            })
+            : Promise.resolve(undefined)),
+          // The credit chain: one record plus one row per stage, keyed by the episode id, in one insert.
+          timed("cognitiveCreditMs", persistCognitiveCredit(context, creditRecord))
+        ]);
+        return {
+          cognitiveShadow,
+          timing,
+          ...(creativeOffer ? { creativeOfferId: creativeOffer.id } : {}),
+          ...(storedSession === undefined ? {} : { sessionAudit: storedSession })
+        };
+      });
+      traceEvent(trace, {
+        stage: "dialogue.persistence.queued",
+        label: "api.turn.dialogue",
+        counts: { queued: 1 },
+        support: { status: "queued", mode: "deferred_ordered", ordering: "conversation", sessionIncluded: Boolean(sessionId) }
+      });
+      observeDeferredDialoguePersistence(trace, dialoguePersistence);
+      traceEvent(trace, {
+        stage: "turn.runtime.end",
+        label: "api.turn",
+        durationMs: Date.now() - turnStarted,
+        counts: {
+          evidence: result.evidence.length,
+          artifacts: result.emissionGraph.artifacts.length
+        }
+      });
+      traceEvent(trace, {
+        stage: "turn.output",
+        label: "api.turn",
+        output: previewText(result.answer),
+        counts: {
+          answerChars: result.answer.length,
+          evidence: result.evidence.length,
+          artifacts: result.emissionGraph.artifacts.length
+        }
+      });
+      const webLearning = webRequested
+        ? { schema: "scce.web_learning.disabled.v1", enabled: false, triggered: false, disabledReason: "local_mouth_focus" }
+        : undefined;
+      const turnResponse = full ? result : compactTurnResult(result);
+      const dialogueResponse = compactTurnDialogue(dialogue);
+      const deadlineStatus = productionTurnDeadlineStatus(
+        productionDeadline,
+        requestTiming.firstVisibleFrameMonotonicMs ?? performance.now()
+      );
+      // Only turns that answered teach the budget. A turn that produced nothing says what failure costs, and
+      // fitting to failure would widen the deadline every time the system could not answer.
+      observeAnsweringTurnDuration(Number(deadlineStatus.elapsedMs), Boolean(String(result.answer ?? "").trim()));
+      traceEvent(trace, {
+        stage: "turn.deadline.observed",
+        label: "api.turn",
+        durationMs: Number(deadlineStatus.elapsedMs),
+        support: deadlineStatus,
+        ...(deadlineStatus.status === "exceeded" ? { warnings: ["production turn exceeded its first-visible-frame deadline"] } : {})
+      });
+      const baseResponse = {
+        ...turnResponse,
+        ...(programReadiness ? {
+          programReadiness: toJsonValue(programReadiness),
+          programArtifacts: programReadiness.status === "ready" ? result.buildTest?.artifacts ?? [] : []
+        } : {}),
+        dialogue: dialogueResponse,
+        deadline: deadlineStatus,
+        persistence: {
+          schema: "scce.turn_persistence.v1",
+          dialogue: {
+            status: "queued",
+            mode: "deferred_ordered",
+            durableWritesPending: true,
+            ordering: "conversation"
+          },
+          ...(sessionId ? {
+            session: {
+              status: "queued",
+              mode: "deferred_ordered",
+              durableWritesPending: true,
+              ordering: "conversation"
+            }
+          } : {})
+        },
+        ...(completedWorkspaceCoding ? { workspaceCoding: toJsonValue(completedWorkspaceCoding) } : {})
+      };
+      const response=webLearning ? { ...baseResponse, webLearning } : baseResponse;
+      return json(full?response:encodeProgramArtifactWire(response));
+    } catch (error) {
+      traceEvent(trace, { stage: "turn.error", label: "api.turn", durationMs: Date.now() - turnStarted, warnings: [String(error)] });
+      throw error;
+    }
 }
 
 function validateTurn(value: unknown): OwnerInput {

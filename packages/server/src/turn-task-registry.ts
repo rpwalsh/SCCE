@@ -62,6 +62,7 @@ interface LiveTurnTask {
   subscribers: Set<(frame: TurnTaskFrame) => void>;
   persistenceTail: Promise<void>;
   durableSequence: number;
+  persistenceFailed: boolean;
   lastEvent?: ScceEvent;
 }
 
@@ -97,7 +98,7 @@ export class TurnTaskRegistry {
     });
   }
 
-  create(input: { requestId: string; observedAt?: number }): TurnTaskSnapshot {
+  create(input: { requestId: string; observedAt?: number; cognition?: JsonValue }): TurnTaskSnapshot {
     const episodeId = this.#idFactory.episodeId();
     const taskId = String(episodeId);
     const observedAt = input.observedAt ?? Date.now();
@@ -111,12 +112,14 @@ export class TurnTaskRegistry {
       controller: new AbortController(),
       subscribers: new Set(),
       persistenceTail: Promise.resolve(),
-      durableSequence: 0
+      durableSequence: 0,
+      persistenceFailed: false
     };
     this.#tasks.set(taskId, task);
     this.append(taskId, {
       type: "accepted",
       requestId: input.requestId,
+      ...(input.cognition === undefined ? {} : { cognition: input.cognition }),
       persistence: "pending"
     });
     this.#evictCompleted();
@@ -132,6 +135,14 @@ export class TurnTaskRegistry {
     if (!task || terminal(task.status)) return;
     task.status = "running";
     task.updatedAt = Date.now();
+  }
+
+  /** Atomic within this local coordinator; only an unclaimed accepted task may start. */
+  claim(taskId: string, inputDigest: string): boolean {
+    const task = this.#tasks.get(taskId);
+    if (!task || task.status !== "accepted") return false;
+    this.append(taskId, { type: "progress", phase: "application.turn.claimed", cognition: { inputDigest } });
+    return true;
   }
 
   append(
@@ -175,6 +186,9 @@ export class TurnTaskRegistry {
       .filter((frame): frame is TurnTaskFrame => Boolean(frame))
       .sort((left, right) => left.sequence - right.sequence);
     if (!frames.length) return undefined;
+    if (frames.some((frame, index) => frame.taskId !== taskId || frame.sequence !== index + 1)) {
+      throw new Error("invalid persisted turn task frame sequence");
+    }
     const last = frames.at(-1)!;
     const status: TurnTaskStatus = last.type === "result"
       ? "succeeded"
@@ -230,6 +244,7 @@ export class TurnTaskRegistry {
         task.durableSequence = Math.max(task.durableSequence, frame.sequence);
       })
       .catch(() => {
+        task.persistenceFailed = true;
         // The live stream remains available and honestly reports pending
         // persistence. Later events continue from the last durable parent.
       });
@@ -237,7 +252,7 @@ export class TurnTaskRegistry {
 
   #evictCompleted(): void {
     const completed = [...this.#tasks.values()]
-      .filter(task => terminal(task.status) && task.subscribers.size === 0)
+      .filter(task => terminal(task.status) && task.subscribers.size === 0 && !task.persistenceFailed && task.durableSequence === task.frames.length)
       .sort((left, right) => left.updatedAt - right.updatedAt);
     while (this.#tasks.size > 256 && completed.length) {
       const task = completed.shift()!;
@@ -254,7 +269,7 @@ function snapshot(task: LiveTurnTask): TurnTaskSnapshot {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     latestSequence: task.frames.at(-1)?.sequence ?? 0,
-    persistence: task.durableSequence >= (task.frames.at(-1)?.sequence ?? 0)
+    persistence: !task.persistenceFailed && task.durableSequence >= (task.frames.at(-1)?.sequence ?? 0)
       ? "durable"
       : "pending",
     frames: [...task.frames]

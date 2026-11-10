@@ -17,6 +17,14 @@ The current package and command boundary. Package manifests, `package.json`, and
 - `pnpm mcp:build` and `pnpm mcp:start` build or run the bounded developer MCP server.
 - `pnpm repo:shape`, `repo:search`, `repo:deps`, `repo:cruise`, `repo:dead`, `repo:exports`, and `repo:docs` are developer inspection commands.
 
+## Local GraphQL and Relay workbench
+
+`POST /api/graphql` runs the registered operations compiled from `packages/workbench`. `packages/server/schema.graphql` defines runtime status, scoped Node refetch, turn tasks/results, task-frame connections, and source/evidence node projections. The current client uses the runtime and task operations. Mutations reserve, start and cancel durable turn operations; subscriptions replay task updates after a sequence over POST with `Accept: text/event-stream`.
+
+The endpoint shares the existing native origin, bearer and body limits, and validates protocol version, operation registration, generation, page sizes and work budgets. A reserved server operation ID binds one request; retries cannot launch that operation again. Cursors bind the local state, task and server generation. Published task frames are durable before GraphQL exposes them. Nonterminal work becomes interrupted after restart.
+
+`/workbench/` and `/scce/workbench/` serve the built React/Relay application. The existing `/` workbench and all native engine modules remain available. See the [workbench guide](../packages/workbench/README.md) for build, connection and retry behavior.
+
 ## Package APIs
 
 The kernel, adapters, UI, server, and CLI are ESM packages with built output under `dist`. The VS Code extension is a CommonJS extension-host package.

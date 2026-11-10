@@ -1,0 +1,78 @@
+interface Node { id: ID! }
+type Query {
+  node(id: ID!): Node
+  nodes(ids: [ID!]!): [Node]!
+  runtime: RuntimeStatus!
+  turnTask(id: ID!): TurnTask
+}
+type RuntimeStatus {
+  protocolVersion: String!
+  generation: String!
+  phase: String!
+  ready: Boolean!
+}
+type TurnTask implements Node {
+  id: ID!
+  status: String!
+  createdAt: Float!
+  updatedAt: Float!
+  latestSequence: Int!
+  persistence: String!
+  latestFrame: TurnFrame
+  frames(first: Int! = 20, after: String): TurnFrameConnection!
+  result: TurnResult
+}
+type TurnResult implements Node {
+  id: ID!
+  answer: String
+  error: String
+  httpStatus: Int
+  episodeId: String
+}
+type TurnFrame implements Node {
+  id: ID!
+  sequence: Int!
+  kind: String!
+  phase: String
+  answer: String
+  error: String
+  observedAt: Float!
+}
+type TurnFrameConnection { edges: [TurnFrameEdge!]!, pageInfo: PageInfo! }
+type TurnFrameEdge { cursor: String!, node: TurnFrame! }
+type PageInfo { hasNextPage: Boolean!, hasPreviousPage: Boolean!, startCursor: String, endCursor: String }
+type EvidenceSpan implements Node {
+  id: ID!
+  sourceVersion: SourceVersion
+  mediaType: String!
+  byteStart: Float!
+  byteEnd: Float!
+  charStart: Float!
+  charEnd: Float!
+}
+type SourceVersion implements Node {
+  id: ID!
+  canonicalUri: String!
+  contentHash: String!
+  mediaType: String!
+  byteLength: Float!
+  observedAt: Float!
+}
+enum RequestedAuthority { factual reasoned creative translation program action }
+input StartTurnInput {
+  operationId: ID!
+  text: String!
+  sessionId: String
+  conversationId: String
+  requestedAuthority: RequestedAuthority
+  clientMutationId: String
+}
+input ReserveTurnInput { clientMutationId: String }
+input CancelTurnInput { taskId: ID!, clientMutationId: String }
+type TurnTaskPayload { task: TurnTask!, clientMutationId: String }
+type Mutation {
+  reserveTurn(input: ReserveTurnInput!): TurnTaskPayload!
+  startTurn(input: StartTurnInput!): TurnTaskPayload!
+  cancelTurn(input: CancelTurnInput!): TurnTaskPayload!
+}
+type Subscription { turnTaskUpdated(id: ID!, afterSequence: Int! = 0): TurnTask! }
