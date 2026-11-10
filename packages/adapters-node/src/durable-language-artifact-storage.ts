@@ -121,4 +121,3 @@ function jsonByteLengths(value: unknown, cache: WeakMap<object, JsonByteLengths>
   const expanded = decimalPosition <= 0 ? 2 - decimalPosition + digits.length : decimalPosition >= digits.length ? decimalPosition : digits.length + 1;
   return { decodedJsonBytes, decodedJsonbBytes: Math.max(decodedJsonBytes, expanded + Number(value < 0)) };
 }
-

@@ -10,4 +10,3 @@ export function immutableRequestSourceFact<T extends JsonValue>(value: T): T {
   }
   return value;
 }
-
