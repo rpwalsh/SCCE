@@ -1138,7 +1138,8 @@ describe("prepared corpus training", () => {
     const prose = { ...input, sourceSystem: "oss_docs", streamUri: "fixture://source-docs", text: "A reader opens the book. Another reader closes the book." };
     await commitLanguageCorpusTraining(prose, await prepareLanguageCorpusTraining(prose));
     expect(graph).toHaveBeenCalledTimes(2);
-    expect(pool).toHaveBeenCalledTimes(1);
+    expect(pool).toHaveBeenCalledTimes(2);
+    expect(pool.mock.calls[1]).toEqual(pool.mock.calls[0]);
   });
 
   const options = (storage: ScceStorage) => ({ storage, sourceSystem: "gutenberg", streamUri: "fixture://prepared-book",
