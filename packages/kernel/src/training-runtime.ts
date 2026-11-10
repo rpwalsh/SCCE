@@ -5,7 +5,7 @@ import { createAlphaFieldEngine } from "./field.js";
 import { createIdFactory } from "./ids.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
-import { LANGUAGE_CONSTRUCTION_PUBLICATION, publishCompiledLanguagePatterns } from "./language-pattern-publication.js";
+import { INDUCED_LANGUAGE_MEMORY_PUBLICATIONS, LANGUAGE_CONSTRUCTION_PUBLICATION, publishCompiledLanguagePatterns } from "./language-pattern-publication.js";
 import { sourceCompilationChunkCount, sourceCompilationModelReadLimit, sourceLanguageCompilationReceiptIdForModels, validateSourceCompilationArtifactInventory, validateSourceCompilationReceipt, validateSourceLanguageCompilation } from "./source-language-compilation.js";
 import {
   compileLanguageTrainingBatch,
@@ -325,7 +325,8 @@ export function createTrainingRuntime(options: {
         for (const unit of memory.units) await deps.storage.languageMemory.putLanguageUnit({ ...unit, informationLabel });
         await publishCompiledLanguagePatterns({ store: deps.storage.languageMemory,
           owner: { sourceId: source.sourceId, sourceVersionId, contentHash: source.contentHash }, profileId: groupProfile.id,
-          sourceSystem, informationLabel, patterns: memory.patterns, projections: [LANGUAGE_CONSTRUCTION_PUBLICATION] });
+          sourceSystem, informationLabel, patterns: memory.patterns, projections: [LANGUAGE_CONSTRUCTION_PUBLICATION,
+            ...(memory.preparedInduction ? INDUCED_LANGUAGE_MEMORY_PUBLICATIONS : [])] });
         for (const frame of memory.semanticFrames) await deps.storage.languageMemory.putSemanticFrame({ ...frame, informationLabel });
       });
       if (!profileBySourceVersion.has(String(sourceVersionId))) {

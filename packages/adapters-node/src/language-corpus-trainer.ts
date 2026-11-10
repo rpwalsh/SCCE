@@ -29,6 +29,8 @@ import {
   LANGUAGE_TRAINING_BATCH_RECIPE_ID,
   CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+  INDUCED_LANGUAGE_MEMORY_PUBLICATIONS,
+  INDUCED_LANGUAGE_MEMORY_PUBLICATION_RECIPE_ID,
   SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID,
   LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
@@ -417,6 +419,7 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
   const hasGraphDependency = Boolean(input.graphSnapshotAdditions?.hyperedges.length || input.graphSnapshotSourceVersionIds?.length || graphProjectionEnabled);
   const components: Record<string, string> = naturalSource
     ? { inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+      inducedLanguageProjection: INDUCED_LANGUAGE_MEMORY_PUBLICATION_RECIPE_ID,
       sourceConstructionProjection: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
       ...(hasGraphDependency ? { sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } : {}) } : {};
   if (!input.languageOnly && needsConstructionContext(input)) components.constructionContext = SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID;
@@ -1416,6 +1419,7 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     profileId: String(prepared.profile.id), sourceSystem: prepared.sourceSystem, informationLabel: prepared.informationLabel,
     patterns: prepared.patterns, projections: [
       ...(patternProjectionRecipe ? [{ patternSchema, componentRecipe: patternProjectionRecipe }] : []),
+      ...(componentRecipes.inducedLanguageMemory ? INDUCED_LANGUAGE_MEMORY_PUBLICATIONS : []),
       ...(!input.languageOnly && prepared.models.length && componentRecipes.sourceConstructionProjection
         ? [{ patternSchema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, componentRecipe: CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID }] : []),
       ...(canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode

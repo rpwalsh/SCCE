@@ -19,6 +19,10 @@ export interface InducedLanguageModelMemoryProjection {
 
 export const INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID = "kernel.induced_language_memory_projection.v3" as const;
 export const INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA = "scce.induced_language_model.syntax_memory.v1" as const;
+export const INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS: readonly string[] = Object.freeze([
+  "scce.induced_language_model.morphology_memory.v1", INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
+  "scce.induced_language_model.semantic_memory.v1", "scce.induced_language_model.translation_seed_memory.v1"
+]);
 
 export type InducedLanguageMemoryModel = Omit<Pick<InducedLanguageModel,
   "id" | "audit" | "morphology" | "morphologyClassBindings" | "syntaxTemplates" | "boundarySignals" | "joinProgram"

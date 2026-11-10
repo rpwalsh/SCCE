@@ -1,7 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID, type LanguagePatternRecord, type LanguagePatternProjection } from "@scce/kernel";
+import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
+  INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS,
+  type LanguagePatternRecord, type LanguagePatternProjection } from "@scce/kernel";
 import { PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -25,6 +27,28 @@ function fixture() {
 }
 
 describe("source-owned creative compatibility publication", () => {
+  it.each(INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS)("replaces current induced rows and preserves unpublished owners for %s", async schema => {
+    const { adapter, calls, pattern, projection } = fixture();
+    const induced = { ...pattern, patternJson: { schema, profileId: pattern.profileId, sourceVersionId: projection.sourceVersionId,
+      sourceSystem: projection.sourceSystem, componentRecipe: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } };
+    const scope = { ...projection, patternSchema: schema, componentRecipe: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID };
+    await adapter.languageMemory.replaceLanguagePatternProjection!({ patterns: [induced], projection: scope });
+    expect(calls.at(-1)!.params[1]).toContain(pattern.id);
+    await adapter.languageMemory.replaceLanguagePatternProjection!({ patterns: [], projection: { ...scope, patternIds: [] } });
+    expect(calls.at(-1)!.params[1]).toContain('"patternIds":[]');
+    await adapter.languageMemory.listLanguagePatterns({ profileId: pattern.profileId, patternSchemas: [schema] });
+    const query = calls.at(-1)!;
+    expect(query.params).toContain(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
+    expect(query.sql).toContain("pattern.component_recipe,pattern.owned_source_version_id");
+    expect(query.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id,projection_recipe,source_version_id FROM active_projection_ids_0");
+    expect(query.sql).toContain("published.source_version_id=pattern.owned_source_version_id");
+    expect(query.sql.indexOf("FROM active_projection_ids_0_headers published")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
+    calls.length = 0;
+    await expect(adapter.languageMemory.replaceLanguagePatternProjection!({ patterns: [{ ...induced,
+      patternJson: { ...induced.patternJson, sourceVersionId: "foreign.version" } }], projection: scope })).rejects.toThrow("rows in the replacement batch");
+    expect(calls).toEqual([]);
+  });
+
   it("publishes exact models and an empty current set without deleting history", async () => {
     expect(typeof CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID).toBe("string");
     const { adapter, calls, pattern, projection } = fixture();

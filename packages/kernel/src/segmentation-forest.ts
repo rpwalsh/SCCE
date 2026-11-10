@@ -140,9 +140,81 @@ interface DpNode {
 }
 
 interface WeightedArc {
-  unit: SegmentationForestUnit;
+  unit: Readonly<Pick<SegmentationForestUnit, "id" | "overlapClass" | "graphemeStart" | "graphemeEnd">>;
   energy: number;
   energyTrace: SegmentationEnergyComponents;
+}
+
+interface FullDagMeasure {
+  arcsByStart: ReadonlyMap<number, readonly WeightedArc[]>;
+  forward: readonly number[];
+  backward: readonly number[];
+  partitionLogZ: number;
+}
+const FULL_DAG_MEASURE = Symbol("segmentation.full_dag_measure");
+
+export interface SegmentationSurfaceAdjacency {
+  leftUnitId: string;
+  rightUnitId: string;
+  posterior: number;
+}
+
+/** Local expected counts integrate every cover, including unmaterialized derivations. */
+export function segmentationSurfaceAdjacencies(forest: SurfaceSegmentationForest, surfaceBearingUnitIds: ReadonlySet<string>): Iterable<SegmentationSurfaceAdjacency> {
+  const measure = (forest as SurfaceSegmentationForest & { [FULL_DAG_MEASURE]?: FullDagMeasure })[FULL_DAG_MEASURE];
+  if (!measure) throw new Error("segmentation forest has no canonical full-DAG adjacency measure");
+  const bearing = new Set(surfaceBearingUnitIds);
+  return (function* () {
+    if (!Number.isFinite(measure.partitionLogZ)) return;
+    for (const arcs of measure.arcsByStart.values()) for (const left of arcs) {
+      if (!bearing.has(left.unit.id) || !Number.isFinite(measure.forward[left.unit.graphemeStart]!)) continue;
+      const bridges = new Map<number, number>([[left.unit.graphemeEnd, 0]]);
+      const pending = [left.unit.graphemeEnd];
+      while (pending.length) {
+        const position = popCoordinate(pending), bridge = bridges.get(position)!;
+        for (const right of measure.arcsByStart.get(position) ?? []) {
+          if (bearing.has(right.unit.id)) {
+            const suffix = measure.backward[right.unit.graphemeEnd]!;
+            if (!Number.isFinite(suffix)) continue;
+            const posterior = Math.exp(measure.forward[left.unit.graphemeStart]! - left.energy + bridge - right.energy + suffix - measure.partitionLogZ);
+            if (posterior > 0) yield { leftUnitId: left.unit.id, rightUnitId: right.unit.id, posterior };
+          } else {
+            const end = right.unit.graphemeEnd, previous = bridges.get(end);
+            bridges.set(end, logAddExp(previous ?? Number.NEGATIVE_INFINITY, bridge - right.energy));
+            if (previous === undefined) pushCoordinate(pending, end);
+          }
+        }
+      }
+    }
+  })();
+}
+
+function pushCoordinate(heap: number[], value: number): void {
+  let index = heap.length;
+  heap.push(value);
+  while (index) {
+    const parent = Math.floor((index - 1) / 2);
+    if (heap[parent]! <= value) break;
+    heap[index] = heap[parent]!;
+    index = parent;
+  }
+  heap[index] = value;
+}
+
+function popCoordinate(heap: number[]): number {
+  const first = heap[0]!, last = heap.pop()!;
+  if (heap.length) {
+    let index = 0;
+    while (index * 2 + 1 < heap.length) {
+      let child = index * 2 + 1;
+      if (child + 1 < heap.length && heap[child + 1]! < heap[child]!) child++;
+      if (heap[child]! >= last) break;
+      heap[index] = heap[child]!;
+      index = child;
+    }
+    heap[index] = last;
+  }
+  return first;
 }
 
 const MIN_PROBABILITY = 1e-9;
@@ -187,7 +259,8 @@ function prepareSegmentationForest(input: SegmentationForestBuildInput) {
       semanticContextEnergy: input.semanticContextEnergyByUnitId?.[unit.id]
     });
     const bucket = allArcsByStart.get(unit.graphemeStart) ?? [];
-    bucket.push({ unit, energy: energyTrace.total, energyTrace });
+    bucket.push({ unit: Object.freeze({ id: unit.id, overlapClass: unit.overlapClass,
+      graphemeStart: unit.graphemeStart, graphemeEnd: unit.graphemeEnd }), energy: energyTrace.total, energyTrace });
     allArcsByStart.set(unit.graphemeStart, bucket);
   }
   for (const bucket of allArcsByStart.values()) bucket.sort(compareArcs);
@@ -204,7 +277,7 @@ function prepareSegmentationForest(input: SegmentationForestBuildInput) {
   });
 
   return { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart,
-    fullPartitionLogZ, boundaryMarginals };
+    fullPartitionLogZ, fullForward, fullBackward, boundaryMarginals };
 }
 
 export function measureSegmentationBoundaries(input: SegmentationForestBuildInput): SegmentationBoundaryMeasurement {
@@ -218,7 +291,7 @@ export function measureSegmentationBoundaries(input: SegmentationForestBuildInpu
 /** Measure every valid arc before applying operational limits to path materialization. */
 export function buildSegmentationForest(input: SegmentationForestBuildInput): SurfaceSegmentationForest {
   const { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart,
-    fullPartitionLogZ, boundaryMarginals } = prepareSegmentationForest(input);
+    fullPartitionLogZ, fullForward, fullBackward, boundaryMarginals } = prepareSegmentationForest(input);
 
   const pruning = pruneArcs(allArcsByStart, graphemeCount, limits);
   const arcsByStart = pruning.arcsByStart;
@@ -312,7 +385,7 @@ export function buildSegmentationForest(input: SegmentationForestBuildInput): Su
     completion,
     ...(resumeState ? { resumeState } : {})
   };
-  return {
+  const forest: SurfaceSegmentationForest = {
     ...canonical,
     id: `segmentation_forest.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`,
     audit: toJsonValue({
@@ -343,6 +416,9 @@ export function buildSegmentationForest(input: SegmentationForestBuildInput): Su
       completion
     })
   };
+  Object.defineProperty(forest, FULL_DAG_MEASURE, { value: Object.freeze({ arcsByStart: allArcsByStart,
+    forward: Object.freeze(fullForward), backward: Object.freeze(fullBackward), partitionLogZ: fullPartitionLogZ }) });
+  return forest;
 }
 
 /**

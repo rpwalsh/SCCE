@@ -16,7 +16,7 @@ import { corpusSegmentationInputDigest, validateCorpusSegmentationForDocuments }
 import type { SourceInductionBatch, SourceInductionBatchExecution, SourceInductionBatchIdentity, SourceInductionBatchJob, SourceInductionBatchProduct } from "./source-induction-execution.js";
 export type { SourceInductionBatch } from "./source-induction-execution.js";
 
-export const SOURCE_WINDOW_INDUCTION_RECIPE_ID = "kernel.source_window_induction.v1" as const;
+export const SOURCE_WINDOW_INDUCTION_RECIPE_ID = "kernel.source_window_induction.v2" as const;
 
 function freezeProducts<T>(value: T, seen = new WeakSet<object>()): T {
   if (value && typeof value === "object" && !seen.has(value)) {
@@ -118,31 +118,12 @@ export function sourceInductionBatchJobDigest(job: Omit<SourceInductionBatchJob,
   return hasher.digestHex(canonicalStringify({ job, streamingDigest: canonicalDigestHex(job, hasher) }));
 }
 
-function compactSourceInductionModel(model: InducedLanguageModel, batch: SourceInductionBatch): InducedLanguageMemoryModel {
+function compactSourceInductionModel(model: InducedLanguageModel): InducedLanguageMemoryModel {
     const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds } = model;
-    const windowsByEvidence = new Map<string, number[]>();
-    for (let index = 0; graphBoundConstructions.length && index < batch.windows.length; index++) {
-      const window = batch.windows[index]!;
-      for (const evidenceId of new Set(window.evidenceIds)) {
-        const matches = windowsByEvidence.get(evidenceId);
-        if (matches) matches.push(index);
-        else windowsByEvidence.set(evidenceId, [index]);
-      }
-    }
     return freezeProducts({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
       joinProgram: joinProgramMixtureStorageForm(joinProgram, { immutable: true }),
-      semanticFrames, graphBoundConstructions: graphBoundConstructions.map(construction => {
-        const matches = new Set<number>();
-        for (const evidenceId of construction.evidenceIds) {
-          for (const index of windowsByEvidence.get(evidenceId) ?? []) matches.add(index);
-        }
-        // Preserve physical source-window order independently of construction evidence order.
-        return { ...construction, sourceWindows: [...matches].sort((left, right) => left - right).map(index => {
-          const { ownerDocumentId, startUtf16, endUtf16 } = batch.windows[index]!;
-          return { ownerDocumentId, startUtf16, endUtf16 };
-        }) };
-      }), lexicalClasses, relationHypothesisModel, translationSeeds });
+      semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds });
 }
 
 /** Prepare/induce are the same pure producer in serial execution and worker sessions. */
@@ -158,7 +139,7 @@ export function prepareSourceInductionBatch(input: { batch: SourceInductionBatch
       || verified && corpusSegmentationInputDigest(batch.documents.filter(document => document.text.trim()), verified, hasher) !== corpusBinding)
       throw new Error("source induction batch inputs changed");
     const model = createLanguageInductionEngine({ hasher }).induce({ documents: batch.documents, ...(verified ? { verifiedCorpusSegmentation: verified } : {}) });
-    return { compact: compactSourceInductionModel(model, batch), ...(retainFullModel ? { fullModel: model } : {}) };
+    return { compact: compactSourceInductionModel(model), ...(retainFullModel ? { fullModel: model } : {}) };
   } });
 }
 
