@@ -5,7 +5,7 @@ import * as kernel from "@scce/kernel";
 import { canonicalDigestHex, createClock, createHasher, createIdFactory, sourceLanguageTrainingStreamId,
   stampSourceLanguageCompilation, toJsonValue, type InformationLabel, type JsonValue } from "@scce/kernel";
 import { createSourceArtifactMetadataCodec, SOURCE_ARTIFACT_METADATA_KEY } from "../source-artifact-metadata.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import { LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY, LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA, languageArtifactJsonByteLengths } from "../durable-language-artifact-storage.js";
 import type { CreativeEventStorageHost } from "../canonical-creative-event-store.js";
 
 const hasher = createHasher(), label: InformationLabel = { tenantId: "owner", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" };
@@ -78,7 +78,7 @@ describe("canonical source artifact metadata", () => {
       expect(stored.joinProgram).toEqual(object(f.originals[index]).joinProgram);
       expect(stored.requirementTargets).toEqual(f.metadata.requirementTargets);
       expect(stored.sourceIds).toEqual(f.metadata.sourceIds);
-      expect(object(stored[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY])).toMatchObject(durableJoinProgramJsonByteLengths(f.originals[index]));
+      expect(object(stored[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY])).toMatchObject(languageArtifactJsonByteLengths(f.originals[index]));
     }
     expect(f.calls).toHaveLength(1);
     const decoded = await f.codec.decodeMany(encoded.map(value => ({ value, informationLabel: label })));
@@ -153,21 +153,21 @@ describe("canonical source artifact metadata", () => {
     if (mutation === "payload") stored.templates = [{ surface: "fabricated" }];
     if (mutation === "reference") object(stored[SOURCE_ARTIFACT_METADATA_KEY]).receiptId = "foreign";
     if (mutation === "collision") stored.links = [];
-    if (mutation === "ledger") object(stored[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).decodedJsonbBytes = 1;
+    if (mutation === "ledger") object(stored[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]).decodedJsonbBytes = 1;
     await expect(f.codec.decodeMany([{ value: stored, informationLabel }])).rejects.toThrow("metadata");
   });
 
   it("retains an existing JOIN/creative byte ledger until that codec reconstructs its payload", async () => {
-    const f = fixture(), value = { ...object(f.originals[0]), [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA,
-      ...durableJoinProgramJsonByteLengths(f.originals[0]) } };
+    const f = fixture(), value = { ...object(f.originals[0]), [LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]: { schema: LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA,
+      ...languageArtifactJsonByteLengths(f.originals[0]) } };
     const [encoded] = await f.codec.encodeMany([{ value, logicalValue: f.originals[0], informationLabel: label }]);
-    expect(object(encoded)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).toEqual(value[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
+    expect(object(encoded)[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]).toEqual(value[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]);
     expect(await f.codec.decodeMany([{ value: encoded, informationLabel: label }])).toEqual([value]);
   });
 
   it("rejects caller supplied byte ledgers instead of licensing an under-budget read", async () => {
-    const f = fixture(), value = { ...object(f.originals[0]), [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: {
-      schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, decodedJsonBytes: 1, decodedJsonbBytes: 1 } };
+    const f = fixture(), value = { ...object(f.originals[0]), [LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]: {
+      schema: LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA, decodedJsonBytes: 1, decodedJsonbBytes: 1 } };
     await expect(f.codec.encodeMany([{ value, informationLabel: label }])).rejects.toThrow("metadata");
     await expect(f.codec.encodeMany([{ value, logicalValue: f.originals[0], informationLabel: label }])).rejects.toThrow("metadata");
     await expect(f.codec.encodeMany([{ value, logicalValue: value, informationLabel: label }])).rejects.toThrow("metadata");
@@ -179,7 +179,7 @@ describe("canonical source artifact metadata", () => {
     expect(f.calls).toHaveLength(0);
     const bare = { schema: "test.bare", arbitrary: { value: 2 } };
     expect(await f.codec.encodeMany([{ value: bare }])).toEqual([bare]); expect(f.calls).toHaveLength(0);
-    const collision = { ...bare, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: { schema: "caller.owned", arbitrary: 1 } };
+    const collision = { ...bare, [LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]: { schema: "caller.owned", arbitrary: 1 } };
     const [untouched] = await f.codec.encodeMany([{ value: collision }]);
     expect(untouched).toBe(collision); expect(f.calls).toHaveLength(0);
   });

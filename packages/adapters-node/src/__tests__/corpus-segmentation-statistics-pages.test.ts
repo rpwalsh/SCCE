@@ -5,7 +5,7 @@ import { expect, it } from "vitest";
 import { canonicalStringify, collectBoundaryTrainingObservations, compileBoundaryStatistics, createHasher, fitBoundaryEstimator,
   measureSurfaceBoundaries, type BoundaryStatisticsRow } from "@scce/kernel";
 import { fixtureSegmentationScratch } from "../../../kernel/src/__tests__/fixtures/corpus-segmentation-scratch.js";
-import { durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import { languageArtifactJsonByteLengths } from "../durable-language-artifact-storage.js";
 import { readCorpusStatisticsPages, writeCorpusStatisticsPages } from "../corpus-segmentation-statistics-pages.js";
 
 function fixture(maxPageBytes: number) {
@@ -46,7 +46,7 @@ it("packs genuine source statistics losslessly across input chunks and physical 
     expect(fitBoundaryEstimator({ statistics: { ...statistics, rows: restored }, hasher })).toEqual(expectedFit);
     digests.push(hasher.digestHex(canonicalStringify({ ...statistics, rows: restored })));
     for await (const page of f.memory.pages({ collection: "input/statistics/0000000000000001", ...f.store.bounds })) for (const row of page)
-      expect(durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(budget!);
+      expect(languageArtifactJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(budget!);
   }
   expect(digests[0]).toBe(digests[1]);
 });

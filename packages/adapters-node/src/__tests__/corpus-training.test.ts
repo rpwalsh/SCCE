@@ -3365,6 +3365,19 @@ describe("dialogue corpus training", () => {
     const patterns = fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.request_requirement_pattern.v1");
     expect(result.requestAuthorities).toEqual({ examples: 6, evidenceBoundExamples: 6, patternsPersisted: patterns.length });
     expect(patterns.length).toBeGreaterThan(0);
+    const provenanceRanges = new Map<number, unknown>();
+    const sharedMetadata = recordOf(patterns[0]!.patternJson).sourceMetadata;
+    for (const pattern of patterns) {
+      const record = recordOf(pattern.patternJson);
+      expect(record.sourceMetadata).toBe(sharedMetadata);
+      expect(Object.isFrozen(record.sourceMetadata)).toBe(true);
+      for (const range of record.sourceTurnRanges as Array<{ turnIndex: number }>) {
+        if (provenanceRanges.has(range.turnIndex)) expect(range).toBe(provenanceRanges.get(range.turnIndex));
+        else provenanceRanges.set(range.turnIndex, range);
+        expect(Object.isFrozen(range)).toBe(true);
+      }
+    }
+    expect(provenanceRanges.size).toBe(6);
     expect(patterns.every(pattern => recordOf(pattern.patternJson).sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue)).toBe(true);
     expect(patterns.some(pattern => recordOf(pattern.patternJson).surface === "imagine"
       && recordOf(pattern.patternJson).requestSpanRole === "control")).toBe(true);

@@ -700,11 +700,11 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // section realizer. Ordinary creative turns used to leave the same
       // candidate permanently undefined, then rely only on frame assembly.
       // Keep both paths: this is a candidate, not an authority override.
-      const directCreativeCandidate = creativeRequested
-        ? directCreativeSectionCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget, constructionHasher)
-        : undefined;
       const structuralCreativeDecision: Record<string, JsonValue> = {};
       const structuralCreativeCandidate = selectedStructuralCreativeCandidate(input, discoursePlan, constructionHasher, structuralCreativeDecision);
+      const directCreativeCandidate = creativeRequested
+        ? directCreativeSectionCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget, structuralCreativeCandidate?.constructionSurface)
+        : undefined;
       markMouthPhase("structural_creative_realization");
       const structuralCreativeBound = Boolean(structuralCreativeCandidate);
       const structuralCreativeFailClosed = inventionConstructState(input.construct)?.realizationPath === "mouth_realization_deferred" && !structuralCreativeCandidate;
@@ -2307,6 +2307,7 @@ function semanticAnswerSurfacePoints(input: {
           score: fact.score,
           contradiction: Math.max(fact.contradiction ?? 0, unit.epistemicState === "contradicted" ? 1 : 0),
           sourceVersionId: fact.sourceVersionId ?? null,
+          evidenceIds: fact.evidenceIds ?? [],
           roleId: fact.roleId ?? null,
           alphaRhetoricalCentrality: fact.alphaRhetoricalCentrality ?? null,
           pathScore: fact.pathScore ?? null,
@@ -3644,7 +3645,10 @@ function constructionGenerationMaterial(frames: readonly RealizationFrame[], inp
           ? observedMemberMeaningPlan(frame, fact, input, bundle, construction, hasher)
           : factConstructionMeaningPlan({ fact, bundle, construction, profileKey: input.languageProfile.id,
             evidence: input.evidence, proofEvidenceIds: fact.evidenceIds ?? [], support: fact.support, hasher });
-        if (!bound || literalResidueIsCorpusInvariant({ literals: construction.sequence.filter(part => part.kind === "literal"), sourceExamples: bundle.sourceExamples }).status === "invalid") continue;
+        if (!bound) continue;
+        const literals = construction.sequence.filter(part => part.kind === "literal");
+        if (literals.some(part => part.surface.trim())
+          && literalResidueIsCorpusInvariant({ literals, sourceExamples: bundle.sourceExamples }).status === "invalid") continue;
         const realized = realizeLearnedSurface({ plan: bound.plan, constructions: [construction], formClasses: bound.formClasses,
           hasher, cycleConsistencyByConstructionId: input.cycleConsistencyByConstructionId });
         if (realized.status !== "realized") continue;
@@ -4644,7 +4648,7 @@ function directCreativeSectionCandidate(
   discoursePlan: DiscoursePlan,
   languageMemory: LanguageMemoryRuntime,
   budget: MouthGenerationWorkBudget,
-  hasher: Hasher
+  selectedSurface?: ConstructionSurface
 ): SurfaceCandidate | undefined {
   const generationExtent = claimMouthGenerationWork(budget, 160);
   if (generationExtent === undefined) return undefined;
@@ -4652,7 +4656,7 @@ function directCreativeSectionCandidate(
   const typedInventionBinding = typedInvention ? inventionSurfaceBinding(typedInvention) : undefined;
   const requestTerms = creativeRequestContentTerms(input);
   const realization = realizeCreativeSection({
-    selectedCreativePlan: { speakInput: input, hasher },
+    selectedCreativePlan: { speakInput: input, realize: () => selectedSurface },
     languageMemory,
     state: input.languageMemory,
     targetLanguageProfile: input.languageProfile,
@@ -6027,6 +6031,8 @@ function requiredTermsForDiscourseUnit(unit: DiscourseUnit, frames: readonly Rea
 
 function generationImportedPriorIds(generation: LanguageGenerationResult): string[] {
   return uniqueStrings([
+    ...generation.importedConstructionBundleIdsUsed,
+    ...generation.importedConstructionIdsUsed,
     ...generation.importedLanguageUnitIdsUsed,
     ...generation.importedPhrasePatternIdsUsed,
     ...generation.importedObservationIdsUsed,
@@ -6041,9 +6047,13 @@ function aggregateLanguageGeneration(sentences: readonly SentenceCandidate[]): L
   if (!first) return undefined;
   const generations = sentences.map(sentence => sentence.generation);
   const audits = generations.map(generation => jsonRecord(generation.audit));
+  const surface = sentences.every(sentence => sentence.generation.surface && sentence.text === sentence.generation.surface.text)
+    ? layoutConstructionParagraphs(sentences.map(sentence => ({ nodeId: sentence.unitId, surface: sentence.generation.surface! }))) : undefined;
+  if (!surface) return undefined;
   return {
     ...first,
-    text: tidySurface(sentences.map(sentence => sentence.text).join(" ")),
+    surface,
+    text: surface.text,
     symbols: generations.flatMap(generation => generation.symbols),
     phrasesUsed: uniqueStrings(generations.flatMap(generation => generation.phrasesUsed)),
     importedNgramModelIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedNgramModelIdsUsed)),
@@ -6051,6 +6061,8 @@ function aggregateLanguageGeneration(sentences: readonly SentenceCandidate[]): L
     importedLanguageUnitIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedLanguageUnitIdsUsed)),
     importedPhrasePatternIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedPhrasePatternIdsUsed)),
     importedSemanticFrameIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedSemanticFrameIdsUsed)),
+    importedConstructionBundleIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedConstructionBundleIdsUsed)),
+    importedConstructionIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedConstructionIdsUsed)),
     orderUsage: generations.flatMap(generation => generation.orderUsage),
     averageInformation: mean(generations.map(generation => generation.averageInformation)),
     confidence: mean(generations.map(generation => generation.confidence)),

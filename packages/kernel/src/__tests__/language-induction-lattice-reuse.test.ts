@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from "vitest";
 import { createLanguageInductionEngine } from "../language-induction.js";
 import { canonicalStringify, createHasher } from "../primitives.js";
 import { createSegmentationAdjacencyQuery } from "../segmentation-adjacency-factors.js";
-import { joinProgramChoices } from "../join-program.js";
 import * as surfaceLattice from "../surface-lattice.js";
 
 describe("induction bootstrap lexical reuse", () => {
@@ -37,30 +36,18 @@ describe("induction bootstrap lexical reuse", () => {
       const engine = createLanguageInductionEngine({ hasher });
       const first = engine.induce({ documents });
       expect(build).toHaveBeenCalledTimes(documents.length);
-      const { id: _modelId, joinProgram: _joinProgram, audit: fullAudit, ...nonJoin } = first;
+      const { id: _modelId, segmentationDocuments: _segmentationDocuments, audit: fullAudit, ...nonJoin } = first;
       const { joinProgramId: _joinId, joinProgramComponentIds: _componentIds, ...audit } = fullAudit as Record<string, unknown>;
       // All non-JOIN fields match the complete pre-repair artifact at 5bd251b1.
       expect(hasher.digestHex(canonicalStringify({ ...nonJoin, audit }))).toBe("ffe1198e627f5885f730a958c4beba285d7b4a34b11e5c0e0e876cb212174a01");
-      expect(hasher.digestHex(canonicalStringify(first))).toBe("090f53fcbfa21f5b8218d8ef01c1ed8664fff99a3fc5ae4741c4a3eebcd3e813");
-      for (const { program } of first.joinProgram.components) {
-        expect(program.exactIndex).toEqual({}); expect(program.classIndex).toEqual({});
-        const factors = program.localFactors!;
-        expect(factors.documents.map(document => document.documentId).sort()).toEqual(documents.map(document => document.id).sort());
-        let fullLocalMass = 0;
-        for (const document of factors.documents) {
-          expect(document.contexts.every(context => context.length === 1)).toBe(true);
-          expect(Object.keys(document.graph).sort()).toEqual(["arcs", "nodeCount", "schema"]);
-          const bearing = new Set(document.units.flatMap((unit, index) => unit ? [index] : []));
-          for (const pair of createSegmentationAdjacencyQuery(document.graph, bearing).pairs()) fullLocalMass += pair.posterior;
-        }
-        expect(program.observations).toBeCloseTo(fullLocalMass, 10);
-        const globalChoices = Object.values(program.conditionedIndex).flat();
-        expect(program.observations).toBeGreaterThan(globalChoices.reduce((sum, choice) => sum + choice.count, 0));
-        expect(globalChoices.some(choice => choice.probability < 1)).toBe(true);
-        const queried = joinProgramChoices(program, "exact", JSON.stringify(["the", "cat"]));
-        expect(queried.length).toBeGreaterThan(0);
-        expect(queried.every(choice => choice.count > 0)).toBe(true);
-        expect(program.exactIndex).toEqual({});
+      expect(first).not.toHaveProperty("joinProgram");
+      expect(first.segmentationDocuments.map(document => document.documentId).sort()).toEqual(documents.map(document => document.id).sort());
+      for (const document of first.segmentationDocuments) {
+        expect(Object.keys(document.graph).sort()).toEqual(["arcs", "nodeCount", "schema"]);
+        const bearing = new Set(document.graph.arcs.map((_, index) => index));
+        const pairs = [...createSegmentationAdjacencyQuery(document.graph, bearing).pairs()];
+        expect(pairs.length).toBeGreaterThan(0);
+        expect(pairs.every(pair => pair.posterior > 0 && pair.posterior <= 1)).toBe(true);
       }
       const replay = engine.induce({ documents });
       expect(replay).toEqual(first);

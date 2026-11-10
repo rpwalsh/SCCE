@@ -3,6 +3,7 @@
 import type { LearnedRealization, LearnedRealizationTracePart } from "./language-construction.js";
 
 export type ConstructionSurface = Pick<LearnedRealization, "text" | "trace" | "evidenceIds"> & {
+  constructionId?: string;
   childBindings?: readonly ConstructionSurfaceChildBinding[];
 };
 export interface ConstructionSurfaceChildBinding {
@@ -43,6 +44,7 @@ export function constructionSurfaceComplete(surface: ConstructionSurface): boole
 function snapshot(surface: ConstructionSurface): ConstructionSurface {
   return { text: surface.text, evidenceIds: [...surface.evidenceIds], trace: surface.trace.map(part => ({ ...part,
     evidenceIds: [...part.evidenceIds], sourceExampleIds: [...part.sourceExampleIds] })),
+    ...(surface.constructionId ? { constructionId: surface.constructionId } : {}),
     ...(surface.childBindings ? { childBindings: surface.childBindings.map(binding => ({ ...binding, surface: snapshot(binding.surface) })) } : {}) };
 }
 
@@ -61,8 +63,9 @@ export function composeConstructionSurface(pieces: readonly ConstructionSurfaceP
       if (!constructionSurfaceComplete(piece.surface)) return undefined;
       const child = snapshot(piece.surface); text += child.text;
       trace.push(...child.trace.map(part => ({ ...part, outputStart: start + part.outputStart, outputEnd: start + part.outputEnd })));
+      const constructionId = piece.constructionId ?? child.constructionId;
       childBindings.push({ roleId: piece.roleId, ...(piece.occurrenceId ? { occurrenceId: piece.occurrenceId } : {}),
-        ...(piece.constructionId ? { constructionId: piece.constructionId } : {}), outputStart: start, outputEnd: text.length, surface: child });
+        ...(constructionId ? { constructionId } : {}), outputStart: start, outputEnd: text.length, surface: child });
       child.evidenceIds.forEach(id => evidenceIds.add(id));
     }
   }

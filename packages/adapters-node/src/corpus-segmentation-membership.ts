@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { canonicalStringify, toJsonValue, type JsonValue } from "@scce/kernel";
 import type { PostgresStorageAdapter } from "./postgres.js";
 import type { PostgresCorpusSegmentationRun } from "./corpus-segmentation-store.js";
-import { durableJoinProgramJsonByteLengths } from "./durable-join-program-storage.js";
+import { languageArtifactJsonByteLengths } from "./durable-language-artifact-storage.js";
 
 export const CORPUS_MEMBERSHIP_SCHEMA = "scce.corpus_segmentation_membership_page.v1";
 export const CORPUS_COUNT_PAGE_SCHEMA = "scce.corpus_segmentation_count_page.v3";
@@ -25,7 +25,7 @@ export async function writeCorpusMembershipPages(run: CorpusMembershipRun, input
   let entries: Array<string | readonly [string, string]> = [], page = 0, entryBytes = 0;
   const orderKey = () => `${input.windowKey}:${String(page).padStart(16, "0")}`;
   const value = () => ({ schema: CORPUS_MEMBERSHIP_SCHEMA, kind: input.kind, documentId: input.documentId, sourceVersionId: input.sourceVersionId, entries });
-  const headerBytes = durableJoinProgramJsonByteLengths({ orderKey: orderKey(), value: { ...value(), entries: [] } }).decodedJsonbBytes + 2;
+  const headerBytes = languageArtifactJsonByteLengths({ orderKey: orderKey(), value: { ...value(), entries: [] } }).decodedJsonbBytes + 2;
   const flush = async () => {
     if (!entries.length) return;
     await run.scratch.putMany(membershipCollection(input.kind), [{ orderKey: orderKey(), value: toJsonValue(value()) }]);
@@ -34,7 +34,7 @@ export async function writeCorpusMembershipPages(run: CorpusMembershipRun, input
   };
   for (const entry of input.entries) {
     if (input.kind === "class" ? typeof entry !== "string" : !Array.isArray(entry) || entry.length !== 2 || entry.some(value => typeof value !== "string")) return fail();
-    const bytes = durableJoinProgramJsonByteLengths(entry).decodedJsonbBytes + 2;
+    const bytes = languageArtifactJsonByteLengths(entry).decodedJsonbBytes + 2;
     if (headerBytes + bytes > run.bounds.maxPageBytes) throw Error("Corpus membership entry exceeds decoded JSON page budget");
     if (entries.length && headerBytes + entryBytes + bytes > run.bounds.maxPageBytes) await flush();
     entries.push(entry); entryBytes += bytes;

@@ -128,7 +128,7 @@ import {
   translationTargetFromMetadata
 } from "./kernel-input-controls.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
-import { activeJoinProgram, cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, scopeLanguageMemoryStateToProfile } from "./language-memory-runtime.js";
+import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, scopeLanguageMemoryStateToProfile } from "./language-memory-runtime.js";
 import {
   selectLanguageProfileClusterForSourceVersions,
   languageHintFromProfile,
@@ -173,6 +173,7 @@ import {
   surfaceCarriesInternalFeatureKeys,
   withSurfaceContract,
   selectedConversationPlanForOutput,
+  selectedCreativeConstructionSurface,
   type MouthSemanticInput,
   type SpeakInput,
   type SpokenOutput
@@ -5202,7 +5203,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               generativeDerivation = searchTargetConditionedDerivation({
                 target: semanticTarget,
                 algebra,
-                joinMixture: activeJoinProgram(surfaceLanguageMemory)
               });
               kernelTrace({
                 stage: "candidate.field.generate",
@@ -5351,6 +5351,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               const candidate = realizeCreativeSection({
                 languageMemory: languageMemoryRuntime,
                 state: speakInput.languageMemory,
+                selectedCreativePlan: { speakInput: { ...speakInput, narrativeConditioning: conditioning }, realize: plan => selectedCreativeConstructionSurface(plan, hasher) },
                 targetLanguageProfile: speakInput.languageProfile,
                 requestText: input.text,
                 requirementField,

@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalDigestHex, canonicalStringify, createHasher, normalizeInformationLabel, REQUEST_SEED_PATTERN_JSON_FIELDS, REQUEST_SEED_FRAME_JSON_FIELDS, toJsonValue, validateSourceLanguageCompilationHeader, type SourceId, type SourceVersionId, type ContentHash, type InformationLabel } from "@scce/kernel";
 import { profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, durableJoinProgramJsonByteLengths } from "./durable-join-program-storage.js";
+import { LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY, LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA, languageArtifactJsonByteLengths } from "./durable-language-artifact-storage.js";
 import type { CreativeEventStorageHost } from "./canonical-creative-event-store.js";
 
 export const SOURCE_ARTIFACT_METADATA_KEY = "_scceSourceArtifactMetadata";
@@ -93,22 +93,22 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
         const id = compilationId(root); if (!id) return input.value;
         const shared = validate(input, owners.get(`source.language.compilation.${id}`), id, validated); if (!shared) return input.value;
         const scalarProvenance = input.artifactFamily === "language_pattern" && typeof root.schema === "string" && SCALAR_PROVENANCE_SCHEMAS.has(root.schema);
-        const keys = Object.keys(shared.metadata).filter(key => !QUERY_ROOTS.has(key) && key !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY && key !== SOURCE_ARTIFACT_METADATA_KEY
+        const keys = Object.keys(shared.metadata).filter(key => !QUERY_ROOTS.has(key) && key !== LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY && key !== SOURCE_ARTIFACT_METADATA_KEY
           && root[key] !== undefined && same(root[key], shared.metadata[key])
           && (root[key] !== null && typeof root[key] === "object"
             ? !Array.isArray(root[key]) || (root[key] as unknown[]).some(value => value !== null && typeof value === "object")
             : scalarProvenance && SCALAR_PROVENANCE_FIELDS.has(key)));
         if (!keys.length) return input.value;
-        const existingLedger = record(root[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
-        if (Object.hasOwn(root, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) {
-          if (input.logicalValue === undefined || Object.hasOwn(record(input.logicalValue) ?? {}, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) return fail();
-          const sizes = durableJoinProgramJsonByteLengths(input.logicalValue);
-          if (existingLedger?.schema !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA || existingLedger.decodedJsonBytes !== sizes.decodedJsonBytes
+        const existingLedger = record(root[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]);
+        if (Object.hasOwn(root, LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY)) {
+          if (input.logicalValue === undefined || Object.hasOwn(record(input.logicalValue) ?? {}, LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY)) return fail();
+          const sizes = languageArtifactJsonByteLengths(input.logicalValue);
+          if (existingLedger?.schema !== LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA || existingLedger.decodedJsonBytes !== sizes.decodedJsonBytes
             || existingLedger.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail();
         }
         const next = { ...root }; for (const key of keys) delete next[key];
-        const introducedLedger = root[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] === undefined;
-        if (introducedLedger) next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(root) };
+        const introducedLedger = root[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY] === undefined;
+        if (introducedLedger) next[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY] = { schema: LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA, ...languageArtifactJsonByteLengths(root) };
         next[SOURCE_ARTIFACT_METADATA_KEY] = { schema: SOURCE_ARTIFACT_METADATA_REF_SCHEMA, receiptId: `source.language.compilation.${id}`, digest: shared.digest, keys, introducedLedger, recordDigest: canonicalDigestHex(root, hasher) };
         return next;
       });
@@ -120,7 +120,7 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
         const raw = record(root[SOURCE_ARTIFACT_METADATA_KEY]); if (!raw) return fail();
         if (raw.schema !== SOURCE_ARTIFACT_METADATA_REF_SCHEMA || typeof raw.receiptId !== "string" || typeof raw.digest !== "string"
           || typeof raw.recordDigest !== "string" || typeof raw.introducedLedger !== "boolean" || !Array.isArray(raw.keys) || !raw.keys.length
-          || raw.keys.some(key => typeof key !== "string" || QUERY_ROOTS.has(key) || key === SOURCE_ARTIFACT_METADATA_KEY || key === DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)
+          || raw.keys.some(key => typeof key !== "string" || QUERY_ROOTS.has(key) || key === SOURCE_ARTIFACT_METADATA_KEY || key === LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY)
           || new Set(raw.keys).size !== raw.keys.length) return fail();
         const ref = raw as unknown as Reference, id = compilationId(root); if (!id || ref.receiptId !== `source.language.compilation.${id}`) return fail();
         const shared = validate(input, owners.get(ref.receiptId), id, validated, ref.digest)!;
@@ -128,9 +128,9 @@ export function createSourceArtifactMetadataCodec(host: CreativeEventStorageHost
         for (const key of ref.keys) { if (!Object.hasOwn(shared.metadata, key) || Object.hasOwn(root, key)) return fail();
           Object.defineProperty(next, key, { value: structuredClone(shared.metadata[key]), enumerable: true, writable: true, configurable: true }); }
         if (ref.introducedLedger) {
-          const ledger = record(next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]); delete next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY];
-          const sizes = durableJoinProgramJsonByteLengths(next);
-          if (ledger?.schema !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA || ledger.decodedJsonBytes !== sizes.decodedJsonBytes || ledger.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail();
+          const ledger = record(next[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]); delete next[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY];
+          const sizes = languageArtifactJsonByteLengths(next);
+          if (ledger?.schema !== LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA || ledger.decodedJsonBytes !== sizes.decodedJsonBytes || ledger.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail();
         }
         if (canonicalDigestHex(next, hasher) !== ref.recordDigest) return fail();
         return next;

@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
+import { SEGMENTATION_ADJACENCY_FACTORS_SCHEMA, canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
   createUniversalCreativeEventConstructionCompiler, deriveUniversalCreativeEvent, hashEvent, hydrateLanguageConstructionPatterns,
   informationLabelAllowsRead, requestSeedLanguagePattern, type EvidenceSpan, type InformationLabel,
   type JsonValue, type LanguagePatternRecord, type ScceEvent } from "@scce/kernel";
@@ -11,7 +11,7 @@ import { canonicalCreativeEventSchemaStatements } from "../canonical-creative-ev
 import { CREATIVE_EVENT_NORMALIZATION_SCHEMA, CREATIVE_EVENT_NORMALIZATION_TABLES, CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA,
   creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage,
   type CreativeEventDomainRecord, type CreativeEventOwner } from "../creative-event-normalization.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import { LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY, languageArtifactJsonByteLengths } from "../durable-language-artifact-storage.js";
 
 const hasher = createHasher(), label: InformationLabel = { tenantId: "tenant.owned", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" };
 const access = { tenantId: "tenant.owned", principalId: "principal.owned", compartments: [], maximumExportClass: "restricted" as const };
@@ -111,12 +111,12 @@ describe("canonical creative-event domain normalization", () => {
     for (const row of rows.patterns) {
       const stored = object(row.pattern_json), original = patterns.find(pattern => pattern.id === row.id)!;
       expect(object(object(stored.bundle).events).schema).toBe(CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA);
-      expect(object(stored[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY])).toMatchObject(durableJoinProgramJsonByteLengths(original.patternJson));
+      expect(object(stored[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY])).toMatchObject(languageArtifactJsonByteLengths(original.patternJson));
       const { events: _events, ...headers } = object(stored.bundle), { events: _originalEvents, ...originalHeaders } = object(object(original.patternJson).bundle);
       expect(headers).toEqual(originalHeaders);
     }
     const restored = await adapter.languageMemory.listLanguagePatterns({ patternIds: patterns.map(pattern => pattern.id), limit: patterns.length,
-      maxTotalJsonBytes: patterns.reduce((sum, pattern) => sum + durableJoinProgramJsonByteLengths(pattern.patternJson).decodedJsonbBytes, 0), requireComplete: true });
+      maxTotalJsonBytes: patterns.reduce((sum, pattern) => sum + languageArtifactJsonByteLengths(pattern.patternJson).decodedJsonbBytes, 0), requireComplete: true });
     expect(restored.map(pattern => digest(pattern.patternJson))).toEqual(patterns.map(pattern => digest(pattern.patternJson)));
     expect(hydrateLanguageConstructionPatterns({ patterns: restored, evidence: [evidence], hasher }))
       .toEqual(hydrateLanguageConstructionPatterns({ patterns, evidence: [evidence], hasher }));
@@ -133,11 +133,12 @@ describe("canonical creative-event domain normalization", () => {
   it("reuses the same canonical records in full induced models and immutable ledger payloads without changing replay hashes", async () => {
     const { adapter, components, rows, state } = fixture();
     const model = { id: "model.genuine.creative", corpusDocuments: 1, vocabularySize: 2, patterns: patterns.map(pattern => pattern.patternJson),
-      joinProgram: { schema: "scce.join_program_mixture.v3", id: "mixture.empty", populationModelId: "population.empty", minimumConfidence: 0, components: [] } };
+      segmentationDocuments: [{ graph: { schema: SEGMENTATION_ADJACENCY_FACTORS_SCHEMA, nodeCount: 1001,
+        arcs: Array.from({ length: 1000 }, (_, index) => [index, index + 1, 0]) } }] };
     await adapter.inducedLanguageModels.putModel({ id: model.id, model: model as never, trainingPlanId: "plan.owned", createdAt: 1, informationLabel: label });
     const count = state.inserted;
     expect(JSON.stringify(rows.models[0]!.model_json).includes(CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA)).toBe(true);
-    expect(JSON.stringify(rows.models[0]!.model_json).includes("scce.durable_join_program.storage.v1")).toBe(true);
+    expect(JSON.stringify(rows.models[0]!.model_json).includes("scce.segmentation_graph.storage.v1")).toBe(true);
     expect((await adapter.inducedLanguageModels.readById(model.id))!.model).toEqual(model);
     expect((await adapter.inducedLanguageModels.listRecent())[0]!.model).toEqual(model);
     const input = { id: "event.genuine.creative", episodeId: "episode.owned", typeId: "InducedLanguageModelPersisted", t: 1, parents: [],
@@ -163,7 +164,7 @@ describe("canonical creative-event domain normalization", () => {
       (f: ReturnType<typeof fixture>) => { f.state.source = { ...owner, sourceContentHash: "changed.raw.source.hash" }; },
       (f: ReturnType<typeof fixture>) => { f.state.sourceLabel = { ...label, tenantId: "tenant.foreign", exportClass: "restricted", principals: ["foreign"] }; },
       (f: ReturnType<typeof fixture>) => { f.components.get("creative_event_lexemes")!.clear(); },
-      (f: ReturnType<typeof fixture>) => { object(object(f.rows.patterns[0]!.pattern_json)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).decodedJsonBytes = 1; }
+      (f: ReturnType<typeof fixture>) => { object(object(f.rows.patterns[0]!.pattern_json)[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]).decodedJsonBytes = 1; }
     ]) {
       const f = fixture(); await f.adapter.languageMemory.putLanguagePattern(patterns[0]!); mutate(f);
       let rejected: unknown;

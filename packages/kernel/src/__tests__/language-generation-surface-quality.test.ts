@@ -69,10 +69,10 @@ describe("learned language generation surface quality", () => {
   // docs/PRODUCTION_COMPLETION_PLAN_250.md Phase 10 item 126 for the real
   // (still-open) held-out multilingual translation test gap this must not
   // be conflated with.
-  it("admits a complete non-Latin-script discourse the same way as any other script (heuristic is script-agnostic, not a multilingual-capability claim)", () => {
+  it("requires learned construction ownership for fluent non-Latin input too", () => {
     const text = "용은 깊은 계곡을 건넜다. 과학자는 별빛을 따라 산 정상으로 올랐다. 두 사람은 새벽이 올 때까지 서로의 계획을 시험했다.";
 
-    expect(languageGenerationSurfaceAdequate(generation(text, 0.06))).toBe(true);
+    expect(languageGenerationSurfaceAdequate(generation(text, 0.06))).toBe(false);
   });
 
   it("keeps learned fallback generation bounded while the structural lane owns long-form extent", () => {
@@ -99,6 +99,7 @@ function generation(text: string, repetitionPenalty: number): LanguageGeneration
   const symbols = text.match(/[\p{Letter}\p{Mark}\p{Number}]+|[^\s]/gu) ?? [];
   return {
     text,
+    realizationStatus: "unresolved",
     symbols,
     phrasesUsed: ["source-trained fixture"],
     discourse: {
@@ -144,6 +145,8 @@ function generation(text: string, repetitionPenalty: number): LanguageGeneration
     importedLanguageUnitIdsUsed: ["unit.fixture"],
     importedPhrasePatternIdsUsed: [],
     importedSemanticFrameIdsUsed: [],
+    importedConstructionBundleIdsUsed: [],
+    importedConstructionIdsUsed: [],
     orderUsage: [],
     averageInformation: 1,
     confidence: 0.8,

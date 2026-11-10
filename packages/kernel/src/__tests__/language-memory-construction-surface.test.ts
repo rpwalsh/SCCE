@@ -47,6 +47,8 @@ describe("complete constructions as the runtime prose boundary", () => {
     const generated = runtime.generate({ state, constructionPlans: [plan()], requiredTerms: [{ text: "40%", weight: 1 }, { text: "9:00", weight: 1 }] });
     expect(generated.text).toBe("⟦কি⟧40%＠9:00。");
     expect(generated.realizationStatus).toBe("realized"); expect(generated.coverageComplete).toBe(true);
+    expect(generated.importedConstructionBundleIdsUsed).toEqual(["bundle"]);
+    expect(generated.importedConstructionIdsUsed.length).toBeGreaterThan(0);
     expect(languageGenerationSurfaceAdequate(generated)).toBe(true);
     expect(generated.surface?.trace.filter(part => part.kind === "slot").map(part => part.evidenceIds)).toEqual([["new-source.actor"], ["new-source.amount"]]);
     expect(state).not.toHaveProperty("joinPrograms");

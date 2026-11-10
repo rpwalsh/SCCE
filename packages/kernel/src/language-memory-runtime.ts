@@ -309,6 +309,8 @@ export interface LanguageGenerationResult {
   importedLanguageUnitIdsUsed: string[];
   importedPhrasePatternIdsUsed: string[];
   importedSemanticFrameIdsUsed: string[];
+  importedConstructionBundleIdsUsed: string[];
+  importedConstructionIdsUsed: string[];
   orderUsage: Array<{ order: number; symbols: number; averageInformation: number; activation: number }>;
   averageInformation: number;
   confidence: number;
@@ -1025,6 +1027,7 @@ interface DiscourseDecodeResult {
 function generateFromLanguageMemory(input: LanguageGenerationInput, hasher?: Hasher): LanguageGenerationResult {
   const requiredTerms = generationRequiredTerms(input), atoms = generationFrameAtoms(input);
   const contextText = (input.contextSymbols ?? []).join(" "); // Operational scoring context, never an emitted surface.
+  const narrativeConstraints = narrativeConditioningSurfaceConstraints(input.frames ?? []);
   const rhetorical = planLanguageMemoryDiscourse(input);
   const framePriorities = new Map(rhetorical.materials.map(material => [material.frameId,
     rhetorical.plan?.assignments.find(assignment => assignment.materialId === material.id)?.priority ?? 0]));
@@ -1058,11 +1061,23 @@ function generateFromLanguageMemory(input: LanguageGenerationInput, hasher?: Has
     const coveredAtoms = uniqueStrings([...coveredAtomIds(candidate.surface.text, atoms), ...boundAtoms]);
     const covered = coverageMeetsThreshold(required.length, coveredAtoms.length, requiredTerms, atoms);
     const rhetoricalPriority = Math.max(0, ...candidate.frameIds.map(id => framePriorities.get(id) ?? 0));
-    return { ...candidate, score, required, coveredAtoms, covered, rhetoricalPriority };
+    const narrativeFit = narrativeConstraints.length ? narrativeConstraints.filter(constraint => containsLoose(candidate.surface.text, constraint.surface)).length / narrativeConstraints.length : 0;
+    return { ...candidate, score, required, coveredAtoms, covered, rhetoricalPriority, narrativeFit };
   }).sort((a, b) => Number(b.covered) - Number(a.covered) || b.required.length - a.required.length
-    || b.coveredAtoms.length - a.coveredAtoms.length || b.rhetoricalPriority - a.rhetoricalPriority || b.score.activation - a.score.activation
+    || b.coveredAtoms.length - a.coveredAtoms.length || b.rhetoricalPriority - a.rhetoricalPriority || b.narrativeFit - a.narrativeFit || b.score.activation - a.score.activation
     || b.score.fit - a.score.fit || compareCodePoint(a.surface.text, b.surface.text));
   const selected = ranked[0], text = selected?.surface.text ?? "", symbols = symbolizeData(text);
+  const constructionIds = new Set<string>();
+  const visitConstruction = (surface: ConstructionSurface) => {
+    if (surface.constructionId) constructionIds.add(surface.constructionId);
+    for (const binding of surface.childBindings ?? []) {
+      if (binding.constructionId) constructionIds.add(binding.constructionId);
+      visitConstruction(binding.surface);
+    }
+  };
+  if (selected) { if (selected.constructionId) constructionIds.add(selected.constructionId); visitConstruction(selected.surface); }
+  const usedBundles = input.state.importedConstructionBundles.filter(bundle => bundle.constructions.some(construction => constructionIds.has(construction.id)));
+  const ownedConstructionIds = [...constructionIds].filter(id => usedBundles.some(bundle => bundle.constructions.some(construction => construction.id === id)));
   const score = selected?.score ?? scoreText(input.state, "", contextText);
   const id = selected?.constructionId ?? hashText(text);
   const moves: LanguageDiscourseMove[] = selected ? [{ id, role: "construction", text,
@@ -1092,11 +1107,14 @@ function generateFromLanguageMemory(input: LanguageGenerationInput, hasher?: Has
     importedLanguageUnitIdsUsed: importedIdsFromScore(score.audit, "importedLanguageUnitIdsUsed"),
     importedPhrasePatternIdsUsed: importedIdsFromScore(score.audit, "importedPhrasePatternIdsUsed"),
     importedSemanticFrameIdsUsed: importedIdsFromScore(score.audit, "importedSemanticFrameIdsUsed"),
+    importedConstructionBundleIdsUsed: usedBundles.map(bundle => bundle.id), importedConstructionIdsUsed: ownedConstructionIds,
     orderUsage, averageInformation: score.information, confidence: selected ? score.activation : 0,
     competence: input.state.competenceVector, stoppedBy: selected ? "source_exhausted" : "empty",
     audit: toJsonValue({ source: "language-memory-runtime.generate", constructionCandidateCount: candidates.length,
       constructionId: selected?.constructionId ?? null, frameIds: selected?.frameIds ?? [],
+      importedConstructionBundleIdsUsed: usedBundles.map(bundle => bundle.id), importedConstructionIdsUsed: ownedConstructionIds,
       rhetoricalPlan: rhetorical.plan ?? null, discoursePrior: rhetorical.prior ? discoursePriorAudit(rhetorical.prior) : null,
+      narrativeConditioning: { constraints: narrativeConstraints, selectedCoverage: selected?.narrativeFit ?? 0 },
       realizationStatus: selected ? "realized" : "unresolved", score: score.audit,
       requiredTermIdsCovered: selected?.required ?? [], propositionAtomIdsCovered: selected?.coveredAtoms ?? [] }) };
 }
@@ -1116,6 +1134,29 @@ export function planLanguageMemoryDiscourse(input: LanguageGenerationInput): {
 interface NarrativeSurfaceConstraint {
   surface: string;
   source: "established_fact_value" | "open_setup_surface";
+}
+
+/** Narrative values rank complete construction candidates; typed entity/fact/setup IDs never become prose. */
+function narrativeConditioningSurfaceConstraints(frames: readonly LanguageGenerationFrame[]): NarrativeSurfaceConstraint[] {
+  const values = new Map<string, NarrativeSurfaceConstraint>();
+  const add = (value: string, source: NarrativeSurfaceConstraint["source"]) => {
+    const surface = tidyInline(value);
+    if (!surface || !/[\p{Letter}\p{Number}]/u.test(surface) || surface.includes("://")
+      || !/\s/u.test(surface) && /^(?:[\p{L}\p{N}_-]+[._:])+[\p{L}\p{N}_-]+$/u.test(surface)) return;
+    const key = surface.normalize("NFKC").toLocaleLowerCase();
+    if (!values.has(key)) values.set(key, { surface, source });
+  };
+  const visit = (value: JsonValue, depth: number) => {
+    if (depth > 4) return;
+    if (typeof value === "string") add(value, "established_fact_value");
+    else if (Array.isArray(value)) value.forEach(child => visit(child, depth + 1));
+    else if (value && typeof value === "object") Object.values(value).forEach(child => visit(child, depth + 1));
+  };
+  for (const frame of frames) {
+    for (const fact of frame.narrativeConditioning?.establishedFacts ?? []) visit(fact.value, 0);
+    for (const setup of frame.narrativeConditioning?.openSetupSurfaces ?? []) add(setup.surface, "open_setup_surface");
+  }
+  return [...values.values()].sort((a, b) => a.surface.localeCompare(b.surface)).slice(0, 24);
 }
 
 function generationRequiredTerms(input: LanguageGenerationInput): LanguageGenerationTerm[] {

@@ -9,7 +9,8 @@ import { languageUnitMetadataMergeSql, SOURCE_METADATA_BINDING_SCHEMA } from "./
 import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js";
 import { createCanonicalCreativeEventCodec, type CreativeEventStorageHost } from "./canonical-creative-event-store.js";
 import { createSourceArtifactMetadataCodec } from "./source-artifact-metadata.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA } from "./durable-join-program-storage.js";
+import { inheritPatternCompilationBindings } from "./pattern-compilation-binding.js";
+import { LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY, LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA } from "./durable-language-artifact-storage.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "./dialogue-conversational-checkpoint.js";
 import { pooledProfileOwnershipSql, profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
 import {
@@ -898,8 +899,8 @@ function sourceArtifactMetadataCodec(storage: PostgresStorageAdapter) {
 }
 
 function sourceArtifactJsonBytesSql(expression: string): string {
-  const ledger = `${expression}->'${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}'`;
-  return `CASE WHEN ${ledger}->>'schema'='${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA}'
+  const ledger = `${expression}->'${LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY}'`;
+  return `CASE WHEN ${ledger}->>'schema'='${LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA}'
     AND jsonb_typeof(${ledger}->'decodedJsonbBytes')='number'
     THEN (${ledger}->>'decodedJsonbBytes')::numeric ELSE octet_length(${expression}::text) END`;
 }
@@ -5306,6 +5307,7 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
   if (!patterns.length) return;
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "language_patterns", patterns.map(pattern => ({ id: pattern.id, informationLabel: pattern.informationLabel })));
+    patterns = await inheritPatternCompilationBindings(canonicalCodecHost(storage), patterns);
     const codec = canonicalCreativeCodec(storage), payload = [];
     const values: unknown[] = patterns.map(pattern => pattern.patternJson);
     const indices = values.flatMap((value, index) => isSourceCompilationMetadataHolder(value) ? [] : [index]);

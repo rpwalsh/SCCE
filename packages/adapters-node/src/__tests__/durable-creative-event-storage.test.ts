@@ -8,8 +8,8 @@ import { canonicalStringify, createClock, createHasher, createIdFactory, createU
   inductionCharBudget, inductionDocumentCharCap, SOURCE_WINDOW_INDUCTION_RECIPE_ID, UNIVERSAL_CREATIVE_EVENT_COVERAGE_RECIPE_ID,
   type EvidenceSpan, type JsonValue, type LanguagePatternRecord } from "@scce/kernel";
 import { DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA, encodeDurableCreativeEvents } from "../durable-creative-event-storage.js";
-import { decodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA,
-  durableJoinProgramJsonByteLengths, encodeDurableJoinPrograms } from "../durable-join-program-storage.js";
+import { decodeLanguageArtifacts, LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY, LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA,
+  languageArtifactJsonByteLengths, encodeLanguageArtifacts } from "../durable-language-artifact-storage.js";
 
 const cold = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
@@ -30,7 +30,7 @@ function repetitivePage() {
 }
 
 function packedMarker(value = repetitivePage()): Record<string, unknown> {
-  const packed = encodeDurableJoinPrograms(value);
+  const packed = encodeLanguageArtifacts(value);
   const marker = record(record(packed).bundle).events;
   expect(record(marker).schema).toBe(DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA);
   return record(marker);
@@ -89,17 +89,17 @@ describe("durable creative-event page representation", () => {
     ]);
     const restored: LanguagePatternRecord[] = [];
     const measurements = patterns.map(pattern => {
-      const original = pattern.patternJson, encoded = encodeDurableJoinPrograms(original);
+      const original = pattern.patternJson, encoded = encodeLanguageArtifacts(original);
       const marker = record(record(encoded).bundle).events;
       expect(record(marker).schema).toBe(DURABLE_CREATIVE_EVENT_STORAGE_SCHEMA);
       expect(bytes(encoded)).toBeLessThan(bytes(original) / 2);
-      expect(encodeDurableJoinPrograms(encoded)).toBe(encoded);
-      const decoded = decodeDurableJoinPrograms<JsonValue>(cold(encoded));
+      expect(encodeLanguageArtifacts(encoded)).toBe(encoded);
+      const decoded = decodeLanguageArtifacts<JsonValue>(cold(encoded));
       expect(decoded).toEqual(original);
       expect(digest(decoded)).toBe(digest(original));
       restored.push({ ...pattern, patternJson: decoded });
-      const ledger = record(record(encoded)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
-      expect(ledger).toEqual({ schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(original) });
+      const ledger = record(record(encoded)[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]);
+      expect(ledger).toEqual({ schema: LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA, ...languageArtifactJsonByteLengths(original) });
       expect(ledger.decodedJsonBytes).toBe(bytes(original));
       expect(requestSeedLanguagePattern({ ...pattern, patternJson: encoded as JsonValue })).toEqual(requestSeedLanguagePattern(pattern));
       const originalBundle = record(record(original).bundle), packedBundle = record(record(encoded).bundle);
@@ -130,13 +130,13 @@ describe("durable creative-event page representation", () => {
 
   it("preserves every JSON field, Unicode, escaped NUL and prototype-like names through nested aggregate cold storage", () => {
     const original = repetitivePage(), aggregate = { events: [{ payload: original }], model: { patternJson: original } };
-    const encoded = encodeDurableJoinPrograms(aggregate);
+    const encoded = encodeLanguageArtifacts(aggregate);
     expect(bytes(encoded)).toBeLessThan(bytes(aggregate) / 2);
-    const restored = decodeDurableJoinPrograms<typeof aggregate>(cold(encoded));
+    const restored = decodeLanguageArtifacts<typeof aggregate>(cold(encoded));
     expect(restored).toEqual(aggregate);
     expect(JSON.stringify(restored)).toBe(JSON.stringify(aggregate));
     expect(JSON.stringify(restored)).toContain("\\u0000");
-    const ledger = record(record(encoded)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
+    const ledger = record(record(encoded)[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]);
     expect(ledger.decodedJsonBytes).toBe(bytes(aggregate));
     const jsonbBytes = (value: unknown): number => {
       if (!value || typeof value !== "object") return bytes(value);
@@ -148,30 +148,30 @@ describe("durable creative-event page representation", () => {
 
   it("keeps tiny pages, unrelated schemas, unsupported non-JSON values and caller ledger collisions unchanged", () => {
     const tiny = page([null]);
-    expect(encodeDurableJoinPrograms(tiny)).toBe(tiny);
+    expect(encodeLanguageArtifacts(tiny)).toBe(tiny);
     const unrelated = { ...repetitivePage(), bundle: { ...repetitivePage().bundle, schema: "unrelated" } };
-    expect(encodeDurableJoinPrograms(unrelated)).toBe(unrelated);
+    expect(encodeLanguageArtifacts(unrelated)).toBe(unrelated);
     for (const value of [undefined, NaN, Infinity, -0, new Date(0), 1n, () => 1]) {
       const original = repetitivePage(); Object.assign(original.bundle.events[0]!, { unsupported: value });
       expect(encodeDurableCreativeEvents(original.bundle.events), `unsupported ${String(value)}`).toBeUndefined();
     }
-    const collision = { ...repetitivePage(), [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: { retained: true } };
-    expect(encodeDurableJoinPrograms(collision)).toBe(collision);
-    expect(decodeDurableJoinPrograms(cold(collision))).toEqual(collision);
+    const collision = { ...repetitivePage(), [LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]: { retained: true } };
+    expect(encodeLanguageArtifacts(collision)).toBe(collision);
+    expect(decodeLanguageArtifacts(cold(collision))).toEqual(collision);
   });
 
   it("keeps the original representation unless savings include the complete root byte ledger", () => {
     for (let count = 1; count <= 32; count++) {
       const original = page(Array.from({ length: count }, () => ({ surface: "shared", roles: ["opaque.role"] })));
-      const encoded = encodeDurableJoinPrograms(original);
+      const encoded = encodeLanguageArtifacts(original);
       if (encoded !== original) expect(bytes(encoded)).toBeLessThan(bytes(original));
-      expect(decodeDurableJoinPrograms(cold(encoded))).toEqual(original);
+      expect(decodeLanguageArtifacts(cold(encoded))).toEqual(original);
     }
   });
 
   it("counts escaped NUL keys and values using their exact public JSON bytes", () => {
     const value = { ["key\u0000"]: "雪🧭\u0000\ud800" };
-    expect(durableJoinProgramJsonByteLengths(value)).toEqual({ decodedJsonBytes: bytes(value), decodedJsonbBytes: bytes(value) + 1 });
+    expect(languageArtifactJsonByteLengths(value)).toEqual({ decodedJsonBytes: bytes(value), decodedJsonbBytes: bytes(value) + 1 });
   });
 
   it("rejects malformed tables, tags, references and extensions instead of interpreting a changed event", () => {
@@ -185,7 +185,7 @@ describe("durable creative-event page representation", () => {
     ];
     for (const corrupt of corruptions) {
       const invalid = cold(good); corrupt(invalid);
-      expect(() => decodeDurableJoinPrograms({ nested: invalid })).toThrow("invalid durable creative-event storage marker");
+      expect(() => decodeLanguageArtifacts({ nested: invalid })).toThrow("invalid durable creative-event storage marker");
     }
   });
 });

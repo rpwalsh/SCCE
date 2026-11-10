@@ -1223,12 +1223,12 @@ describe("Mouth runtime surface planning", () => {
     });
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
     const spoken = await mouth.speak({
-      construct: constructGraph(false),
+      construct: taughtConstruct(evidence),
       field,
       languageProfile: languageProfile(source),
       evidence: [evidence],
       entailment,
-      languageMemory: importedMemory(source, evidence, "scoreTrace-test"),
+      languageMemory: importedMemory(source, evidence, "scoreTrace-test", true),
       targetLanguage: "fixture-language",
       brainMarker: { activeBrainVersion: "fixture-brain", activeImportRunIds: ["scoreTrace-test"] }
     });
@@ -2534,7 +2534,7 @@ describe("Mouth runtime surface planning", () => {
       evidence: [evidence], updatedAt: 5000, observations: surfaces.map((surface, index) => {
         const base = [...text.slice(0, text.indexOf(surface))].length;
         return { sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id), surfaceStartCodePoint: base,
-          surfaceEndCodePoint: base + [...surface].length, roles: values[index].map((value, slotIndex) => {
+          surfaceEndCodePoint: base + [...surface].length, roles: values[index]!.map((value, slotIndex) => {
             const startCodePoint = [...surface.slice(0, surface.indexOf(value))].length;
             return { slotIndex, startCodePoint, endCodePoint: startCodePoint + value.length,
               graphBinding: { relationId: "fixture.source.syntax", roleId: "fixture.role." + slotIndex, valueKind: "source.lexical" } };
@@ -2544,6 +2544,21 @@ describe("Mouth runtime surface planning", () => {
     return { pattern: compiled.pattern, evidence };
   }
 
+
+  function memberTeaching() {
+    const names = ["Spock", "James T. Kirk"], text = names.join("\n");
+    const evidence = directEvidence(sourceVersion(text), text);
+    const compiled = compileLanguageConstructionPattern({ bindingId: RELATION_ROLE_IDS.graphRequestMembership,
+      profileId: "fixture-language", evidence: [evidence], hasher, updatedAt: 5000,
+      observations: names.map(name => { const start = [...text.slice(0, text.indexOf(name))].length;
+        return { sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
+          surfaceStartCodePoint: start, surfaceEndCodePoint: start + [...name].length,
+          roles: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: [...name].length,
+            graphBinding: { relationId: RELATION_ROLE_IDS.graphRequestMembership, roleId: ANSWER_SLOT_IDS.memberRelation, valueKind: "entity" } }] };
+      }) });
+    if (compiled.status !== "compiled") throw Error("member source grammar did not compile");
+    return { pattern: compiled.pattern, evidence };
+  }
 
   function starTrekMemory(source: SourceVersion, importRunId: string) {
     const text = "Star Trek main characters include James T. Kirk, Spock, Leonard McCoy, Nyota Uhura, Montgomery Scott, Hikaru Sulu, and Pavel Chekov.";
@@ -2585,8 +2600,8 @@ describe("Mouth runtime surface planning", () => {
         patternJson: { sourceSystem: "scce2", provenanceClass: "learned_language_prior", counts: { [text]: 3 } },
         evidenceIds: [],
         updatedAt: clock.now()
-      }, sourceSyntaxTeaching().pattern],
-      constructionEvidence: [sourceSyntaxTeaching().evidence],
+      }, sourceSyntaxTeaching().pattern, memberTeaching().pattern],
+      constructionEvidence: [sourceSyntaxTeaching().evidence, memberTeaching().evidence],
       semanticFrames: []
     });
   }

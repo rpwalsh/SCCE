@@ -19,7 +19,7 @@ it("materializes small selection headers at writes while retaining the canonical
   expect(ddl?.match(/GENERATED ALWAYS AS/gu)).toHaveLength(columns.length);
   expect(ddl).toContain("pattern_json ? 'sourceCompilationId'");
   expect(ddl).toContain("pattern_json ? 'sourceVersionId'");
-  expect(ddl).toContain("jsonb_typeof(pattern_json#>'{_scceJoinProgramStorage,decodedJsonbBytes}')='number'");
+  expect(ddl).toContain("jsonb_typeof(pattern_json#>'{_scceLanguageArtifactStorage,decodedJsonbBytes}')='number'");
   expect(ddl).not.toMatch(/DROP|TRUNCATE|DELETE/u);
 });
 

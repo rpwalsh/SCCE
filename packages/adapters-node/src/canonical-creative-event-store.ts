@@ -7,8 +7,8 @@ import { pooledProfileOwnershipSql, profileSourceOwnershipSql } from "./pooled-p
 import { CREATIVE_EVENT_NORMALIZATION_TABLES, CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA, creativeEventRecord,
   creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage, verifyCreativeEventDomainRecord,
   type CreativeEventDomainRecord, type CreativeEventOwner } from "./creative-event-normalization.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, decodeDurableJoinPrograms,
-  durableJoinProgramJsonByteLengths, encodeDurableJoinPrograms } from "./durable-join-program-storage.js";
+import { LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY, LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA, decodeLanguageArtifacts,
+  languageArtifactJsonByteLengths, encodeLanguageArtifacts } from "./durable-language-artifact-storage.js";
 
 export interface CreativeEventStorageHost {
   table(name: string): string;
@@ -162,7 +162,7 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
           if (inherited) old.labels.push(inherited); bundles.set(row, old);
         }
       }, input.informationLabel, join);
-      if (!bundles.size) return inputs.map(input => encodeDurableJoinPrograms(input.value));
+      if (!bundles.size) return inputs.map(input => encodeLanguageArtifacts(input.value));
       const owners = await ownersFor([...bundles.values()].map(row => row.value)), references = new Map<object, unknown>();
       const pending = new Map(CREATIVE_EVENT_NORMALIZATION_TABLES.map(table => [table, new Map<string, CreativeEventDomainRecord>()]));
       for (const [bundle, entry] of bundles) {
@@ -174,15 +174,13 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
       for (const table of CREATIVE_EVENT_NORMALIZATION_TABLES) await persist(table, [...pending.get(table)!.values()]);
       return inputs.map(({ value }) => {
       const normalized = replace(value, row => references.has(row) ? { ...row, events: references.get(row) } : undefined);
-      if (normalized === value) return encodeDurableJoinPrograms(value);
-      if (!Array.isArray(value) && (!record(value) || Object.hasOwn(record(value)!, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY))) return fail("reserved root storage marker");
-      const original = record(value), sizes = durableJoinProgramJsonByteLengths(value);
-      const ledger = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...sizes,
-        ...(original && Object.hasOwn(original, "joinProgram") ? { joinProgramMemberJsonbBytes: durableJoinProgramJsonByteLengths(original.joinProgram).decodedJsonbBytes
-          + Buffer.byteLength(JSON.stringify("joinProgram")) + 2 + (Object.keys(original).length > 1 ? 2 : 0) } : {}) };
-      if (Array.isArray(value)) return { schema: CANONICAL_CREATIVE_EVENT_ARRAY_SCHEMA, value: normalized, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: ledger };
-      const encoded = creativeEventRecord(encodeDurableJoinPrograms(normalized));
-      return { ...encoded, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: ledger };
+      if (normalized === value) return encodeLanguageArtifacts(value);
+      if (!Array.isArray(value) && (!record(value) || Object.hasOwn(record(value)!, LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY))) return fail("reserved root storage marker");
+      const sizes = languageArtifactJsonByteLengths(value);
+      const ledger = { schema: LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA, ...sizes };
+      if (Array.isArray(value)) return { schema: CANONICAL_CREATIVE_EVENT_ARRAY_SCHEMA, value: normalized, [LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]: ledger };
+      const encoded = creativeEventRecord(encodeLanguageArtifacts(normalized));
+      return { ...encoded, [LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]: ledger };
       });
   };
   return {
@@ -191,7 +189,7 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
       return (await encodeMany([{ value, informationLabel }]))[0];
     },
     async decodeMany(values: readonly unknown[]): Promise<unknown[]> {
-      const decoded = values.map(value => decodeDurableJoinPrograms<unknown>(value));
+      const decoded = values.map(value => decodeLanguageArtifacts<unknown>(value));
       const referenceIds = new Set<string>();
       for (const value of decoded) walk(value, row => {
         if (row.schema === CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA) {
@@ -228,10 +226,10 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
           changed = true; return next;
         });
         if (!changed) return envelope ? fail("unresolved array payload envelope") : value;
-        const ledger = record(wire?.[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
-        if (!ledger || ledger.schema !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA) return fail("missing decoded byte ledger");
-        const logical = envelope ? restored : Object.fromEntries(Object.entries(creativeEventRecord(restored)).filter(([key]) => key !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY));
-        const sizes = durableJoinProgramJsonByteLengths(logical);
+        const ledger = record(wire?.[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]);
+        if (!ledger || ledger.schema !== LANGUAGE_ARTIFACT_BYTE_LEDGER_SCHEMA) return fail("missing decoded byte ledger");
+        const logical = envelope ? restored : Object.fromEntries(Object.entries(creativeEventRecord(restored)).filter(([key]) => key !== LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY));
+        const sizes = languageArtifactJsonByteLengths(logical);
         if (ledger.decodedJsonBytes !== sizes.decodedJsonBytes || ledger.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail("decoded byte ledger mismatch");
         return logical;
       });
