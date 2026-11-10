@@ -218,6 +218,7 @@ import {
   type JoinRenderContext
 } from "./join-program.js";
 import { realizeReversibleConstruction } from "./reversible-construction.js";
+import { factConstructionMeaningPlan } from "./construction-meaning-plan.js";
 import {  } from "./semantic-round-trip.js";
 import { dominantScriptId, joinLexicalSurfaces } from "./unicode-segmentation-v2.js";
 import {
@@ -3062,62 +3063,11 @@ function learnedConstructionCandidateFromBundle(input: {
   routeAdmissibility: number;
   hasher: Hasher;
 }): SurfaceCandidate | undefined {
-  if (input.construction.profileKey !== input.bundle.targetProfileId
-    || !input.bundle.constructions.some(construction => construction.id === input.construction.id)) return undefined;
-  const factSlots = [
-    { slotIndex: 0, semanticId: input.fact.sourceNodeId, surface: input.fact.subject },
-    { slotIndex: 1, semanticId: input.fact.relationId, surface: input.fact.predicate },
-    { slotIndex: 2, semanticId: input.fact.targetNodeId, surface: input.fact.object }
-  ];
-  const factualOwners = input.input.evidence.filter(span => input.proofEvidenceIds.includes(String(span.id)));
-  if (!factualOwners.some(owner => factSlots.every(slot => exactSourceExcerptOwners(slot.surface, [owner]).length > 0))) return undefined;
-  const slotByRoleId = new Map(factSlots.map(slot => [
-    languageConstructionRoleId(input.hasher, input.bundle.bindingId, slot.slotIndex),
-    slot
-  ]));
-  const occurrenceSlotIndexes = constructionOccurrenceSlotIndexes(input.bundle);
-  if (!occurrenceSlotIndexes) return undefined;
-  const formClasses = input.bundle.formClasses.filter(formClass => formClass.constructionId === input.construction.id);
-  const formClassByOccurrence = new Map(formClasses.map(formClass => [formClass.occurrenceId, formClass.id]));
-  const seenSlotIndexes = new Set<number>();
-  const slots: Array<SurfaceMeaningPlan["slots"][number]> = [];
-  for (const occurrence of input.construction.roleOccurrences) {
-    if (occurrence.realization !== "spoken") return undefined;
-    const slotIndex = occurrenceSlotIndexes.get(occurrence.occurrenceId);
-    const factSlot = slotIndex === undefined ? undefined : slotByRoleId.get(occurrence.roleId);
-    if (!factSlot || factSlot.slotIndex !== slotIndex || seenSlotIndexes.has(slotIndex)) return undefined;
-    const expectedOccurrenceId = languageConstructionOccurrenceId(input.hasher, input.bundle.bindingId, slotIndex, 0);
-    if (occurrence.occurrenceId !== expectedOccurrenceId) return undefined;
-    const formClassId = formClassByOccurrence.get(occurrence.occurrenceId);
-    if (!formClassId) return undefined;
-    seenSlotIndexes.add(slotIndex);
-    slots.push({
-      roleId: occurrence.roleId,
-      occurrenceId: occurrence.occurrenceId,
-      variants: [{
-        id: opaqueSurfaceId(input.hasher, "variant", [input.bundle.id, input.construction.id, input.fact.relationId, factSlot.semanticId, factSlot.surface]),
-        profileKey: input.input.languageProfile.id,
-        surface: factSlot.surface,
-        evidenceIds: [...input.proofEvidenceIds],
-        support: input.routeAdmissibility,
-        formClassId
-      }]
-    });
-  }
-  if (seenSlotIndexes.size !== factSlots.length || factSlots.some(slot => !seenSlotIndexes.has(slot.slotIndex))) return undefined;
-  const plan: SurfaceMeaningPlan = {
-    id: opaqueSurfaceId(input.hasher, "plan", [
-      input.bundle.id,
-      input.construction.id,
-      input.fact.sourceNodeId,
-      input.fact.relationId,
-      input.fact.targetNodeId,
-      input.proofEvidenceIds
-    ]),
-    profileKey: input.input.languageProfile.id,
-    roleSignature: factSlots.map(slot => languageConstructionRoleId(input.hasher, input.bundle.bindingId, slot.slotIndex)),
-    slots
-  };
+  const binding = factConstructionMeaningPlan({ fact: input.fact, bundle: input.bundle, construction: input.construction,
+    profileKey: input.input.languageProfile.id, evidence: input.input.evidence, proofEvidenceIds: input.proofEvidenceIds,
+    support: input.routeAdmissibility, hasher: input.hasher });
+  if (!binding) return undefined;
+  const { plan, formClasses } = binding;
   const realized = realizeLearnedSurface({
     plan,
     constructions: [input.construction],
@@ -3140,7 +3090,7 @@ function learnedConstructionCandidateFromBundle(input: {
     const sourceRelationBinding = predicate
       ? sourceRelationConstructionBindingId(input.hasher, input.bundle.sourceProfileId, predicate)
       : undefined;
-    return example.roles.length === factSlots.length && example.roles.every(role =>
+    return example.roles.length === binding.factSlotCount && example.roles.every(role =>
       role.graphBinding?.relationId && role.graphBinding.roleId && role.graphBinding.valueKind
       && (role.graphBinding.relationId === input.bundle.bindingId || sourceRelationBinding === input.bundle.bindingId));
   });
@@ -3329,19 +3279,6 @@ function persistedLearnedSurfaceCandidate(input: {
   };
 }
 
-function constructionOccurrenceSlotIndexes(
-  bundle: DurableLanguageConstructionBundle
-): Map<string, number> | undefined {
-  const out = new Map<string, number>();
-  for (const example of bundle.sourceExamples) {
-    for (const role of [...example.roles, ...example.nullRoles]) {
-      const current = out.get(role.occurrenceId);
-      if (current !== undefined && current !== role.slotIndex) return undefined;
-      out.set(role.occurrenceId, role.slotIndex);
-    }
-  }
-  return out;
-}
 
 /**
  * plan.targetLanguage is a locale-ish tag (defaults to "und" when the turn named no explicit target language
