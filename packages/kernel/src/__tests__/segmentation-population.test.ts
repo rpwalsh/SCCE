@@ -125,6 +125,45 @@ describe("segmentation population induction", () => {
     );
   });
 
+  it("assigns a supplied one-grapheme document its learned prior without changing population fitting", () => {
+    const hasher = createHasher();
+    const rootPopulationId = "population.zero-boundaries";
+    const documents = Array.from({ length: 20 }, (_, index) => {
+      const documentId = `doc.measured.${index}`;
+      return { documentId, statistics: compileBoundaryStatistics({ populationId: rootPopulationId, sourceDocumentIds: [documentId], hasher,
+        observations: [spaced, joined].map((features, featureIndex) => ({ sourceDocumentId: documentId, features,
+          positiveMass: (index < 10) === (featureIndex === 0) ? 120 : 1,
+          negativeMass: (index < 10) === (featureIndex === 0) ? 1 : 120,
+          supervision: "independent_anchor" as const, signalKind: "external_anchor" as const, signalId: `${documentId}.${featureIndex}` })) }) };
+    });
+    const lattice = buildSurfaceLattice({ documentId: "doc.one-grapheme", text: "木", hasher });
+    const zero = { documentId: lattice.documentId, statistics: compileBoundaryStatistics({ populationId: rootPopulationId,
+      sourceDocumentIds: [lattice.documentId], observations: collectBoundaryTrainingObservations({ lattices: [lattice] }), hasher }) };
+    expect(zero.statistics.positiveMass + zero.statistics.negativeMass).toBe(0);
+    expect(() => learnSegmentationPopulations({ rootPopulationId, documents: [zero], hasher }))
+      .toThrow("cannot fit segmentation populations without positive boundary observation mass");
+    expect(() => learnSegmentationPopulations({ rootPopulationId, documents: [], hasher }))
+      .toThrow("cannot fit segmentation populations without positive boundary observation mass");
+    const baseline = learnSegmentationPopulations({ rootPopulationId, documents, maxPopulations: 4, hasher });
+    const model = learnSegmentationPopulations({ rootPopulationId, documents: [zero, ...documents], maxPopulations: 4, hasher });
+    expect(model.populations).toHaveLength(2);
+    expect(model.populations).toEqual(baseline.populations);
+    expect(model.selection).toEqual(baseline.selection);
+    expect(model.collapseGuard).toEqual(baseline.collapseGuard);
+    expect(model.assignments.filter(row => row.documentId !== zero.documentId)).toEqual(baseline.assignments);
+    const mixture = boundaryMixtureForDocument(model, zero.documentId, hasher);
+    const assignment = model.assignments[model.assignmentIndex[zero.documentId]!]!;
+    expect(assignment.documentId).toBe(zero.documentId);
+    for (const row of assignment.posterior) {
+      expect(row.documentMass).toBe(0);
+      expect(row.negativeLogLikelihood).toBe(0);
+      expect(row.probability).toBeCloseTo(model.populations.find(population => population.id === row.populationId)!.prior, 12);
+    }
+    expect(mixture.components.map(row => row.weight)).toEqual(model.populations.map(row => row.prior));
+    expect(() => boundaryMixtureForDocument(model, "doc.never-supplied", hasher)).toThrow(/unseen document/u);
+    expect(learnSegmentationPopulations({ rootPopulationId, documents: [...documents, zero].reverse(), maxPopulations: 4, hasher })).toEqual(model);
+  });
+
   it("is invariant to input document order", () => {
     const hasher = createHasher();
     const documents = ["a", "b", "c", "d"].map((id, index) => ({
