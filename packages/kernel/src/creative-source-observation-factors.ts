@@ -1,17 +1,20 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { deriveCreativeSourceCorrespondence, type CreativeSourceCorrespondence } from "./creative-source-correspondence.js";
-import { canonicalStringify, createHasher } from "./primitives.js";
+import { createHasher } from "./primitives.js";
 import type { Hasher } from "./types.js";
 
 export const CREATIVE_SOURCE_OBSERVATION_FACTORS_SCHEMA = "scce.creative_source_observation_factors.v1" as const;
 type SourceGroup = Pick<CreativeSourceCorrespondence, "requestFrameId" | "sourceId" | "sourceVersionId" | "request" | "reply">;
-type Occurrence = [group: number, eventId: string, eventRelationId: string, eventConstructionId: string,
-  eventArgumentFrameId: string, bindings: CreativeSourceCorrespondence["bindings"]];
+type Occurrence = [group: number, eventId: string, relation: number, construction: number, argumentFrame: number, bindings: number];
 export interface CreativeSourceObservationFactors {
   schema: typeof CREATIVE_SOURCE_OBSERVATION_FACTORS_SCHEMA;
   contentDigest: string;
   groups: SourceGroup[];
+  eventRelations: string[];
+  eventConstructions: string[];
+  eventArgumentFrames: string[];
+  bindingSets: CreativeSourceCorrespondence["bindings"][];
   occurrences: Occurrence[];
 }
 const failure = (): never => { throw new Error("invalid creative source observation factors"); };
@@ -56,41 +59,67 @@ function bindings(value: unknown): CreativeSourceCorrespondence["bindings"] {
     return structuredClone(binding) as unknown as CreativeSourceCorrespondence["bindings"][number];
   });
 }
-function digest(groups: SourceGroup[], occurrences: Occurrence[], hasher: Hasher): string {
-  return hasher.digestHex(canonicalStringify({ groups, occurrences }));
+function exactJson(value: unknown): string {
+  const sorted = (value: unknown): unknown => Array.isArray(value) ? value.map(sorted)
+    : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([key, member]) => [key, sorted(member)])) : value;
+  return JSON.stringify(sorted(value));
+}
+type Facts = Omit<CreativeSourceObservationFactors, "schema" | "contentDigest">;
+function digest(facts: Facts, hasher: Hasher): string {
+  return hasher.digestHex(exactJson(facts));
+}
+function dictionary<T>() {
+  const values: T[] = [], index = new Map<string, number>();
+  return { values, intern(value: T): number {
+    const key = exactJson(value); let id = index.get(key);
+    if (id === undefined) { id = values.length; values.push(value); index.set(key, id); }
+    return id;
+  } };
 }
 
 /** One request/reply premise is retained once for its ordered event correspondences. */
 export function creativeSourceObservationStorageForm(rows: readonly CreativeSourceCorrespondence[], hasher: Hasher = createHasher()): CreativeSourceObservationFactors {
   if (!Array.isArray(rows)) return failure();
-  const groups: SourceGroup[] = [], occurrences: Occurrence[] = [], groupIndex = new Map<string, number>();
+  const groups = dictionary<SourceGroup>(), relations = dictionary<string>(), constructions = dictionary<string>(), argumentFrames = dictionary<string>();
+  const bindingSets = dictionary<CreativeSourceCorrespondence["bindings"]>(), occurrences: Occurrence[] = [];
   for (const raw of rows) {
     const row = record(raw); keys(row, ["id", ...groupKeys, ...occurrenceKeys]);
     const group = sourceGroup(Object.fromEntries(groupKeys.map(key => [key, row[key]]))), occurrenceBindings = bindings(row.bindings);
     const material = { ...group, eventId: requiredText(row.eventId), eventRelationId: requiredText(row.eventRelationId),
       eventConstructionId: requiredText(row.eventConstructionId), eventArgumentFrameId: requiredText(row.eventArgumentFrameId), bindings: occurrenceBindings };
     if (row.id !== deriveCreativeSourceCorrespondence(material, hasher).id) return failure();
-    const key = canonicalStringify(group); let index = groupIndex.get(key);
-    if (index === undefined) { index = groups.length; groups.push(group); groupIndex.set(key, index); }
-    occurrences.push([index, material.eventId, material.eventRelationId, material.eventConstructionId, material.eventArgumentFrameId, occurrenceBindings]);
+    occurrences.push([groups.intern(group), material.eventId, relations.intern(material.eventRelationId), constructions.intern(material.eventConstructionId),
+      argumentFrames.intern(material.eventArgumentFrameId), bindingSets.intern(occurrenceBindings)]);
   }
-  return { schema: CREATIVE_SOURCE_OBSERVATION_FACTORS_SCHEMA, contentDigest: digest(groups, occurrences, hasher), groups, occurrences };
+  const facts = { groups: groups.values, eventRelations: relations.values, eventConstructions: constructions.values,
+    eventArgumentFrames: argumentFrames.values, bindingSets: bindingSets.values, occurrences };
+  return { schema: CREATIVE_SOURCE_OBSERVATION_FACTORS_SCHEMA, contentDigest: digest(facts, hasher), ...facts };
 }
 
 /** Restores the original logical rows before the existing source/evidence authorization verifier. */
 export function creativeSourceObservationsFromStorage(value: unknown, hasher: Hasher = createHasher()): CreativeSourceCorrespondence[] {
-  const root = record(value); keys(root, ["schema", "contentDigest", "groups", "occurrences"]);
+  const root = record(value); keys(root, ["schema", "contentDigest", "groups", "eventRelations", "eventConstructions", "eventArgumentFrames", "bindingSets", "occurrences"]);
   if (root.schema !== CREATIVE_SOURCE_OBSERVATION_FACTORS_SCHEMA || !Array.isArray(root.groups) || !Array.isArray(root.occurrences)) return failure();
-  const groups = root.groups.map(sourceGroup), unique = new Set(groups.map(group => canonicalStringify(group)));
-  if (unique.size !== groups.length) return failure();
-  const used = new Set<number>();
+  const table = <T>(raw: unknown, validate: (value: unknown) => T): T[] => {
+    if (!Array.isArray(raw)) return failure();
+    const values = raw.map(validate);
+    if (new Set(values.map(exactJson)).size !== values.length) return failure();
+    return values;
+  };
+  const groups = table(root.groups, sourceGroup), eventRelations = table(root.eventRelations, requiredText), eventConstructions = table(root.eventConstructions, requiredText);
+  const eventArgumentFrames = table(root.eventArgumentFrames, requiredText), bindingSets = table(root.bindingSets, bindings);
+  const tables = [groups, eventRelations, eventConstructions, eventArgumentFrames, bindingSets], used = tables.map(() => new Set<number>());
   const occurrences: Occurrence[] = root.occurrences.map(raw => {
     if (!Array.isArray(raw) || raw.length !== 6) return failure();
-    const index = integer(raw[0]); if (index >= groups.length) return failure(); used.add(index);
-    return [index, requiredText(raw[1]), requiredText(raw[2]), requiredText(raw[3]), requiredText(raw[4]), bindings(raw[5])];
+    const refs = [raw[0], raw[2], raw[3], raw[4], raw[5]].map((value, index) => {
+      const id = integer(value); if (id >= tables[index]!.length) return failure(); used[index]!.add(id); return id;
+    });
+    return [refs[0]!, requiredText(raw[1]), refs[1]!, refs[2]!, refs[3]!, refs[4]!];
   });
-  if (used.size !== groups.length || root.contentDigest !== digest(groups, occurrences, hasher)) return failure();
-  return occurrences.map(([index, eventId, eventRelationId, eventConstructionId, eventArgumentFrameId, occurrenceBindings]) =>
-    deriveCreativeSourceCorrespondence({ ...structuredClone(groups[index]!), eventId, eventRelationId, eventConstructionId,
-      eventArgumentFrameId, bindings: occurrenceBindings }, hasher));
+  if (used.some((set, index) => set.size !== tables[index]!.length)
+    || root.contentDigest !== digest({ groups, eventRelations, eventConstructions, eventArgumentFrames, bindingSets, occurrences }, hasher)) return failure();
+  return occurrences.map(([index, eventId, relation, construction, argumentFrame, binding]) =>
+    deriveCreativeSourceCorrespondence({ ...structuredClone(groups[index]!), eventId, eventRelationId: eventRelations[relation]!, eventConstructionId: eventConstructions[construction]!,
+      eventArgumentFrameId: eventArgumentFrames[argumentFrame]!, bindings: structuredClone(bindingSets[binding]!) }, hasher));
 }

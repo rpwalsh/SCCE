@@ -11,6 +11,9 @@ import type { EvidenceSpan } from "../types.js";
 
 const hasher = createHasher(), cold = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
 const size = (x: unknown) => Buffer.byteLength(JSON.stringify(x));
+const exact = (value: unknown): string => JSON.stringify(Array.isArray(value) ? value.map(item => JSON.parse(exact(item)))
+  : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([key, member]) => [key, JSON.parse(exact(member))])) : value);
 function fixture(count = 8, padding = "") {
   const request = `🧵 ${padding}α 雪 e\u0301`, reply = Array.from({ length: count }, () => "ρ 雪.").join(" "), text = `${request}\n${reply}`;
   const start = [...request].length + 1;
@@ -39,10 +42,14 @@ it("retains one owned Unicode premise and every compiled event, binding, ordered
   expect(rows).toHaveLength(8);
   const before = canonicalStringify(rows), stored = creativeSourceObservationStorageForm(rows), encoded = JSON.stringify(stored);
   expect(stored.groups).toHaveLength(1);
+  expect(stored.eventRelations).toHaveLength(1);
+  expect(stored.eventConstructions).toHaveLength(1);
+  expect(stored.eventArgumentFrames).toHaveLength(1);
   expect(stored.occurrences).toHaveLength(rows.length);
   const restored = creativeSourceObservationsFromStorage(cold(stored));
   expect(restored).toEqual(rows);
   expect(canonicalStringify(restored)).toBe(before);
+  expect(hasher.digestHex(exact(restored))).toBe(hasher.digestHex(exact(rows)));
   const verifier = createCreativeSourceCorrespondenceVerifier(context);
   expect(restored.every(row => verifier.verify(row, [String(evidence.id)]))).toBe(true);
   expect(restored[0]!.request.surface).toContain("🧵");
@@ -73,13 +80,66 @@ it("rejects corrupt source facts, dangling references, altered occurrences, dupl
     expect(() => creativeSourceObservationsFromStorage(value)).toThrow("invalid creative source observation factors"); };
   bad(value => { value.groups[0]!.sourceVersionId = "foreign.version"; });
   bad(value => { value.groups[0]!.request.surface += "changed"; });
-  bad(value => { value.occurrences[0]![0] = 99; });
+  for (const column of [0, 2, 3, 4, 5]) bad(value => { value.occurrences[0]![column] = 99; });
   bad(value => { value.occurrences[0]![1] = "foreign.event"; });
-  bad(value => { value.occurrences[0]![5][0]!.eventStart++; });
+  bad(value => { value.bindingSets[0]![0]!.eventStart++; });
+  bad(value => { value.eventRelations[0] = "foreign.relation"; });
+  bad(value => { value.eventConstructions[0] = "foreign.construction"; });
+  bad(value => { value.eventArgumentFrames[0] = "foreign.argument"; });
+  bad(value => { value.contentDigest = "foreign.digest"; });
+  bad(value => { value.bindingSets.push(cold(value.bindingSets[0]!)); });
   bad(value => { value.groups.push(cold(value.groups[0]!)); });
   bad(value => { value.occurrences = []; });
   bad(value => { (value as unknown as Record<string, unknown>).extra = "unknown"; });
   expect(() => creativeSourceObservationStorageForm([{ ...rows[0]!, id: "changed.id" }])).toThrow("invalid creative source observation factors");
+});
+
+it("keeps repeated occurrences while sharing their typed facts and isolating every restored binding", () => {
+  const { rows } = fixture(2), repeated = [rows[0]!, rows[0]!, rows[1]!, rows[0]!];
+  const stored = creativeSourceObservationStorageForm(repeated);
+  expect(stored.occurrences).toHaveLength(4); expect(stored.bindingSets).toHaveLength(2);
+  expect(stored.eventRelations).toEqual([rows[0]!.eventRelationId]);
+  expect(stored.eventConstructions).toEqual([rows[0]!.eventConstructionId]);
+  expect(stored.eventArgumentFrames).toEqual([rows[0]!.eventArgumentFrameId]);
+  const restored = creativeSourceObservationsFromStorage(cold(stored));
+  expect(restored).toEqual(repeated); expect(restored.map(row => row.id)).toEqual(repeated.map(row => row.id));
+  restored[0]!.bindings[0]!.requestRoleId = "changed";
+  expect(restored[1]!.bindings[0]!.requestRoleId).toBe(rows[0]!.bindings[0]!.requestRoleId);
+  expect(stored.bindingSets[0]![0]!.requestRoleId).toBe(rows[0]!.bindings[0]!.requestRoleId);
+});
+
+it("preserves exact NUL-versus-space premises and binding facts despite the unchanged canonical ID factory", () => {
+  const { id: _id, ...base } = fixture(1).rows[0]!;
+  const premise = (surface: string) => deriveCreativeSourceCorrespondence({ ...base, request: { ...base.request, surface } }, hasher);
+  const nul = premise("owned\u0000source"), space = premise("owned source");
+  expect(nul.id).toBe(space.id);
+  const originals = [nul, space], stored = creativeSourceObservationStorageForm(originals);
+  expect(stored.groups).toHaveLength(2);
+  const restored = creativeSourceObservationsFromStorage(cold(stored));
+  expect(exact(restored)).toBe(exact(originals));
+  expect(restored.map(row => row.id)).toEqual(originals.map(row => row.id));
+  const altered = cold(creativeSourceObservationStorageForm([nul]));
+  altered.groups[0]!.request.surface = space.request.surface;
+  expect(() => creativeSourceObservationsFromStorage(altered)).toThrow("invalid creative source observation factors");
+  const reference = (referentId: string) => deriveCreativeSourceCorrespondence({ ...base, bindings: base.bindings.map(binding => ({ ...binding,
+    sourceReference: { patternId: "reference", referentId, propertyId: "property" } })) }, hasher);
+  const references = [reference("entity\u0000one"), reference("entity one")];
+  const referenceStorage = creativeSourceObservationStorageForm(references);
+  expect(referenceStorage.bindingSets).toHaveLength(2);
+  expect(exact(creativeSourceObservationsFromStorage(cold(referenceStorage)))).toBe(exact(references));
+  const shared = creativeSourceObservationStorageForm([references[0]!, references[0]!]);
+  const isolated = creativeSourceObservationsFromStorage(cold(shared));
+  isolated[0]!.bindings[0]!.sourceReference!.referentId = "changed";
+  expect(isolated[1]!.bindings[0]!.sourceReference!.referentId).toBe("entity\u0000one");
+  expect(shared.bindingSets[0]![0]!.sourceReference!.referentId).toBe("entity\u0000one");
+});
+
+it("rejects unused typed facts even with a recomputed content digest", () => {
+  const stored = creativeSourceObservationStorageForm(fixture(2).rows);
+  stored.eventRelations.push("unused.relation");
+  const { schema: _schema, contentDigest: _digest, ...facts } = stored;
+  stored.contentDigest = hasher.digestHex(exact(facts));
+  expect(() => creativeSourceObservationsFromStorage(stored)).toThrow("invalid creative source observation factors");
 });
 
 it("stores source premise growth once instead of multiplying long requests by event count", () => {
