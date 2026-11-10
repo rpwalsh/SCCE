@@ -3,7 +3,7 @@
 import { expect, it } from "vitest";
 import { buildSegmentationForest } from "../segmentation-forest.js";
 import { buildSurfaceLattice, type SurfaceLatticeUnit } from "../surface-lattice.js";
-import { compileJoinProgram, compileJoinProgramMixture, derivationShape, renderJoinedSurface } from "../join-program.js";
+import { compileJoinProgram, compileJoinProgramMixture, derivationShape, renderJoinedSurface, joinProgramChoices } from "../join-program.js";
 import { joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "../join-program-storage.js";
 
 function binaryDocument(blocks: number, pathLimit: number, documentId = "binary") {
@@ -34,20 +34,27 @@ function bridgeDocument(documentId: string, gap = " ") {
 }
 
 it("counts the exact enumerated local adjacency law once while retaining only measured global shape mass", () => {
-  const document = binaryDocument(3, 8), expected = new Map<string, number>();
+  const document = binaryDocument(3, 8), expected = new Map<string, number>(), classes = new Map<string, number>();
   const byId = new Map(document.lattice.units.map(unit => [unit.id, unit]));
   expect(document.lattice.segmentationForest.paths).toHaveLength(8);
   for (const path of document.lattice.segmentationForest.paths) for (let index = 1; index < path.unitIds.length; index++) {
     const left = byId.get(path.unitIds[index - 1]!)!, right = byId.get(path.unitIds[index]!)!, key = JSON.stringify([left.normalized, right.normalized]);
     expected.set(key, (expected.get(key) ?? 0) + path.posterior);
+    const classKey = JSON.stringify([left.surfaceFormClassId, right.surfaceFormClassId, left.kind, right.kind,
+      Math.min(7, Math.max(0, Math.floor(left.boundaryAfter.boundaryProbability * 8)))]);
+    classes.set(classKey, (classes.get(classKey) ?? 0) + path.posterior);
   }
   const complete = compileJoinProgram({ populationId: "proof", documents: [document] });
-  for (const [key, count] of expected) expect(complete.exactIndex[key]!.reduce((sum, choice) => sum + choice.count, 0)).toBeCloseTo(count, 10);
+  for (const [key, count] of expected) expect(joinProgramChoices(complete, "exact", key).reduce((sum, choice) => sum + choice.count, 0)).toBeCloseTo(count, 10);
+  for (const [key, count] of classes) expect(joinProgramChoices(complete, "class", key).reduce((sum, choice) => sum + choice.count, 0)).toBeCloseTo(count, 10);
   expect(complete.observations).toBeCloseTo(3.5, 10);
   const limitedDocument = binaryDocument(3, 1);
   const limited = compileJoinProgram({ populationId: "proof", documents: [limitedDocument] });
   expect(limited.exactIndex).toEqual(complete.exactIndex);
   expect(limited.classIndex).toEqual(complete.classIndex);
+  expect(limited.localFactors).toEqual(complete.localFactors);
+  for (const key of expected.keys()) expect(joinProgramChoices(limited, "exact", key)).toEqual(joinProgramChoices(complete, "exact", key));
+  for (const key of classes.keys()) expect(joinProgramChoices(limited, "class", key)).toEqual(joinProgramChoices(complete, "class", key));
   expect(limited.localShapeIndex).toEqual(complete.localShapeIndex);
   expect(limited.observations).toEqual(complete.observations);
   expect(Object.values(limited.conditionedIndex).some(choices => choices.reduce((sum, choice) => sum + choice.probability, 0) < 1)).toBe(true);
@@ -61,12 +68,18 @@ it("learns genuine local joins from 41 binary blocks even when every bounded ful
   expect(forest.paths.every(path => path.posterior === 0)).toBe(true);
   const program = compileJoinProgram({ populationId: "proof", documents: [document] });
   expect(program.observations).toBeCloseTo(41 * 1.5 - 1, 9);
-  expect(program.exactIndex[JSON.stringify(["\u03b1", "\u03b2"])]![0]!.count).toBeCloseTo(41 / 2, 9);
+  const key = JSON.stringify(["\u03b1", "\u03b2"]), snapshot = JSON.stringify(program);
+  expect(joinProgramChoices(program, "exact", key)[0]!.count).toBeCloseTo(41 / 2, 9);
+  expect(program.exactIndex).toEqual({});
+  expect(program.classIndex).toEqual({});
+  expect(program.localFactors!.documents[0]!.units).toHaveLength(document.lattice.units.length);
+  expect(program.localFactors!.documents[0]!.graph.arcs).toHaveLength(document.lattice.units.length);
   expect(program.conditionedIndex).toEqual({});
   expect(program.structuralIndex).toEqual({});
   const mixture = compileJoinProgramMixture({ populationModelId: "proof", components: [{ populationId: "proof", weight: 1, program }] });
   expect(renderJoinedSurface(["\u03b1", "\u03b2"], mixture)).toMatchObject({ status: "resolved", text: "\u03b1\u03b2" });
-  expect(Object.values(program.exactIndex).flat().every(choice => choice.count > 0 && choice.probability > 0)).toBe(true);
+  expect(joinProgramChoices(program, "exact", key).every(choice => choice.count > 0 && choice.probability > 0)).toBe(true);
+  expect(JSON.stringify(program)).toBe(snapshot);
   expect(forest.paths).toHaveLength(16);
 });
 
@@ -86,8 +99,10 @@ it("chooses stronger calibrated local evidence over a weak global factor and col
     program: { ...component.program, backoffReliability: { conditioned: 0.9, exact: 0.1, structural: 0, class: 0, local_shape: 0, construction: 0 } } })) };
   const measured = renderJoinedSurface(units.map(unit => unit.surface), calibrated, context);
   expect(measured.trace.every(step => step.source === "conditioned" && step.support > 0.1)).toBe(true);
-  const globals = { ...mixture, minimumConfidence: 0, components: mixture.components.map(component => ({ ...component,
-    program: { ...component.program, exactIndex: {}, classIndex: {}, localShapeIndex: {}, constructionIndex: {} } })) };
+  const globals = { ...mixture, minimumConfidence: 0, components: mixture.components.map(component => {
+    const { localFactors: _factors, ...globalProgram } = component.program;
+    return { ...component, program: { ...globalProgram, exactIndex: {}, classIndex: {}, localShapeIndex: {}, constructionIndex: {} } };
+  }) };
   const partial = renderJoinedSurface(units.map(unit => unit.surface), globals, context);
   expect(partial.trace.some(step => step.support > 0 && step.support < 1 && step.unresolvedPopulationMass > 0)).toBe(true);
   for (const step of partial.trace) expect(step.support + step.unresolvedPopulationMass).toBeCloseTo(1, 10);

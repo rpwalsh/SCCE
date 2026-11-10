@@ -16,6 +16,7 @@ import {
 import { joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "../join-program-storage.js";
 import * as joinStorage from "../join-program-storage.js";
 import { buildSegmentationForest } from "../segmentation-forest.js";
+import { joinProgramChoices } from "../join-program.js";
 
 function trainedMixture(documentId: string, text: string) {
   const hasher = createHasher();
@@ -88,13 +89,13 @@ describe("learned join programs", () => {
 
   it("preserves special index keys and distinguishes absent from empty source-version IDs", () => {
     const mixture = trainedMixture("edge-case-provenance", "alpha beta alpha beta");
-    const program = mixture.components[0]!.program;
-    const entries = Object.entries(program.exactIndex);
-    const [key, choices] = entries[0]!;
+    const { localFactors: _factors, ...program } = mixture.components[0]!.program;
+    const key = JSON.stringify(["alpha", "beta"]), choices = joinProgramChoices(mixture.components[0]!.program, "exact", key);
     const first = choices[0]!;
     const coordinate = first.evidenceCoordinates[0]!;
     const changed = { ...first, evidenceCoordinates: [...first.evidenceCoordinates, { ...coordinate, sourceVersionId: "" }] };
-    program.exactIndex = Object.fromEntries([...entries, [key, [changed, ...choices.slice(1)]], ["__proto__", [changed]]]);
+    program.exactIndex = Object.fromEntries([[key, [changed, ...choices.slice(1)]], ["__proto__", [changed]]]);
+    mixture.components[0]!.program = program;
     const restored = joinProgramMixtureFromStorage(joinProgramMixtureStorageForm(mixture));
     expect(restored).toEqual(mixture);
     expect(Object.prototype.hasOwnProperty.call(restored!.components[0]!.program.exactIndex, "__proto__")).toBe(true);
@@ -250,10 +251,10 @@ describe("learned join programs", () => {
     const exactKey = JSON.stringify(["alpha", "beta"]);
     const ambiguous = {
       ...base,
-      components: base.components.map(component => ({
-        ...component,
-        program: {
-          ...component.program,
+      components: base.components.map(component => {
+        const { localFactors: _factors, ...program } = component.program;
+        return { ...component, program: {
+          ...program,
           conditionedIndex: {}, structuralIndex: {}, classIndex: {}, localShapeIndex: {}, constructionIndex: {},
           exactIndex: {
             ...component.program.exactIndex,
@@ -263,7 +264,7 @@ describe("learned join programs", () => {
             ]
           }
         }
-      }))
+      }; })
     };
     const rendered = renderJoinedSurface(["alpha", "beta"], ambiguous);
 
