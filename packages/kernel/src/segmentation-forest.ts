@@ -3,6 +3,9 @@
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 import { canonicalNormalizationContract } from "./normalization-contract.js";
+import { createSegmentationAdjacencyQuery, SEGMENTATION_ADJACENCY_FACTORS_SCHEMA, type SegmentationAdjacencyFactors } from "./segmentation-adjacency-factors.js";
+export { createSegmentationAdjacencyQuery, validateSegmentationAdjacencyFactors, SEGMENTATION_ADJACENCY_FACTORS_SCHEMA,
+  type SegmentationAdjacencyFactors, type SegmentationAdjacencySelection, type SegmentationFactorAdjacency } from "./segmentation-adjacency-factors.js";
 
 export const SEGMENTATION_FOREST_SCHEMA = "scce.segmentation_forest.v2" as const;
 
@@ -146,10 +149,8 @@ interface WeightedArc {
 }
 
 interface FullDagMeasure {
-  arcsByStart: ReadonlyMap<number, readonly WeightedArc[]>;
-  forward: readonly number[];
-  backward: readonly number[];
-  partitionLogZ: number;
+  factors: SegmentationAdjacencyFactors;
+  unitIds: readonly string[];
 }
 const FULL_DAG_MEASURE = Symbol("segmentation.full_dag_measure");
 
@@ -159,62 +160,21 @@ export interface SegmentationSurfaceAdjacency {
   posterior: number;
 }
 
-/** Local expected counts integrate every cover, including unmaterialized derivations. */
-export function segmentationSurfaceAdjacencies(forest: SurfaceSegmentationForest, surfaceBearingUnitIds: ReadonlySet<string>): Iterable<SegmentationSurfaceAdjacency> {
+/** Unit identities map producer metadata to numeric arcs and need not enter the learned factors. */
+export function exportSegmentationAdjacencyFactors(forest: SurfaceSegmentationForest): Readonly<FullDagMeasure> {
   const measure = (forest as SurfaceSegmentationForest & { [FULL_DAG_MEASURE]?: FullDagMeasure })[FULL_DAG_MEASURE];
   if (!measure) throw new Error("segmentation forest has no canonical full-DAG adjacency measure");
-  const bearing = new Set(surfaceBearingUnitIds);
+  return measure;
+}
+
+/** Local expected counts integrate every cover, including unmaterialized derivations. */
+export function segmentationSurfaceAdjacencies(forest: SurfaceSegmentationForest, surfaceBearingUnitIds: ReadonlySet<string>): Iterable<SegmentationSurfaceAdjacency> {
+  const { factors, unitIds } = exportSegmentationAdjacencyFactors(forest);
+  const bearing = new Set(unitIds.flatMap((id, index) => surfaceBearingUnitIds.has(id) ? [index] : []));
+  const query = createSegmentationAdjacencyQuery(factors, bearing);
   return (function* () {
-    if (!Number.isFinite(measure.partitionLogZ)) return;
-    for (const arcs of measure.arcsByStart.values()) for (const left of arcs) {
-      if (!bearing.has(left.unit.id) || !Number.isFinite(measure.forward[left.unit.graphemeStart]!)) continue;
-      const bridges = new Map<number, number>([[left.unit.graphemeEnd, 0]]);
-      const pending = [left.unit.graphemeEnd];
-      while (pending.length) {
-        const position = popCoordinate(pending), bridge = bridges.get(position)!;
-        for (const right of measure.arcsByStart.get(position) ?? []) {
-          if (bearing.has(right.unit.id)) {
-            const suffix = measure.backward[right.unit.graphemeEnd]!;
-            if (!Number.isFinite(suffix)) continue;
-            const posterior = Math.exp(measure.forward[left.unit.graphemeStart]! - left.energy + bridge - right.energy + suffix - measure.partitionLogZ);
-            if (posterior > 0) yield { leftUnitId: left.unit.id, rightUnitId: right.unit.id, posterior };
-          } else {
-            const end = right.unit.graphemeEnd, previous = bridges.get(end);
-            bridges.set(end, logAddExp(previous ?? Number.NEGATIVE_INFINITY, bridge - right.energy));
-            if (previous === undefined) pushCoordinate(pending, end);
-          }
-        }
-      }
-    }
+    for (const pair of query.pairs()) yield { leftUnitId: unitIds[pair.leftArcIndex]!, rightUnitId: unitIds[pair.rightArcIndex]!, posterior: pair.posterior };
   })();
-}
-
-function pushCoordinate(heap: number[], value: number): void {
-  let index = heap.length;
-  heap.push(value);
-  while (index) {
-    const parent = Math.floor((index - 1) / 2);
-    if (heap[parent]! <= value) break;
-    heap[index] = heap[parent]!;
-    index = parent;
-  }
-  heap[index] = value;
-}
-
-function popCoordinate(heap: number[]): number {
-  const first = heap[0]!, last = heap.pop()!;
-  if (heap.length) {
-    let index = 0;
-    while (index * 2 + 1 < heap.length) {
-      let child = index * 2 + 1;
-      if (child + 1 < heap.length && heap[child + 1]! < heap[child]!) child++;
-      if (heap[child]! >= last) break;
-      heap[index] = heap[child]!;
-      index = child;
-    }
-    heap[index] = last;
-  }
-  return first;
 }
 
 const MIN_PROBABILITY = 1e-9;
@@ -416,8 +376,14 @@ export function buildSegmentationForest(input: SegmentationForestBuildInput): Su
       completion
     })
   };
-  Object.defineProperty(forest, FULL_DAG_MEASURE, { value: Object.freeze({ arcsByStart: allArcsByStart,
-    forward: Object.freeze(fullForward), backward: Object.freeze(fullBackward), partitionLogZ: fullPartitionLogZ }) });
+  const factorArcs = [...allArcsByStart.entries()].sort(([left], [right]) => left - right).flatMap(([, arcs]) => arcs);
+  const factors: SegmentationAdjacencyFactors = Object.freeze({ schema: SEGMENTATION_ADJACENCY_FACTORS_SCHEMA,
+    partitionLogZ: Number.isFinite(fullPartitionLogZ) ? fullPartitionLogZ : null,
+    nodeLogWeights: Object.freeze(fullForward.map((forward, index) => Object.freeze([
+      Number.isFinite(forward) ? forward : null, Number.isFinite(fullBackward[index]!) ? fullBackward[index]! : null
+    ] as const))),
+    arcs: Object.freeze(factorArcs.map(arc => Object.freeze([arc.unit.graphemeStart, arc.unit.graphemeEnd, arc.energy] as const))) });
+  Object.defineProperty(forest, FULL_DAG_MEASURE, { value: Object.freeze({ factors, unitIds: Object.freeze(factorArcs.map(arc => arc.unit.id)) }) });
   return forest;
 }
 
