@@ -132,7 +132,7 @@ function approximateHydrationEstimatedBytes(value: {
   const programRoots = [value.state, value.retainedProgramState].flatMap(state => state ? [
     ...peekLanguageMemoryConstructionState(state).roots, state.importedReversibleConstructions,
     state.importedPairedAntiUnifiedConstructions, state.optionalNullRealizationModels,
-    state.structuralDeltas,
+    state.joinPrograms, state.structuralDeltas,
     state.requestRequirementHydration
   ] : []);
   return jsonBytes + estimateRetainedProgramBytes(programRoots, allowance - jsonBytes);

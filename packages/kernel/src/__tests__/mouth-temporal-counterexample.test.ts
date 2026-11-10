@@ -13,8 +13,6 @@ import {
 } from "../index.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, LanguageProfile, SourceVersion } from "../types.js";
 import type { SemanticFrameRecord } from "../storage.js";
-import { compileLanguageConstructionPattern } from "../language-construction-memory.js";
-import { TEMPORAL_REJECTION_CONSTRUCTION_ROLES, TEMPORAL_REJECTION_CONSTRUCTION_BINDING_ID } from "../mouth.js";
 
 describe("Mouth temporal counterexample realization", () => {
   const clock = createClock({ fixedTime: 10_000, stepMs: 1 });
@@ -31,7 +29,6 @@ describe("Mouth temporal counterexample realization", () => {
     const counter = evidence(counterSource, counterText);
     const subject = evidence(subjectSource, subjectText);
     const field = emptyField(question);
-    const teaching = learnedNegativeConstruction(counterSource);
     const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
       text: question,
       evidence: [counter, subject],
@@ -44,8 +41,7 @@ describe("Mouth temporal counterexample realization", () => {
       models: [],
       observations: [],
       units: [],
-      patterns: [teaching.pattern],
-      constructionEvidence: [teaching.evidence],
+      patterns: [],
       semanticFrames: learnedNegativeFrames(counter)
     });
     const mouth = createMouth({
@@ -75,10 +71,10 @@ describe("Mouth temporal counterexample realization", () => {
     expect(spoken.text).not.toMatch(/[¬\[\]]|rel\.|semantic\./u);
     expect(spoken.evidenceRefs).toEqual(expect.arrayContaining([counter.id, subject.id]));
     expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:semantic-temporal-counterexample");
-    expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain(teaching.pattern.id);
+    expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("frame:negative-bridge:0");
   });
 
-  it("reports unavailable rejection geometry instead of substituting a positive premise or contextual source echo", async () => {
+  it("falls back to the contextual counterexample instead of realizing the rejected premise as positive", async () => {
     const question = "Did Martha Washington invent the idea of using flags to represent nation states?";
     const counterText = "One of the earliest examples of a national flag is the flag of Genoa; the Union Flag dates from 1606.";
     const subjectText = "Martha Washington (1731–1802) was the wife of George Washington.";
@@ -110,35 +106,12 @@ describe("Mouth temporal counterexample realization", () => {
       targetLanguage: "fixture-language"
     });
 
-    expect(spoken.text).toBe("");
-    expect(spoken.realizationAvailability.status).toBe("realization_unavailable");
+    expect(spoken.text).toBe(counterText);
     expect(spoken.text).not.toContain("Martha Washington invent");
     expect(spoken.text).not.toMatch(/[¬\[\]]|rel\.|semantic\./u);
+    expect(spoken.evidenceRefs).toEqual(expect.arrayContaining([counter.id, subject.id]));
+    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:semantic-temporal-counterexample");
   });
-
-  function learnedNegativeConstruction(targetSource: SourceVersion) {
-    const examples = [
-      { subject: "The council", predicate: "adopt the proposal" },
-      { subject: "The committee", predicate: "approve the measure" }
-    ];
-    const surfaces = examples.map(row => `${row.subject} did not ${row.predicate}.`);
-    const text = surfaces.join("\n");
-    const owner = evidence(sourceVersion("fixture://negative-construction", text), text);
-    const bindingId = TEMPORAL_REJECTION_CONSTRUCTION_BINDING_ID;
-    const roleIds = [TEMPORAL_REJECTION_CONSTRUCTION_ROLES.subject, TEMPORAL_REJECTION_CONSTRUCTION_ROLES.proposition];
-    const compiled = compileLanguageConstructionPattern({ bindingId, profileId: languageProfile(targetSource).id, evidence: [owner], hasher,
-      updatedAt: clock.now(), observations: surfaces.map((surface, index) => {
-        const base = [...text.slice(0, text.indexOf(surface))].length;
-        return { sourceVersionId: String(owner.sourceVersionId), evidenceId: String(owner.id), surfaceStartCodePoint: base,
-          surfaceEndCodePoint: base + [...surface].length, roles: [examples[index]!.subject, examples[index]!.predicate].map((value, slotIndex) => {
-            const startCodePoint = [...surface.slice(0, surface.indexOf(value))].length;
-            return { slotIndex, startCodePoint, endCodePoint: startCodePoint + [...value].length,
-              graphBinding: { relationId: bindingId, roleId: roleIds[slotIndex]!, valueKind: slotIndex ? "proposition" : "entity" } };
-          }) };
-      }) });
-    if (compiled.status !== "compiled") throw new Error(`Negation source failed: ${JSON.stringify(compiled)}`);
-    return { pattern: compiled.pattern, evidence: owner };
-  }
 
   function temporalCounterexampleConstruct(counter: EvidenceSpan, subject: EvidenceSpan): ConstructGraph {
     const evidenceIds = [counter.id, subject.id];

@@ -4,6 +4,7 @@ import { createLanguageInductionEngine, type LanguageInductionDocument, type Ind
 import type { InducedLanguageMemoryModel } from "./language-induction-memory.js";
 import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { canonicalStringify } from "./primitives.js";
+import { joinProgramMixtureStorageForm } from "./join-program-storage.js";
 import { inductionCharBudget, inductionDocumentCharCap } from "./training-orchestrator.js";
 import { surfaceSentenceRanges } from "./surface-linguistics.js";
 import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
@@ -118,10 +119,10 @@ export function sourceInductionBatchJobDigest(job: Omit<SourceInductionBatchJob,
 }
 
 function compactSourceInductionModel(model: InducedLanguageModel): InducedLanguageMemoryModel {
-    const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, segmentationDocuments,
+    const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds } = model;
     return freezeProducts({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
-      segmentationDocuments,
+      joinProgram: joinProgramMixtureStorageForm(joinProgram, { immutable: true }),
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds });
 }
 

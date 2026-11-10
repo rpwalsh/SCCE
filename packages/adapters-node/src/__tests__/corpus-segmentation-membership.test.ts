@@ -8,8 +8,8 @@ import { fixtureSegmentationScratch } from "../../../kernel/src/__tests__/fixtur
 import { corpusSegmentationWindows } from "../corpus-segmentation-windows.js";
 import { CORPUS_COUNT_PAGE_SCHEMA, corpusCountPageEntries, corpusMembershipHash, prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusMembershipPages,
   type CorpusMembershipRun, type CorpusMembershipStorage } from "../corpus-segmentation-membership.js";
-import { languageArtifactJsonByteLengths } from "../durable-language-artifact-storage.js";
-import * as durableJson from "../durable-language-artifact-storage.js";
+import { durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import * as durableJson from "../durable-join-program-storage.js";
 import { corpusMembershipSqlFixture } from "./fixtures/corpus-membership-sql.js";
 
 function fixture(pageRows = 2, maxPageBytes = 12000) {
@@ -21,7 +21,7 @@ function fixture(pageRows = 2, maxPageBytes = 12000) {
   const run: CorpusMembershipRun = { run: { runId: "owned", recipeId: "scce.corpus_segmentation_input.v2:256" }, bounds,
     scratch: { ...memory, pages: query => memory.pages({ ...query, collection: `scratch/${query.collection}` }),
       putMany: async (collection, rows) => { for (const row of rows) { const value = row.value as Record<string, JsonValue>;
-        writes.push({ collection, bytes: languageArtifactJsonByteLengths(row).decodedJsonbBytes + 2, members: (value.entries as JsonValue[]).length }); }
+        writes.push({ collection, bytes: durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2, members: (value.entries as JsonValue[]).length }); }
         await memory.putMany(`scratch/${collection}`, rows); },
       count: collection => memory.count(`scratch/${collection}`), deleteCollection: collection => memory.deleteCollection(`scratch/${collection}`) },
     pages: (collection, query) => { reads.push({ collection, pageRows: query?.pageRows }); return memory.pages({ ...bounds, ...query, collection }); },
@@ -82,7 +82,7 @@ it("packs genuine human Unicode memberships and preserves every exact per-pair c
   for (const kind of ["class", "context"]) {
     expect(await f.memory.count(`scratch/producer/${kind}-membership`)).toBe(0);
     for await (const page of f.memory.pages({ collection: `input/${kind}-counts`, ...f.run.bounds })) for (const row of page) {
-      expect(languageArtifactJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
+      expect(durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
       expect(corpusCountPageEntries(row.value).length).toBeGreaterThan(0);
     }
   }
@@ -137,7 +137,7 @@ it("refuses an entry that cannot fit its decoded operational page budget", async
 });
 
 it("sizes the immutable source header once while writing many bounded pages", async () => {
-  const f = fixture(16, 1200), size = vi.spyOn(durableJson, "languageArtifactJsonByteLengths");
+  const f = fixture(16, 1200), size = vi.spyOn(durableJson, "durableJoinProgramJsonByteLengths");
   try {
     await writeCorpusMembershipPages(f.run, { kind: "class", windowKey: "0", documentId: "owner", sourceVersionId: "version",
       entries: Array.from({ length: 100 }, (_, index) => `class.${index}.雪🧭`) });
@@ -192,17 +192,17 @@ it("stores block-sized exact-key leaves and reuses their receipt capacity for bo
       const hash = corpusMembershipHash(key), group = nested.get(hash) ?? []; group.push([key, count]); nested.set(hash, group);
     }
     const legacy = { ...row, value: { ...value, schema: "scce.corpus_segmentation_count_page.v2", entries: Object.fromEntries([...nested].map(([hash, members]) => [hash, Object.fromEntries(members)])) } };
-    const currentBytes = languageArtifactJsonByteLengths(row).decodedJsonbBytes + 2, previousBytes = languageArtifactJsonByteLengths(legacy).decodedJsonbBytes + 2;
+    const currentBytes = durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2, previousBytes = durableJoinProgramJsonByteLengths(legacy).decodedJsonbBytes + 2;
     expect(currentBytes).toBeLessThanOrEqual(8192); leaves++;
     beforeBytes += previousBytes; afterBytes += currentBytes; hashGroups += nested.size; denser ||= previousBytes > 8192;
   }
   expect(leaves).toBeGreaterThan(1);
   expect(denser).toBe(true);
-  const hashFieldBytes = languageArtifactJsonByteLengths({ ["0".repeat(64)]: { key: 1 } }).decodedJsonbBytes - languageArtifactJsonByteLengths({ key: 1 }).decodedJsonbBytes;
+  const hashFieldBytes = durableJoinProgramJsonByteLengths({ ["0".repeat(64)]: { key: 1 } }).decodedJsonbBytes - durableJoinProgramJsonByteLengths({ key: 1 }).decodedJsonbBytes;
   expect(beforeBytes - afterBytes).toBe(hashGroups * hashFieldBytes);
   expect(f.reads.filter(read => read.collection === "input/class-counts").every(read => read.pageRows === 8)).toBe(true);
   for await (const page of f.run.pages("input/class-counts", { pageRows: 8 }))
-    expect(page.reduce((sum, row) => sum + languageArtifactJsonByteLengths(row).decodedJsonbBytes + 2, 0)).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
+    expect(page.reduce((sum, row) => sum + durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2, 0)).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
   f.setBlockSize(16384); f.reads.length = 0;
   expect(await prepareCorpusMembershipCounts(f.storage, f.run, { id: "inventory", count: 1 })).toEqual(first);
   expect(f.reads.filter(read => read.collection === "input/class-counts").every(read => read.pageRows === 8)).toBe(true);
@@ -222,7 +222,7 @@ it("retains an oversized atomic full key within the declared run budget as one v
   await prepareCorpusMembershipCounts(f.storage, f.run, { id: "inventory", count: 1 });
   expect(await readCorpusMembershipCounts(f.storage, f.run, "class", [key, "before", "after", "unseen"])).toEqual({ [key]: 1, before: 1, after: 1, unseen: 0 });
   for await (const page of f.memory.pages({ collection: "input/class-counts", ...f.run.bounds })) for (const row of page)
-    expect(languageArtifactJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
+    expect(durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(f.run.bounds.maxPageBytes);
 });
 
 it("validates a full 4096-key unordered response with linear key inspections", async () => {

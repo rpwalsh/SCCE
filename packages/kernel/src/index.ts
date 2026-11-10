@@ -59,6 +59,8 @@ export * from "./language-identity.js";
 export * from "./language-identity-runtime.js";
 export * from "./structural-residue.js";
 export * from "./apparatus-lines.js";
+export * from "./join-program.js";
+export * from "./join-program-storage.js";
 export * from "./surface-lattice.js";
 export * from "./segmentation-aggregate.js";
 export * from "./language-induction-persistence.js";
@@ -366,5 +368,3 @@ export * from "./program-artifact-wire.js";
 export * from "./corpus-segmentation-storage.js";
 
 export * from "./source-program-provider.js";
-export * from "./construction-role-geometry-storage.js";
-export * from "./segmentation-adjacency-storage.js";

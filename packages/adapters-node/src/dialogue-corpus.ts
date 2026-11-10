@@ -5,7 +5,6 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { LanguageTrainingSegmentationDeclaration } from "./language-training-segmentation.js";
 import { pathToFileURL } from "node:url";
-import { immutableRequestSourceFact } from "./request-source-facts.js";
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
   REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
@@ -373,7 +372,11 @@ async function persistDialogueRequestAuthorities(
       updatedAt: Date.now(),
       makeId: representation => `request_requirement_dialogue_${hasher.digestHex(canonicalStringify(representation))}`
     });
-    const sourceRanges = new Map(bound.map(({ turn, evidenceIds }) => [turn.index, immutableRequestSourceFact(toJsonValue({
+    const patterns = compiled.patterns.map(pattern => {
+      const record = pattern.patternJson as Record<string, JsonValue>;
+      const featureKey = `${String(record.anchor)}:${String(record.surface)}`;
+      const supportingTurns = featureOwners.get(featureKey) ?? [];
+      const sourceTurnRanges = supportingTurns.map(({ turn, evidenceIds }) => ({
         turnIndex: turn.index,
         authority: turn.requestAuthority!,
         sourceCategory: turn.sourceCategory ?? null,
@@ -385,19 +388,13 @@ async function persistDialogueRequestAuthorities(
           endCodePoint: replies.get(turn.index)!.turn.endCodePoint,
           evidenceIds: replies.get(turn.index)!.evidenceIds
         } } : {})
-      }))]));
-    const sourceMetadata = immutableRequestSourceFact(toJsonValue(file.sourceMetadata ?? null));
-    const trainingSourceUri = toJsonValue(file.sourceUri);
-    const patterns = compiled.patterns.map(pattern => {
-      const record = pattern.patternJson as Record<string, JsonValue>;
-      const featureKey = `${String(record.anchor)}:${String(record.surface)}`;
-      const supportingTurns = featureOwners.get(featureKey) ?? [];
-      const sourceTurnRanges = supportingTurns.map(({ turn }) => sourceRanges.get(turn.index)!);
+      }));
       const evidenceIds = [...new Set(supportingTurns.flatMap(row => [
         ...row.evidenceIds, ...(replies.get(row.turn.index)?.evidenceIds ?? [])
       ]))].slice(0, 64) as EvidenceId[];
       return { ...pattern, evidenceIds,
-        patternJson: { ...record, sourceTurnRanges, sourceMetadata, trainingSourceUri },
+        patternJson: toJsonValue({ ...record, sourceTurnRanges,
+          sourceMetadata: file.sourceMetadata ?? null, trainingSourceUri: file.sourceUri }),
         informationLabel: input.informationLabel };
     });
     await input.storage.transaction(async () => {

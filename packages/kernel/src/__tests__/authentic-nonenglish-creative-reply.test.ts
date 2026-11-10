@@ -16,8 +16,7 @@ import { jsonRecord } from "../kernel-answer-primitives.js";
 import { createLanguageAcquisitionEngine } from "../language.js";
 import { createLanguageMemoryRuntime, scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
 import { compileLanguageTrainingBatch } from "../language-training-batch.js";
-import { createMouth, selectedCreativeConstructionSurface, type SpeakInput } from "../mouth.js";
-import { realizeCreativeSection } from "../creative-section-realization.js";
+import { createMouth } from "../mouth.js";
 import { inventionConstructNode } from "../prediction.js";
 import { createClock, createHasher } from "../primitives.js";
 import type { ConstructGraph, EvidenceSpan } from "../types.js";
@@ -76,13 +75,8 @@ describe("authentic whole Russian creative reply acquisition", () => {
       expect(selected).toBeDefined();
       const invention = inventions.find(candidate => candidate.id === jsonRecord(selected.audit).constructId)!;
       const mouth = createMouth({ languageMemory: runtime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: value => hasher.digestHex(value) });
-      const speakInput: SpeakInput = { requestText: text, requestedAuthority: "creative", creativeRequestFrame: frame, field, entailment, evidence: [], languageMemory: state,
-        languageProfile: profile, construct: { ...base, nodes: [inventionConstructNode(invention)] }, selectedCandidate: selected };
-      const spoken = await mouth.speak(speakInput);
-      const section = realizeCreativeSection({ languageMemory: runtime, state, requestText: text, sectionGoal: text,
-        selectedCreativePlan: { speakInput, realize: input => selectedCreativeConstructionSurface(input, hasher) } });
-      expect(section.accepted, JSON.stringify(section)).toBe(true);
-      expect(section.text.replace(/\s+/gu, " ")).toBe(spoken.text.replace(/\s+/gu, " "));
+      const spoken = await mouth.speak({ requestText: text, requestedAuthority: "creative", creativeRequestFrame: frame, field, entailment, evidence: [], languageMemory: state,
+        languageProfile: profile, construct: { ...base, nodes: [inventionConstructNode(invention)] }, selectedCandidate: selected });
       expect(spoken.realizationAvailability.status).toBe("realized");
       expect(spoken.evidenceRefs).toEqual([]);
       expect(/\p{Script=Latin}/u.test(spoken.text)).toBe(false);

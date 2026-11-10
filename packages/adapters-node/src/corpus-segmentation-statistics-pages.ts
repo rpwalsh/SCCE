@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { BoundaryStatisticsRow, JsonValue } from "@scce/kernel";
 import type { PostgresCorpusSegmentationRun } from "./corpus-segmentation-store.js";
-import { languageArtifactJsonByteLengths } from "./durable-language-artifact-storage.js";
+import { durableJoinProgramJsonByteLengths } from "./durable-join-program-storage.js";
 
 export const CORPUS_STATISTICS_PAGE_SCHEMA = "scce.corpus_boundary_statistics_page.v1";
 type StatisticsStore = Pick<PostgresCorpusSegmentationRun, "bounds" | "pages" | "putInput">;
@@ -22,7 +22,7 @@ export async function writeCorpusStatisticsPages(store: StatisticsStore, documen
   if (!Number.isSafeInteger(expectedRows) || expectedRows < 0) return fail();
   let page = 1, logicalRows = 0, rows: BoundaryStatisticsRow[] = [], rowBytes = 0;
   const value = () => ({ schema: CORPUS_STATISTICS_PAGE_SCHEMA, rows });
-  const headerBytes = languageArtifactJsonByteLengths({ orderKey: ordinal(page), value: { ...value(), rows: [] } }).decodedJsonbBytes + 2;
+  const headerBytes = durableJoinProgramJsonByteLengths({ orderKey: ordinal(page), value: { ...value(), rows: [] } }).decodedJsonbBytes + 2;
   const flush = async () => {
     if (!rows.length) return;
     const json: JsonValue = JSON.parse(JSON.stringify(value()));
@@ -32,7 +32,7 @@ export async function writeCorpusStatisticsPages(store: StatisticsStore, documen
   };
   for await (const chunk of source) for (const value of chunk) {
     if (!row(value) || ++logicalRows > expectedRows) return fail();
-    const bytes = languageArtifactJsonByteLengths(value).decodedJsonbBytes + 2;
+    const bytes = durableJoinProgramJsonByteLengths(value).decodedJsonbBytes + 2;
     if (headerBytes + bytes > store.bounds.maxPageBytes) throw Error("Corpus statistics row exceeds decoded JSON page budget");
     if (rows.length && headerBytes + rowBytes + bytes > store.bounds.maxPageBytes) await flush();
     rows.push(value); rowBytes += bytes;

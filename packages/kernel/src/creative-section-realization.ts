@@ -7,14 +7,10 @@ import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { collapseSurfaceWhitespace, sourceDerivedCasingHints, surfaceContainsTerm, surfaceUnits } from "./surface-linguistics.js";
 import type { LanguageProfile } from "./types.js";
 import type { NarrativeConditioning } from "./document-generation-session.js";
-import type { SpeakInput } from "./mouth-contracts.js";
-import type { ConstructionSurface } from "./construction-surface.js";
 import { requestSubjectSegments, type TurnRequirementField } from "./turn-requirements.js";
 
 
 export interface CreativeSectionRealizationInput {
-  /** The already judged event graph; section realization cannot invent or replace its semantic selection. */
-  selectedCreativePlan?: { speakInput: SpeakInput; realize: (input: SpeakInput) => ConstructionSurface | undefined };
   languageMemory: LanguageMemoryRuntime;
   state: LanguageMemoryRuntimeState;
   targetLanguageProfile?: LanguageProfile;
@@ -70,11 +66,20 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   const sectionGoal = input.sectionGoal === input.requestText && input.requirementField
     ? creativeRequestContentSurface(input.sectionGoal, input.requirementField)
     : input.sectionGoal;
-  // The selected semantic plan owns interpretation. Only explicitly resolved cast members become
-  // hard lexical obligations; learned content spans supply scoring context without guessing from casing.
+  // Corpus-named anchors only, not a ranking over every word by length.
+  // contentUnits' length ranking had no way to tell a request's own
+  // instruction words ("write", "paragraph", "three") from its actual
+  // subject -- live-verified: "write a three paragraph short story about
+  // her" put "write"/"three"/"paragraph" into the story as characters.
+  // A request with no capitalized subject (a pronoun, a common noun)
+  // honestly yields no forced entity rather than a wrong one.
+  // A section goal built from the request text ("... [part N of M]") has
+  // the same emptiness a bare-pronoun request does -- the resolved cast
+  // fallback applies here too, not just to the whole-request entity set.
   const resolvedCast = (input.resolvedCastSubjectIds ?? []).slice(0, 3);
-  const goalUnits = resolvedCast;
-  const contentContext = input.requirementField ? continuationUnits(sectionGoal) : [];
+  const goalUnits = resolvedCast.length
+    ? resolvedCast
+    : properNounEntityAnchors(sectionGoal).slice(0, 3);
   // One rotated unit per section owns the hard required-coverage
   // obligation (its opener varies instead of chanting every unit every
   // time) -- but the whole document's core entities (protagonist,
@@ -84,8 +89,13 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   // document has exactly one cast, present throughout.
   const rotation = goalUnits.length ? (stableRotation(input.sectionGoal) + Math.max(0, Math.floor(input.attempt ?? 1) - 1)) % goalUnits.length : 0;
   const sectionUnit = goalUnits.length ? [goalUnits[rotation]!] : [];
-  // The turn resolves the cast once. Section realization preserves that decision across the document.
-  const persistentEntities = resolvedCast;
+  // One source of truth for the cast: the turn resolves it once, with the corpus own closed class available to cut
+  // a relative clause down to its head, and re-deriving it here from the goal text reintroduced the clause
+  // ("blacksmith who forgets his own" required in every section). The goal-derived anchors remain the fallback for
+  // a caller that resolves no cast at all.
+  const persistentEntities = resolvedCast.length
+    ? resolvedCast
+    : properNounEntityAnchors(sectionGoal).slice(0, 3);
   const castTerms = [...new Set([...persistentEntities, ...sectionUnit])];
   const requiredTerms = [...new Set([...castTerms, ...(input.requiredContentTerms ?? [])])];
   // Evidence text is a casing source too, not just the request: a
@@ -115,12 +125,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
       conditioningHeads: conditioning.map(line => line.slice(0, 60))
     }
   });
-  const selectedSurface = input.selectedCreativePlan
-    && input.selectedCreativePlan.speakInput.languageMemory === input.state
-    && (input.selectedCreativePlan.speakInput.requestText ?? input.selectedCreativePlan.speakInput.entailment.claim.text) === input.requestText
-    ? input.selectedCreativePlan.realize(input.selectedCreativePlan.speakInput) : undefined;
   const generation = input.languageMemory.generate({
-    constructionSurfaces: selectedSurface ? [selectedSurface] : [],
     state: input.state,
     targetLanguageProfile: input.targetLanguageProfile,
     choiceSeed: `${sectionGoal}\u0001${Math.max(1, Math.floor(input.attempt ?? 1))}`,
@@ -138,7 +143,6 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
       // the actual handoff point. The tail is a structural signal; it does
       // not assume a source language or a lexical ontology.
       ...conditioning.flatMap(line => continuationUnits(line)),
-      ...contentContext,
       ...goalUnits
     ],
     frames: [{

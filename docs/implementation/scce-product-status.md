@@ -1,32 +1,25 @@
 # SCCE implementation checkpoint
 
-Updated November 9, 2026. Current priority: qualify ingestion and persistent learned state, build a fresh brain, start the server, then run the local Qwen2.5:3b comparison.
+Updated November 10, 2026.
 
-## Storage and construction decisions
+## Current direction
 
-- **10× storage amplification is an optimization goal, not an acceptance gate.** Exact reconstruction, evidence ownership, bounded resources and working language behavior remain requirements.
-- PostgreSQL remains the native store. No hosting, deployment, new inference backend or browser migration is part of this checkpoint.
-- Lexical JOIN compilation, prediction, storage and public exports have been retired. Their replacements are learned ordered literal/slot constructions, explicit document layout, independent complete segmentation DAGs, and KN proposal/scoring. The DAG representation preserves ordered parallel arcs, exact Float64 energies, source windows and normalization contracts.
-- The role/request page layout was rejected after native measurements showed increased allocation. Its default integration and tables were removed. The slow semantic dictionary experiment was also reverted.
-- Creative source observations share typed definitions while retaining every occurrence. Dialogue preparation shares immutable provenance objects instead of copying them for each feature.
-- The generic language-artifact codec preserves decoded byte accounting through patterns, full induced records and replay events. A fresh build uses schema version33.
+Restore the complete engine at the fully passing `b612ee3b` baseline, then implement the requested GraphQL/Relay application boundary additively. Preserve existing cognitive, learning, storage, language and program modules while tracing their consumers. The newer private-assistant brief keeps native PostgreSQL eligible and rules out adding a Rust storage daemon without qualification; that is the baseline for this retry.
 
-## Verification
+The prior construction/JOIN replacement is preserved at local tag `archive/20261110-before-graphql-relay` (`1f3bf822`). It passed a full TypeScript build,54focused Mouth/creative tests, and26native publication checks, but its full unit sweep exposed additional regressions. It is not the working release baseline. The source and tests removed by that attempt are restored by this rollback, including `join-program.ts`.
 
-`pnpm build` passes. The integrated Mouth/creative check passes54tests, including complete Russian human-source acquisition, an unseen substituted name, source revocation, and the shared section API. Native storage/replay boundary checks and complete-DAG round trips pass separately. The full unit sweep and a fresh persistent brain build are next; a focused fixture is not a whole-product comparison.
+## Active work
 
-The selected creative cohort measured2,334,720B before typed factoring and598,016B afterward, including that pattern table's copied indexes, with exact cold reconstruction. The separate paired17,248B human-source fixture contains385patterns: pattern payload relations and primary keys measured3,031,040B unencoded versus2,342,912B with the generic codec. Other brain tables and common metadata columns are excluded from that second measurement. These savings must not be added or presented as whole-brain amplification.
+1. Rebuild the restored source and verify the affected integration paths.
+2. Complete the source/API/durable-domain map and preserve the evidence from the repository audit.
+3. Add typed GraphQL application services over the existing runtime, with ownership, bounded reads and task/event/cancellation semantics.
+4. Add the React/Relay workbench and generated schema/operation types against those services.
+5. Verify ordinary user flows, restart recovery and existing engine behavior before switching application entry points.
 
-Reproduce the second measurement after building:
+No hosting or deployment is authorized.10× storage amplification remains an optimization goal, not a pass/fail gate. No LLM backend is permitted.
 
-```powershell
-node --max-old-space-size=768 tools/measure-language-artifact-storage.mjs --config <local-config.json> --output <receipt.json>
-```
+## Local artifacts
 
-The tool compiles the complete pinned fixture, writes session-temporary tables, measures their physical PostgreSQL allocations, cold-restores every logical artifact, and rolls back the data writes. Application tables are untouched.
+The interrupted whole-suite run and the source inventory/dependency/Knip reports are under `.scce/verification/`. Their source revision is `1f3bf822`; inventory and parsing do not represent completed manual semantic review. That inventory read1,831tracked code files, including911non-test source files and920test files, with no JS/TS parse errors. The dependency scan found7cycles requiring review; Knip findings are investigation candidates and are not a deletion list.
 
-## Local continuation
-
-Detailed receipts and the frozen402-input source manifest are under `.scce/verification/brain-build/`. The previous diagnostic brain is `scce_brain_20261109_r003`; its ingestion was stopped before these compiler changes. Its learned data must not be resumed or copied into the new build. The complete manifest covers29Wikipedia pages,128Dolly files,230OASST files and15Gutenberg books; it is not the full Wikipedia archive.
-
-After the current full sweep and native publisher checks pass: select a new physical database, bind the manifest and stage plans to the final source revision and compiled identity, ingest every declared source, verify publication, start the exact build's server and run the blind comparison campaign. Qwen is a local comparator only. No comparative capability result has been produced by this checkpoint.
+The previous ingestion remains stopped. `scce_brain_20261109_r005` is a new schema fixture with no retained source/learned state; it has not begun the declared402-input build. The stopped diagnostic database is `scce_brain_20261109_r003`. No completed live comparison or Claude/Qwen superiority result exists.

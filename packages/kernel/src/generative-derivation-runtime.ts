@@ -15,10 +15,9 @@ import {
   type ProofLicenseCarrier,
   type ProofLicenseSemiring
 } from "./proof-license-semiring.js";
-import { interleaveConstructions, orderedDiscontinuousSurfacePieces, type DiscontinuousConstruction } from "./discontinuous-construction.js";
+import { interleaveConstructions, reassembleLogicalSurface, type DiscontinuousConstruction } from "./discontinuous-construction.js";
 import type { ReversibleConstruction } from "./reversible-construction.js";
-import { composeConstructionSurface, type ConstructionSurface, type ConstructionSurfacePiece } from "./construction-surface.js";
-import { layoutConstructionParagraphs } from "./construction-surface-layout.js";
+import { renderJoinedSurface, type JoinProgramMixture } from "./join-program.js";
 import type { GraphSlice, Hyperedge } from "./types.js";
 import { toJsonValue } from "./primitives.js";
 import type { JsonValue } from "./types.js";
@@ -82,12 +81,14 @@ export function constructionOperator(construction: ReversibleConstruction): Cons
   if (!relationId) return undefined;
   const boundaryPortIds = new Set(construction.graph.boundaryPortIds);
   const argumentPorts = construction.graph.ports.filter(port => boundaryPortIds.has(port.id));
-  const observedSlots: Array<{ portId: string; start: number; end: number }> = [];
+  const slotByPort = new Map<string, { start: number; end: number }>();
   for (const slot of construction.surface.slots) {
     for (const portId of slot.graphPortIds) {
       if (!boundaryPortIds.has(portId)) continue;
-      if (!observedSlots.some(value => value.portId === portId && value.start === slot.relativeUtf16Start && value.end === slot.relativeUtf16End))
-        observedSlots.push({ portId, start: slot.relativeUtf16Start, end: slot.relativeUtf16End });
+      const existing = slotByPort.get(portId);
+      if (!existing || slot.relativeUtf16Start < existing.start) {
+        slotByPort.set(portId, { start: slot.relativeUtf16Start, end: slot.relativeUtf16End });
+      }
     }
   }
   return {
@@ -98,7 +99,12 @@ export function constructionOperator(construction: ReversibleConstruction): Cons
     evidenceIds: [...new Set(construction.graph.ports.flatMap(port => port.evidenceIds))],
     surface: {
       text: construction.surface.sourceSurface,
-      slots: observedSlots.sort((left, right) => left.start - right.start || left.end - right.end)
+      slots: argumentPorts
+        .flatMap(port => {
+          const slot = slotByPort.get(port.id);
+          return slot ? [{ portId: port.id, start: slot.start, end: slot.end }] : [];
+        })
+        .sort((left, right) => left.start - right.start)
     }
   };
 }
@@ -263,43 +269,60 @@ export function buildConstructionAlgebra(input: {
  * ancestor chains.
  */
 export function realizeDerivation(input: {
-  constructionId: string; algebra: ConstructionAlgebra; depth?: number; maxDepth?: number;
+  constructionId: string;
+  algebra: ConstructionAlgebra;
+  depth?: number;
+  maxDepth?: number;
 }): string {
-  return realizeDerivationSurface(input)?.text ?? "";
-}
-
-export function realizeDerivationSurface(input: {
-  constructionId: string; algebra: ConstructionAlgebra; depth?: number; maxDepth?: number;
-}): ConstructionSurface | undefined {
   const depth = input.depth ?? 0;
-  if (depth > (input.maxDepth ?? 8)) return undefined;
+  const maxDepth = input.maxDepth ?? 8;
+  if (depth > maxDepth) return "";
   const composite = input.algebra.registry.composed[input.constructionId];
-  const operator = input.algebra.operators.get(composite?.baseConstructionId ?? input.constructionId);
-  if (!operator) return undefined;
-  const childByPort = new Map(composite?.ports.map(port => [port.portId, port.childConstructionId]) ?? []);
-  const literal = (start: number, end: number): ConstructionSurfacePiece => ({ kind: "literal", surface: operator.surface.text.slice(start, end),
-    evidenceIds: [...operator.evidenceIds], sourceExampleIds: [] });
-  const pieces: ConstructionSurfacePiece[] = [];
-  const ranges = operator.discontinuous ? orderedDiscontinuousSurfacePieces(operator.discontinuous, operator.surface.text)
-    : [{ kind: "span" as const, utf16Start: 0, utf16End: operator.surface.text.length }];
-  for (const range of ranges) {
-    if (range.kind === "literal") { pieces.push(literal(range.utf16Start, range.utf16End)); continue; }
-    let cursor = range.utf16Start;
-    for (const slot of operator.surface.slots) {
-      const childId = childByPort.get(slot.portId);
-      if (slot.start < range.utf16Start || slot.end > range.utf16End) continue;
-      if (!Number.isSafeInteger(slot.start) || !Number.isSafeInteger(slot.end) || slot.start < cursor || slot.end < slot.start) return undefined;
-      const observed = operator.surface.text.slice(slot.start, slot.end);
-      const child = childId === undefined ? { text: observed, evidenceIds: [...operator.evidenceIds], trace: [{ kind: "slot" as const,
-        roleId: slot.portId, outputStart: 0, outputEnd: observed.length, surface: observed, evidenceIds: [...operator.evidenceIds], sourceExampleIds: [] }] }
-        : realizeDerivationSurface({ ...input, constructionId: childId, depth: depth + 1 });
-      if (!child) return undefined;
-      pieces.push(literal(cursor, slot.start), { kind: "slot", roleId: slot.portId, constructionId: childId ?? operator.constructionId, surface: child });
-      cursor = slot.end;
-    }
-    pieces.push(literal(cursor, range.utf16End));
+  const baseId = composite?.baseConstructionId ?? input.constructionId;
+  const operator = input.algebra.operators.get(baseId);
+  if (!operator) return "";
+  // A discontinuous construction reads in its own logical order, not the order its spans happen to sit in.
+  const surfaceText = operator.discontinuous
+    ? reassembleLogicalSurface(operator.discontinuous, operator.surface.text)
+    : operator.surface.text;
+  if (!composite || !operator.surface.slots.length) return surfaceText.trim();
+
+  const childByPort = new Map(composite.ports.map(port => [port.portId, port.childConstructionId]));
+  const realizeChild = (childId: string): string =>
+    realizeDerivation({ constructionId: childId, algebra: input.algebra, depth: depth + 1, maxDepth });
+  // A discontinuous operator with slots must be filled span by span in its own reading order; filling it in byte order
+  // would silently discard the logical order the construction exists to carry.
+  if (operator.discontinuous) {
+    const spans = [...operator.discontinuous.spans].sort((left, right) => left.order - right.order);
+    const pieces = spans.map(span => {
+      let piece = "";
+      let cursor = span.utf16Start;
+      for (const slot of operator.surface.slots) {
+        if (slot.start < span.utf16Start || slot.end > span.utf16End) continue;
+        const childId = childByPort.get(slot.portId);
+        if (childId === undefined) continue;
+        const start = Math.max(cursor, slot.start);
+        piece += operator.surface.text.slice(cursor, start);
+        piece += realizeChild(childId);
+        cursor = Math.max(start, slot.end);
+      }
+      return piece + operator.surface.text.slice(cursor, span.utf16End);
+    });
+    return pieces.join(" ").replace(/\s+/gu, " ").trim();
   }
-  return composeConstructionSurface(pieces);
+  let out = "";
+  let cursor = 0;
+  for (const slot of operator.surface.slots) {
+    const childId = childByPort.get(slot.portId);
+    if (childId === undefined) continue;
+    const start = Math.max(cursor, Math.min(slot.start, operator.surface.text.length));
+    const end = Math.max(start, Math.min(slot.end, operator.surface.text.length));
+    out += operator.surface.text.slice(cursor, start);
+    out += realizeChild(childId);
+    cursor = end;
+  }
+  out += operator.surface.text.slice(cursor);
+  return out.replace(/\s+/gu, " ").trim();
 }
 
 /**
@@ -383,7 +406,6 @@ export interface DerivationSearchResult {
   bestConstructionId?: string;
   bestScore: number;
   text: string;
-  surface?: ConstructionSurface;
   evidenceIds: string[];
   /** k-best rivals of the selected derivation, walked from the packed chart with shared subderivations. */
   alternatives: Array<{ constructionId: string; ruleIds: string[]; text: string }>;
@@ -472,8 +494,9 @@ export function searchBestDerivation(input: {
     }
   }
 
-  const surface = bestConstructionId ? realizeDerivationSurface({ constructionId: bestConstructionId, algebra: input.algebra }) : undefined;
-  const text = surface?.text ?? "";
+  const text = bestConstructionId
+    ? realizeDerivation({ constructionId: bestConstructionId, algebra: input.algebra })
+    : "";
 
   // The chart holds every licensed derivation, not just the argmax; the rivals are what a caller needs to see that a
   // choice was made rather than forced.
@@ -494,7 +517,6 @@ export function searchBestDerivation(input: {
 
   return {
     ...(bestConstructionId ? { bestConstructionId } : {}),
-    surface,
     bestScore,
     text,
     evidenceIds: bestEvidence,
@@ -529,6 +551,7 @@ export function searchBestDerivation(input: {
 export function searchTargetConditionedDerivation(input: {
   target: SemanticTarget;
   algebra: ConstructionAlgebra;
+  joinMixture?: JoinProgramMixture;
   treewidthBudget?: number;
 }): DerivationSearchResult & { coveredPartIds: string[] } {
   const semiring = createProofLicenseSemiring<DerivationLicense>({
@@ -600,17 +623,17 @@ export function searchTargetConditionedDerivation(input: {
     }
   }
 
-  // Each covered graph part is a complete construction block with explicit document layout.
-  const surfaces: ConstructionSurface[] = [];
+  // Realize each covered part through its best operator, then join the
+  // realized units with the learned join program rather than concatenating.
+  const units: string[] = [];
   for (const partId of bestCoverage) {
     const atom = atoms.find(row => row.key.coverage === partId);
     const operatorId = atom ? atomOperator.get(atom.id) : undefined;
-    const surface = operatorId ? realizeDerivationSurface({ constructionId: operatorId, algebra: input.algebra }) : undefined;
-    if (!surface) break;
-    surfaces.push(surface);
+    if (!operatorId) continue;
+    const realized = realizeDerivation({ constructionId: operatorId, algebra: input.algebra });
+    if (realized) units.push(realized);
   }
-  const surface = surfaces.length === bestCoverage.length ? layoutConstructionParagraphs(surfaces.map((surface, index) => ({ nodeId: bestCoverage[index]!, surface }))) : undefined;
-  const text = surface?.text ?? "";
+  const joined = renderJoinedSurface(units, input.joinMixture);
 
   // Each covered part's rival operators, from the same packed chart the coverage was chosen in.
   const alternatives = bestCoverage.flatMap(partId => {
@@ -630,8 +653,7 @@ export function searchTargetConditionedDerivation(input: {
 
   return {
     bestScore,
-    text,
-    surface,
+    text: joined.text,
     evidenceIds: bestEvidence,
     alternatives,
     chart: decoded.chart,
@@ -646,9 +668,9 @@ export function searchTargetConditionedDerivation(input: {
       coveredParts: bestCoverage.length,
       coverageRatio: input.target.parts.length ? bestCoverage.length / input.target.parts.length : 0,
       treewidth: decoded.treewidth,
-      realizationStatus: surface ? "realized" : "unresolved",
-      unresolvedParts: bestCoverage.length - surfaces.length,
-      realizationPath: "ordered-construction-program",
+      joinStatus: joined.status,
+      unresolvedBoundaries: joined.unresolvedBoundaries,
+      realizationPath: "join-program",
       bestScore: Number.isFinite(bestScore) ? bestScore : null
     })
   };

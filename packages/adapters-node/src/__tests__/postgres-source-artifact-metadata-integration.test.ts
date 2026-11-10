@@ -7,7 +7,7 @@ import {validateSourceCompilationReceipt} from "../../../kernel/src/source-langu
 import {canonicalNgramModelId} from "../../../kernel/src/source-language-training-identity.js";
 import {createPostgresStorageAdapter,clearResidentNgramModelJson,type PostgresStorageAdapter} from "../postgres.js";
 import {SOURCE_ARTIFACT_METADATA_KEY} from "../source-artifact-metadata.js";
-import {LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY} from "../durable-language-artifact-storage.js";
+import {DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY} from "../durable-join-program-storage.js";
 const hasher=createHasher(),label:InformationLabel={tenantId:"metadata.owner",principals:["operator"],compartments:[],exportClass:"restricted",mergePolicy:"isolated"};
 const adapters:PostgresStorageAdapter[]=[];
 afterEach(async()=>{clearResidentNgramModelJson();await Promise.all(adapters.splice(0).map(adapter=>adapter.close()));});
@@ -44,11 +44,8 @@ function fixture(){
   };
   const mapped=(name:string):Row[]=>[...table(name).values()].map(row=>({...cold(row),updated_at:new Date(Number(row.updated_at_ms??1000)),created_at:new Date(Number(row.created_at_ms??1000)),
     evidence_ids:row.evidence_ids_json??[],features:row.features_json??[],competence_vector:row.competence_vector_json??[],embedding:row.embedding??"[]",information_label:label}));
-  const bytes=(value:unknown)=>Number(object(object(value)[LANGUAGE_ARTIFACT_BYTE_LEDGER_KEY]??{}).decodedJsonbBytes??Buffer.byteLength(JSON.stringify(value)));
+  const bytes=(value:unknown)=>Number(object(object(value)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]??{}).decodedJsonbBytes??Buffer.byteLength(JSON.stringify(value)));
   adapter.query=async<T>(sql:string,params:unknown[]=[]):Promise<T[]>=>{
-    if(sql.startsWith('SELECT pattern.id,pattern.profile_id,pattern.source_compilation_id'))return mapped("language_patterns")
-      .filter(row=>(params[0] as string[]).includes(String(row.id))&&typeof object(row.pattern_json).sourceCompilationId==="string")
-      .map(row=>({id:row.id,profile_id:row.profile_id,source_compilation_id:object(row.pattern_json).sourceCompilationId})) as T[];
     calls.push({sql,params});
     if(sql.includes("pg_advisory_xact_lock"))return [];
     if(sql.includes("receipt.id=ANY"))return (visible?mapped("language_patterns").filter(row=>(params[0] as string[]).includes(String(row.id))):[]) as T[];

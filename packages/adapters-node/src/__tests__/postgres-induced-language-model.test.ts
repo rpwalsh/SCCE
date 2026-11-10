@@ -94,7 +94,13 @@ function fakeModel(id: string): InducedLanguageModel {
       collapseGuard: [],
       audit: {}
     },
-    segmentationDocuments: [],
+    joinProgram: {
+      schema: "scce.join_program_mixture.v3",
+      id: "join_program_mixture.fixture",
+      populationModelId: "segmentation_population.fixture",
+      minimumConfidence: 0.67,
+      components: []
+    },
     relationHypothesisModel: {
       schema: "scce.relation_hypothesis_model.v1",
       id: "relation_hypothesis_model.fixture",

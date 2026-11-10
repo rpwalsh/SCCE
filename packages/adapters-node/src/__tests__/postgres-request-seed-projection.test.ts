@@ -1,6 +1,5 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { JsonValue } from "@scce/kernel";
 import { afterEach, expect, it } from "vitest";
 import { createHasher, requestSeedLanguagePattern, requestSeedSemanticFrame, type LanguagePatternRecord, type SemanticFrameRecord } from "@scce/kernel";
 import { normalizePriorKey } from "../../../kernel/src/kernel-answer-primitives.js";
@@ -87,7 +86,7 @@ it("projects source owner headers and explicit request/declarative port flags on
 it("budgets projected metadata rather than full physical pages or decoded-program ledgers while preserving category quotas", async () => {
   const pages = ["request", "declarative"].map((name, index) => pattern(`surface.construction.bundle.${name}`, {
     schema: "scce.language_construction_pattern.v1", sourceSystem: "workspace", sourceVersionId: "version.owned",
-    _scceLanguageArtifactStorage: { schema: "scce.language_artifact.byte_ledger.v1", decodedJsonBytes: 4_000_000, decodedJsonbBytes: 4_000_000 },
+    _scceJoinProgramStorage: { schema: "scce.durable_join_program.byte_ledger.v1", decodedJsonbBytes: 4_000_000 },
     bundle: { sourceExamples: [{ surface: "body".repeat(10000), roles: index ? [{ graphBinding: { relationId: "opaque" } }] : [],
       nullRoles: index ? [] : [{ graphBinding: { relationId: "opaque" } }] }], constructions: [{ body: "program".repeat(10000) }] }
   }));
@@ -97,7 +96,7 @@ it("budgets projected metadata rather than full physical pages or decoded-progra
   expect(seed).toHaveLength(2);
   for (const row of seed) {
     expect(row.patternJson).not.toHaveProperty("bundle");
-    expect(row.patternJson).not.toHaveProperty("_scceLanguageArtifactStorage");
+    expect(row.patternJson).not.toHaveProperty("_scceJoinProgramStorage");
   }
   const sql = calls.at(-1)!.sql;
   expect(sql).not.toContain("running_stored_bytes");
@@ -105,8 +104,7 @@ it("budgets projected metadata rather than full physical pages or decoded-progra
   expect(sql).toContain("ranked.category_rank <= CEIL(");
   expect(sql).toContain("PARTITION BY CASE");
   expect(sql).toContain("octet_length(eligible.pattern_json::text)");
-  const { _scceLanguageArtifactStorage: _storage, ...logical } = pages[0]!.patternJson as Record<string, JsonValue>;
-  expect((await adapter.languageMemory.listLanguagePatterns({ limit: 8, maxTotalJsonBytes: 2048 }))).toEqual([{ ...pages[0], patternJson: logical }]);
+  expect((await adapter.languageMemory.listLanguagePatterns({ limit: 8, maxTotalJsonBytes: 2048 }))).toEqual([pages[0]]);
   expect(calls.at(-1)!.sql).toContain("running_stored_bytes");
   expect(calls.at(-1)!.sql).toContain("pattern.decoded_jsonb_bytes AS decoded_jsonb_bytes");
 });

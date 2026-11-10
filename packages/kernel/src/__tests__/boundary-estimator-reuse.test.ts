@@ -117,11 +117,11 @@ describe("boundary fitting repeated-work equivalence", () => {
       const nonJoinModelDigests: string[] = [];
       const outputs = batches.map(batch => {
         const model = createLanguageInductionEngine({ hasher }).induce({ documents: batch.documents });
-        const { id: _modelId, segmentationDocuments: _segmentationDocuments, audit: fullAudit, ...nonJoin } = model;
+        const { id: _modelId, joinProgram: _joinProgram, audit: fullAudit, ...nonJoin } = model;
         const { joinProgramId: _joinId, joinProgramComponentIds: _componentIds, ...audit } = fullAudit as Record<string, unknown>;
         nonJoinModelDigests.push(hasher.digestHex(canonicalStringify({ ...nonJoin, audit })));
         return { id: model.id, boundaryEstimator: model.boundaryEstimator, statisticsId: model.boundaryStatistics.id,
-          relationModelId: model.relationHypothesisModel.id,
+          joinProgramId: model.joinProgram.id, relationModelId: model.relationHypothesisModel.id,
           frameIds: model.semanticFrames.map(frame => frame.id), constructionIds: model.graphBoundConstructions.map(construction => construction.id) };
       });
       const elapsedMs = performance.now() - start;
@@ -133,7 +133,7 @@ describe("boundary fitting repeated-work equivalence", () => {
         "c87a3b7fa7e2d311791a366596bd1914c081827678a96f02d8f968ecee0ceb93",
         "41229eac592952b03b3e11c74295e153a7ac83c216d1c31ffdf2e5411e838bb8"
       ]);
-      expect(hasher.digestHex(JSON.stringify(outputs.map(({ id: _id, ...stable }) => stable))))
+      expect(hasher.digestHex(JSON.stringify(outputs.map(({ id: _id, joinProgramId: _joinId, ...stable }) => stable))))
         .toBe("efbf62bfa27b794aeed7c2ae1d8bb2e68308cd840f1b431f89518860ddb9064c");
       const calibrations = outputs.map(output => {
         const estimator = output.boundaryEstimator;
@@ -148,7 +148,9 @@ describe("boundary fitting repeated-work equivalence", () => {
       expect(fitted.length).toBe(reference.convergedPopulationReuse.fits);
       expect(fitted.length).toBeLessThan(reference.fits);
       expect(outputs.length).toBe(reference.outputModels);
+      expect(hasher.digestHex(JSON.stringify(outputs))).toBe("014b786ee3ed371d51115e0259ff6f4d74ac34cf1f2b223145b7d3fdc439f581");
       expect(hasher.digestHex(JSON.stringify([...new Set(fitted.map(model => JSON.stringify(model)))].sort()))).toBe("8f7031295e4fca92b3a24b396e524f2f7d6513739be73ecdf79ef123d47a09c4");
+      expect(hasher.digestHex(JSON.stringify(result))).toBe("267774ac9f6c90d1476cf8d9394559f23592ee31ec141c91b7205f3d8329a3d6");
       process.stdout.write(`\nAlice 19k total=${elapsedMs.toFixed(1)}ms boundary-fit=${fittingMs.toFixed(1)}ms requested=${fitted.length} computed=${computedFits}\n`);
       expect(outputs.length).toBeGreaterThan(1);
       expect(fitted.length).toBeGreaterThan(1);

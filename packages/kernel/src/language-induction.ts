@@ -12,7 +12,7 @@ import {
   type BoundaryObservation,
   type BoundarySufficientStatistics
 } from "./boundary-estimator.js";
-import { compactKneserNeyForProfile, proposeKneserNeyContinuation, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
+import { compactKneserNeyForProfile, continueBoundedProse, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
 import {
   buildSurfaceLattice,
   measureSurfaceBoundaries,
@@ -34,14 +34,17 @@ import {
 import type { SegmentationPopulationInferenceModel } from "./segmentation-population.js";
 import type { VerifiedCorpusSegmentation } from "./corpus-segmentation-cursor.js";
 import { validateCorpusSegmentationForDocuments } from "./corpus-segmentation-input.js";
-import { exportSegmentationAdjacencyFactors } from "./segmentation-forest.js";
-import type { SegmentationAdjacencyFactors } from "./segmentation-adjacency-factors.js";
-import { canonicalGraphemeSegmenter, type NormalizationContract } from "./normalization-contract.js";
+import {
+  compileJoinProgram,
+  compileJoinProgramMixture,
+  type JoinProgramMixture
+} from "./join-program.js";
 import {
   compileRelationHypothesisModel,
   inferRelationHypotheses,
   type RelationHypothesisModel
 } from "./relation-hypothesis.js";
+import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
 import { induceEditProgram } from "./universal-edit-program.js";
 
 export type NgramOrder = 1 | 2 | 3 | 4 | 5 | 6;
@@ -186,16 +189,6 @@ export interface TranslationSeed {
   evidenceIds: EvidenceId[];
 }
 
-export interface InducedSegmentationDocument {
-  documentId: string;
-  sourceVersionId?: SourceVersionId;
-  evidenceIds: EvidenceId[];
-  sourceWindow: { ownerDocumentId: string; startUtf16: number; endUtf16: number };
-  normalizationContract: NormalizationContract;
-  graph: SegmentationAdjacencyFactors;
-  unitUtf16Bounds?: Array<[arcIndex: number, startUtf16: number, endUtf16: number]>;
-}
-
 export interface InducedLanguageModel {
   id: string;
   corpusDocuments: number;
@@ -208,7 +201,7 @@ export interface InducedLanguageModel {
   boundaryEstimator: BoundaryEstimatorState;
   boundaryFeatureContext: CompiledBoundaryFeatureContext;
   segmentationPopulations: SegmentationPopulationModel | SegmentationPopulationInferenceModel;
-  segmentationDocuments: InducedSegmentationDocument[];
+  joinProgram: JoinProgramMixture;
   relationHypothesisModel: RelationHypothesisModel;
   boundarySignals: BoundarySignal[];
   morphology: MorphologicalRule[];
@@ -337,19 +330,33 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           hasher
         })
       }));
-      const segmentationDocuments: InducedSegmentationDocument[] = lattices.map(({ doc, lattice }) => {
-        const { factors, unitIds } = exportSegmentationAdjacencyFactors(lattice.segmentationForest);
-        const units = new Map(lattice.units.map(unit => [unit.id, unit]));
-        const utf16 = [...canonicalGraphemeSegmenter().segment(doc.text)].map(segment => segment.index); utf16.push(doc.text.length);
-        const unitUtf16Bounds: NonNullable<InducedSegmentationDocument["unitUtf16Bounds"]> = [];
-        unitIds.forEach((id, index) => {
-          const unit = units.get(id)!; const [start, end] = factors.arcs[index]!;
-          if (unit.utf16Start !== utf16[start] || unit.utf16End !== utf16[end]) unitUtf16Bounds.push([index, unit.utf16Start, unit.utf16End]);
-        });
-        return { documentId: doc.id, ...(doc.sourceVersionId ? { sourceVersionId: doc.sourceVersionId } : {}), evidenceIds: [...(doc.evidenceIds ?? [])],
-          sourceWindow: { ...(doc.sourceWindow ?? { ownerDocumentId: doc.id, startUtf16: 0, endUtf16: doc.text.length }) },
-          normalizationContract: structuredClone(lattice.normalizationContract), graph: factors,
-          ...(unitUtf16Bounds.length ? { unitUtf16Bounds } : {}) };
+      const selectedPopulationByDocument = verified ? new Map(documents.map(doc => {
+        const mixture = mixtures!.get(doc.id)!;
+        const selected = [...mixture.components].sort((left, right) => right.weight - left.weight || left.populationId.localeCompare(right.populationId))[0];
+        if (!selected) throw new Error("corpus segmentation document was not routed");
+        return [doc.id, selected.populationId];
+      })) : new Map(localSegmentationPopulations!.assignments.map(assignment => [assignment.documentId, assignment.selectedPopulationId]));
+      const defaultPopulationId = verified ? undefined : localSegmentationPopulations!.populations[0]!.id;
+      const joinProgram = compileJoinProgramMixture({
+        populationModelId: segmentationPopulations.id,
+        components: segmentationPopulations.populations.map(population => ({
+          populationId: population.id,
+          weight: population.prior,
+          program: compileJoinProgram({
+            populationId: population.id,
+            documents: lattices
+              .filter(({ doc }) =>
+                (selectedPopulationByDocument.get(doc.id) ?? defaultPopulationId) === population.id)
+              .map(({ doc, lattice }) => ({
+                documentId: doc.id,
+                sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
+                text: doc.text,
+                lattice
+              })),
+            hasher
+          })
+        })),
+        hasher
       });
       const symbols = lattices.flatMap(({ doc, lattice }) =>
         canonicalSurfaceSequence(lattice).map(unit => ({ symbol: unit.surface, doc }))
@@ -393,14 +400,14 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         }) } : construction;
       });
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
-      const proseDiagnostics = proseDiagnostic(kn, symbolStrings);
+      const proseDiagnostics = proseDiagnostic(kn, symbolStrings, joinProgram);
       const id = `language_model_${hasher.digestHex(JSON.stringify({
         docs: documents.map(d => d.id),
         symbols: symbolStrings.length,
         order,
         boundaryEstimatorId: boundaryEstimator.id,
         segmentationPopulationModelId: segmentationPopulations.id,
-        segmentationForestIds: lattices.map(({ lattice }) => lattice.segmentationForest.id),
+        joinProgramId: joinProgram.id,
         relationHypothesisModelId: relationHypothesisModel.id
       })).slice(0, 32)}`;
       const result = {
@@ -415,7 +422,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         boundaryEstimator,
         boundaryFeatureContext,
         segmentationPopulations,
-        segmentationDocuments,
+        joinProgram,
         relationHypothesisModel,
         boundarySignals,
         morphology,
@@ -441,6 +448,8 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           segmentationPopulationModelId: segmentationPopulations.id,
           segmentationPopulationCount: segmentationPopulations.populations.length,
           segmentationPopulationMdlGainNats: segmentationPopulations.selection.mdlGainNats,
+          joinProgramId: joinProgram.id,
+          joinProgramComponentIds: joinProgram.components.map(component => component.program.id),
           relationHypothesisModelId: relationHypothesisModel.id,
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText),
@@ -458,8 +467,12 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       model: KneserNeyModel;
       prompt: string;
       generationExtent?: number;
+      joinProgram?: JoinProgramMixture;
     }): JsonValue {
-      return toJsonValue(proposeKneserNeyContinuation(input.model, input.prompt, { generationExtent: input.generationExtent ?? 64 }));
+      return toJsonValue(continueBoundedProse(input.model, input.prompt, {
+        generationExtent: input.generationExtent ?? 64,
+        joinProgram: input.joinProgram
+      }));
     }
   };
 }
@@ -1331,16 +1344,14 @@ function translationBasis(sourceSymbol: string, targetSymbol: string, frames: re
 
 function proseDiagnostic(
   model: KneserNeyModel,
-  symbols: readonly string[]
+  symbols: readonly string[],
+  joinProgram: JoinProgramMixture
 ): JsonValue {
-  // Preserve the existing diagnostic's scoring input encoding. This is an
-  // operational prompt, never a licensed construction or emitted prose.
-  const sample: { kind: "operational_symbol_encoding"; value: string } = {
-    kind: "operational_symbol_encoding", value: symbols.slice(0, Math.min(64, symbols.length)).join(" ")
-  };
-  const continuation = proposeKneserNeyContinuation(model, sample.value, {
+  const sample = symbols.slice(0, Math.min(64, symbols.length)).join(" ");
+  const continuation = continueBoundedProse(model, sample, {
     generationExtent: 32,
-    probabilityFloor: 1e-9
+    probabilityFloor: 1e-9,
+    joinProgram
   });
   const orderMass = new Map<number, number>();
   for (const key of Object.keys(model.counts)) {
@@ -1348,7 +1359,7 @@ function proseDiagnostic(
     orderMass.set(order, (orderMass.get(order) ?? 0) + (model.counts[key] ?? 0));
   }
   return toJsonValue({
-    sampleHash: createHasher().digestHex(sample.value),
+    sampleHash: createHasher().digestHex(sample),
     continuation: {
       symbols: continuation.symbols,
       stoppedBy: continuation.stoppedBy,

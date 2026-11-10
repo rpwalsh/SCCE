@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { creativeRequestContentSurface, realizeCreativeSection } from "../creative-section-realization.js";
-import { createLanguageMemoryRuntime, type LanguageGenerationInput } from "../language-memory-runtime.js";
-import { induceLearnedConstructions, type SurfaceMeaningPlan } from "../language-construction.js";
-import { createHasher } from "../primitives.js";
-import { LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "../language-construction-memory.js";
+import { createLanguageMemoryRuntime, renderContinuationSentences, type LanguageGenerationInput } from "../language-memory-runtime.js";
+import type { LanguageUnitRecord } from "../storage.js";
 import { sourceDerivedCasingHints } from "../surface-linguistics.js";
 import type { NarrativeConditioning } from "../document-generation-session.js";
 
@@ -106,19 +104,17 @@ describe("creative section realization handoff", () => {
   });
 
   it("uses typed narrative values to choose an attested learned surface without speaking opaque state ids", () => {
-    const hasher = createHasher(), runtime = createLanguageMemoryRuntime({ hasher });
-    const state = runtime.hydrate({ models: [] });
-    const examples = ["lantern", "compass"].map(item => ({ id: `source.${item}`, profileKey: "profile.fixture",
-      surface: `The ${item} glowed beside the harbor.`, evidenceIds: [`proof.${item}`],
-      roleSpans: [{ roleId: "item", start: 4, end: 4 + item.length, surface: item, evidenceIds: [`proof.${item}`] }] }));
-    const learned = induceLearnedConstructions({ hasher, examples });
-    state.importedConstructionBundles = [{ schema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, id: "source.grammar", bindingId: "scene.grammar",
-      sourceProfileId: "profile.fixture", targetProfileId: "profile.fixture", sourceVersionIds: ["source.fixture"], evidenceIds: ["proof.lantern", "proof.compass"],
-      evidenceContentHashes: [], sourceExamples: [], constructions: [...learned.constructions], formClasses: [...learned.formClasses], contentDigest: "fixture" }];
-    const plans: SurfaceMeaningPlan[] = ["lantern", "compass"].map(item => ({ id: `plan.${item}`, profileKey: "profile.fixture", roleSignature: ["item"],
-      slots: [{ roleId: "item", variants: [{ id: `value.${item}`, surface: item, profileKey: "profile.fixture", support: 1, evidenceIds: [`proof.${item}`] }] }] }));
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrateFromImportedBrain({
+      importRunId: "run.conditioned-surface",
+      models: [], observations: [], patterns: [], semanticFrames: [],
+      units: [
+        learnedPhrase("unit.lantern", "The lantern glowed beside the harbor."),
+        learnedPhrase("unit.compass", "The compass turned toward the ridge.")
+      ]
+    });
     const generateUnder = (value: string) => runtime.generate({
-      state, constructionPlans: plans,
+      state,
       contextSymbols: ["scene"],
       frames: [{
         id: "frame.conditioned",
@@ -147,22 +143,40 @@ describe("creative section realization handoff", () => {
   });
 });
 
-describe("source-derived casing observations", () => {
+function learnedPhrase(id: string, text: string): LanguageUnitRecord {
+  return {
+    id,
+    profileId: "profile.fixture",
+    sourceVersionId: "source.fixture" as never,
+    script: "script.fixture",
+    unitKind: "phrase",
+    text,
+    features: [],
+    competenceVector: [],
+    alpha: 1,
+    evidenceIds: ["evidence.fixture" as never],
+    metadata: null
+  };
+}
+
+describe("source-derived continuation casing", () => {
   it("recovers short names and acronyms from attested interiors in any cased script", () => {
     const hints = sourceDerivedCasingHints(["За рекой Ю встречает РАН. Потом Ю видит РАН."]);
     expect(hints).toMatchObject({ "ю": "Ю", "ран": "РАН" });
     expect(hints).not.toHaveProperty("потом");
+    expect(renderContinuationSentences([["там", "ю", "видит", "ран", "."]], hints))
+      .toBe("Там Ю видит РАН.");
   });
 
   it("does not give one Latin token a built-in capitalization rule", () => {
-    expect(sourceDerivedCasingHints(["x i y."])).not.toHaveProperty("i");
+    expect(renderContinuationSentences([["x", "i", "y", "."]])).toBe("X i y.");
     const hints = sourceDerivedCasingHints(["x I y."]);
-    expect(hints).toMatchObject({ i: "I" });
+    expect(renderContinuationSentences([["x", "i", "y", "."]], hints)).toBe("X I y.");
   });
 
   it("abstains on conflicting casing and ignores inherited object properties", () => {
     const hints = sourceDerivedCasingHints(["x Ю y. z ю w."]);
     expect(hints).not.toHaveProperty("ю");
-    expect(Object.hasOwn(hints, "constructor")).toBe(false);
+    expect(renderContinuationSentences([["x", "constructor", "."]], {})).toBe("X constructor.");
   });
 });

@@ -1,14 +1,12 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { constructionSurfaceComplete, type ConstructionSurface } from "./construction-surface.js";
-import { realizeLearnedSurface, type SurfaceMeaningPlan } from "./language-construction.js";
 import type { IdFactory } from "./ids.js";
 import { sourceReferenceBindingsFromPatterns } from "./source-reference-bindings.js";
 import type { NarrativeConditioning } from "./document-generation-session.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
-import type { KneserNeyModel } from "./kneser-ney.js";
-import { KNESER_NEY_SCHEMA, compileKneserNeyRuntimeIndexes, continueBoundedProse, materializeKneserNey, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
+import type { BeamSentenceContinuation, KneserNeyModel } from "./kneser-ney.js";
+import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, materializeKneserNey, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
 import { createNgramMemoryCompiler, type NgramMemoryCompilation } from "./ngram-memory.js";
 import { buildLanguageProfileClusters, type LanguageProfileCluster } from "./language.js";
 import { clamp01, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -27,10 +25,11 @@ import {
   scopeCreativeEventCompatibilityModels,
   type CreativeEventCompatibilityModel
 } from "./creative-event-compatibility.js";
-import { SENTENCE_BOUNDARY_SYMBOLS, collapseSurfaceWhitespace, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
+import { SENTENCE_BOUNDARY_SYMBOLS, collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, sourceDerivedCasingHints, splitSurfaceSentences, stripTerminalSentenceBoundary, surfaceContainsTerm, surfaceWords } from "./surface-linguistics.js";
 import {
   ANSWER_ROLE_IDS,
   ANSWER_SLOT_IDS,
+  GRAPH_QUALITY_CLASS_IDS,
   RELATION_ROLE_IDS,
   isBackgroundAnswerRoleId,
   isBridgeAnswerRoleId
@@ -40,6 +39,14 @@ import {
   type RequestRequirementHydrationReport
 } from "./request-requirement-learning.js";
 import {
+  composeJoinProgramMixtures,
+  renderJoinedSurface,
+  type JoinProgramMixture,
+  type JoinProgramTraceStep
+} from "./join-program.js";
+import { JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA, joinProgramMixtureFromStorage } from "./join-program-storage.js";
+import {
+  INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
   INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA
 } from "./language-induction-memory.js";
 import {
@@ -65,6 +72,10 @@ import {
   type LanguageStructuralDeltaMatchContext
 } from "./language-state-delta.js";
 
+const composedJoinProgramCache = new WeakMap<
+  LanguageMemoryRuntimeState,
+  JoinProgramMixture | null
+>();
 
 interface DeferredConstructionState {
   independent: LanguageMemoryRuntimeState;
@@ -164,6 +175,7 @@ export interface LanguageMemoryRuntimeState {
   importedReversibleConstructions?: ReversibleConstruction[];
   importedPairedAntiUnifiedConstructions?: PairedAntiUnifiedConstruction[];
   optionalNullRealizationModels?: OptionalNullRealizationModel[];
+  joinPrograms: JoinProgramMixture[];
   creativeEventCompatibilityModels: CreativeEventCompatibilityModel[];
   rejectedConstructionPatterns: LanguageConstructionMemoryIssue[];
   /** Set by hydrate(); absent only on states built without hydration. */
@@ -176,7 +188,22 @@ export interface LanguageMemoryRuntimeState {
   audit: JsonValue;
 }
 
-
+export function activeJoinProgram(
+  state: LanguageMemoryRuntimeState,
+  populationPosterior?: Readonly<Record<string, number>>
+): JoinProgramMixture | undefined {
+  if (populationPosterior) {
+    return composeJoinProgramMixtures({
+      mixtures: state.joinPrograms,
+      populationPosterior
+    });
+  }
+  const cached = composedJoinProgramCache.get(state);
+  if (cached !== undefined) return cached ?? undefined;
+  const composed = composeJoinProgramMixtures({ mixtures: state.joinPrograms });
+  composedJoinProgramCache.set(state, composed ?? null);
+  return composed;
+}
 
 export interface LanguageMemoryRuntimeScope {
   mode: "unscoped" | "cluster" | "language";
@@ -207,15 +234,16 @@ export interface LanguageMemorySuggestion {
 
 export interface LanguageMemoryRealization {
   text: string;
-  surface?: ConstructionSurface;
   evidenceIds: string[];
   score: LanguageMemoryScore;
   continuation?: {
     text: string;
     stoppedBy: string;
     averageLogProbability: number;
-    surface?: ConstructionSurface;
-    realizationStatus: "realized" | "unresolved";
+    joinTrace: JoinProgramTraceStep[];
+    unresolvedBoundaries: number;
+    joinStatus: "resolved" | "preserved_source_span" | "unresolved";
+    joinRequiredAction?: "try_alternate_derivation" | "request_additional_evidence";
   };
   audit: JsonValue;
 }
@@ -245,9 +273,6 @@ export interface LanguageGenerationOrdering {
 }
 
 export interface LanguageGenerationFrame {
-  /** Complete caller-owned construction alternatives; token arrays are scoring data only. */
-  constructionSurfaces?: readonly ConstructionSurface[];
-  constructionPlans?: readonly SurfaceMeaningPlan[];
   id: string;
   pointId?: string;
   role?: string;
@@ -271,9 +296,6 @@ export interface LanguageGenerationFrame {
 }
 
 export interface LanguageGenerationInput {
-  /** Complete caller-owned construction alternatives; token arrays are scoring data only. */
-  constructionSurfaces?: readonly ConstructionSurface[];
-  constructionPlans?: readonly SurfaceMeaningPlan[];
   state: LanguageMemoryRuntimeState;
   segmentationPopulationPosterior?: Readonly<Record<string, number>>;
   targetLanguageProfile?: LanguageProfile;
@@ -294,10 +316,6 @@ export interface LanguageGenerationInput {
 }
 
 export interface LanguageGenerationResult {
-  surface?: ConstructionSurface;
-  realizationStatus: "realized" | "unresolved";
-  unresolvedReason?: "no_supported_construction";
-  requiredAction?: "try_alternate_construction";
   text: string;
   /** Actual final discourse coverage; absent only on older imported generation traces. */
   coverageComplete?: boolean;
@@ -309,8 +327,7 @@ export interface LanguageGenerationResult {
   importedLanguageUnitIdsUsed: string[];
   importedPhrasePatternIdsUsed: string[];
   importedSemanticFrameIdsUsed: string[];
-  importedConstructionBundleIdsUsed: string[];
-  importedConstructionIdsUsed: string[];
+  importedJoinProgramIdsUsed?: string[];
   orderUsage: Array<{ order: number; symbols: number; averageInformation: number; activation: number }>;
   averageInformation: number;
   confidence: number;
@@ -325,16 +342,16 @@ export interface LanguageGenerationResult {
  * generated discourse is complete enough to speak.
  */
 export function languageGenerationSurfaceAdequate(
-  generation: Pick<LanguageGenerationResult, "discourse" | "symbols" | "surface" | "coverageComplete">
+  generation: Pick<LanguageGenerationResult, "discourse" | "symbols" | "coverageComplete">
 ): boolean {
   return generation.coverageComplete !== false && languageGenerationSurfaceFluent(generation);
 }
 
 /** Structurally speakable, whatever share of the request it reached: coverage ranks a surface, it does not silence one. */
 export function languageGenerationSurfaceFluent(
-  generation: Pick<LanguageGenerationResult, "discourse" | "symbols" | "surface">
+  generation: Pick<LanguageGenerationResult, "discourse" | "symbols">
 ): boolean {
-  return !!generation.surface && constructionSurfaceComplete(generation.surface) && !!generation.surface.text;
+  return discourseSurfaceAdequate(generation.discourse, Math.max(1, generation.symbols.length));
 }
 
 /** Reject a dangling learned function-word pair with no attested sentence ending. */
@@ -565,7 +582,6 @@ export interface LanguageMemoryRuntime {
     requestText: string;
     candidates: Array<{
       text: string;
-      surface?: ConstructionSurface;
       evidenceIds?: string[];
       fit?: number;
       /** Typed realization identity used to scope construction corrections. */
@@ -614,6 +630,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const constructionInput = constructionPatterns.length ? structuredClone({
         patterns: constructionPatterns, evidence: input.constructionEvidence ?? []
       }) : undefined;
+      const joinPrograms = joinProgramsFromPatterns(importedPatterns);
       const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
       const priorModelCount = input.models.filter(isImportedLanguagePriorModel).length;
       const finish = (constructionMemory: ReturnType<typeof hydrateLanguageConstructionPatterns>): LanguageMemoryRuntimeState => {
@@ -624,7 +641,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
             referenceBindings: sourceReferenceBindingsFromPatterns({ patterns: persistedPatterns, evidence: input.constructionEvidence ?? [], hasher: options.hasher }).bindings
           } : undefined)
         ]);
-        const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + importedReversibleConstructions.length + importedPairedAntiUnifiedConstructions.length + optionalNullRealizationModels.length + creativeEventCompatibilityModels.length + priorModelCount;
+        const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + importedReversibleConstructions.length + importedPairedAntiUnifiedConstructions.length + optionalNullRealizationModels.length + creativeEventCompatibilityModels.length + joinPrograms.length + priorModelCount;
         const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
         return {
           models,
@@ -644,6 +661,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           importedReversibleConstructions,
           importedPairedAntiUnifiedConstructions,
           optionalNullRealizationModels,
+          joinPrograms,
           creativeEventCompatibilityModels,
           rejectedConstructionPatterns: constructionMemory.rejected,
           requestRequirementHydration: requestRequirements.report,
@@ -675,6 +693,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
               importedPairedAntiUnifiedConstructions.length,
             optionalNullRealizationModels:
               optionalNullRealizationModels.length,
+            joinPrograms: joinPrograms.map(program => program.id),
             creativeEventCompatibilityModels: creativeEventCompatibilityModels.length,
             rejectedConstructionPatterns: constructionMemory.rejected,
             requestRequirementHydration: requestRequirements.report,
@@ -755,6 +774,11 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
               estimates: model.estimates.length,
               threshold: model.threshold.selected
             })),
+        joinPrograms: input.state.joinPrograms.slice(0, 24).map(program => ({
+          id: program.id,
+          populationModelId: program.populationModelId,
+          components: program.components.length
+        })),
         creativeEventCompatibilityModels: input.state.creativeEventCompatibilityModels.slice(0, 24).map(model => ({
           id: model.id,
           version: model.version,
@@ -807,12 +831,11 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
     },
 
     generate(input) {
-      return generateFromLanguageMemory(input, options.hasher);
+      return generateFromLanguageMemory(input);
     },
 
     realize(input) {
       const ranked = input.candidates
-        .filter(candidate => !candidate.surface || (candidate.surface.text === candidate.text && constructionSurfaceComplete(candidate.surface)))
         .map(candidate => {
           const score = scoreText(input.state, candidate.text, input.requestText);
           const requestFit = weightedJaccard(featureSet(input.requestText, 256), featureSet(candidate.text, 256));
@@ -834,20 +857,24 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         ? continueBoundedProse(continuationModel, input.continuationPrompt, {
           generationExtent: 32,
           probabilityFloor: 1e-8,
-          temperature: 0.82
+          temperature: 0.82,
+          joinProgram: activeJoinProgram(input.state)
         })
         : undefined;
       return {
         text: best?.candidate.text ?? "",
-        ...(best?.candidate.surface ? { surface: structuredClone(best.candidate.surface) } : {}),
         evidenceIds: best?.candidate.evidenceIds ?? [],
         score: best?.score ?? scoreText(input.state, "", input.requestText),
         continuation: continuation ? {
           text: continuation.text,
           stoppedBy: continuation.stoppedBy,
           averageLogProbability: continuation.averageLogProbability,
-          surface: continuation.surface,
-          realizationStatus: continuation.realizationStatus
+          joinTrace: continuation.joinTrace,
+          unresolvedBoundaries: continuation.unresolvedBoundaries,
+          joinStatus: continuation.joinStatus,
+          ...(continuation.joinRequiredAction
+            ? { joinRequiredAction: continuation.joinRequiredAction }
+            : {})
         } : undefined,
         audit: toJsonValue({
           source: "language-memory-runtime.realize",
@@ -863,7 +890,11 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           continuation: continuation ? {
             stoppedBy: continuation.stoppedBy,
             symbols: continuation.symbols.length,
-            averageLogProbability: continuation.averageLogProbability
+            averageLogProbability: continuation.averageLogProbability,
+            joinProgramId: activeJoinProgram(input.state)?.id ?? null,
+            unresolvedBoundaries: continuation.unresolvedBoundaries,
+            joinStatus: continuation.joinStatus,
+            joinRequiredAction: continuation.joinRequiredAction ?? null
           } : null
         })
       };
@@ -1024,139 +1055,364 @@ interface DiscourseDecodeResult {
   boundaries: LanguageDiscourseBoundaryUse[];
   fluency: LanguageDiscourseFluencyTrace;
 }
-function generateFromLanguageMemory(input: LanguageGenerationInput, hasher?: Hasher): LanguageGenerationResult {
-  const requiredTerms = generationRequiredTerms(input), atoms = generationFrameAtoms(input);
-  const contextText = (input.contextSymbols ?? []).join(" "); // Operational scoring context, never an emitted surface.
+
+function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGenerationResult {
+  const generationExtent = Math.max(1, Math.min(256, Math.floor(input.generationExtent ?? 64)));
+  const requiredTerms = generationRequiredTerms(input);
+  const frameAtoms = generationFrameAtoms(input);
+  // Narrative state affects which learned surfaces are eligible and how they
+  // score.  It is guidance, not a prompt: opaque graph/setup ids never enter
+  // the lexical context, and a condition with no source surface remains
+  // available to the consistency layer but cannot manufacture prose here.
   const narrativeConstraints = narrativeConditioningSurfaceConstraints(input.frames ?? []);
-  const rhetorical = planLanguageMemoryDiscourse(input);
-  const framePriorities = new Map(rhetorical.materials.map(material => [material.frameId,
-    rhetorical.plan?.assignments.find(assignment => assignment.materialId === material.id)?.priority ?? 0]));
-  const candidates: Array<{ surface: ConstructionSurface; frameIds: string[]; constructionId?: string }> = [];
-  const add = (surface: ConstructionSurface, frameIds: string[], constructionId?: string) => {
-    if (surface.text && constructionSurfaceComplete(surface)) {
-      const boundFrames = (surface.childBindings ?? []).flatMap(binding => (input.frames ?? []).some(frame => frame.id === binding.roleId) ? [binding.roleId] : []);
-      candidates.push({ surface: structuredClone(surface), frameIds: [...new Set([...frameIds, ...boundFrames])], constructionId });
-    }
+  const contextSymbols = [...(input.contextSymbols ?? []), ...requiredTerms.map(term => term.text), ...frameAtoms.map(atom => atom.text), ...narrativeConstraints.map(constraint => constraint.surface)]
+    .map(symbol => tidyInline(symbol))
+    .filter(Boolean)
+    .slice(-128);
+  const contextText = contextSymbols.join(" ");
+  const taskJoinProgram = activeJoinProgram(
+    input.state,
+    input.segmentationPopulationPosterior
+  );
+  const discoursePrior = runtimeDiscoursePriorProfile(input.state, generationExtent);
+  const pieces = generationPieces(input, requiredTerms, frameAtoms, narrativeConstraints, contextSymbols, contextText);
+  const candidatePieces = selectGenerationPieces(pieces, requiredTerms, generationExtent);
+  const latticeGeneration = generateRhetoricalSentenceLattice({
+    state: input.state,
+    pieces: candidatePieces,
+    requiredTerms,
+    frameAtoms,
+    frames: input.frames ?? [],
+    contextSymbols,
+    contextText,
+    generationExtent,
+    discoursePrior,
+    styleProfileId: input.styleProfileId,
+    joinProgram: taskJoinProgram
+  });
+  const firstDiscourse = latticeGeneration?.discourse ?? weaveDiscourse({ state: input.state, pieces: candidatePieces, requiredTerms, frameAtoms, frames: input.frames ?? [], contextSymbols, generationExtent });
+  const discourseCoverage = (trace: LanguageDiscourseTrace) => latticeGeneration && trace === latticeGeneration.discourse
+    ? latticeDiscourseHasCoverage(latticeGeneration, input.frames ?? [], requiredTerms, frameAtoms)
+    : discourseTraceHasCoverage(trace, requiredTerms, frameAtoms);
+  const firstDiscourseAdequate = discourseSurfaceAdequate(firstDiscourse, generationExtent)
+    && discourseCoverage(firstDiscourse);
+  const continuationDiscourse = firstDiscourseAdequate
+    ? undefined
+    : learnedContinuationDiscourse({
+      state: input.state,
+      contextSymbols,
+      contextText,
+      requiredTerms,
+      frameAtoms,
+      generationExtent,
+      pieces: candidatePieces,
+      topicVocabulary: uniqueStrings([...(input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? []), ...narrativeConstraints.map(constraint => constraint.surface)]),
+      properNounCasing: generationCasingHints(input),
+      choiceSeed: input.choiceSeed
+    });
+  // Plan items 140-141: fluency alone (discourseSurfaceAdequate) is never
+  // enough to accept the Kneser-Ney-driven fallback continuation in place
+  // of the real evidence-grounded discourse -- it must also meet the same
+  // required-term/frame-atom coverage bar the primary beam-search path
+  // already holds itself to (discourseBeamHasCoverage), or the fallback is
+  // refused and the less-fluent-but-grounded firstDiscourse is kept
+  // instead. A fluent but factually empty continuation is worse than a
+  // less fluent but grounded one for anything the caller supplied real
+  // requiredTerms/frameAtoms for.
+  const continuationAcceptable = continuationDiscourse
+    && discourseSurfaceAdequate(continuationDiscourse, generationExtent)
+    && discourseTraceHasCoverage(continuationDiscourse, requiredTerms, frameAtoms)
+    // Unit-level coverage drops a term's own punctuation, so "40 % 9: 00" reads as covering "40%" and "9:00".
+    && discourseSpellsRequiredTerms(continuationDiscourse, requiredTerms);
+  const discourse = firstDiscourseAdequate
+    ? firstDiscourse
+    : continuationAcceptable
+      ? continuationDiscourse!
+      : firstDiscourse;
+  const selectedMovePieceIds = new Set(discourse.moves.flatMap(move => move.sourcePieceIds));
+  const selected = candidatePieces.filter(piece => {
+    const clean = tidyInline(piece.text);
+    return (piece.id && selectedMovePieceIds.has(piece.id)) || discourse.moves.some(move => containsLoose(move.text, clean) || containsLoose(clean, move.text));
+  });
+  const text = discourse.text;
+  const symbols = symbolizeData(text);
+  const score = scoreText(input.state, text, contextText);
+  const orderUsage = score.orderScores.map(row => ({
+    order: row.order,
+    symbols: symbols.length,
+    averageInformation: row.information,
+    activation: row.activation
+  }));
+  const importedFromScore = {
+    modelIds: importedIdsFromScore(score.audit, "importedNgramModelIdsUsed"),
+    observationIds: importedIdsFromScore(score.audit, "importedObservationIdsUsed"),
+    unitIds: importedIdsFromScore(score.audit, "importedLanguageUnitIdsUsed"),
+    patternIds: importedIdsFromScore(score.audit, "importedPhrasePatternIdsUsed"),
+    semanticFrameIds: importedIdsFromScore(score.audit, "importedSemanticFrameIdsUsed")
   };
-  const resolve = (plans: readonly SurfaceMeaningPlan[], frameIds: string[]) => {
-    if (!hasher) return;
-    for (const plan of plans) for (const bundle of input.state.importedConstructionBundles) {
-      if (!bundle.constructions.some(construction => construction.profileKey === plan.profileKey)) continue;
-      const result = realizeLearnedSurface({ plan, constructions: bundle.constructions, formClasses: bundle.formClasses, hasher });
-      if (result.status === "realized") add(result.realization, frameIds, result.realization.constructionId);
-    }
+  const importedNgramModelIdsUsed = uniqueStrings([...importedFromScore.modelIds, ...importedNgramModelIdsForOrders(input.state, score.orderScores)]);
+  const importedObservationIdsUsed = uniqueStrings([...importedFromScore.observationIds, ...selected.filter(piece => piece.source === "observation" && piece.id).map(piece => piece.id!)]);
+  const importedLanguageUnitIdsUsed = uniqueStrings([...importedFromScore.unitIds, ...selected.filter(piece => piece.source === "language_unit" && piece.id).map(piece => piece.id!)]);
+  const importedPhrasePatternIdsUsed = uniqueStrings([...importedFromScore.patternIds, ...selected.filter(piece => piece.source === "phrase_pattern" && piece.id).map(piece => piece.id!)]);
+  const selectedText = joinTextForAudit(selected.map(piece => piece.text));
+  const importedSemanticFrameIdsUsed = uniqueStrings([
+    ...importedFromScore.semanticFrameIds,
+    ...selected.filter(piece => piece.source === "semantic_frame" && piece.id).map(piece => piece.id!),
+    ...semanticFrameIdsOverlappingSelectedText(input.state, selectedText)
+  ]);
+  const importedJoinProgramIdsUsed = taskJoinProgram
+    ? [taskJoinProgram.id]
+    : [];
+  const semanticMaterials = semanticFactMaterialsFromFrames(input.frames ?? []);
+  const selectedSemanticPieces = selected.filter(piece => piece.source === "semantic_rhetoric");
+  const semanticMaterialIdsUsed = uniqueStrings(selectedSemanticPieces.flatMap(piece => piece.semanticMaterialIds ?? []));
+  const semanticRhetoricalPlan = semanticRhetoricalPlanFromMaterials(semanticMaterials, contextText, discoursePrior);
+  const semanticFactMaterialsUsed = semanticMaterials
+    .filter(material => semanticMaterialIdsUsed.includes(material.id))
+    .map(material => ({
+      id: material.id,
+      frameId: material.frameId,
+      relationId: material.relationId,
+      sourceNodeId: material.sourceNodeId,
+      targetNodeId: material.targetNodeId,
+      forceClass: material.forceClass,
+      slotIds: material.slotIds,
+      support: material.support,
+      upstreamRoleId: material.upstreamRoleId ?? null,
+      alphaRhetoricalCentrality: material.alphaRhetoricalCentrality ?? null,
+      pathScore: material.pathScore ?? null,
+      roleScore: material.roleScore ?? null,
+      bridgeValue: material.bridgeValue ?? null,
+      backgroundPenalty: material.backgroundPenalty ?? null,
+      forceMeaning: material.forceMeaning ?? null,
+      certificationPower: material.certificationPower ?? null,
+      alphaRhetoricalPlannerId: material.alphaRhetoricalPlannerId ?? null,
+      cognitiveEdgeId: material.cognitiveEdgeId ?? null,
+      requestedSlotId: material.requestedSlotId ?? null,
+      relationRoleId: material.relationRoleId ?? null,
+      topicSenseId: material.topicSenseId ?? null,
+      finalQuestionFit: material.finalQuestionFit ?? null,
+      questionSlotId: material.questionSlotId ?? null,
+      questionSlotImportance: material.questionSlotImportance ?? null,
+      questionSlotScore: material.questionSlotScore ?? null,
+      questionSlotReasonIds: material.questionSlotReasonIds ?? []
+    }));
+  const answerSlotsFilled = uniqueStrings(selectedSemanticPieces.flatMap(piece => piece.answerSlotIds ?? []));
+  const demotedFacts = uniqueStrings(selectedSemanticPieces.flatMap(piece => piece.demotedMaterialIds ?? []));
+  const roleAssignmentIdsUsed = uniqueStrings(selectedSemanticPieces.flatMap(piece => piece.roleAssignmentIds ?? []));
+  const languagePriorsUsed = uniqueStrings(selected
+    .filter(piece => piece.source === "language_unit" || piece.source === "phrase_pattern" || piece.source === "semantic_frame" || piece.source === "observation" || piece.source === "suggestion")
+    .map(piece => piece.id ?? piece.source));
+  const compressionApplied = selectedSemanticPieces.some(piece => Boolean(piece.compressionApplied));
+  const discourseShapeId = selectedSemanticPieces.find(piece => piece.discourseShapeId)?.discourseShapeId ?? semanticRhetoricalPlan?.id;
+  const stoppedBy: LanguageGenerationResult["stoppedBy"] = text ? (symbols.length >= generationExtent ? "generation_extent" : "source_exhausted") : "empty";
+  const averageInformation = orderUsage.length ? mean(orderUsage.map(row => row.averageInformation)) : 0;
+  const importedUseMass = importedLanguageUnitIdsUsed.length
+    + importedPhrasePatternIdsUsed.length
+    + importedObservationIdsUsed.length
+    + importedSemanticFrameIdsUsed.length
+    + importedNgramModelIdsUsed.length
+    + importedJoinProgramIdsUsed.length;
+  const confidence = clamp01(calibrated("language_memory.confidence_activation_weight") * score.activation + calibrated("language_memory.confidence_generation_reliability_weight") * input.state.competenceVector.generationReliability + calibrated("language_memory.confidence_selected_count_weight") * Math.min(1, selected.length / 5) + calibrated("language_memory.confidence_imported_use_weight") * Math.min(1, importedUseMass / 4));
+  return {
+    text,
+    symbols,
+    phrasesUsed: selected.map(piece => piece.text),
+    coverageComplete: discourseCoverage(discourse),
+    discourse,
+    importedNgramModelIdsUsed,
+    importedObservationIdsUsed,
+    importedLanguageUnitIdsUsed,
+    importedPhrasePatternIdsUsed,
+    importedSemanticFrameIdsUsed,
+    importedJoinProgramIdsUsed,
+    orderUsage,
+    averageInformation,
+    confidence,
+    competence: input.state.competenceVector,
+    stoppedBy,
+    audit: toJsonValue({
+      source: "language-memory-runtime.generate",
+      textHash: hashText(text),
+      phraseCount: selected.length,
+      symbolCount: symbols.length,
+      generationExtent,
+      stoppedBy,
+      confidence,
+      averageInformation,
+      generationStepCount: discourse.generationStepCount,
+      decoderSteps: discourse.steps,
+      selectedTransitions: discourse.boundaries,
+      requiredTermIdsCovered: discourse.requiredTermIdsCovered,
+      propositionAtomIdsCovered: discourse.propositionAtomIdsCovered,
+      scoreOrderTextHash: discourse.scoreOrderTextHash,
+      discourse,
+      rhetoricalSentenceLattice: latticeGeneration ? {
+        paragraphPlan: {
+          id: latticeGeneration.paragraphPlan.id,
+          sentencePlanCount: latticeGeneration.paragraphPlan.sentencePlans.length,
+          targetSymbolCount: latticeGeneration.paragraphPlan.targetSymbolCount,
+          forceClass: latticeGeneration.paragraphPlan.forceClass
+        },
+        lattice: {
+          id: latticeGeneration.lattice.id,
+          clausePlanCount: latticeGeneration.lattice.clausesByPlan.length,
+          clauseCandidateCount: latticeGeneration.lattice.clausesByPlan.reduce((sum, row) => sum + row.candidates.length, 0),
+          edgeCount: latticeGeneration.lattice.edges.length,
+          audit: latticeGeneration.lattice.audit
+        },
+        proseCandidates: latticeGeneration.proseCandidates.slice(0, 8).map(candidate => ({
+          id: candidate.id,
+          textHash: hashText(candidate.text),
+          sentencePlanIds: candidate.sentencePlanIds,
+          score: candidate.score,
+          claimCoverage: candidate.claimCoverage,
+          anchorCoverage: candidate.anchorCoverage,
+          continuity: candidate.continuity,
+          repetitionPenalty: candidate.repetitionPenalty,
+          lengthFit: candidate.lengthFit,
+          priorSupport: candidate.priorSupport
+        })),
+        critic: {
+          candidateId: latticeGeneration.critic.candidateId,
+          accepted: latticeGeneration.critic.accepted,
+          score: latticeGeneration.critic.score,
+          issues: latticeGeneration.critic.issues
+        }
+      } : null,
+      selectedPieces: selected.slice(0, 24).map(piece => ({
+        id: piece.id ?? null,
+        source: piece.source,
+        textHash: hashText(piece.text),
+        support: piece.support,
+        fit: piece.fit,
+        order: piece.order,
+        probability: piece.probability,
+        score: piece.score,
+        semanticMaterialIds: piece.semanticMaterialIds ?? [],
+        answerSlotIds: piece.answerSlotIds ?? [],
+        demotedMaterialIds: piece.demotedMaterialIds ?? [],
+        discourseShapeId: piece.discourseShapeId ?? null,
+        compressionApplied: Boolean(piece.compressionApplied),
+        rhetoricalPlanId: piece.rhetoricalPlanId ?? null,
+        roleAssignmentIds: piece.roleAssignmentIds ?? [],
+        rhetoricalStageIds: piece.rhetoricalStageIds ?? [],
+        backgroundMaterialIds: piece.backgroundMaterialIds ?? [],
+        significanceBridgeMaterialIds: piece.significanceBridgeMaterialIds ?? [],
+        structuralDeltaFit: piece.structuralDeltaFit ?? 0,
+        structuralDeltaIds: piece.structuralDeltaIds ?? []
+      })),
+      semanticFactMaterialsUsed,
+      answerSlotsFilled,
+      languagePriorsUsed,
+      importedJoinProgramIdsUsed,
+      compressionApplied,
+      demotedFacts,
+      answerRoleAssignments: semanticRhetoricalPlan ? semanticRhetoricalPlan.assignments.map(assignment => ({
+        id: assignment.id,
+        materialId: assignment.materialId,
+        subjectRef: assignment.subjectRef,
+        relationRef: assignment.relationRef,
+        objectRef: assignment.objectRef,
+        roleId: assignment.roleId,
+        priority: assignment.priority,
+        support: assignment.support,
+        relationUsefulness: assignment.relationUsefulness,
+      questionShapeFit: assignment.questionShapeFit,
+      requestedSlotId: assignment.requestedSlotId ?? null,
+      relationRoleId: assignment.relationRoleId ?? null,
+      topicSenseId: assignment.topicSenseId ?? null,
+      questionSlotId: assignment.questionSlotId ?? null,
+      questionSlotImportance: assignment.questionSlotImportance ?? null,
+      shouldSurface: assignment.shouldSurface,
+      surfaceWeight: assignment.surfaceWeight
+      })) : [],
+      rhetoricalPlan: semanticRhetoricalPlan ? {
+        id: semanticRhetoricalPlan.id,
+        subjectLabelHash: hashText(semanticRhetoricalPlan.subjectLabel),
+        stages: semanticRhetoricalPlan.stages,
+        targetMoveCount: semanticRhetoricalPlan.targetMoveCount,
+        backgroundAssignmentIds: semanticRhetoricalPlan.backgroundAssignmentIds,
+        significanceBridgeAssignmentIds: semanticRhetoricalPlan.significanceBridgeAssignmentIds,
+        roleAssignmentIdsUsed
+      } : null,
+      discourseShapeId: discourseShapeId ?? null,
+      importedNgramModelIdsUsed,
+      importedObservationIdsUsed,
+      importedLanguageUnitIdsUsed,
+      importedPhrasePatternIdsUsed,
+      importedSemanticFrameIdsUsed,
+      orderUsage,
+      competence: input.state.competenceVector,
+      score: score.audit,
+      frames: (input.frames ?? []).slice(0, 16).map(frame => ({
+        id: frame.id,
+        pointId: frame.pointId ?? null,
+        role: frame.role ?? null,
+        force: frame.force ?? null,
+        targetLanguage: frame.targetLanguage ?? null,
+        targetScript: frame.targetScript ?? null,
+        semanticFrameIds: frame.semanticFrameIds ?? [],
+        atomCount: frame.propositionAtoms?.length ?? 0,
+        requiredTermCount: frame.requiredTerms?.length ?? 0
+      })),
+      narrativeConditioning: {
+        constraintCount: narrativeConstraints.length,
+        surfaceHashes: narrativeConstraints.map(constraint => hashText(constraint.surface)),
+        establishedFactCount: (input.frames ?? []).reduce((count, frame) => count + (frame.narrativeConditioning?.establishedFacts.length ?? 0), 0),
+        openSetupCount: (input.frames ?? []).reduce((count, frame) => count + (frame.narrativeConditioning?.openSetupIds.length ?? 0), 0)
+      }
+    })
   };
-  for (const surface of input.constructionSurfaces ?? []) add(surface, []);
-  resolve(input.constructionPlans ?? [], []);
-  for (const frame of input.frames ?? []) {
-    for (const surface of frame.constructionSurfaces ?? []) add(surface, [frame.id]);
-    resolve(frame.constructionPlans ?? [], [frame.id]);
-  }
-  const ranked = candidates.map(candidate => {
-    const score = scoreText(input.state, candidate.surface.text, contextText);
-    const required = coveredRequiredTermIds(candidate.surface.text, requiredTerms);
-    // Only a caller-bound construction can establish an opaque frame claim.
-    const boundAtoms = (input.frames ?? []).filter(frame => candidate.frameIds.includes(frame.id))
-      .flatMap(frame => (frame.propositionAtoms ?? []).filter(atom => atoms.some(value => value.id === atom.id)).map(atom => atom.id));
-    const coveredAtoms = uniqueStrings([...coveredAtomIds(candidate.surface.text, atoms), ...boundAtoms]);
-    const covered = coverageMeetsThreshold(required.length, coveredAtoms.length, requiredTerms, atoms);
-    const rhetoricalPriority = Math.max(0, ...candidate.frameIds.map(id => framePriorities.get(id) ?? 0));
-    const narrativeFit = narrativeConstraints.length ? narrativeConstraints.filter(constraint => containsLoose(candidate.surface.text, constraint.surface)).length / narrativeConstraints.length : 0;
-    return { ...candidate, score, required, coveredAtoms, covered, rhetoricalPriority, narrativeFit };
-  }).sort((a, b) => Number(b.covered) - Number(a.covered) || b.required.length - a.required.length
-    || b.coveredAtoms.length - a.coveredAtoms.length || b.rhetoricalPriority - a.rhetoricalPriority || b.narrativeFit - a.narrativeFit || b.score.activation - a.score.activation
-    || b.score.fit - a.score.fit || compareCodePoint(a.surface.text, b.surface.text));
-  const selected = ranked[0], text = selected?.surface.text ?? "", symbols = symbolizeData(text);
-  const constructionIds = new Set<string>();
-  const visitConstruction = (surface: ConstructionSurface) => {
-    if (surface.constructionId) constructionIds.add(surface.constructionId);
-    for (const binding of surface.childBindings ?? []) {
-      if (binding.constructionId) constructionIds.add(binding.constructionId);
-      visitConstruction(binding.surface);
-    }
-  };
-  if (selected) { if (selected.constructionId) constructionIds.add(selected.constructionId); visitConstruction(selected.surface); }
-  const usedBundles = input.state.importedConstructionBundles.filter(bundle => bundle.constructions.some(construction => constructionIds.has(construction.id)));
-  const ownedConstructionIds = [...constructionIds].filter(id => usedBundles.some(bundle => bundle.constructions.some(construction => construction.id === id)));
-  const score = selected?.score ?? scoreText(input.state, "", contextText);
-  const id = selected?.constructionId ?? hashText(text);
-  const moves: LanguageDiscourseMove[] = selected ? [{ id, role: "construction", text,
-    sourcePieceIds: uniqueStrings(selected.surface.trace.flatMap(part => part.sourceExampleIds)),
-    frameIds: selected.frameIds, atomIds: selected.coveredAtoms, support: score.activation,
-    information: score.information, symbolCount: symbols.length }] : [];
-  const discourse: LanguageDiscourseTrace = { text, moves, boundaries: [], steps: moves.map((move, index) => ({
-    index, action: "emit_move", moveId: move.id, role: move.role, textHash: hashText(move.text),
-    sourcePieceIds: move.sourcePieceIds, coveredRequiredTermIds: selected!.required,
-    coveredAtomIds: selected!.coveredAtoms, score: score.activation, cumulativeScore: score.activation, transitionScore: 0
-  })), generationStepCount: moves.length, stopReason: !selected ? "empty" : selected.covered ? "coverage_satisfied" : "source_exhausted",
-    requiredTermIdsCovered: selected?.required ?? [], propositionAtomIdsCovered: selected?.coveredAtoms ?? [],
-    scoreOrderTextHash: hashText(text), anchorCoverage: selected?.covered ? 1 : 0,
-    cohesion: selected ? 1 : 0, repetitionPenalty: 0, discourseScore: score.activation,
-    fluency: { beamWidth: 1, beamExpansions: candidates.length, candidateMoveCount: candidates.length,
-      selectedBeamScore: score.activation, selectedUnitIds: [], latentCoherence: selected ? score.fit : 0,
-      ngramMeanActivation: score.activation, priorSupport: score.activation,
-      coverageGain: selected?.covered ? 1 : 0, repetitionPenalty: 0, symbolCount: symbols.length } };
-  const orderUsage = score.orderScores.map(row => ({ order: row.order, symbols: symbols.length,
-    averageInformation: row.information, activation: row.activation }));
-  return { text, ...(selected ? { surface: selected.surface } : {}),
-    realizationStatus: selected ? "realized" : "unresolved",
-    ...(!selected ? { unresolvedReason: "no_supported_construction" as const, requiredAction: "try_alternate_construction" as const } : {}),
-    symbols, phrasesUsed: selected ? [text] : [], coverageComplete: selected?.covered ?? false, discourse,
-    importedNgramModelIdsUsed: importedIdsFromScore(score.audit, "importedNgramModelIdsUsed"),
-    importedObservationIdsUsed: importedIdsFromScore(score.audit, "importedObservationIdsUsed"),
-    importedLanguageUnitIdsUsed: importedIdsFromScore(score.audit, "importedLanguageUnitIdsUsed"),
-    importedPhrasePatternIdsUsed: importedIdsFromScore(score.audit, "importedPhrasePatternIdsUsed"),
-    importedSemanticFrameIdsUsed: importedIdsFromScore(score.audit, "importedSemanticFrameIdsUsed"),
-    importedConstructionBundleIdsUsed: usedBundles.map(bundle => bundle.id), importedConstructionIdsUsed: ownedConstructionIds,
-    orderUsage, averageInformation: score.information, confidence: selected ? score.activation : 0,
-    competence: input.state.competenceVector, stoppedBy: selected ? "source_exhausted" : "empty",
-    audit: toJsonValue({ source: "language-memory-runtime.generate", constructionCandidateCount: candidates.length,
-      constructionId: selected?.constructionId ?? null, frameIds: selected?.frameIds ?? [],
-      importedConstructionBundleIdsUsed: usedBundles.map(bundle => bundle.id), importedConstructionIdsUsed: ownedConstructionIds,
-      rhetoricalPlan: rhetorical.plan ?? null, discoursePrior: rhetorical.prior ? discoursePriorAudit(rhetorical.prior) : null,
-      narrativeConditioning: { constraints: narrativeConstraints, selectedCoverage: selected?.narrativeFit ?? 0 },
-      realizationStatus: selected ? "realized" : "unresolved", score: score.audit,
-      requiredTermIdsCovered: selected?.required ?? [], propositionAtomIdsCovered: selected?.coveredAtoms ?? [] }) };
 }
-
-/** Plan claim roles and discourse extent without converting labels or boundary statistics into text. */
-export function planLanguageMemoryDiscourse(input: LanguageGenerationInput): {
-  materials: SemanticFactMaterial[]; plan?: RhetoricalPlan; prior?: RuntimeDiscoursePriorProfile;
-} {
-  const materials = semanticFactMaterialsFromFrames(input.frames ?? []);
-  const contextText = (input.contextSymbols ?? []).join(" ");
-  const prior = runtimeDiscoursePriorProfile(input.state, input.generationExtent);
-  return { materials, plan: semanticRhetoricalPlanFromMaterials(materials, contextText, prior), prior };
-}
-
-
 
 interface NarrativeSurfaceConstraint {
   surface: string;
   source: "established_fact_value" | "open_setup_surface";
 }
 
-/** Narrative values rank complete construction candidates; typed entity/fact/setup IDs never become prose. */
+/**
+ * Project only source-bearing narrative values into realization guidance.
+ * Subject, fact, and setup identifiers stay typed bookkeeping keys; lexical
+ * recovery from their punctuation would be an invented ontology.  Strings in
+ * values and the event's own description are the only admissible surfaces.
+ */
 function narrativeConditioningSurfaceConstraints(frames: readonly LanguageGenerationFrame[]): NarrativeSurfaceConstraint[] {
-  const values = new Map<string, NarrativeSurfaceConstraint>();
+  const bySurface = new Map<string, NarrativeSurfaceConstraint>();
   const add = (value: string, source: NarrativeSurfaceConstraint["source"]) => {
     const surface = tidyInline(value);
-    if (!surface || !/[\p{Letter}\p{Number}]/u.test(surface) || surface.includes("://")
-      || !/\s/u.test(surface) && /^(?:[\p{L}\p{N}_-]+[._:])+[\p{L}\p{N}_-]+$/u.test(surface)) return;
+    if (!surface || looksLikeInternalIdentifierSurface(surface) || looksLikeNarrativeOpaqueIdentifier(surface) || !speechBearingSurface(surface)) return;
     const key = surface.normalize("NFKC").toLocaleLowerCase();
-    if (!values.has(key)) values.set(key, { surface, source });
+    if (!bySurface.has(key)) bySurface.set(key, { surface, source });
   };
-  const visit = (value: JsonValue, depth: number) => {
+  const visitValue = (value: JsonValue, depth: number) => {
     if (depth > 4) return;
-    if (typeof value === "string") add(value, "established_fact_value");
-    else if (Array.isArray(value)) value.forEach(child => visit(child, depth + 1));
-    else if (value && typeof value === "object") Object.values(value).forEach(child => visit(child, depth + 1));
+    if (typeof value === "string") {
+      add(value, "established_fact_value");
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const child of value) visitValue(child, depth + 1);
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const child of Object.values(value)) visitValue(child, depth + 1);
   };
   for (const frame of frames) {
-    for (const fact of frame.narrativeConditioning?.establishedFacts ?? []) visit(fact.value, 0);
-    for (const setup of frame.narrativeConditioning?.openSetupSurfaces ?? []) add(setup.surface, "open_setup_surface");
+    const conditioning = frame.narrativeConditioning;
+    if (!conditioning) continue;
+    for (const fact of conditioning.establishedFacts) visitValue(fact.value, 0);
+    for (const setup of conditioning.openSetupSurfaces ?? []) add(setup.surface, "open_setup_surface");
   }
-  return [...values.values()].sort((a, b) => a.surface.localeCompare(b.surface)).slice(0, 24);
+  return [...bySurface.values()]
+    .sort((left, right) => left.surface.localeCompare(right.surface))
+    .slice(0, 24);
+}
+
+/** A dotted/colonized single token is a typed key, not a recovered phrase. */
+function looksLikeNarrativeOpaqueIdentifier(value: string): boolean {
+  return !/\s/u.test(value)
+    && /^(?:[\p{L}\p{N}_-]+[._:])+[\p{L}\p{N}_-]+$/u.test(value);
 }
 
 function generationRequiredTerms(input: LanguageGenerationInput): LanguageGenerationTerm[] {
@@ -1171,7 +1427,7 @@ function generationRequiredTerms(input: LanguageGenerationInput): LanguageGenera
   };
   for (const term of input.requiredTerms ?? []) add(term);
   for (const frame of input.frames ?? []) for (const term of frame.requiredTerms ?? []) add(term);
-  return [...terms.values()].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0));
+  return [...terms.values()].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0)).slice(0, 48);
 }
 
 function generationFrameAtoms(input: LanguageGenerationInput): LanguageGenerationAtom[] {
@@ -1186,12 +1442,164 @@ function generationFrameAtoms(input: LanguageGenerationInput): LanguageGeneratio
     if (!existing || (next.weight ?? 0) > (existing.weight ?? 0)) atoms.set(key, next);
   };
   for (const frame of input.frames ?? []) for (const atom of frame.propositionAtoms ?? []) add(atom, frame);
-  return [...atoms.values()].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || a.text.localeCompare(b.text));
+  return [...atoms.values()].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || a.text.localeCompare(b.text)).slice(0, 48);
 }
 
 function isDiscourseAtom(atom: LanguageGenerationAtom, frame: LanguageGenerationFrame | undefined): boolean {
   if (frame?.role && frame.role !== "answer" && frame.role !== "caveat" && frame.role !== "example" && frame.role !== "instruction") return false;
   return atom.kind === "claim" || atom.kind === "surface" || atom.kind === "caveat" || atom.kind === "artifact" || atom.kind === "program";
+}
+
+function generationPieces(
+  input: LanguageGenerationInput,
+  requiredTerms: readonly LanguageGenerationTerm[],
+  frameAtoms: readonly LanguageGenerationAtom[],
+  narrativeConstraints: readonly NarrativeSurfaceConstraint[],
+  contextSymbols: readonly string[],
+  contextText: string
+): GenerationPiece[] {
+  const semanticFrameIds = new Set([...(input.semanticFrameIds ?? []), ...(input.frames ?? []).flatMap(frame => frame.semanticFrameIds ?? [])]);
+  const rows: GenerationPiece[] = [];
+  // Typed narrative constraints are guidance for selecting learned surfaces,
+  // just like explicit semantic terms.  Without this, an unconstrained
+  // full-corpus phrase pool could drown out a condition before scoring ever
+  // had a chance to discriminate it.
+  const allowRawNgramSurfacePieces = requiredTerms.length === 0 && frameAtoms.length === 0 && narrativeConstraints.length === 0;
+  const contextFeatures = contextText ? featureSet(contextText, 256) : [];
+  const contextAnchors = new Set(symbolizeData(contextText).map(symbol => symbol.toLocaleLowerCase()).filter(isAnchorSymbol));
+  // Plan item L11: the cheap categorical/anchor rejection gates run BEFORE
+  // the expensive per-piece scoring (featureSet + weightedJaccard + n-gram
+  // lookup). This routine is fed up to ~10K candidate surfaces per generate()
+  // call (1024 units, 512x8 pattern surfaces, 512x8 frame surfaces, 2048
+  // observations) of which selectGenerationPieces ultimately keeps ~8-12;
+  // in the common evidence-grounded path (requiredTerms/frameAtoms present)
+  // the anchor gates reject the large majority, so scoring first meant
+  // paying full featurization for pieces that were then discarded unread.
+  // Gate order is the only change -- every piece that survives produces the
+  // exact same score as before.
+  // Beam-synthesized sentences exist to give the discourse beam sentence-
+  // level material when the corpus has none; they are self-derived from
+  // this very context, so the raw-scrap anchor gates do not apply to them.
+  // Discourse-level coverage still judges the assembled result.
+  const synthesized = (input.frames ?? []).some(frame => frame.force === "creative")
+    ? synthesizeBeamSentencePieces({
+      state: input.state,
+      requiredTerms,
+      contextText,
+      generationExtent: Math.max(1, Math.min(256, Math.floor(input.generationExtent ?? 64))),
+      topicVocabulary: uniqueStrings([...(input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? []), ...narrativeConstraints.map(constraint => constraint.surface)]),
+      properNounCasing: generationCasingHints(input),
+      choiceSeed: input.choiceSeed
+    })
+    : [];
+  const synthesizedTexts = new Set(synthesized.map(sentence => tidyInline(sentence.text)));
+  const add = (text: string, source: GenerationPiece["source"], id: string | undefined, support: number, metadata: Partial<GenerationPiece> = {}) => {
+    const clean = tidyInline(text);
+    if (!clean || looksLikeInternalIdentifierSurface(clean)) return;
+    const selfDerived = source === "suggestion" && synthesizedTexts.has(clean);
+    if ((source === "observation" || source === "suggestion") && !allowRawNgramSurfacePieces && !selfDerived) return;
+    if ((source === "observation" || source === "suggestion") && !selfDerived && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
+    if ((source === "language_unit" || source === "phrase_pattern" || source === "semantic_frame") && !allowRawNgramSurfacePieces && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
+    const fit = contextText ? weightedJaccard(featureSet(clean, 256), contextFeatures) : 0.5;
+    const ngram = ngramPieceSupport(input.state, clean, contextSymbols);
+    const structuralDelta = bestStructuralDeltaForSurface(input.state, contextText, clean);
+    const learnedFit = Math.max(fit, structuralDelta.fit);
+    const narrativeFit = narrativeConditioningCoverage(clean, narrativeConstraints);
+    // Narrative support is an observed semantic-context feature beside the
+    // normal learned fit. It can rank learned candidates but cannot create a
+    // new surface or force a typed id into text.
+    const score = clamp01(calibrated("language_memory.unit_support_weight") * clamp01(support) + calibrated("language_memory.unit_fit_weight") * Math.max(learnedFit, narrativeFit) + calibrated("language_memory.unit_ngram_probability_weight") * ngram.probability + calibrated("language_memory.unit_source_preference_weight") * sourcePreference(source));
+    rows.push({ ...metadata, text: clean, source, id, support: clamp01(support), fit, order: ngram.order, probability: ngram.probability, score, structuralDeltaFit: structuralDelta.fit, structuralDeltaIds: structuralDelta.ids });
+  };
+  // Required terms constrain generated/prior-bearing material. They are not
+  // standalone sentence candidates whose existence could satisfy the request.
+  for (const atom of frameAtoms) add(atom.text, "proposition_atom", atom.id, Math.max(0.1, atom.weight ?? 0.5));
+  for (const piece of semanticRhetoricalPiecesFromMaterials(semanticFactMaterialsFromFrames(input.frames ?? []), input.state, contextText)) {
+    add(piece.text, piece.source, piece.id, piece.support, piece);
+  }
+  // A hydrated delta offers the surface it was learned to produce; its own fit refuses one whose source half this request never matched.
+  for (const delta of (input.state.structuralDeltas ?? []).slice(0, 256)) {
+    if (!delta.surface.to) continue;
+    if (structuralDeltaRealizationFit(delta, contextText, delta.surface.to) <= 0) continue;
+    add(delta.surface.to, "structural_delta", delta.id, delta.support);
+  }
+  for (const unit of input.state.importedUnits.slice(0, 1024)) {
+    if (unit.unitKind !== "phrase" && unit.unitKind !== "symbol") continue;
+    add(unit.text, "language_unit", unit.id, unit.alpha);
+  }
+  for (const pattern of input.state.importedPatterns.slice(0, 512)) {
+    for (const surface of patternKeys(pattern).slice(0, 8)) add(surface, "phrase_pattern", pattern.id, pattern.support);
+  }
+  for (const frame of input.state.importedSemanticFrames.slice(0, 512)) {
+    if (semanticFrameIds.size && !semanticFrameIds.has(frame.id)) continue;
+    for (const surface of semanticFrameSurfaces(frame).slice(0, 8)) add(surface, "semantic_frame", frame.id, frame.alpha);
+  }
+  // Also L11: when requiredTerms/frameAtoms exist, every observation and
+  // suggestion piece is categorically rejected by the first gate in add()
+  // above -- so skip the 2048-observation join-program rendering loop and
+  // the model-scanning suggestFromModels call entirely in that case rather
+  // than paying their cost to produce pieces that cannot survive.
+  if (allowRawNgramSurfacePieces) {
+    for (const observation of input.state.importedObservations.slice(0, 2048)) {
+      const text = renderLearnedSequence(
+        [...observation.history.slice(-5), observation.symbol],
+        activeJoinProgram(input.state, input.segmentationPopulationPosterior)
+      );
+      const support = Math.max(0.001, Math.log2(1 + observation.count) * Math.max(0.1, observation.fieldWeight) / 12);
+      add(text, "observation", observation.id, support);
+    }
+    for (const suggestion of suggestFromModels(input.state, contextSymbols, 24)) add(suggestion.symbol, "suggestion", undefined, suggestion.support);
+  }
+  for (const sentence of synthesized) add(sentence.text, "suggestion", sentence.id, sentence.support);
+  const seen = new Map<string, GenerationPiece>();
+  for (const row of rows) {
+    const key = row.text.normalize("NFKC").toLocaleLowerCase();
+    const existing = seen.get(key);
+    if (!existing || row.score > existing.score) seen.set(key, row);
+  }
+  return [...seen.values()].sort((a, b) => b.score - a.score || b.support - a.support || a.text.localeCompare(b.text)).slice(0, 256);
+}
+
+function selectGenerationPieces(pieces: readonly GenerationPiece[], requiredTerms: readonly LanguageGenerationTerm[], generationExtent: number): GenerationPiece[] {
+  const selected: GenerationPiece[] = [];
+  const add = (piece: GenerationPiece) => {
+    if (!piece.text) return;
+    const selectedText = selected.map(row => row.text).join(" ");
+    if (containsLoose(selectedText, piece.text) || selected.some(row => containsLoose(piece.text, row.text) && row.source !== "required_term")) return;
+    const projected = symbolizeData(tidyInline([...selected.map(row => row.text), piece.text].join(" ")));
+    if (projected.length > generationExtent && selected.length) return;
+    selected.push(piece);
+  };
+  if (requiredTerms.length) {
+    const semanticRhetoric = pieces.filter(row => row.source === "semantic_rhetoric").slice(0, Math.max(1, Math.min(3, Math.floor(generationExtent / 14))));
+    for (const piece of semanticRhetoric) add(piece);
+    if (semanticRhetoric.length) {
+      for (const piece of pieces.filter(row => row.source === "semantic_frame").slice(0, 2)) add(piece);
+      for (const source of ["language_unit", "phrase_pattern"] as const) for (const piece of pieces.filter(row => row.source === source).slice(0, 2)) add(piece);
+      return selected.slice(0, 8);
+    }
+    // Synthesized sentences first: whole-sentence material outranks
+    // fragment fillers when the corpus offered no grounded pieces.
+    for (const piece of pieces.filter(row => row.source === "suggestion").slice(0, 8)) add(piece);
+    for (const piece of pieces.filter(row => row.source === "proposition_atom").slice(0, 8)) add(piece);
+    for (const piece of pieces.filter(row => row.source === "semantic_frame").slice(0, 4)) add(piece);
+    for (const source of ["language_unit", "phrase_pattern"] as const) for (const piece of pieces.filter(row => row.source === source).slice(0, 4)) add(piece);
+    if (!selected.length) for (const piece of pieces.slice(0, 4)) add(piece);
+    return selected.slice(0, 12);
+  }
+  for (const piece of pieces.filter(row => row.source === "semantic_rhetoric").slice(0, Math.max(1, Math.min(3, Math.floor(generationExtent / 14))))) add(piece);
+  if (selected.length) {
+    for (const source of ["semantic_frame", "language_unit", "phrase_pattern"] as const) for (const piece of pieces.filter(row => row.source === source).slice(0, 2)) add(piece);
+    return selected.slice(0, 8);
+  }
+  for (const source of ["language_unit", "phrase_pattern", "observation", "suggestion"] as const) {
+    for (const piece of pieces.filter(row => row.source === source).slice(0, 6)) add(piece);
+    if (selected.length >= 3) break;
+  }
+  for (const piece of pieces.filter(row => row.source === "proposition_atom").slice(0, 4)) add(piece);
+  for (const piece of pieces.filter(row => row.source === "semantic_frame").slice(0, 4)) add(piece);
+  if (!selected.length) for (const piece of pieces.slice(0, 4)) add(piece);
+  return selected.slice(0, 12);
 }
 
 interface RhetoricalLatticeGeneration {
@@ -1200,6 +1608,362 @@ interface RhetoricalLatticeGeneration {
   lattice: SentenceLattice;
   proseCandidates: ProseCandidate[];
   critic: ProseCriticResult;
+}
+
+function generateRhetoricalSentenceLattice(input: {
+  state: LanguageMemoryRuntimeState;
+  pieces: readonly GenerationPiece[];
+  requiredTerms: readonly LanguageGenerationTerm[];
+  frameAtoms: readonly LanguageGenerationAtom[];
+  frames: readonly LanguageGenerationFrame[];
+  contextSymbols: readonly string[];
+  contextText: string;
+  generationExtent: number;
+  discoursePrior?: RuntimeDiscoursePriorProfile;
+  styleProfileId?: string;
+  joinProgram?: JoinProgramMixture;
+}): RhetoricalLatticeGeneration | undefined {
+  const materials = semanticFactMaterialsFromFrames(input.frames);
+  if (!materials.length) return undefined;
+  const rhetoricalPlan = semanticRhetoricalPlanFromMaterials(materials, input.contextText, input.discoursePrior);
+  if (!rhetoricalPlan) return undefined;
+  const paragraphPlan = paragraphPlanFromRhetoricalPlan({
+    plan: rhetoricalPlan,
+    materials,
+    frameAtoms: input.frameAtoms,
+    generationExtent: input.generationExtent,
+    discoursePrior: input.discoursePrior,
+    styleProfileId: input.styleProfileId
+  });
+  if (!paragraphPlan.sentencePlans.length) return undefined;
+  const inlineBoundary = chooseInlineCompressionBoundary(input.state);
+  const clausesByPlan = paragraphPlan.sentencePlans
+    .map(sentencePlan => ({
+      sentencePlanId: sentencePlan.id,
+      candidates: clauseCandidatesForSentencePlan({
+        sentencePlan,
+        plan: rhetoricalPlan,
+        materials,
+        pieces: input.pieces,
+        inlineBoundary: inlineBoundary.text,
+        joinProgram: input.joinProgram,
+        generationExtent: input.generationExtent
+      })
+    }))
+    .filter(row => row.candidates.length > 0);
+  if (!clausesByPlan.length) return undefined;
+  const lattice: SentenceLattice = {
+    id: `sentence.lattice:${hashText(`${paragraphPlan.id}:${clausesByPlan.flatMap(row => row.candidates.map(candidate => candidate.id)).join("|")}`).slice(0, 18)}`,
+    paragraphPlan,
+    clausesByPlan,
+    edges: clauseLatticeEdges(clausesByPlan),
+    audit: toJsonValue({
+      source: "language-memory-runtime.rhetorical_sentence_lattice",
+      paragraphPlanId: paragraphPlan.id,
+      sentencePlanCount: paragraphPlan.sentencePlans.length,
+      clauseCandidateCount: clausesByPlan.reduce((sum, row) => sum + row.candidates.length, 0),
+      edgeCount: clauseLatticeEdges(clausesByPlan).length,
+      inlineBoundarySource: inlineBoundary.source
+    })
+  };
+  const sentenceBoundary = chooseSentenceDiscourseBoundary(input.state);
+  const proseCandidates = proseCandidatesFromSentenceLattice({
+    lattice,
+    sentenceBoundary: sentenceBoundary.text,
+    joinProgram: input.joinProgram,
+    generationExtent: input.generationExtent
+  });
+  if (!proseCandidates.length) return undefined;
+  const critics = proseCandidates
+    .map(candidate => critiqueProseCandidate(candidate, lattice))
+    .sort((a, b) => Number(b.accepted) - Number(a.accepted) || b.score - a.score || a.candidateId.localeCompare(b.candidateId));
+  const critic = critics[0];
+  const selected = critic ? proseCandidates.find(candidate => candidate.id === critic.candidateId) : undefined;
+  if (!critic || !selected || !selected.text.trim()) return undefined;
+  const discourse = discourseFromProseCandidate({
+    candidate: selected,
+    lattice,
+    critic,
+    state: input.state,
+    requiredTerms: input.requiredTerms,
+    frameAtoms: input.frameAtoms,
+    sentenceBoundary,
+    generationExtent: input.generationExtent
+  });
+  return { discourse, paragraphPlan, lattice, proseCandidates: proseCandidates.slice(0, 12), critic };
+}
+
+function paragraphPlanFromRhetoricalPlan(input: {
+  plan: RhetoricalPlan;
+  materials: readonly SemanticFactMaterial[];
+  frameAtoms: readonly LanguageGenerationAtom[];
+  generationExtent: number;
+  discoursePrior?: RuntimeDiscoursePriorProfile;
+  styleProfileId?: string;
+}): ParagraphPlan {
+  const materialById = new Map(input.materials.map(material => [material.id, material]));
+  const directMaterials = materialsForRoles(input.plan, materialById, [ANSWER_ROLE_IDS.identity, ANSWER_ROLE_IDS.contribution]).slice(0, 3);
+  const explanationMaterials = materialsForRoles(input.plan, materialById, [ANSWER_ROLE_IDS.contribution, ANSWER_ROLE_IDS.significance, ANSWER_ROLE_IDS.context, ANSWER_ROLE_IDS.field]).slice(0, 4);
+  const contrastMaterials = input.plan.backgroundAssignmentIds.map(id => materialById.get(input.plan.assignments.find(row => row.id === id)?.materialId ?? "")).filter((row): row is SemanticFactMaterial => Boolean(row)).slice(0, 2);
+  const hasAttachedEvidence = input.frameAtoms.some(atom => (atom.evidenceIds ?? []).length > 0);
+  const forceClass = input.materials.find(material => material.forceClass)?.forceClass ?? "bounded_memory";
+  const priorTarget = input.discoursePrior?.targetSymbolCount ?? 0;
+  const target = Math.max(24, Math.min(256, Math.max(input.generationExtent, priorTarget)));
+  const sentencePlans: SentencePlan[] = [];
+  // Rhetorical moves are assigned from role-filtered material pools that
+  // frequently overlap (e.g. directMaterials feeds both the lead and close
+  // moves); with few distinct input facts, the same material can otherwise
+  // get selected for several moves, producing near-duplicate clauses once
+  // each sentence plan is realized into a surface (the diversity gate in
+  // discourseSurfaceAdequate then correctly rejects the whole candidate).
+  // Prefer materials not already claimed by an earlier sentence plan in
+  // this paragraph; only reuse when a move's candidate pool is otherwise
+  // empty (a genuine restatement, e.g. a closing sentence, rather than
+  // redundant padding).
+  const usedMaterialIds = new Set<string>();
+  const add = (move: RhetoricalMove, materialsInput: readonly SemanticFactMaterial[], rank: number, anchors: readonly string[] = []) => {
+    const unused = materialsInput.filter(material => !usedMaterialIds.has(material.id));
+    const materials = unused.length ? unused : materialsInput;
+    for (const material of materials) usedMaterialIds.add(material.id);
+    const claimIds = uniqueStrings(materials.map(material => material.id));
+    const requiredAnchors = uniqueStrings([
+      ...anchors,
+      ...materials.flatMap(material => [material.subjectLabel, material.objectLabel])
+    ].map(tidyInline).filter(Boolean)).slice(0, move === RHETORICAL_MOVE_IDS.lead ? 4 : 3);
+    sentencePlans.push({
+      id: `sentence.plan:${hashText(`${input.plan.id}:${move}:${claimIds.join(":")}:${rank}`).slice(0, 18)}`,
+      move,
+      claimIds,
+      requiredAnchors,
+      forceClass,
+      maxTokens: Math.max(8, Math.ceil(target / 5)),
+      rank
+    });
+  };
+  const memberMaterials = collectionMemberMaterials(input.plan, materialById, input.materials, input.plan.subjectLabel);
+  if (memberMaterials.length) {
+    add(RHETORICAL_MOVE_IDS.lead, memberMaterials, 0, [input.plan.subjectLabel]);
+    if (memberMaterials.length > 4 && input.plan.targetMoveCount > 1) {
+      add(
+        RHETORICAL_MOVE_IDS.support,
+        memberMaterials.slice(4),
+        1,
+        [input.plan.subjectLabel]
+      );
+    }
+    return {
+      id: `paragraph.plan:${hashText(`${input.plan.id}:member_relation`).slice(0, 18)}`,
+      sentencePlans,
+      targetSymbolCount: target,
+      forceClass,
+      styleProfileId: input.styleProfileId,
+      audit: toJsonValue({
+        source: "language-memory-runtime.paragraph_plan",
+        rhetoricalPlanId: input.plan.id,
+        subjectLabelHash: hashText(input.plan.subjectLabel),
+        moves: sentencePlans.map(plan => plan.move),
+        hasAttachedEvidence,
+        forceClass,
+        discoursePrior: input.discoursePrior ? discoursePriorAudit(input.discoursePrior) : null
+      })
+    };
+  }
+  add(RHETORICAL_MOVE_IDS.lead, directMaterials.length ? directMaterials : input.materials.slice(0, 2), 0, [input.plan.subjectLabel]);
+  const leadClaimIds = new Set(sentencePlans[0]?.claimIds ?? []);
+  const supportMaterials = (explanationMaterials.length
+    ? explanationMaterials
+    : input.materials.slice(0, 3))
+    .filter(material => !leadClaimIds.has(material.id));
+  if (supportMaterials.length) {
+    add(RHETORICAL_MOVE_IDS.support, supportMaterials, 1, [input.plan.subjectLabel]);
+  }
+  if (contrastMaterials.length) add(RHETORICAL_MOVE_IDS.contrast, contrastMaterials, 2, [input.plan.subjectLabel]);
+  if (hasAttachedEvidence) {
+    const sourceBoundMaterials = input.materials.slice(0, 3);
+    if (sourceBoundMaterials.length) {
+      add(RHETORICAL_MOVE_IDS.sourceBound, sourceBoundMaterials, 3);
+    }
+  }
+  return {
+    id: `paragraph.plan:${hashText(`${input.plan.id}:${sentencePlans.map(plan => plan.move).join("|")}`).slice(0, 18)}`,
+    sentencePlans,
+    targetSymbolCount: target,
+    forceClass,
+    styleProfileId: input.styleProfileId,
+    audit: toJsonValue({
+      source: "language-memory-runtime.paragraph_plan",
+      rhetoricalPlanId: input.plan.id,
+      subjectLabelHash: hashText(input.plan.subjectLabel),
+      moves: sentencePlans.map(plan => plan.move),
+      hasAttachedEvidence,
+      forceClass,
+      discoursePrior: input.discoursePrior ? discoursePriorAudit(input.discoursePrior) : null
+    })
+  };
+}
+
+function clauseCandidatesForSentencePlan(input: {
+  sentencePlan: SentencePlan;
+  plan: RhetoricalPlan;
+  materials: readonly SemanticFactMaterial[];
+  pieces: readonly GenerationPiece[];
+  inlineBoundary: string;
+  joinProgram?: JoinProgramMixture;
+  generationExtent: number;
+}): ClauseCandidate[] {
+  const materialById = new Map(input.materials.map(material => [material.id, material]));
+  const planMaterials = input.sentencePlan.claimIds.map(id => materialById.get(id)).filter((row): row is SemanticFactMaterial => Boolean(row));
+  const sourcePieceIds = sourcePieceIdsForClaims(input.pieces, input.sentencePlan.claimIds);
+  const textRows = rhetoricalClauseTexts({
+    move: input.sentencePlan.move,
+    plan: input.plan,
+    materials: planMaterials.length ? planMaterials : input.materials,
+    materialById,
+    inlineBoundary: input.inlineBoundary,
+    joinProgram: input.joinProgram
+  });
+  const out: ClauseCandidate[] = [];
+  for (const [index, text] of textRows.entries()) {
+    const clean = tidyInline(text);
+    if (!clean) continue;
+    if (containsUserFacingMetaSpeech(clean)) continue;
+    const coverage = anchorCoverage(clean, input.sentencePlan.requiredAnchors);
+    const repetitionPenalty = discourseRepetitionPenalty(clean);
+    const symbolCount = symbolizeData(clean).length;
+    const maxTokens = input.sentencePlan.maxTokens ?? input.generationExtent;
+    const lengthFit = clamp01(1 - Math.max(0, symbolCount - maxTokens) / Math.max(1, maxTokens));
+    const support = clamp01(semanticMaterialSupport(planMaterials.length ? planMaterials : input.materials) + (sourcePieceIds.length ? 0.04 : 0));
+    const continuity = clauseContinuity(clean, input.plan.subjectLabel);
+    const score = clamp01(calibrated("language_memory.sentence_support_weight") * support + calibrated("language_memory.sentence_coverage_weight") * coverage + calibrated("language_memory.sentence_continuity_weight") * continuity + calibrated("language_memory.sentence_length_fit_weight") * lengthFit + calibrated("language_memory.sentence_non_repetition_weight") * (1 - repetitionPenalty));
+    out.push({
+      id: `clause:${hashText(`${input.sentencePlan.id}:${index}:${clean}`).slice(0, 18)}`,
+      sentencePlanId: input.sentencePlan.id,
+      move: input.sentencePlan.move,
+      text: clean,
+      claimIds: input.sentencePlan.claimIds,
+      requiredAnchors: input.sentencePlan.requiredAnchors,
+      sourcePieceIds,
+      support,
+      coverage,
+      continuity,
+      repetitionPenalty,
+      lengthFit,
+      score
+    });
+  }
+  return out.sort((a, b) => b.score - a.score || a.text.localeCompare(b.text)).slice(0, 3);
+}
+
+function rhetoricalClauseTexts(input: {
+  move: RhetoricalMove;
+  plan: RhetoricalPlan;
+  materials: readonly SemanticFactMaterial[];
+  materialById: ReadonlyMap<string, SemanticFactMaterial>;
+  inlineBoundary: string;
+  joinProgram?: JoinProgramMixture;
+}): string[] {
+  const boundary = input.inlineBoundary;
+  const rows: string[] = [];
+  const add = (value: string) => {
+    const clean = tidyInline(value);
+    if (!clean) return;
+    if (containsUserFacingMetaSpeech(clean)) return;
+    if (!rows.some(row => semanticRelationDuplicate(row, clean))) rows.push(clean);
+  };
+  const members = collectionMemberMaterials(input.plan, input.materialById, input.materials, input.plan.subjectLabel);
+  if (members.length && (input.move === RHETORICAL_MOVE_IDS.lead || input.move === RHETORICAL_MOVE_IDS.support || input.move === RHETORICAL_MOVE_IDS.close)) {
+    add(renderLearnedSequence(
+      members.map(material => collectionMemberLabel(material, input.plan.subjectLabel)),
+      input.joinProgram,
+      boundary
+    ));
+    return rows.slice(0, 4);
+  }
+  if (input.move === RHETORICAL_MOVE_IDS.lead || input.move === RHETORICAL_MOVE_IDS.close) {
+    const main = rhetoricalMainSurface(input.plan, input.materialById, boundary, input.joinProgram);
+    add(main.text);
+    const bridge = rhetoricalContributionBridgeSurface(input.plan, input.materialById, boundary, input.joinProgram);
+    add(bridge.text);
+  }
+  if (input.move === RHETORICAL_MOVE_IDS.support) {
+    const bridge = rhetoricalBridgeSurface(input.plan, input.materialById, boundary, input.joinProgram);
+    add(bridge.text);
+    const contributionBridge = rhetoricalContributionBridgeSurface(input.plan, input.materialById, boundary, input.joinProgram);
+    add(contributionBridge.text);
+  }
+  if (input.move === RHETORICAL_MOVE_IDS.contrast) {
+    const background = materialsForRoles(input.plan, input.materialById, [ANSWER_ROLE_IDS.backgroundActor, ANSWER_ROLE_IDS.backgroundRelation, ANSWER_ROLE_IDS.context]).slice(0, 2);
+    for (const material of background) {
+      add(renderLearnedSequence(
+        contextRelationSegments(material, input.plan.subjectLabel),
+        input.joinProgram
+      ));
+    }
+  }
+  if (input.move === RHETORICAL_MOVE_IDS.sourceBound) {
+    const supported = input.materials
+      .filter(material => material.forceClass === "direct_evidence" || material.certificationPower)
+      .slice(0, 2);
+    for (const material of supported) {
+      add(materialClauseSurface(material, input.plan.subjectLabel, boundary, input.joinProgram));
+    }
+  }
+  if (input.move === RHETORICAL_MOVE_IDS.boundary) {
+    const weak = input.materials
+      .filter(material => material.forceClass !== "direct_evidence" && !material.certificationPower)
+      .sort((a, b) => a.support - b.support)
+      .slice(0, 1);
+    for (const material of weak) {
+      add(materialClauseSurface(material, input.plan.subjectLabel, boundary, input.joinProgram));
+    }
+  }
+  // Only fall back to raw per-material clause surfaces when the move-specific
+  // branches above produced nothing: this used to run unconditionally for
+  // every move, so with few distinct materials (fewer than the number of
+  // rhetorical moves in the paragraph plan) every move ended up appending
+  // the same materialClauseSurface text on top of its own move-specific
+  // text, producing near-duplicate clauses across the whole paragraph that
+  // tripped the discourse diversity/repetition gate.
+  if (!rows.length) {
+    for (const material of input.materials.slice(0, 4)) {
+      add(materialClauseSurface(material, input.plan.subjectLabel, boundary, input.joinProgram));
+    }
+  }
+  return rows.slice(0, 4);
+}
+
+function collectionMemberMaterials(plan: RhetoricalPlan, materialById: ReadonlyMap<string, SemanticFactMaterial>, materials: readonly SemanticFactMaterial[], subject: string): SemanticFactMaterial[] {
+  const surfaced = materialsForRoles(plan, materialById, [ANSWER_ROLE_IDS.contribution, ANSWER_ROLE_IDS.context, ANSWER_ROLE_IDS.field]);
+  return uniqueSemanticMaterials([...surfaced, ...materials])
+    .filter(material => !materialRejectedByQuestionSlot(material))
+    .filter(material => isCollectionMemberMaterial(material, subject))
+    .sort((a, b) => (b.questionSlotScore ?? b.finalQuestionFit ?? b.support) - (a.questionSlotScore ?? a.finalQuestionFit ?? a.support) || a.objectLabel.localeCompare(b.objectLabel))
+    .slice(0, 8);
+}
+
+function isCollectionMemberMaterial(material: SemanticFactMaterial, subject: string): boolean {
+  const slotAligned = material.questionSlotId === ANSWER_SLOT_IDS.memberRelation;
+  const roleAligned = material.relationRoleId === RELATION_ROLE_IDS.graphRequestMembership;
+  if (!slotAligned && !roleAligned) return false;
+  const direct = sameSurface(material.subjectLabel, subject);
+  const inverse = inverseCollectionMemberMaterial(material, subject);
+  if (!direct && !inverse) return false;
+  if (direct && sameSurface(material.objectLabel, subject)) return false;
+  const object = normalizeSurfaceKey(material.objectLabel);
+  const member = collectionMemberLabel(material, subject);
+  if (!object || !member || sameSurface(member, subject)) return false;
+  if (semanticSurfaceSymbolMass(member) > 6) return false;
+  return inverse || semanticSurfaceSymbolMass(material.objectLabel) <= 5;
+}
+
+function collectionMemberLabel(material: SemanticFactMaterial, subject: string): string {
+  return inverseCollectionMemberMaterial(material, subject) ? material.subjectLabel : material.objectLabel;
+}
+
+function inverseCollectionMemberMaterial(material: SemanticFactMaterial, subject: string): boolean {
+  if (material.relationRoleId !== RELATION_ROLE_IDS.graphRequestMembership && material.graphQualityClassId !== GRAPH_QUALITY_CLASS_IDS.catalogNavigation) return false;
+  if (sameSurface(material.subjectLabel, subject)) return false;
+  return containsSurfaceUnits(material.objectLabel, subject);
 }
 
 export function scopeLanguageMemoryStateToProfile(
@@ -1388,6 +2152,7 @@ function scopeLanguageMemoryStateWith(
     ...importedObservations.map(record => record.languageHint)
   ]).sort(compareCodePoint);
   const ordinaryPatterns = importedPatterns.filter(pattern => !isLanguageConstructionPattern(pattern));
+  const joinPrograms = joinProgramsFromPatterns(ordinaryPatterns, state.joinPrograms);
   const importedLanguagePriorCount = importedUnits.length
     + ordinaryPatterns.length
     + importedObservations.length
@@ -1397,7 +2162,7 @@ function scopeLanguageMemoryStateWith(
     + importedPairedAntiUnifiedConstructions.length
     + optionalNullRealizationModels.length
     + creativeEventCompatibilityModels.length
-   
+    + joinPrograms.length
     + (continuationPopulation ? 1 : 0)
     + records.filter(isImportedLanguagePriorModel).length;
   const competenceVector = competenceFromRuntime({
@@ -1433,6 +2198,7 @@ function scopeLanguageMemoryStateWith(
     importedReversibleConstructions,
     importedPairedAntiUnifiedConstructions,
     optionalNullRealizationModels,
+    joinPrograms,
     creativeEventCompatibilityModels,
     rejectedConstructionPatterns,
     importedLanguagePriorCount,
@@ -1472,6 +2238,7 @@ function scopeLanguageMemoryStateWith(
           importedPairedAntiUnifiedConstructions.length,
         optionalNullRealizationModels:
           optionalNullRealizationModels.length,
+        joinPrograms: joinPrograms.length,
         creativeEventCompatibilityModels: creativeEventCompatibilityModels.length
       },
       rejected: {
@@ -1530,6 +2297,7 @@ export function markLanguageMemoryStateUnscoped(
     importedReversibleConstructions: [],
     importedPairedAntiUnifiedConstructions: [],
     optionalNullRealizationModels: [],
+    joinPrograms: [],
     creativeEventCompatibilityModels: [],
     rejectedConstructionPatterns: [],
     importedLanguagePriorCount: 0,
@@ -1572,11 +2340,496 @@ export function markLanguageMemoryStateUnscoped(
   };
 }
 
+function clauseLatticeEdges(clausesByPlan: readonly { sentencePlanId: string; candidates: readonly ClauseCandidate[] }[]): SentenceLattice["edges"] {
+  const edges: SentenceLattice["edges"] = [];
+  for (let index = 1; index < clausesByPlan.length; index++) {
+    for (const left of clausesByPlan[index - 1]!.candidates) {
+      for (const right of clausesByPlan[index]!.candidates) {
+        const continuity = weightedJaccard(featureSet(left.text, 128), featureSet(right.text, 128));
+        edges.push({
+          fromClauseId: left.id,
+          toClauseId: right.id,
+          continuity,
+          score: clamp01(calibrated("language_memory.join_continuity_weight") * continuity + calibrated("language_memory.join_right_score_weight") * right.score + calibrated("language_memory.join_left_score_weight") * left.score)
+        });
+      }
+    }
+  }
+  return edges.slice(0, 96);
+}
+
+function proseCandidatesFromSentenceLattice(input: {
+  lattice: SentenceLattice;
+  sentenceBoundary: string;
+  joinProgram?: JoinProgramMixture;
+  generationExtent: number;
+}): ProseCandidate[] {
+  const beams: ClauseCandidate[][] = [[]];
+  for (const row of input.lattice.clausesByPlan) {
+    const next: ClauseCandidate[][] = [];
+    for (const beam of beams) {
+      // With few distinct materials, several rhetorical moves (e.g. lead and
+      // close both realize the same "main surface", or support and
+      // sourceBound both fall back to the same material clause) can produce
+      // literally the same clause text. Prefer a candidate that doesn't
+      // duplicate a clause already chosen in this beam; if every candidate
+      // for this sentence plan would duplicate, drop the sentence from this
+      // beam rather than repeating it verbatim -- a shorter, non-repetitive
+      // paragraph clears the discourse diversity gate where a longer,
+      // duplicate-laden one does not.
+      const freshCandidates = row.candidates.filter(candidate => !beam.some(existing => semanticRelationDuplicate(existing.text, candidate.text)));
+      if (freshCandidates.length) {
+        for (const candidate of freshCandidates) next.push([...beam, candidate]);
+      } else if (row.candidates.length) {
+        next.push(beam);
+      }
+    }
+    beams.splice(0, beams.length, ...next
+      .sort((a, b) => clauseSequenceScore(b) - clauseSequenceScore(a))
+      .slice(0, 16));
+  }
+  return beams
+    .map((clauses, index) => proseCandidateFromClauses(
+      clauses,
+      input.lattice,
+      input.sentenceBoundary,
+      input.joinProgram,
+      input.generationExtent,
+      index
+    ))
+    .filter((candidate): candidate is ProseCandidate => Boolean(candidate))
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+    .slice(0, 12);
+}
+
+function proseCandidateFromClauses(
+  clauses: readonly ClauseCandidate[],
+  lattice: SentenceLattice,
+  sentenceBoundary: string,
+  joinProgram: JoinProgramMixture | undefined,
+  generationExtent: number,
+  index: number
+): ProseCandidate | undefined {
+  if (!clauses.length) return undefined;
+  const text = renderLearnedSequence(
+    clauses.map(clause => terminateDiscourseSurface(clause.text, sentenceBoundary)),
+    joinProgram
+  );
+  if (containsUserFacingMetaSpeech(text)) return undefined;
+  const symbolCount = symbolizeData(text).length;
+  const target = Math.max(1, Math.min(generationExtent, lattice.paragraphPlan.targetSymbolCount));
+  const claimIds = uniqueStrings(lattice.paragraphPlan.sentencePlans.flatMap(plan => plan.claimIds));
+  const coveredClaimIds = uniqueStrings(clauses.flatMap(clause => clause.claimIds));
+  const anchors = uniqueStrings(lattice.paragraphPlan.sentencePlans.flatMap(plan => plan.requiredAnchors));
+  const claimCoverage = claimIds.length ? coveredClaimIds.length / claimIds.length : 1;
+  const anchor = anchorCoverage(text, anchors);
+  const continuity = clauseSequenceContinuity(clauses);
+  const repetitionPenalty = discourseRepetitionPenalty(text);
+  const lengthFit = clamp01(1 - Math.abs(symbolCount - target) / Math.max(1, target));
+  const priorSupport = clauses.length ? mean(clauses.map(clause => clause.support)) : 0;
+  const score = clamp01(calibrated("language_memory.prose_claim_coverage_weight") * claimCoverage + calibrated("language_memory.prose_anchor_weight") * anchor + calibrated("language_memory.prose_continuity_weight") * continuity + calibrated("language_memory.prose_prior_support_weight") * priorSupport + calibrated("language_memory.prose_length_fit_weight") * lengthFit + calibrated("language_memory.prose_non_repetition_weight") * (1 - repetitionPenalty));
+  return {
+    id: `prose:${hashText(`${lattice.id}:${index}:${clauses.map(clause => clause.id).join("|")}`).slice(0, 18)}`,
+    text,
+    sentencePlanIds: clauses.map(clause => clause.sentencePlanId),
+    clauseIds: clauses.map(clause => clause.id),
+    score,
+    claimCoverage,
+    anchorCoverage: anchor,
+    continuity,
+    repetitionPenalty,
+    lengthFit,
+    priorSupport,
+    audit: toJsonValue({
+      source: "language-memory-runtime.prose_candidate",
+      symbolCount,
+      target,
+      moveCount: clauses.length,
+      score
+    })
+  };
+}
+
+function critiqueProseCandidate(candidate: ProseCandidate, lattice: SentenceLattice): ProseCriticResult {
+  const issues: string[] = [];
+  if (!candidate.text.trim()) issues.push("prose.empty");
+  if (containsUserFacingMetaSpeech(candidate.text)) issues.push("prose.meta_speech");
+  if (candidate.claimCoverage < calibrated("language_memory.prose_claim_coverage_floor")) issues.push("prose.claim_coverage.low");
+  if (candidate.anchorCoverage < calibrated("language_memory.prose_anchor_coverage_floor")) issues.push("prose.anchor_coverage.low");
+  if (candidate.repetitionPenalty > 0.42) issues.push("prose.repetition.high");
+  if (candidate.lengthFit < calibrated("language_memory.prose_length_fit_floor")) issues.push("prose.length_fit.low");
+  const score = clamp01(candidate.score - issues.length * 0.08);
+  return {
+    candidateId: candidate.id,
+    accepted: issues.length === 0 || (issues.length === 1 && issues[0] === "prose.length_fit.low"),
+    score,
+    issues,
+    claimCoverage: candidate.claimCoverage,
+    anchorCoverage: candidate.anchorCoverage,
+    continuity: candidate.continuity,
+    repetitionPenalty: candidate.repetitionPenalty,
+    lengthFit: candidate.lengthFit,
+    audit: toJsonValue({
+      source: "language-memory-runtime.prose_critic",
+      latticeId: lattice.id,
+      candidateId: candidate.id,
+      issues,
+      score
+    })
+  };
+}
+
+function discourseFromProseCandidate(input: {
+  candidate: ProseCandidate;
+  lattice: SentenceLattice;
+  critic: ProseCriticResult;
+  state: LanguageMemoryRuntimeState;
+  requiredTerms: readonly LanguageGenerationTerm[];
+  frameAtoms: readonly LanguageGenerationAtom[];
+  sentenceBoundary: DiscourseBoundaryCandidate;
+  generationExtent: number;
+}): LanguageDiscourseTrace {
+  const clauseById = new Map(input.lattice.clausesByPlan.flatMap(row => row.candidates).map(clause => [clause.id, clause]));
+  const clauses = input.candidate.clauseIds.map(id => clauseById.get(id)).filter((clause): clause is ClauseCandidate => Boolean(clause));
+  const moves = clauses.map((clause, index): LanguageDiscourseMove => ({
+    id: `move:${hashText(`${clause.id}:${index}`).slice(0, 12)}`,
+    role: clause.move,
+    text: clause.text,
+    sourcePieceIds: clause.sourcePieceIds,
+    frameIds: clause.claimIds,
+    atomIds: clause.claimIds,
+    support: clause.support,
+    information: discourseMoveInformation(input.state, clause.text),
+    symbolCount: symbolizeData(clause.text).length,
+    planRank: index
+  }));
+  const boundaries: LanguageDiscourseBoundaryUse[] = [];
+  for (let index = 1; index < moves.length; index++) {
+    boundaries.push({
+      text: input.sentenceBoundary.text,
+      source: input.sentenceBoundary.source,
+      sourceId: input.sentenceBoundary.sourceId,
+      support: input.sentenceBoundary.support,
+      betweenMoveIds: [moves[index - 1]!.id, moves[index]!.id]
+    });
+  }
+  const text = input.candidate.text;
+  const symbolCount = symbolizeData(text).length;
+  const requiredTermIdsCovered = coveredRequiredTermIds(text, input.requiredTerms);
+  const propositionAtomIdsCovered = coveredAtomIds(text, input.frameAtoms);
+  const fluency: LanguageDiscourseFluencyTrace = {
+    beamWidth: Math.max(1, Math.min(8, input.lattice.clausesByPlan.reduce((max, row) => Math.max(max, row.candidates.length), 1))),
+    beamExpansions: input.lattice.edges.length + input.candidate.clauseIds.length,
+    candidateMoveCount: input.lattice.clausesByPlan.reduce((sum, row) => sum + row.candidates.length, 0),
+    selectedBeamScore: input.critic.score,
+    selectedUnitIds: moves.map(move => move.id),
+    latentCoherence: input.candidate.continuity,
+    ngramMeanActivation: moves.length ? clamp01(mean(moves.map(move => 1 / Math.max(1, move.information)))) : 0,
+    priorSupport: input.candidate.priorSupport,
+    coverageGain: input.candidate.claimCoverage,
+    repetitionPenalty: input.candidate.repetitionPenalty,
+    symbolCount
+  };
+  return {
+    text,
+    moves,
+    boundaries,
+    steps: discourseGenerationSteps(moves, boundaries, text, input.requiredTerms, input.frameAtoms),
+    generationStepCount: moves.length,
+    stopReason: stopReasonForDiscourse({ text, moves, symbolCount, generationExtent: input.generationExtent, requiredTermIdsCovered, requiredTerms: input.requiredTerms, propositionAtomIdsCovered, frameAtoms: input.frameAtoms }),
+    requiredTermIdsCovered,
+    propositionAtomIdsCovered,
+    scoreOrderTextHash: hashText(input.candidate.clauseIds.join("|")),
+    anchorCoverage: input.candidate.anchorCoverage,
+    cohesion: discourseCohesion(moves),
+    repetitionPenalty: input.candidate.repetitionPenalty,
+    discourseScore: input.critic.score,
+    fluency
+  };
+}
+
+function sourcePieceIdsForClaims(pieces: readonly GenerationPiece[], claimIds: readonly string[]): string[] {
+  return uniqueStrings(pieces
+    .filter(piece => piece.id && piece.semanticMaterialIds?.some(id => claimIds.includes(id)))
+    .map(piece => piece.id!));
+}
+
+function materialsForRoles(plan: RhetoricalPlan, materialById: ReadonlyMap<string, SemanticFactMaterial>, roleIds: readonly string[]): SemanticFactMaterial[] {
+  return uniqueSemanticMaterials(plan.assignments
+    .filter(assignment => roleIds.includes(assignment.roleId) && assignment.shouldSurface)
+    .sort((a, b) => b.surfaceWeight - a.surfaceWeight || b.priority - a.priority)
+    .map(assignment => materialById.get(assignment.materialId))
+    .filter((material): material is SemanticFactMaterial => Boolean(material)));
+}
+
 function anchorCoverage(text: string, anchors: readonly string[]): number {
   const required = uniqueStrings(anchors.map(tidyInline).filter(Boolean));
   if (!required.length) return 1;
   const covered = required.filter(anchor => containsLoose(text, anchor) || weightedJaccard(featureSet(text, 128), featureSet(anchor, 128)) > calibrated("language_memory.anchor_similarity_floor")).length;
   return covered / required.length;
+}
+
+function clauseContinuity(text: string, subject: string): number {
+  const cleanSubject = tidyInline(subject);
+  if (!cleanSubject) return 0.5;
+  return clamp01(0.35 + weightedJaccard(featureSet(text, 128), featureSet(cleanSubject, 128)) * 1.4);
+}
+
+function clauseSequenceScore(clauses: readonly ClauseCandidate[]): number {
+  if (!clauses.length) return 0;
+  return clamp01(mean(clauses.map(clause => clause.score)) + clauseSequenceContinuity(clauses) * 0.18 - mean(clauses.map(clause => clause.repetitionPenalty)) * 0.18);
+}
+
+function clauseSequenceContinuity(clauses: readonly ClauseCandidate[]): number {
+  if (clauses.length <= 1) return clauses.length ? 0.72 : 0;
+  const scores: number[] = [];
+  for (let index = 1; index < clauses.length; index++) scores.push(weightedJaccard(featureSet(clauses[index - 1]!.text, 128), featureSet(clauses[index]!.text, 128)));
+  return clamp01(mean(scores));
+}
+
+function weaveDiscourse(input: {
+  state: LanguageMemoryRuntimeState;
+  pieces: readonly GenerationPiece[];
+  requiredTerms: readonly LanguageGenerationTerm[];
+  frameAtoms: readonly LanguageGenerationAtom[];
+  frames: readonly LanguageGenerationFrame[];
+  contextSymbols: readonly string[];
+  generationExtent: number;
+}): LanguageDiscourseTrace {
+  const availableMoves = discourseMoves(input);
+  const boundary = availableMoves.some(move => move.role === "semantic_rhetoric")
+    ? chooseSentenceDiscourseBoundary(input.state)
+    : chooseDiscourseBoundary(input.state, input.contextSymbols);
+  const decoded = decodeDiscourseMoves({ state: input.state, moves: availableMoves, boundary, requiredTerms: input.requiredTerms, frameAtoms: input.frameAtoms, generationExtent: input.generationExtent });
+  // Missing meaning is a search failure. Appending the missing terms to a
+  // sentence only manufactured coverage and produced the live word salad.
+  const repairedText = decoded.text;
+  const text = availableMoves.some(move => move.role === "semantic_rhetoric")
+    ? terminateDiscourseSurface(repairedText, boundary.text)
+    : repairedText;
+  const finalMoves = decoded.moves.map(move => ({ ...move, symbolCount: symbolizeData(move.text).length, information: discourseMoveInformation(input.state, move.text) }));
+  const boundaries = decoded.boundaries.map(row => ({ ...row, support: boundary.support }));
+  const requiredTermIdsCovered = coveredRequiredTermIds(text, input.requiredTerms);
+  const propositionAtomIdsCovered = coveredAtomIds(text, input.frameAtoms);
+  const steps = discourseGenerationSteps(finalMoves, boundaries, text, input.requiredTerms, input.frameAtoms);
+  const symbolCount = symbolizeData(text).length;
+  const anchorCoverage = requiredTermCoverage(text, input.requiredTerms);
+  const cohesion = discourseCohesion(finalMoves);
+  const repetitionPenalty = discourseRepetitionPenalty(text);
+  const fluency = {
+    ...decoded.fluency,
+    selectedUnitIds: finalMoves.map(move => move.id),
+    symbolCount,
+    repetitionPenalty
+  };
+  const discourseScore = clamp01(calibrated("language_memory.discourse_anchor_coverage_weight") * anchorCoverage + calibrated("language_memory.discourse_cohesion_weight") * cohesion + calibrated("language_memory.discourse_beam_score_weight") * fluency.selectedBeamScore + calibrated("language_memory.discourse_ngram_activation_weight") * fluency.ngramMeanActivation + calibrated("language_memory.discourse_boundary_support_weight") * boundary.support - repetitionPenalty * calibrated("language_memory.discourse_repetition_penalty"));
+  return {
+    text,
+    moves: finalMoves,
+    boundaries,
+    steps,
+    generationStepCount: steps.length,
+    stopReason: stopReasonForDiscourse({ text, moves: finalMoves, symbolCount, generationExtent: input.generationExtent, requiredTermIdsCovered, requiredTerms: input.requiredTerms, propositionAtomIdsCovered, frameAtoms: input.frameAtoms }),
+    requiredTermIdsCovered,
+    propositionAtomIdsCovered,
+    scoreOrderTextHash: hashText(joinTextForAudit(input.pieces.map(piece => piece.text))),
+    anchorCoverage,
+    cohesion,
+    repetitionPenalty,
+    discourseScore,
+    fluency
+  };
+}
+
+function decodeDiscourseMoves(input: {
+  state: LanguageMemoryRuntimeState;
+  moves: readonly LanguageDiscourseMove[];
+  boundary: DiscourseBoundaryCandidate;
+  requiredTerms: readonly LanguageGenerationTerm[];
+  frameAtoms: readonly LanguageGenerationAtom[];
+  generationExtent: number;
+}): DiscourseDecodeResult {
+  const candidates = rankDiscourseMoveCandidates(input.moves).slice(0, 32);
+  const hasPriorAnchorCandidate = candidates.some(isPriorAnchorMove);
+  const semanticCandidateCount = candidates.filter(move => move.role === "semantic_rhetoric").length;
+  // Synthesized sentence moves signal a length demand, not just a coverage
+  // demand: a story section is done at its extent, not at first coverage.
+  const synthesizedCandidateCount = candidates.filter(move => move.role === "suggestion").length;
+  const lengthDemandMoves = synthesizedCandidateCount
+    ? Math.min(synthesizedCandidateCount, Math.max(2, Math.round(input.generationExtent / 24)))
+    : 0;
+  const minimumCoverageMoves = Math.max(
+    lengthDemandMoves,
+    semanticCandidateCount > 1 ? Math.min(4, semanticCandidateCount) : Math.min(2, candidates.length)
+  );
+  const beamWidth = Math.max(2, Math.min(8, Math.ceil(Math.sqrt(candidates.length + 1))));
+  const maxSteps = Math.min(8, candidates.length);
+  let beams: DiscourseBeamState[] = [emptyDiscourseBeamState()];
+  let best = beams[0]!;
+  let beamExpansions = 0;
+
+  for (let depth = 0; depth < maxSteps; depth++) {
+    const expanded: DiscourseBeamState[] = [];
+    for (const state of beams) {
+      for (const move of candidates) {
+        if (state.usedMoveIds.includes(move.id)) continue;
+        const next = advanceDiscourseBeam({
+          state,
+          move,
+          boundary: input.boundary,
+          joinProgram: activeJoinProgram(input.state),
+          requiredTerms: input.requiredTerms,
+          frameAtoms: input.frameAtoms,
+          generationExtent: input.generationExtent
+        });
+        if (!next) continue;
+        expanded.push(next);
+        beamExpansions++;
+      }
+    }
+    if (!expanded.length) break;
+    beams = expanded
+      .sort((a, b) => scoreDiscourseBeamState(b, input.requiredTerms, input.frameAtoms) - scoreDiscourseBeamState(a, input.requiredTerms, input.frameAtoms) || a.text.localeCompare(b.text))
+      .slice(0, beamWidth);
+    if (scoreDiscourseBeamState(beams[0]!, input.requiredTerms, input.frameAtoms) > scoreDiscourseBeamState(best, input.requiredTerms, input.frameAtoms)) best = beams[0]!;
+    if (discourseBeamHasCoverage(best, input.requiredTerms, input.frameAtoms) && (!hasPriorAnchorCandidate || discourseBeamHasPriorAnchor(best)) && best.moves.length >= minimumCoverageMoves) break;
+  }
+
+  if (!best.moves.length && candidates.length) {
+    best = advanceDiscourseBeam({
+      state: emptyDiscourseBeamState(),
+      move: candidates[0]!,
+      boundary: input.boundary,
+      joinProgram: activeJoinProgram(input.state),
+      requiredTerms: input.requiredTerms,
+      frameAtoms: input.frameAtoms,
+      generationExtent: input.generationExtent
+    }) ?? emptyDiscourseBeamState();
+  }
+
+  const moveCount = Math.max(1, best.moves.length);
+  const latentCoherence = best.moves.length > 1 ? clamp01(best.latentCoherenceSum / Math.max(1, best.moves.length - 1)) : best.moves.length ? 0.72 : 0;
+  const fluency: LanguageDiscourseFluencyTrace = {
+    beamWidth,
+    beamExpansions,
+    candidateMoveCount: candidates.length,
+    selectedBeamScore: clamp01(scoreDiscourseBeamState(best, input.requiredTerms, input.frameAtoms)),
+    selectedUnitIds: best.moves.map(move => move.id),
+    latentCoherence,
+    ngramMeanActivation: clamp01(best.ngramActivationSum / moveCount),
+    priorSupport: clamp01(best.priorSupportSum / moveCount),
+    coverageGain: clamp01(best.coverageGainSum / moveCount),
+    repetitionPenalty: best.repetitionPenalty,
+    symbolCount: best.symbolCount
+  };
+  return { moves: best.moves, text: best.text, boundaries: best.boundaryUses, fluency };
+}
+
+function emptyDiscourseBeamState(): DiscourseBeamState {
+  return {
+    moves: [],
+    text: "",
+    symbolCount: 0,
+    usedMoveIds: [],
+    coveredRequiredTermIds: [],
+    coveredAtomIds: [],
+    score: 0,
+    transitionScores: [],
+    latentCoherenceSum: 0,
+    ngramActivationSum: 0,
+    priorSupportSum: 0,
+    coverageGainSum: 0,
+    repetitionPenalty: 0,
+    boundaryUses: []
+  };
+}
+
+function advanceDiscourseBeam(input: {
+  state: DiscourseBeamState;
+  move: LanguageDiscourseMove;
+  boundary: DiscourseBoundaryCandidate;
+  joinProgram?: JoinProgramMixture;
+  requiredTerms: readonly LanguageGenerationTerm[];
+  frameAtoms: readonly LanguageGenerationAtom[];
+  generationExtent: number;
+}): DiscourseBeamState | undefined {
+  const text = input.state.text
+    ? renderBoundary(input.boundary.text, input.state.text, input.move.text, input.joinProgram)
+    : tidyInline(input.move.text);
+  const symbols = symbolizeData(text);
+  if (symbols.length > input.generationExtent && input.state.moves.length > 0) return undefined;
+  const requiredTermIds = coveredRequiredTermIds(text, input.requiredTerms);
+  const atomIds = coveredAtomIds(text, input.frameAtoms);
+  const termGain = newCoverageMass(input.state.coveredRequiredTermIds, requiredTermIds, requiredCoverageDenominator(input.requiredTerms));
+  const atomGain = newCoverageMass(input.state.coveredAtomIds, atomIds, atomCoverageDenominator(input.frameAtoms));
+  const coverageGain = clamp01(calibrated("language_memory.coverage_gain_term_weight") * termGain + calibrated("language_memory.coverage_gain_atom_weight") * atomGain);
+  const lastMove = input.state.moves[input.state.moves.length - 1];
+  const transitionScore = lastMove ? weightedJaccard(featureSet(lastMove.text, 128), featureSet(input.move.text, 128)) : 0.72;
+  const ngramActivation = clamp01(1 / Math.max(1, input.move.information));
+  const priorSupport = clamp01(input.move.support + Math.min(0.2, input.move.sourcePieceIds.length * 0.04));
+  const roleFit = clamp01(1 - discourseRoleRank(input.move.role) / 12);
+  const projectedRepetition = discourseRepetitionPenalty(text);
+  const boundaryBonus = input.state.moves.length ? clamp01(input.boundary.support) * 0.05 : 0;
+  const priorAnchorBonus = isPriorAnchorMove(input.move) ? 0.42 : 0;
+  const planOrderBonus = clamp01(1 - discoursePlanRank(input.move) / 8) * (input.state.moves.length ? 0.05 : 0.24);
+  const increment = calibrated("language_memory.move_increment_coverage_gain_weight") * coverageGain + calibrated("language_memory.move_increment_prior_support_weight") * priorSupport + calibrated("language_memory.move_increment_transition_weight") * transitionScore + calibrated("language_memory.move_increment_ngram_activation_weight") * ngramActivation + calibrated("language_memory.move_increment_role_fit_weight") * roleFit + boundaryBonus + priorAnchorBonus + planOrderBonus - projectedRepetition * calibrated("language_memory.move_increment_repetition_penalty");
+  const boundaryUses = [...input.state.boundaryUses];
+  if (lastMove) boundaryUses.push({ text: input.boundary.text, source: input.boundary.source, sourceId: input.boundary.sourceId, support: input.boundary.support, betweenMoveIds: [lastMove.id, input.move.id] });
+  return {
+    moves: [...input.state.moves, input.move],
+    text,
+    symbolCount: symbols.length,
+    usedMoveIds: [...input.state.usedMoveIds, input.move.id],
+    coveredRequiredTermIds: requiredTermIds,
+    coveredAtomIds: atomIds,
+    score: input.state.score + increment,
+    transitionScores: [...input.state.transitionScores, transitionScore],
+    latentCoherenceSum: input.state.latentCoherenceSum + (lastMove ? transitionScore : 0),
+    ngramActivationSum: input.state.ngramActivationSum + ngramActivation,
+    priorSupportSum: input.state.priorSupportSum + priorSupport,
+    coverageGainSum: input.state.coverageGainSum + coverageGain,
+    repetitionPenalty: projectedRepetition,
+    boundaryUses
+  };
+}
+
+function rankDiscourseMoveCandidates(moves: readonly LanguageDiscourseMove[]): LanguageDiscourseMove[] {
+  const byId = new Map<string, LanguageDiscourseMove>();
+  for (const move of moves) {
+    const existing = byId.get(move.id);
+    if (!existing || discourseCandidateScore(move) > discourseCandidateScore(existing)) byId.set(move.id, move);
+  }
+  return [...byId.values()]
+    .sort((a, b) => discourseCandidateScore(b) - discourseCandidateScore(a) || discoursePlanRank(a) - discoursePlanRank(b) || a.text.localeCompare(b.text))
+    .slice(0, 48);
+}
+
+function discourseCandidateScore(move: LanguageDiscourseMove): number {
+  const ngramActivation = clamp01(1 / Math.max(1, move.information));
+  const roleFit = clamp01(1 - discourseRoleRank(move.role) / 12);
+  const sourceMass = Math.min(0.16, move.sourcePieceIds.length * 0.04);
+  const compactness = clamp01(1 / Math.max(1, move.symbolCount / 8));
+  const priorAnchor = isPriorAnchorMove(move) ? 0.42 : 0;
+  const planOrder = clamp01(1 - discoursePlanRank(move) / 8);
+  return clamp01(calibrated("language_memory.move_support_weight") * move.support + calibrated("language_memory.move_ngram_activation_weight") * ngramActivation + calibrated("language_memory.move_role_fit_weight") * roleFit + calibrated("language_memory.move_compactness_weight") * compactness + calibrated("language_memory.move_source_mass_weight") * sourceMass + calibrated("language_memory.move_plan_order_weight") * planOrder + priorAnchor);
+}
+
+function discoursePlanRank(move: LanguageDiscourseMove): number {
+  return typeof move.planRank === "number" && Number.isFinite(move.planRank) ? move.planRank : 8;
+}
+
+function scoreDiscourseBeamState(state: DiscourseBeamState, requiredTerms: readonly LanguageGenerationTerm[], atoms: readonly LanguageGenerationAtom[]): number {
+  const requiredCoverage = requiredCoverageDenominator(requiredTerms) ? state.coveredRequiredTermIds.length / requiredCoverageDenominator(requiredTerms) : 1;
+  const atomCoverage = atomCoverageDenominator(atoms) ? state.coveredAtomIds.length / atomCoverageDenominator(atoms) : 1;
+  const moveBalance = Math.min(1, state.moves.length / 3);
+  const transitionMean = state.transitionScores.length ? mean(state.transitionScores) : state.moves.length ? 0.72 : 0;
+  const averageSupport = state.moves.length ? state.priorSupportSum / state.moves.length : 0;
+  const priorAnchor = discourseBeamHasPriorAnchor(state) ? 0.62 : 0;
+  return state.score + calibrated("language_memory.state_required_coverage_weight") * clamp01(requiredCoverage) + calibrated("language_memory.state_atom_coverage_weight") * clamp01(atomCoverage) + calibrated("language_memory.state_move_balance_weight") * moveBalance + calibrated("language_memory.state_transition_mean_weight") * transitionMean + calibrated("language_memory.state_average_support_weight") * clamp01(averageSupport) + priorAnchor - state.repetitionPenalty * calibrated("language_memory.state_repetition_penalty");
+}
+
+function discourseBeamHasCoverage(state: DiscourseBeamState, requiredTerms: readonly LanguageGenerationTerm[], atoms: readonly LanguageGenerationAtom[]): boolean {
+  return coverageMeetsThreshold(state.coveredRequiredTermIds.length, state.coveredAtomIds.length, requiredTerms, atoms);
 }
 
 /**
@@ -1609,6 +2862,33 @@ function coverageMeetsThreshold(
   return requiredOk && atomOk;
 }
 
+/**
+ * Plan items 140-141. Whether a discourse trace's own real coverage
+ * (`requiredTermIdsCovered`/`propositionAtomIdsCovered`, already computed
+ * from the trace's real text against the caller's real requiredTerms/
+ * frameAtoms) clears the same bar the primary evidence-grounded beam-
+ * search discourse path holds itself to. `generateFromLanguageMemory`
+ * requires this (in addition to `languageGenerationSurfaceAdequate`'s
+ * pure fluency check) before ever accepting the Kneser-Ney-driven
+ * fallback continuation (`learnedContinuationDiscourse`) in place of the
+ * real evidence-grounded discourse -- fluency alone used to be enough,
+ * which let a fluent but factually empty continuation replace a real one
+ * whenever the real one merely fell short on fluency.
+ */
+/**
+ * Whether a discourse writes each required term the way the term is written, not merely its units in order.
+ *
+ * `surfaceContainsTerm` compares surface units and drops everything between them, so a continuation that shatters
+ * a value -- "40 % 9: 00" for "40%" and "9:00" -- is credited with covering both and replaces the grounded
+ * realization that spelled them. A fallback may not claim a value it does not write.
+ */
+function discourseSpellsRequiredTerms(discourse: LanguageDiscourseTrace, requiredTerms: readonly LanguageGenerationTerm[]): boolean {
+  const haystack = collapseSurfaceWhitespace(discourse.text).normalize("NFKC").toLocaleLowerCase();
+  return requiredTerms
+    .filter(term => (term.weight ?? 0) >= calibrated("language_memory.required_term_weight_floor") && tidyInline(term.text))
+    .every(term => haystack.includes(collapseSurfaceWhitespace(tidyInline(term.text)).normalize("NFKC").toLocaleLowerCase()));
+}
+
 export function discourseTraceHasCoverage(
   discourse: LanguageDiscourseTrace,
   requiredTerms: readonly LanguageGenerationTerm[],
@@ -1617,12 +2897,993 @@ export function discourseTraceHasCoverage(
   return coverageMeetsThreshold(discourse.requiredTermIdsCovered.length, discourse.propositionAtomIdsCovered.length, requiredTerms, atoms);
 }
 
+// A lattice realizes fact frames as planned claims judged by its critic; only atoms outside those frames are matched as text.
+function latticeDiscourseHasCoverage(
+  generation: RhetoricalLatticeGeneration,
+  frames: readonly LanguageGenerationFrame[],
+  requiredTerms: readonly LanguageGenerationTerm[],
+  atoms: readonly LanguageGenerationAtom[]
+): boolean {
+  if (!generation.critic.accepted) return false;
+  const materialFrameIds = new Set(semanticFactMaterialsFromFrames(frames).map(material => material.frameId));
+  const materialAtomIds = new Set(frames.filter(frame => materialFrameIds.has(frame.id)).flatMap(frame => (frame.propositionAtoms ?? []).map(atom => atom.id)));
+  const residualAtoms = atoms.filter(atom => !materialAtomIds.has(atom.id));
+  const residualCovered = generation.discourse.propositionAtomIdsCovered.filter(id => !materialAtomIds.has(id)).length;
+  return coverageMeetsThreshold(generation.discourse.requiredTermIdsCovered.length, residualCovered, requiredTerms, residualAtoms);
+}
+
 function requiredCoverageDenominator(requiredTerms: readonly LanguageGenerationTerm[]): number {
   return requiredTerms.filter(term => (term.weight ?? 0) >= calibrated("language_memory.required_term_weight_floor") && tidyInline(term.text)).length;
 }
 
 function atomCoverageDenominator(atoms: readonly LanguageGenerationAtom[]): number {
   return atoms.filter(atom => tidyInline(atom.text)).length;
+}
+
+function newCoverageMass(previousIds: readonly string[], nextIds: readonly string[], denominator: number): number {
+  if (denominator <= 0) return 0;
+  let gain = 0;
+  for (const id of nextIds) if (!previousIds.includes(id)) gain++;
+  return clamp01(gain / denominator);
+}
+
+function isPriorAnchorMove(move: LanguageDiscourseMove): boolean {
+  return move.role === "semantic_rhetoric" || move.role === "language_unit" || move.role === "phrase_pattern" || move.role === "observation" || move.role === "suggestion";
+}
+
+function discourseBeamHasPriorAnchor(state: DiscourseBeamState): boolean {
+  return state.moves.some(isPriorAnchorMove);
+}
+
+function discourseGenerationSteps(
+  moves: readonly LanguageDiscourseMove[],
+  boundaries: readonly LanguageDiscourseBoundaryUse[],
+  text: string,
+  requiredTerms: readonly LanguageGenerationTerm[],
+  atoms: readonly LanguageGenerationAtom[]
+): LanguageGenerationStep[] {
+  return moves.map((move, index) => {
+    const prefix = joinTextForAudit(moves.slice(0, index + 1).map(row => row.text));
+    const boundary = index === 0 ? undefined : boundaries[index - 1]?.text;
+    return {
+      index,
+      action: "emit_move",
+      moveId: move.id,
+      role: move.role,
+      textHash: hashText(move.text),
+      boundaryBefore: boundary,
+      sourcePieceIds: move.sourcePieceIds,
+      coveredRequiredTermIds: coveredRequiredTermIds(prefix || text, requiredTerms),
+      coveredAtomIds: coveredAtomIds(prefix || text, atoms),
+      score: clamp01(move.support * 0.45 + (1 / Math.max(1, move.information)) * 0.25 + (move.symbolCount > 0 ? 0.3 : 0)),
+      cumulativeScore: clamp01((index + 1) / Math.max(1, moves.length)),
+      transitionScore: index === 0 ? 0.72 : weightedJaccard(featureSet(moves[index - 1]!.text, 128), featureSet(move.text, 128))
+    };
+  });
+}
+
+function stopReasonForDiscourse(input: {
+  text: string;
+  moves: readonly LanguageDiscourseMove[];
+  symbolCount: number;
+  generationExtent: number;
+  requiredTermIdsCovered: readonly string[];
+  requiredTerms: readonly LanguageGenerationTerm[];
+  propositionAtomIdsCovered: readonly string[];
+  frameAtoms: readonly LanguageGenerationAtom[];
+}): LanguageDiscourseTrace["stopReason"] {
+  if (!input.text.trim() || !input.moves.length) return "empty";
+  if (input.symbolCount >= input.generationExtent) return "generation_extent";
+  const required = input.requiredTerms.filter(term => (term.weight ?? 0) >= 0.45);
+  const atoms = input.frameAtoms.filter(atom => atom.kind === "claim" || atom.kind === "surface" || atom.kind === "caveat" || atom.kind === "artifact" || atom.kind === "program");
+  const requiredCovered = required.length === 0 || input.requiredTermIdsCovered.length >= required.length;
+  const atomCovered = atoms.length === 0 || input.propositionAtomIdsCovered.length >= Math.max(1, Math.ceil(atoms.length * 0.5));
+  return requiredCovered && atomCovered ? "coverage_satisfied" : "source_exhausted";
+}
+
+function discourseMoves(input: {
+  state: LanguageMemoryRuntimeState;
+  pieces: readonly GenerationPiece[];
+  requiredTerms: readonly LanguageGenerationTerm[];
+  frameAtoms: readonly LanguageGenerationAtom[];
+  frames: readonly LanguageGenerationFrame[];
+}): LanguageDiscourseMove[] {
+  const rows: LanguageDiscourseMove[] = [];
+  const frameIdsByText = frameIdsBySurface(input.frames);
+  const atomIdsByText = atomIdsBySurface(input.frameAtoms);
+  const hasSemanticRhetoric = input.pieces.some(piece => piece.source === "semantic_rhetoric");
+  const add = (text: string, role: string, support: number, sourcePieceIds: string[], planRank?: number) => {
+    const clean = tidyInline(text);
+    if (!clean) return;
+    if (!speechBearingSurface(clean) || !isDiscourseBearingPriorSurface(clean)) return;
+    if (rows.some(row => shouldMergeDiscourseMoves(row, clean, role))) {
+      const host = rows.find(row => shouldMergeDiscourseMoves(row, clean, role));
+      if (host && clean.length > host.text.length) host.text = clean;
+      if (host) {
+        host.support = Math.max(host.support, support);
+        const ranks = [host.planRank, planRank].filter((rank): rank is number => typeof rank === "number" && Number.isFinite(rank));
+        host.planRank = ranks.length ? Math.min(...ranks) : undefined;
+        host.sourcePieceIds = uniqueStrings([...host.sourcePieceIds, ...sourcePieceIds]);
+        host.frameIds = uniqueStrings([...host.frameIds, ...(frameIdsByText.get(clean) ?? [])]);
+        host.atomIds = uniqueStrings([...host.atomIds, ...(atomIdsByText.get(clean) ?? [])]);
+      }
+      return;
+    }
+    rows.push({
+      id: `move:${hashText(`${role}:${clean}`).slice(0, 12)}`,
+      role,
+      text: clean,
+      sourcePieceIds,
+      frameIds: frameIdsByText.get(clean) ?? [],
+      atomIds: atomIdsByText.get(clean) ?? [],
+      support: clamp01(support),
+      information: discourseMoveInformation(input.state, clean),
+      symbolCount: symbolizeData(clean).length,
+      planRank
+    });
+  };
+  for (const piece of input.pieces) add(piece.text, piece.source, piece.support, piece.id ? [piece.id] : [], piece.planRank);
+  if (!hasSemanticRhetoric) for (const atom of input.frameAtoms.slice(0, 8)) add(atom.text, atom.kind ?? "atom", atom.weight ?? 0.5, [atom.id]);
+  return rows;
+}
+
+function semanticFactMaterialsFromFrames(frames: readonly LanguageGenerationFrame[]): SemanticFactMaterial[] {
+  const out: SemanticFactMaterial[] = [];
+  for (const frame of frames) {
+    const constraints = jsonRecord(frame.realizationConstraints);
+    const fact = jsonRecord(constraints.semanticAnswerFact);
+    const subjectLabel = tidyInline(typeof fact.subject === "string" ? fact.subject : "");
+    const predicateLabel = tidyInline(typeof fact.predicate === "string" ? fact.predicate : "");
+    const objectLabel = tidyInline(typeof fact.object === "string" ? fact.object : "");
+    if (!subjectLabel || !predicateLabel || !objectLabel) continue;
+    const atomSupport = frame.propositionAtoms?.length ? mean(frame.propositionAtoms.map(atom => clamp01(atom.weight ?? 0.5))) : 0.5;
+    const answer = jsonRecord(constraints.semanticAnswer);
+    const alphaRhetoricalPlan = jsonRecord(answer.alphaRhetoricalPlan);
+    out.push({
+      id: `semantic_material:${hashText(`${subjectLabel}\u0001${predicateLabel}\u0001${objectLabel}\u0001${frame.id}`).slice(0, 24)}`,
+      subjectLabel,
+      predicateLabel,
+      objectLabel,
+      slotIds: jsonStringArray(answer.answerSlotIds),
+      support: clamp01(0.68 + atomSupport * 0.28),
+      forceClass: typeof fact.forceClass === "string" ? fact.forceClass : "",
+      relationId: typeof fact.relationId === "string" ? fact.relationId : "",
+      sourceNodeId: typeof fact.sourceNodeId === "string" ? fact.sourceNodeId : "",
+      targetNodeId: typeof fact.targetNodeId === "string" ? fact.targetNodeId : "",
+      frameId: frame.id,
+      relevance: clamp01(typeof fact.support === "number" ? fact.support : atomSupport),
+      preferredSubjectLabel: typeof answer.selectedSubject === "string" ? tidyInline(answer.selectedSubject) : undefined,
+      upstreamRoleId: typeof fact.roleId === "string" ? fact.roleId : undefined,
+      alphaRhetoricalCentrality: typeof fact.alphaRhetoricalCentrality === "number" ? clamp01(fact.alphaRhetoricalCentrality) : undefined,
+      pathScore: typeof fact.pathScore === "number" ? clamp01(fact.pathScore) : undefined,
+      roleScore: typeof fact.roleScore === "number" ? clamp01(fact.roleScore) : undefined,
+      bridgeValue: typeof fact.bridgeValue === "number" ? clamp01(fact.bridgeValue) : undefined,
+      backgroundPenalty: typeof fact.backgroundPenalty === "number" ? clamp01(fact.backgroundPenalty) : undefined,
+      forceMeaning: typeof fact.forceMeaning === "number" ? clamp01(fact.forceMeaning) : undefined,
+      certificationPower: typeof fact.certificationPower === "number" ? clamp01(fact.certificationPower) : undefined,
+      alphaRhetoricalPlannerId: typeof alphaRhetoricalPlan.plannerId === "string" ? alphaRhetoricalPlan.plannerId : undefined,
+      alphaRhetoricalTargetSentenceCount: typeof alphaRhetoricalPlan.targetSentenceCount === "number" ? alphaRhetoricalPlan.targetSentenceCount : undefined,
+      cognitiveEdgeId: typeof fact.cognitiveEdgeId === "string" ? fact.cognitiveEdgeId : undefined,
+      requestedSlotId: typeof fact.requestedSlotId === "string" ? fact.requestedSlotId : undefined,
+      relationRoleId: typeof fact.relationRoleId === "string" ? fact.relationRoleId : undefined,
+      graphQualityClassId: typeof fact.graphQualityClassId === "string" ? fact.graphQualityClassId : undefined,
+      topicSenseId: typeof fact.topicSenseId === "string" ? fact.topicSenseId : undefined,
+      finalQuestionFit: typeof fact.finalQuestionFit === "number" ? clamp01(fact.finalQuestionFit) : undefined,
+      questionSlotId: typeof fact.questionSlotId === "string" ? fact.questionSlotId : undefined,
+      questionSlotImportance: typeof fact.questionSlotImportance === "string" ? fact.questionSlotImportance : undefined,
+      questionSlotScore: typeof fact.questionSlotScore === "number" ? clamp01(fact.questionSlotScore) : undefined,
+      questionSlotReasonIds: jsonStringArray(fact.questionSlotReasonIds)
+    });
+  }
+  const seen = new Map<string, SemanticFactMaterial>();
+  for (const row of out) {
+    const key = semanticMaterialKey(row);
+    const near = [...seen.values()].find(existing => semanticMaterialOverlap(existing, row) > calibrated("language_memory.material_duplicate_overlap_floor"));
+    if (near) {
+      if (row.support > near.support) {
+        near.id = row.id;
+        near.subjectLabel = row.subjectLabel;
+        near.predicateLabel = row.predicateLabel;
+        near.objectLabel = row.objectLabel;
+        near.slotIds = uniqueStrings([...near.slotIds, ...row.slotIds]);
+        near.support = Math.max(near.support, row.support);
+        near.forceClass = row.forceClass || near.forceClass;
+        near.relationId = row.relationId || near.relationId;
+        near.sourceNodeId = row.sourceNodeId || near.sourceNodeId;
+        near.targetNodeId = row.targetNodeId || near.targetNodeId;
+        near.upstreamRoleId = row.upstreamRoleId || near.upstreamRoleId;
+        near.alphaRhetoricalCentrality = Math.max(near.alphaRhetoricalCentrality ?? 0, row.alphaRhetoricalCentrality ?? 0) || near.alphaRhetoricalCentrality;
+        near.pathScore = Math.max(near.pathScore ?? 0, row.pathScore ?? 0) || near.pathScore;
+        near.roleScore = Math.max(near.roleScore ?? 0, row.roleScore ?? 0) || near.roleScore;
+        near.bridgeValue = Math.max(near.bridgeValue ?? 0, row.bridgeValue ?? 0) || near.bridgeValue;
+        near.backgroundPenalty = Math.max(near.backgroundPenalty ?? 0, row.backgroundPenalty ?? 0) || near.backgroundPenalty;
+        near.forceMeaning = Math.max(near.forceMeaning ?? 0, row.forceMeaning ?? 0) || near.forceMeaning;
+        near.certificationPower = Math.max(near.certificationPower ?? 0, row.certificationPower ?? 0) || near.certificationPower;
+        near.alphaRhetoricalPlannerId = row.alphaRhetoricalPlannerId || near.alphaRhetoricalPlannerId;
+        near.alphaRhetoricalTargetSentenceCount = Math.max(near.alphaRhetoricalTargetSentenceCount ?? 0, row.alphaRhetoricalTargetSentenceCount ?? 0) || near.alphaRhetoricalTargetSentenceCount;
+        near.cognitiveEdgeId = row.cognitiveEdgeId || near.cognitiveEdgeId;
+        near.requestedSlotId = row.requestedSlotId || near.requestedSlotId;
+        near.relationRoleId = row.relationRoleId || near.relationRoleId;
+        near.graphQualityClassId = row.graphQualityClassId || near.graphQualityClassId;
+        near.topicSenseId = row.topicSenseId || near.topicSenseId;
+        near.finalQuestionFit = Math.max(near.finalQuestionFit ?? 0, row.finalQuestionFit ?? 0) || near.finalQuestionFit;
+        near.questionSlotId = row.questionSlotId || near.questionSlotId;
+        near.questionSlotImportance = strongerSlotImportance(row.questionSlotImportance, near.questionSlotImportance);
+        near.questionSlotScore = Math.max(near.questionSlotScore ?? 0, row.questionSlotScore ?? 0) || near.questionSlotScore;
+        near.questionSlotReasonIds = uniqueStrings([...(near.questionSlotReasonIds ?? []), ...(row.questionSlotReasonIds ?? [])]);
+      }
+      continue;
+    }
+    const existing = seen.get(key);
+    if (!existing || row.support > existing.support) seen.set(key, row);
+  }
+  return [...seen.values()]
+    .sort((a, b) => b.support - a.support || b.relevance - a.relevance || a.subjectLabel.localeCompare(b.subjectLabel))
+    .slice(0, 24);
+}
+
+function semanticRhetoricalPiecesFromMaterials(materials: readonly SemanticFactMaterial[], state: LanguageMemoryRuntimeState, contextText: string): GenerationPiece[] {
+  const plan = semanticRhetoricalPlanFromMaterials(materials, contextText, runtimeDiscoursePriorProfile(state));
+  if (!plan) return [];
+  const materialById = new Map(materials.map(material => [material.id, material]));
+  const boundary = chooseInlineCompressionBoundary(state).text;
+  const rows: GenerationPiece[] = [];
+  const add = (input: { text: string; idSeed: string; support: number; surfaced: readonly SemanticFactMaterial[]; stages?: readonly string[]; rank: number }) => {
+    if (!input.text.trim()) return;
+    rows.push(semanticRhetoricalPiece({
+      text: input.text,
+      idSeed: input.idSeed,
+      support: input.support,
+      materials: input.surfaced,
+      demoted: demotedMaterialIdsForPlan(plan, input.surfaced),
+      plan,
+      stages: input.stages ?? [],
+      planRank: input.rank
+    }));
+  };
+  const joinProgram = activeJoinProgram(state);
+  const main = rhetoricalMainSurface(plan, materialById, boundary, joinProgram);
+  add({ text: main.text, idSeed: `${plan.id}:main`, support: main.support, surfaced: main.materials, stages: main.stageIds, rank: 0 });
+  const contributionBridge = rhetoricalContributionBridgeSurface(plan, materialById, boundary, joinProgram);
+  add({ text: contributionBridge.text, idSeed: `${plan.id}:contribution_bridge`, support: contributionBridge.support, surfaced: contributionBridge.materials, stages: contributionBridge.stageIds, rank: 1 });
+  const bridge = rhetoricalBridgeSurface(plan, materialById, boundary, joinProgram);
+  add({ text: bridge.text, idSeed: `${plan.id}:bridge`, support: bridge.support, surfaced: bridge.materials, stages: bridge.stageIds, rank: 2 });
+  const members = collectionMemberMaterials(plan, materialById, materials, plan.subjectLabel);
+  if (members.length) add({
+    text: renderLearnedSequence(
+      members.map(material => collectionMemberLabel(material, plan.subjectLabel)),
+      joinProgram,
+      boundary
+    ),
+    idSeed: `${plan.id}:members`,
+    support: semanticMaterialSupport(members),
+    surfaced: members,
+    stages: plan.stages.filter(stage => stage.roleId === ANSWER_ROLE_IDS.contribution).map(stage => stage.id),
+    rank: 0
+  });
+  if (!members.length) {
+    for (const material of materials.slice(0, 4)) add({
+      text: materialClauseSurface(material, plan.subjectLabel, boundary, joinProgram),
+      idSeed: `${plan.id}:${material.id}`,
+      support: material.support,
+      surfaced: [material],
+      stages: plan.stages.filter(stage => stage.assignmentIds.some(id => plan.assignments.find(assignment => assignment.id === id)?.materialId === material.id)).map(stage => stage.id),
+      rank: 4
+    });
+  }
+  return rows
+    .filter(piece => piece.text.trim())
+    .sort((a, b) => (a.planRank ?? 99) - (b.planRank ?? 99) || b.support - a.support || a.text.localeCompare(b.text))
+    .slice(0, 10);
+}
+
+function semanticRhetoricalPlanFromMaterials(materials: readonly SemanticFactMaterial[], contextText: string, discoursePrior?: RuntimeDiscoursePriorProfile): RhetoricalPlan | undefined {
+  const ordered = materials.filter(material => !materialRejectedByQuestionSlot(material)).sort((a, b) => b.support - a.support || b.relevance - a.relevance || a.subjectLabel.localeCompare(b.subjectLabel)).slice(0, 16);
+  if (!ordered.length) return undefined;
+  const subjectLabel = primarySemanticSubject(ordered);
+  const assignments = answerRoleAssignmentsFromMaterials(ordered, subjectLabel, contextText);
+  const stageSpecs: Array<{ roleId: string; priority: number; surfaceWeight: number }> = [
+    { roleId: ANSWER_ROLE_IDS.identity, priority: 0.98, surfaceWeight: 0.92 },
+    { roleId: ANSWER_ROLE_IDS.contribution, priority: 0.96, surfaceWeight: 0.96 },
+    { roleId: ANSWER_ROLE_IDS.significance, priority: 0.78, surfaceWeight: 0.82 },
+    { roleId: ANSWER_ROLE_IDS.context, priority: 0.72, surfaceWeight: 0.72 },
+    { roleId: ANSWER_ROLE_IDS.field, priority: 0.62, surfaceWeight: 0.6 },
+    { roleId: ANSWER_ROLE_IDS.backgroundActor, priority: 0.34, surfaceWeight: 0.22 },
+    { roleId: ANSWER_ROLE_IDS.backgroundRelation, priority: 0.3, surfaceWeight: 0.18 }
+  ];
+  const stages = stageSpecs
+    .map(spec => {
+      const rows = assignments.filter(assignment => assignment.roleId === spec.roleId && assignment.shouldSurface);
+      return rows.length ? {
+        id: `rhetorical.stage:${hashText(`${spec.roleId}:${rows.map(row => row.id).join(":")}`).slice(0, 16)}`,
+        roleId: spec.roleId,
+        assignmentIds: rows.map(row => row.id),
+        priority: spec.priority,
+        surfaceWeight: spec.surfaceWeight
+      } : undefined;
+    })
+    .filter((stage): stage is RhetoricalPlanStage => Boolean(stage));
+  const bridgeIds = assignments
+    .filter(assignment => isBridgeAnswerRoleId(assignment.roleId))
+    .map(assignment => assignment.id);
+  const backgroundIds = assignments
+    .filter(assignment => isBackgroundAnswerRoleId(assignment.roleId))
+    .map(assignment => assignment.id);
+  return {
+    id: `rhetorical.plan:${hashText(`${subjectLabel}:${assignments.map(row => `${row.materialId}:${row.roleId}`).join("|")}`).slice(0, 18)}`,
+    subjectLabel,
+    assignments,
+    stages,
+    backgroundAssignmentIds: backgroundIds,
+    significanceBridgeAssignmentIds: bridgeIds,
+    targetMoveCount: rhetoricalTargetMoveCount(ordered, stages, discoursePrior),
+    certificationBoundaryId: assignments.some(assignment => assignment.roleId === ANSWER_ROLE_IDS.boundary) ? ANSWER_ROLE_IDS.boundary : undefined
+  };
+}
+
+function rhetoricalTargetMoveCount(materials: readonly SemanticFactMaterial[], stages: readonly RhetoricalPlanStage[], discoursePrior?: RuntimeDiscoursePriorProfile): number {
+  const upstreamTarget = Math.max(0, ...materials.map(material => material.alphaRhetoricalTargetSentenceCount ?? 0));
+  const surfacedStageCount = stages.filter(stage => stage.surfaceWeight >= 0.6).length;
+  const bridgeStageCount = stages.filter(stage => isBridgeAnswerRoleId(stage.roleId)).length;
+  const learnedTarget = discoursePrior?.targetMoveCount ?? 0;
+  const raw = Math.max(upstreamTarget, learnedTarget, 1 + surfacedStageCount + Math.min(1, bridgeStageCount));
+  return Math.max(2, Math.min(12, Math.round(raw)));
+}
+
+function runtimeDiscoursePriorProfile(
+  state: LanguageMemoryRuntimeState,
+  generationExtent = 0
+): RuntimeDiscoursePriorProfile | undefined {
+  const patterns = state.importedPatterns
+    .filter(pattern => pattern.patternKind === "discourse" || pattern.patternKind === "narrative")
+    .slice(0, 512);
+  if (!patterns.length) return undefined;
+  const patternIds: string[] = [];
+  const sentenceCounts: number[] = [];
+  const paragraphCounts: number[] = [];
+  const sentenceLengths: number[] = [];
+  const paragraphLengths: number[] = [];
+  const dialogueRates: number[] = [];
+  let dialogueTurnMass = 0;
+  let support = 0;
+  for (const pattern of patterns) {
+    const record = jsonRecord(pattern.patternJson);
+    const schema = typeof record.schema === "string" ? record.schema : "";
+    if (schema !== "scce.long_form_discourse_pattern.v1"
+      && schema !== "scce.narrative_surface_pattern.v1") continue;
+    patternIds.push(pattern.id);
+    support += pattern.support;
+    if (schema === "scce.long_form_discourse_pattern.v1") {
+      sentenceCounts.push(numberOf(record.sentenceCount));
+      paragraphCounts.push(numberOf(record.paragraphCount));
+      sentenceLengths.push(...numberArrayFromJson(record.sentenceSymbolLengths).slice(0, 512));
+      paragraphLengths.push(...numberArrayFromJson(record.paragraphSymbolLengths).slice(0, 256));
+      dialogueTurnMass += topEntryMass(record.dialogueTurnMarkers);
+    } else {
+      paragraphCounts.push(Math.max(0, topEntryMass(record.paragraphShapeTransitions)));
+      dialogueRates.push(numberOf(record.dialogueTurnRate));
+    }
+  }
+  if (!patternIds.length) return undefined;
+  const sentenceCount = boundedMax(sentenceCounts, 0, 24);
+  const paragraphCount = boundedMax(paragraphCounts, 0, 12);
+  const sentenceSymbolP75 = percentile(sentenceLengths, 0.75);
+  const paragraphSymbolP50 = percentile(paragraphLengths, 0.5);
+  const dialogueTurnRate = boundedMax(dialogueRates, 0, 8) + dialogueTurnMass / Math.max(1, patternIds.length * 12);
+  const targetSymbolCount = Math.max(
+    generationExtent,
+    paragraphCount > 1 && paragraphSymbolP50 > 0 ? paragraphCount * paragraphSymbolP50 : 0,
+    sentenceCount > 2 && sentenceSymbolP75 > 0 ? sentenceCount * sentenceSymbolP75 : 0,
+    paragraphCount > 1 ? paragraphCount * 32 : 0,
+    sentenceCount > 2 ? sentenceCount * 12 : 0
+  );
+  const targetMoveCount = Math.max(
+    0,
+    Math.min(12, Math.round(Math.max(
+      paragraphCount > 1 ? paragraphCount * 1.5 : 0,
+      sentenceCount > 2 ? sentenceCount / 2 : 0,
+      dialogueTurnRate > 0 ? 4 + dialogueTurnRate : 0
+    )))
+  );
+  return {
+    patternIds: uniqueStrings(patternIds).slice(0, 32),
+    targetMoveCount,
+    targetSymbolCount: Math.max(0, Math.min(256, Math.ceil(targetSymbolCount))),
+    paragraphCount,
+    sentenceCount,
+    sentenceSymbolP75,
+    paragraphSymbolP50,
+    dialogueTurnRate,
+    support: clamp01(support / Math.max(1, patternIds.length))
+  };
+}
+
+function discoursePriorAudit(prior: RuntimeDiscoursePriorProfile): JsonValue {
+  return toJsonValue({
+    patternIds: prior.patternIds.slice(0, 16),
+    targetMoveCount: prior.targetMoveCount,
+    targetSymbolCount: prior.targetSymbolCount,
+    paragraphCount: prior.paragraphCount,
+    sentenceCount: prior.sentenceCount,
+    sentenceSymbolP75: prior.sentenceSymbolP75,
+    paragraphSymbolP50: prior.paragraphSymbolP50,
+    dialogueTurnRate: prior.dialogueTurnRate,
+    support: prior.support
+  });
+}
+
+function numberArrayFromJson(value: JsonValue | undefined): number[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is number => typeof item === "number" && Number.isFinite(item))
+    : [];
+}
+
+function percentile(values: readonly number[], q: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.floor(clamp01(q) * (sorted.length - 1))));
+  return sorted[index] ?? 0;
+}
+
+function boundedMax(values: readonly number[], min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.max(min, ...values.filter(value => Number.isFinite(value)))));
+}
+
+function topEntryMass(value: JsonValue | undefined): number {
+  if (!Array.isArray(value)) return 0;
+  return value.reduce<number>((sum, entry) => {
+    if (!Array.isArray(entry) || entry.length < 2) return sum;
+    const count = entry[1];
+    return sum + (typeof count === "number" && Number.isFinite(count) && count > 0 ? count : 0);
+  }, 0);
+}
+
+function answerRoleAssignmentsFromMaterials(materials: readonly SemanticFactMaterial[], subjectLabel: string, contextText: string): AnswerRoleAssignment[] {
+  const primaryRows = materials.filter(material => sameSurface(material.subjectLabel, subjectLabel) || sameSurface(material.objectLabel, subjectLabel));
+  const primaryObjectKeys = new Set(primaryRows.map(material => normalizeSurfaceKey(material.objectLabel)).filter(Boolean));
+  const hasContribution = primaryRows.some(material => semanticRelationSurfaceMass(material) > 1 || semanticQuestionFit(material, contextText) > calibrated("language_memory.material_contribution_question_fit_floor"));
+  return materials.map(material => {
+    const subjectMatch = sameSurface(material.subjectLabel, subjectLabel);
+    const objectMatch = sameSurface(material.objectLabel, subjectLabel);
+    const subjectIsContext = primaryObjectKeys.has(normalizeSurfaceKey(material.subjectLabel));
+    const objectIsContext = primaryObjectKeys.has(normalizeSurfaceKey(material.objectLabel));
+    const questionShapeFit = material.finalQuestionFit ?? semanticQuestionFit(material, contextText);
+    const relationUsefulness = clamp01(calibrated("language_memory.relation_support_weight") * material.support + calibrated("language_memory.relation_relevance_weight") * material.relevance + calibrated("language_memory.relation_question_shape_fit_weight") * questionShapeFit);
+    let roleId = rhetoricalRoleFromQuestionSlot(material.questionSlotId, material.questionSlotImportance) || material.upstreamRoleId || rhetoricalRoleFromRelationRole(material.relationRoleId) || ANSWER_ROLE_IDS.field;
+    const slotLocked = Boolean(material.questionSlotId);
+    if (!material.upstreamRoleId && !slotLocked) {
+      if (subjectMatch || objectMatch) {
+        roleId = semanticRelationSurfaceMass(material) <= 3 && semanticSurfaceSymbolMass(material.objectLabel) <= 4 ? ANSWER_ROLE_IDS.identity : ANSWER_ROLE_IDS.contribution;
+      } else if (subjectIsContext) {
+        roleId = ANSWER_ROLE_IDS.context;
+      } else if (objectIsContext) {
+        roleId = hasContribution ? ANSWER_ROLE_IDS.backgroundActor : ANSWER_ROLE_IDS.backgroundRelation;
+      }
+    }
+    const background = isBackgroundAnswerRoleId(roleId);
+    const secondarySlot = material.questionSlotImportance === "secondary" || material.questionSlotImportance === "context";
+    const rejectedSlot = materialRejectedByQuestionSlot(material);
+    const shouldSurface = !rejectedSlot && (!background || (!hasContribution && relationUsefulness > calibrated("language_memory.background_relation_usefulness_floor") && !material.upstreamRoleId && !secondarySlot));
+    const centrality = material.alphaRhetoricalCentrality ?? relationUsefulness;
+    const slotBoost = material.questionSlotImportance === "core" ? 0.18 : material.questionSlotImportance === "secondary" ? -0.05 : material.questionSlotImportance === "context" ? -0.08 : 0;
+    const priority = rhetoricalRolePriority(roleId) + centrality * 0.28 + relationUsefulness * 0.14 + (subjectMatch ? 0.18 : 0) + slotBoost - (material.backgroundPenalty ?? 0) * 0.16;
+    return {
+      id: `answer.role:${hashText(`${material.id}:${roleId}:${subjectLabel}`).slice(0, 18)}`,
+      materialId: material.id,
+      subjectRef: material.sourceNodeId || material.subjectLabel,
+      relationRef: material.relationId || material.predicateLabel,
+      objectRef: material.targetNodeId || material.objectLabel,
+      roleId,
+      priority: clamp01(priority),
+      support: material.support,
+      relationUsefulness: material.roleScore ?? relationUsefulness,
+      questionShapeFit,
+      requestedSlotId: material.requestedSlotId,
+      relationRoleId: material.relationRoleId,
+      topicSenseId: material.topicSenseId,
+      questionSlotId: material.questionSlotId,
+      questionSlotImportance: material.questionSlotImportance,
+      shouldSurface,
+      surfaceWeight: clamp01((shouldSurface ? 0.54 : 0.14) + rhetoricalRolePriority(roleId) * 0.28 + material.support * 0.1 + centrality * 0.22 + slotBoost * 0.6 - (material.backgroundPenalty ?? 0) * 0.2)
+    };
+  }).sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+}
+
+function rhetoricalMainSurface(
+  plan: RhetoricalPlan,
+  materialById: ReadonlyMap<string, SemanticFactMaterial>,
+  boundary: string,
+  joinProgram?: JoinProgramMixture
+): { text: string; materials: SemanticFactMaterial[]; demotedMaterialIds: string[]; stageIds: string[]; support: number } {
+  const identity = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.identity);
+  const contribution = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.contribution);
+  const segments: string[] = [];
+  const materials = uniqueSemanticMaterials([identity, contribution].filter((item): item is SemanticFactMaterial => Boolean(item)));
+  if (plan.subjectLabel) segments.push(plan.subjectLabel);
+  if (identity?.objectLabel) segments.push(identity.objectLabel);
+  if (contribution) {
+    for (const segment of relationObjectSegments(contribution)) {
+      if (segment && !segments.some(existing => semanticRelationDuplicate(existing, segment))) segments.push(segment);
+    }
+  }
+  return {
+    text: renderLearnedSequence(segments, joinProgram, boundary),
+    materials,
+    demotedMaterialIds: demotedMaterialIdsForPlan(plan, materials),
+    stageIds: plan.stages.filter(stage => stage.roleId === ANSWER_ROLE_IDS.identity || stage.roleId === ANSWER_ROLE_IDS.contribution).map(stage => stage.id),
+    support: clamp01(semanticMaterialSupport(materials) + 0.08)
+  };
+}
+
+function rhetoricalBridgeSurface(
+  plan: RhetoricalPlan,
+  materialById: ReadonlyMap<string, SemanticFactMaterial>,
+  boundary: string,
+  joinProgram?: JoinProgramMixture
+): { text: string; materials: SemanticFactMaterial[]; demotedMaterialIds: string[]; stageIds: string[]; support: number } {
+  void boundary;
+  const context = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.significance) ?? firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.context) ?? firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.field);
+  if (!context) return { text: "", materials: [], demotedMaterialIds: demotedMaterialIdsForPlan(plan, []), stageIds: [], support: 0 };
+  const segments = contextRelationSegments(context, plan.subjectLabel);
+  const materials = [context];
+  return {
+    text: renderLearnedSequence(segments, joinProgram),
+    materials,
+    demotedMaterialIds: demotedMaterialIdsForPlan(plan, materials),
+    stageIds: plan.stages.filter(stage => isBridgeAnswerRoleId(stage.roleId)).map(stage => stage.id),
+    support: semanticMaterialSupport(materials) * 0.72
+  };
+}
+
+function rhetoricalContributionBridgeSurface(
+  plan: RhetoricalPlan,
+  materialById: ReadonlyMap<string, SemanticFactMaterial>,
+  boundary: string,
+  joinProgram?: JoinProgramMixture
+): { text: string; materials: SemanticFactMaterial[]; demotedMaterialIds: string[]; stageIds: string[]; support: number } {
+  void boundary;
+  const contribution = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.contribution);
+  const context = firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.significance) ?? firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.context) ?? firstMaterialForRole(plan, materialById, ANSWER_ROLE_IDS.field);
+  if (!contribution || !context) return { text: "", materials: [], demotedMaterialIds: demotedMaterialIdsForPlan(plan, []), stageIds: [], support: 0 };
+  if (sameSurface(contribution.objectLabel, context.subjectLabel) || semanticRelationDuplicate(contribution.objectLabel, context.subjectLabel)) {
+    return { text: "", materials: [], demotedMaterialIds: demotedMaterialIdsForPlan(plan, []), stageIds: [], support: 0 };
+  }
+  const contextSegments = contextRelationSegments(context, plan.subjectLabel).filter(segment => !sameSurface(segment, plan.subjectLabel));
+  const segments = [
+    contribution.subjectLabel,
+    ...relationObjectSegments(contribution),
+    ...contextSegments
+  ].map(tidyInline).filter(Boolean);
+  const text = renderLearnedSequence(segments, joinProgram, boundary);
+  if (!text || semanticSurfaceOverlap(text, contribution.objectLabel) > 0.92) return { text: "", materials: [], demotedMaterialIds: demotedMaterialIdsForPlan(plan, []), stageIds: [], support: 0 };
+  const materials = uniqueSemanticMaterials([contribution, context]);
+  return {
+    text,
+    materials,
+    demotedMaterialIds: demotedMaterialIdsForPlan(plan, materials),
+    stageIds: plan.stages.filter(stage => stage.roleId === ANSWER_ROLE_IDS.contribution || isBridgeAnswerRoleId(stage.roleId)).map(stage => stage.id),
+    support: semanticMaterialSupport(materials) * 0.9
+  };
+}
+
+function semanticRhetoricalPiece(input: {
+  text: string;
+  idSeed: string;
+  support: number;
+  materials: readonly SemanticFactMaterial[];
+  demoted: readonly string[];
+  plan: RhetoricalPlan;
+  stages: readonly string[];
+  planRank: number;
+}): GenerationPiece {
+  return {
+    text: tidyInline(input.text),
+    source: "semantic_rhetoric",
+    id: `semantic_rhetoric:${hashText(input.idSeed).slice(0, 24)}`,
+    support: clamp01(input.support),
+    fit: 0.84,
+    order: 0,
+    probability: 0.5,
+    score: clamp01(0.8 + input.support * 0.16),
+    semanticMaterialIds: input.materials.map(row => row.id),
+    answerSlotIds: uniqueStrings(input.materials.flatMap(row => row.slotIds)),
+    demotedMaterialIds: uniqueStrings(input.demoted),
+    discourseShapeId: input.plan.id,
+    compressionApplied: false,
+    rhetoricalPlanId: input.plan.id,
+    roleAssignmentIds: input.plan.assignments.filter(assignment => input.materials.some(material => material.id === assignment.materialId)).map(assignment => assignment.id),
+    rhetoricalStageIds: uniqueStrings(input.stages),
+    backgroundMaterialIds: input.plan.assignments.filter(assignment => input.plan.backgroundAssignmentIds.includes(assignment.id)).map(assignment => assignment.materialId),
+    significanceBridgeMaterialIds: input.plan.assignments.filter(assignment => input.plan.significanceBridgeAssignmentIds.includes(assignment.id)).map(assignment => assignment.materialId),
+    planRank: input.planRank
+  };
+}
+
+function firstMaterialForRole(plan: RhetoricalPlan, materialById: ReadonlyMap<string, SemanticFactMaterial>, roleId: string): SemanticFactMaterial | undefined {
+  const assignment = plan.assignments
+    .filter(row => row.roleId === roleId && row.shouldSurface)
+    .sort((a, b) => b.surfaceWeight - a.surfaceWeight || b.priority - a.priority)[0];
+  return assignment ? materialById.get(assignment.materialId) : undefined;
+}
+
+function demotedMaterialIdsForPlan(plan: RhetoricalPlan, surfaced: readonly SemanticFactMaterial[]): string[] {
+  const surfacedIds = new Set(surfaced.map(material => material.id));
+  return plan.assignments.filter(assignment => !surfacedIds.has(assignment.materialId)).map(assignment => assignment.materialId);
+}
+
+function relationObjectSegments(material: SemanticFactMaterial): string[] {
+  const relation = tidyInline(material.predicateLabel);
+  const object = tidyInline(material.objectLabel);
+  if (lowSurfaceRelationLabel(relation)) return [object].filter(Boolean);
+  return [relation, object].filter(Boolean);
+}
+
+function contextRelationSegments(material: SemanticFactMaterial, selectedSubject: string): string[] {
+  const subject = tidyInline(material.subjectLabel);
+  const relation = tidyInline(material.predicateLabel);
+  const object = tidyInline(material.objectLabel);
+  if (sameSurface(object, selectedSubject) && lowSurfaceRelationLabel(relation)) return [subject].filter(Boolean);
+  if (sameSurface(subject, selectedSubject)) return relationObjectSegments(material);
+  if (lowSurfaceRelationLabel(relation)) return [subject, object].filter(Boolean);
+  return [subject, relation, object].filter(Boolean);
+}
+
+function materialClauseSurface(
+  material: SemanticFactMaterial,
+  selectedSubject: string,
+  boundary: string,
+  joinProgram?: JoinProgramMixture
+): string {
+  const subject = tidyInline(material.subjectLabel);
+  const relation = tidyInline(material.predicateLabel);
+  const object = tidyInline(material.objectLabel);
+  if (!subject || !object) return subject || object;
+  if (sameSurface(subject, selectedSubject)) {
+    return renderLearnedSequence(relationObjectSegments(material), joinProgram);
+  }
+  if (sameSurface(object, selectedSubject)) {
+    return lowSurfaceRelationLabel(relation)
+      ? subject
+      : renderLearnedSequence([relation, subject], joinProgram);
+  }
+  return renderLearnedSequence(
+    [subject, ...relationObjectSegments(material)],
+    joinProgram,
+    boundary
+  );
+}
+
+function sentenceSubject(value: string): string {
+  return titleEntitySurface(tidyInline(value));
+}
+
+function humanObject(value: string): string {
+  const clean = tidyInline(value).replace(/_/gu, " ");
+  if (clean.includes("#")) return "";
+  return clean;
+}
+
+function humanPredicate(value: string): string {
+  return tidyInline(value).replace(/_/gu, " ").toLocaleLowerCase();
+}
+
+function containsSurfaceUnits(surface: string, required: string): boolean {
+  const haystack = new Set(symbolizeData(surface).map(normalizeSurfaceKey).filter(Boolean));
+  const needles = uniqueStrings(symbolizeData(required).map(normalizeSurfaceKey).filter(Boolean));
+  return needles.length > 0 && needles.every(needle => haystack.has(needle));
+}
+
+function titleEntitySurface(value: string): string {
+  return humanObject(value);
+}
+
+function sentenceCaseSurface(value: string): string {
+  return tidyInline(value);
+}
+
+function learnedContinuationDiscourse(input: {
+  state: LanguageMemoryRuntimeState;
+  contextSymbols: readonly string[];
+  contextText: string;
+  requiredTerms: readonly LanguageGenerationTerm[];
+  frameAtoms: readonly LanguageGenerationAtom[];
+  generationExtent: number;
+  pieces: readonly GenerationPiece[];
+  topicVocabulary?: readonly string[];
+  properNounCasing?: Readonly<Record<string, string>>;
+  choiceSeed?: string;
+}): LanguageDiscourseTrace | undefined {
+  // No pieces means the KN models are the only prose source -- exactly the
+  // case this fallback exists for. Coverage still gates acceptance.
+  const candidates: Array<{
+    text: string;
+    move: LanguageDiscourseMove;
+    support: number;
+    score: LanguageMemoryScore;
+    continuationAverageLogProbability: number;
+  }> = [];
+  // Last-resort single-sentence fallback. Multi-sentence assembly is the
+  // existing discourse beam's job (weaveDiscourse over synthesized
+  // suggestion pieces); this lane never arranges, it only continues.
+  const model = bestProseContinuationModel(input.state);
+  const requiredSeed = renderLearnedSequence(uniqueStrings(input.requiredTerms
+    .filter(term => (term.weight ?? 0) >= 0.7)
+    .map(term => tidyInline(term.text))
+    .filter(Boolean))
+    .slice(0, 4), activeJoinProgram(input.state));
+  if (model) {
+    const seedSymbols = requiredSeed ? symbolizeData(requiredSeed) : [];
+    const beam = beamContinueSentence(model, [...symbolizeData(input.contextText), ...seedSymbols].slice(-32), {
+      beamWidth: 6,
+      maxSymbols: 30,
+      minSymbols: 6,
+      blockedSymbols: nonSpeechGlyphSymbols(model),
+      boostSymbols: beamGuidanceSymbols(input.state, [...seedSymbols, ...(input.topicVocabulary ?? [])]),
+      choiceSeed: `${input.choiceSeed ?? ""}\u0001${input.contextText}\u0001${requiredSeed}`
+    });
+    const text = beam?.endedAtBoundary ? renderContinuationSentences([[...seedSymbols, ...beam.symbols]], input.properNounCasing) : "";
+    if (beam && text && speechBearingSurface(text) && isDiscourseBearingPriorSurface(text)) {
+      const score = scoreText(input.state, text, input.contextText);
+      const sourcePieceIds = input.pieces
+        .filter(piece => containsLoose(text, piece.text) || containsLoose(piece.text, text))
+        .map(piece => piece.id)
+        .filter((id): id is string => Boolean(id))
+        .slice(0, 24);
+      candidates.push({
+        text,
+        move: {
+          id: `move:${hashText(`learned-continuation:${text}`).slice(0, 12)}`,
+          role: "learned_continuation",
+          text,
+          sourcePieceIds,
+          frameIds: [],
+          atomIds: [],
+          support: clamp01(0.48 + score.activation * 0.34 + Math.min(0.18, sourcePieceIds.length * 0.03)),
+          information: score.information,
+          symbolCount: symbolizeData(text).length,
+          planRank: 4
+        },
+        support: clamp01(0.48 + score.activation * 0.34 + Math.min(0.18, sourcePieceIds.length * 0.03)),
+        score,
+        continuationAverageLogProbability: beam.averageLogProbability
+      });
+    }
+  }
+  const selected = candidates
+    .sort((a, b) =>
+      continuationCandidateScore(b) - continuationCandidateScore(a) ||
+      a.text.localeCompare(b.text)
+    )[0];
+  if (!selected) return undefined;
+  const boundary = chooseSentenceDiscourseBoundary(input.state);
+  const text = terminateDiscourseSurface(selected.text, boundary.text);
+  const requiredTermIdsCovered = coveredRequiredTermIds(text, input.requiredTerms);
+  const propositionAtomIdsCovered = coveredAtomIds(text, input.frameAtoms);
+  const step: LanguageGenerationStep = {
+    index: 0,
+    action: "emit_move",
+    moveId: selected.move.id,
+    role: selected.move.role,
+    textHash: hashText(text),
+    sourcePieceIds: selected.move.sourcePieceIds,
+    coveredRequiredTermIds: requiredTermIdsCovered,
+    coveredAtomIds: propositionAtomIdsCovered,
+    score: selected.support,
+    cumulativeScore: selected.support,
+    transitionScore: 0.72
+  };
+  return {
+    text,
+    moves: [{ ...selected.move, text }],
+    boundaries: [],
+    steps: [step],
+    generationStepCount: 1,
+    stopReason: "source_exhausted",
+    requiredTermIdsCovered,
+    propositionAtomIdsCovered,
+    scoreOrderTextHash: hashText(text),
+    anchorCoverage: requiredTermCoverage(text, input.requiredTerms),
+    cohesion: 0.72,
+    repetitionPenalty: discourseRepetitionPenalty(text),
+    discourseScore: clamp01(0.36 + selected.support * 0.32 + selected.score.activation * 0.24),
+    fluency: {
+      beamWidth: 1,
+      beamExpansions: candidates.length,
+      candidateMoveCount: candidates.length,
+      selectedBeamScore: continuationCandidateScore(selected),
+      selectedUnitIds: [selected.move.id],
+      latentCoherence: 0.72,
+      ngramMeanActivation: selected.score.activation,
+      priorSupport: selected.support,
+      coverageGain: requiredTermIdsCovered.length || propositionAtomIdsCovered.length ? 1 : 0,
+      repetitionPenalty: discourseRepetitionPenalty(text),
+      symbolCount: symbolizeData(text).length
+    }
+  };
+}
+
+/** Symbols made solely of quote or bracket glyphs cannot open speech safely: unbalanced pairs are the one defect the per-sentence gate cannot repair. */
+function nonSpeechGlyphSymbols(model: KneserNeyModel): Set<string> {
+  const out = new Set<string>(["<unk>"]);
+  for (const symbol of model.vocabulary ?? []) {
+    if (/^[\p{Pi}\p{Pf}\p{Ps}\p{Pe}"'‘’“”`]+$/u.test(symbol)) out.add(symbol);
+    // Connector punctuation ("_") is source markup, never prose.
+    if (/\p{Pc}/u.test(symbol)) out.add(symbol);
+  }
+  return out;
+}
+
+function generationCasingHints(input: LanguageGenerationInput): Readonly<Record<string, string>> {
+  return Object.assign(
+    Object.create(null),
+    sourceDerivedCasingHints(input.state.importedUnits.slice(0, 512).map(unit => unit.text)),
+    ...(input.frames ?? []).map(frame => frame.properNounCasing ?? {})
+  );
+}
+
+function narrativeConditioningCoverage(surface: string, constraints: readonly NarrativeSurfaceConstraint[]): number {
+  if (!constraints.length) return 0;
+  const covered = constraints.filter(constraint => containsLoose(surface, constraint.surface)).length;
+  return clamp01(covered / constraints.length);
+}
+
+/** Render beam sentences: attach left-binding punctuation, capitalize each cased sentence opener. */
+export function renderContinuationSentences(
+  sentences: readonly (readonly string[])[],
+  properNounCasing?: Readonly<Record<string, string>>
+): string {
+  const rendered = sentences.map(symbols => {
+    // Training lowercases symbols. Restore only casing carried by this
+    // turn's source-derived hints; no language-specific token exceptions.
+    // Own-property read: the casing table is a plain object, so a symbol that names one of Object.prototype's
+    // members (`constructor`, `toString`) otherwise renders that function's source into the sentence.
+    const cased = symbols.map(symbol =>
+      properNounCasing && Object.hasOwn(properNounCasing, symbol) && typeof properNounCasing[symbol] === "string"
+          ? properNounCasing[symbol]!
+          : symbol
+    );
+    const joined = cased.join(" ").replace(/\s+([,;:.!?…])/gu, "$1").replace(/(\S) - (\S)/gu, "$1-$2");
+    const first = [...joined].findIndex(char => char.toLocaleLowerCase() !== char.toLocaleUpperCase());
+    if (first < 0) return joined;
+    const chars = [...joined];
+    chars[first] = chars[first]!.toLocaleUpperCase();
+    return chars.join("");
+  }).filter(Boolean);
+  return rendered.join(" ");
+}
+
+/**
+ * Words present in exactly one currently-loaded novel's vocabulary are that
+ * novel's fingerprint -- character names, invented nouns, place names.
+ * Document frequency across the loaded models (never fewer than 2, or
+ * there is no basis for comparison) tells signature from shared narrative
+ * vocabulary ("man", "fire", "water") without any English word list.
+ */
+function sourceSignatureWords(state: LanguageMemoryRuntimeState): ReadonlySet<string> {
+  const models = state.models.filter(modelSpeaksInWords);
+  // A long novel trained in several chunks yields several KneserNeyModel
+  // objects sharing one sourceKey; they must count as ONE document, or
+  // that novel's own vocabulary trivially appears "shared" with itself
+  // across its own chunks and never gets flagged as anyone's signature.
+  const vocabByGroup = new Map<string, Set<string>>();
+  for (const [index, model] of models.entries()) {
+    const key = model.sourceKey ?? `model:${index}`;
+    const set = vocabByGroup.get(key) ?? new Set<string>();
+    for (const word of model.vocabulary ?? []) set.add(word);
+    vocabByGroup.set(key, set);
+  }
+  if (vocabByGroup.size < 2) return new Set();
+  const docFrequency = new Map<string, number>();
+  for (const vocabulary of vocabByGroup.values()) {
+    for (const word of vocabulary) docFrequency.set(word, (docFrequency.get(word) ?? 0) + 1);
+  }
+  const signature = new Set<string>();
+  for (const [word, freq] of docFrequency) if (freq === 1) signature.add(word);
+  return signature;
+}
+
+/** Combine source-signature suppression with topic/seed boosts; boosts always win on overlap. */
+function beamGuidanceSymbols(state: LanguageMemoryRuntimeState, boostWords: readonly string[]): Map<string, number> {
+  const guidance = new Map<string, number>();
+  // A single novel's within-model probability for its own signature word
+  // ("martian" inside a Wells-only model) is high enough that a mild
+  // multiplier does not move it out of contention -- decoding is always
+  // from one model, so the penalty must be strong to matter.
+  for (const word of sourceSignatureWords(state)) guidance.set(word, 0.04);
+  for (const word of boostWords) guidance.set(word, 6);
+  return guidance;
+}
+
+/** Best generation-grade model: word-speaking, ranked by order x log2(vocabulary) so a rich vocabulary at a lower order beats a vocabulary-starved summary at a higher one. Char-level (script) models never continue prose: letter soup, verified live. */
+function bestProseContinuationModel(state: LanguageMemoryRuntimeState): KneserNeyModel | undefined {
+  return [...state.models]
+    .filter(modelSpeaksInWords)
+    .sort((a, b) =>
+      b.order * Math.log2(2 + (b.vocabulary?.length ?? b.vocabularySize ?? 0)) - a.order * Math.log2(2 + (a.vocabulary?.length ?? a.vocabularySize ?? 0))
+      || b.observedSymbolCount - a.observedSymbolCount)[0];
+}
+
+/** Candidate sentences synthesized by the symbol-level beam, offered to the existing discourse beam as ordinary suggestion pieces. */
+function synthesizeBeamSentencePieces(input: {
+  state: LanguageMemoryRuntimeState;
+  requiredTerms: readonly LanguageGenerationTerm[];
+  contextText: string;
+  generationExtent: number;
+  topicVocabulary?: readonly string[];
+  properNounCasing?: Readonly<Record<string, string>>;
+  choiceSeed?: string;
+}): Array<{ text: string; id: string; support: number }> {
+  const model = bestProseContinuationModel(input.state);
+  if (!model) return [];
+  const blocked = nonSpeechGlyphSymbols(model);
+  const seedUnits = uniqueStrings(input.requiredTerms
+    .filter(term => (term.weight ?? 0) >= 0.7)
+    .map(term => tidyInline(term.text))
+    .filter(Boolean)).slice(0, 4);
+  // Source-signature suppression keeps one novel's fingerprint vocabulary
+  // (character names, invented nouns) out of an unrelated story; the topic
+  // lexicon from this turn's own evidence pulls word choice toward what
+  // the request is actually about. Boosts always outrank suppression.
+  const boostSymbols = beamGuidanceSymbols(input.state, [
+    ...seedUnits.flatMap(unit => symbolizeData(unit)),
+    ...(input.topicVocabulary ?? [])
+  ]);
+  const out: Array<{ text: string; id: string; support: number }> = [];
+  const emit = (symbols: readonly string[], averageLogProbability: number) => {
+    const text = renderContinuationSentences([symbols], input.properNounCasing);
+    if (!text || !speechBearingSurface(text)) return;
+    out.push({
+      text,
+      id: hashText(text).slice(0, 16),
+      support: clamp01(0.5 + 0.5 * Math.exp(Math.max(-24, averageLogProbability)))
+    });
+  };
+  // A chained pass carries the narrative forward: each sentence continues
+  // from the last, so the piece pool tells one progression, not one moment
+  // twelve ways. The boost map alone steers vocabulary choice for the
+  // whole chain, but LOCAL n-gram conditioning only sees the last ~32
+  // symbols -- without periodic reseeding a cast member mentioned in
+  // sentence one is grammatically invisible by sentence three. Cycling
+  // the seed back into context every few sentences keeps every persistent
+  // entity, not just the first, eligible for natural re-mention.
+  const reseedEvery = 3;
+  let working = [...symbolizeData(input.contextText)];
+  const chainLength = Math.max(3, Math.min(10, Math.round(input.generationExtent / 20)));
+  // A short local memory means an identical reseed against a nearly
+  // identical recent tail converges on the same highest-probability
+  // completion every time -- a within-sentence repetition guard cannot
+  // catch this because the repeat spans separate sentences. A word
+  // already spoken earlier in this chain is progressively suppressed the
+  // same way a signature word is, so the beam is pushed toward its
+  // second- and third-best completions instead of repeating verbatim.
+  const usedWordCounts = new Map<string, number>();
+  for (let index = 0; index < chainLength; index++) {
+    const reseed = seedUnits.length && index % reseedEvery === 0;
+    const seedSymbols = reseed ? symbolizeData(seedUnits[Math.floor(index / reseedEvery) % seedUnits.length]!) : [];
+    const iterationBoost = new Map(boostSymbols);
+    for (const [word, count] of usedWordCounts) {
+      if (count < 1) continue;
+      const base = iterationBoost.get(word) ?? 1;
+      iterationBoost.set(word, base * Math.pow(0.3, count));
+    }
+    const beam = beamContinueSentence(model, [...working, ...seedSymbols].slice(-32), {
+      beamWidth: 6,
+      maxSymbols: 30,
+      minSymbols: 6,
+      blockedSymbols: blocked,
+      boostSymbols: iterationBoost,
+      choiceSeed: `${input.choiceSeed ?? ""}\u0001${input.contextText}\u0001${index}`
+    });
+    if (!beam || !beam.endedAtBoundary) break;
+    for (const symbol of beam.symbols) {
+      const seedSet = new Set(seedSymbols);
+      if (seedSet.has(symbol)) continue;
+      usedWordCounts.set(symbol, (usedWordCounts.get(symbol) ?? 0) + 1);
+    }
+    emit(seedSymbols.length ? [...seedSymbols, ...beam.symbols] : beam.symbols, beam.averageLogProbability);
+    working = [...working, ...seedSymbols, ...beam.symbols];
+  }
+  return out;
 }
 
 /** A vocabulary dominated by single-code-point symbols is a char-level (script) model, not a prose model. */
@@ -1635,6 +3896,47 @@ function modelSpeaksInWords(model: { vocabulary?: readonly string[] }): boolean 
   return multiPoint / sample.length >= 0.5;
 }
 
+function learnedContinuationSurface(
+  seed: string | undefined,
+  continuationText: string,
+  contextText: string,
+  generationExtent: number,
+  joinProgram?: JoinProgramMixture
+): string | undefined {
+  const seeded = renderLearnedSequence([seed ?? "", continuationText], joinProgram);
+  const clean = trimBoundaryGlyphSurface(seeded);
+  if (!clean || !speechBearingSurface(clean) || !isDiscourseBearingPriorSurface(clean)) return undefined;
+  const symbols = symbolizeData(clean);
+  if (symbols.length < 2 || symbols.length > Math.max(8, generationExtent)) return undefined;
+  const contextOverlap = contextText ? weightedJaccard(featureSet(clean, 256), featureSet(contextText, 256)) : 0;
+  if (contextOverlap > 0.92 && clean.length <= contextText.length + 8) return undefined;
+  return clean;
+}
+
+function continuationCandidateScore(input: { text: string; support: number; score: LanguageMemoryScore; continuationAverageLogProbability: number }): number {
+  const symbolCount = symbolizeData(input.text).length;
+  const extentFit = clamp01(1 - Math.abs(symbolCount - 28) / 28);
+  const probability = clamp01(Math.exp(Math.max(-24, input.continuationAverageLogProbability)));
+  return clamp01(calibrated("language_memory.admission_support_weight") * input.support + calibrated("language_memory.admission_activation_weight") * input.score.activation + calibrated("language_memory.admission_extent_fit_weight") * extentFit + calibrated("language_memory.admission_probability_weight") * probability);
+}
+
+function discourseSurfaceAdequate(discourse: LanguageDiscourseTrace, generationExtent: number): boolean {
+  if (!speechBearingSurface(discourse.text)) return false;
+  const lexicalSymbols = symbolizeData(discourse.text)
+    .filter(symbol => [...symbol].some(char => isLetterLike(char) || isDigitLike(char)));
+  const minimum = Math.max(4, Math.min(12, Math.floor(generationExtent * 0.2)));
+  if (lexicalSymbols.length < minimum) return false;
+  const normalized = lexicalSymbols.map(symbol => symbol.normalize("NFKC").toLocaleLowerCase());
+  const diversity = new Set(normalized).size / Math.max(1, normalized.length);
+  const multiPointLexicalMass = lexicalSymbols
+    .filter(symbol => [...symbol].length > 1)
+    .length / Math.max(1, lexicalSymbols.length);
+  const diversityFloor = multiPointLexicalMass >= 0.5 ? 0.42 : 0.22;
+  return diversity >= diversityFloor
+    && discourse.repetitionPenalty < calibrated("language_memory.discourse_repetition_ceiling")
+    && !fragmentHeavyDiscourseSurface(discourse.text);
+}
+
 // A punctuation/symbol run only counts as a clause boundary when it sits
 // next to whitespace (or the string edge). Punctuation glued directly
 // between two non-space characters on both sides -- the hyphen in
@@ -1645,16 +3947,520 @@ function modelSpeaksInWords(model: { vocabulary?: readonly string[] }): boolean 
 // "fragment heavy" phrase salad.
 const DISCOURSE_FRAGMENT_BOUNDARY = /(?<=^|\s)[\p{Punctuation}\p{Symbol}]+|[\p{Punctuation}\p{Symbol}]+(?=\s|$)/gu;
 
+/**
+ * How many pieces of text a fragment carries, counting across word-internal punctuation.
+ *
+ * This is a fluency statistic, not an identity: "src/cli.ts" is ONE referent and must stay one symbol everywhere
+ * meaning is decided, but it is plainly more text than a two-word fragment, and the salad thresholds below are
+ * calibrated in pieces of text. Counting it as two made a list of file paths look like phrase salad and the
+ * surface was dropped, which emptied answers to questions about code.
+ */
+function lexicalPieceCount(symbols: readonly string[]): number {
+  let pieces = 0;
+  for (const symbol of symbols) {
+    for (const piece of symbol.split(WORD_INTERNAL_PUNCTUATION)) {
+      if ([...piece].some(char => isLetterLike(char) || isDigitLike(char))) pieces += 1;
+    }
+  }
+  return Math.max(pieces, symbols.length);
+}
+
 /** Punctuation that sits inside a lexical unit: a path separator, a dotted extension, a hyphenated compound. */
 const WORD_INTERNAL_PUNCTUATION = /[./-]+/u;
+
+function fragmentHeavyDiscourseSurface(text: string): boolean {
+  const fragments = text
+    .split(DISCOURSE_FRAGMENT_BOUNDARY)
+    .map(fragment => symbolizeData(fragment)
+      .filter(symbol => [...symbol].some(char => isLetterLike(char) || isDigitLike(char))))
+    .filter(fragment => fragment.length > 0);
+  if (fragments.length < 5) return false;
+  const lexicalTokenCount = fragments.reduce((sum, fragment) => sum + lexicalPieceCount(fragment), 0);
+  if (lexicalTokenCount < 12) return false;
+  const shortFragmentCount = fragments.filter(fragment => lexicalPieceCount(fragment) <= 2).length;
+  const shortFragmentRatio = shortFragmentCount / fragments.length;
+  const punctuationRuns = text.match(DISCOURSE_FRAGMENT_BOUNDARY)?.length ?? 0;
+  const punctuationDensity = punctuationRuns / Math.max(1, lexicalTokenCount);
+  return shortFragmentRatio >= calibrated("language_memory.fragment_ratio_floor") && punctuationDensity >= calibrated("language_memory.fragment_punctuation_density_floor");
+}
+
+function naturalJoin(values: readonly string[], finalJoiner = ";"): string {
+  const clean = uniqueStrings(values.map(tidyInline).filter(Boolean));
+  if (clean.length <= 1) return clean[0] ?? "";
+  return clean.join(finalJoiner === ";" ? "; " : ` ${finalJoiner} `);
+}
+
+function containsUserFacingMetaSpeech(value: string): boolean {
+  const clean = tidyInline(value).normalize("NFKC").toLocaleLowerCase();
+  const hasStructuralMarker = /[._:=]/u.test(clean) || clean.includes("scce");
+  if (!hasStructuralMarker) return false;
+  const key = clean.replace(/[\s.\-:=]+/gu, "_").replace(/_+/gu, "_");
+  return [
+    "answer_path",
+    "relation_roles",
+    "active_memory_labels",
+    "role_weight",
+    "graph_proximity",
+    "selected_memory_structure",
+    "source_evidence_attached",
+    "bounded_wording",
+    "center_of_answer"
+  ].some(marker => key.includes(marker));
+}
+
+function lowSurfaceRelationLabel(value: string): boolean {
+  const key = normalizeSurfaceKey(value).split("_").join(" ");
+  const symbolCount = symbolizeData(key).filter(symbol => symbol.trim()).length;
+  return symbolCount <= 1 && key.length <= 2;
+}
+
+function rhetoricalRoleFromRelationRole(value: string | undefined): string | undefined {
+  if (value === RELATION_ROLE_IDS.roleClass || value === RELATION_ROLE_IDS.definitionClass) return ANSWER_ROLE_IDS.identity;
+  if (value === RELATION_ROLE_IDS.contribution || value === RELATION_ROLE_IDS.knownFor || value === RELATION_ROLE_IDS.characterCast) return ANSWER_ROLE_IDS.contribution;
+  if (value === RELATION_ROLE_IDS.effect) return ANSWER_ROLE_IDS.significance;
+  if (value === RELATION_ROLE_IDS.domain) return ANSWER_ROLE_IDS.field;
+  if (value === RELATION_ROLE_IDS.metadata) return ANSWER_ROLE_IDS.backgroundRelation;
+  if (value === RELATION_ROLE_IDS.graphRequestRelation || value === RELATION_ROLE_IDS.graphRequestMembership || value === RELATION_ROLE_IDS.graphExplanatoryPath) return ANSWER_ROLE_IDS.contribution;
+  if (value === RELATION_ROLE_IDS.graphCompactAttribute) return ANSWER_ROLE_IDS.field;
+  if (value === RELATION_ROLE_IDS.graphCompoundAttribute || value === RELATION_ROLE_IDS.graphCompoundMembership || value === RELATION_ROLE_IDS.graphContextRelation) return ANSWER_ROLE_IDS.context;
+  if (value === RELATION_ROLE_IDS.graphNavigation) return ANSWER_ROLE_IDS.backgroundRelation;
+  return undefined;
+}
+
+function rhetoricalRoleFromQuestionSlot(slotId: string | undefined, importance: string | undefined): string | undefined {
+  if (!slotId) return undefined;
+  if (importance === "secondary") {
+    if (slotId === ANSWER_SLOT_IDS.context) return ANSWER_ROLE_IDS.context;
+    if (slotId === ANSWER_SLOT_IDS.significance) return ANSWER_ROLE_IDS.significance;
+    return ANSWER_ROLE_IDS.backgroundRelation;
+  }
+  if (importance === "context") return ANSWER_ROLE_IDS.context;
+  if (slotId === ANSWER_SLOT_IDS.roleOrField || slotId === ANSWER_SLOT_IDS.sensePrimary || slotId === ANSWER_SLOT_IDS.selectedSense) return ANSWER_ROLE_IDS.identity;
+  if (slotId === ANSWER_SLOT_IDS.contribution || slotId === ANSWER_SLOT_IDS.knownForContribution || slotId === ANSWER_SLOT_IDS.memberRelation || slotId === ANSWER_SLOT_IDS.effectRelation) return ANSWER_ROLE_IDS.contribution;
+  if (slotId === ANSWER_SLOT_IDS.significance) return ANSWER_ROLE_IDS.significance;
+  if (slotId === ANSWER_SLOT_IDS.context || slotId === ANSWER_SLOT_IDS.sourceConcept || slotId === ANSWER_SLOT_IDS.targetConcept) return ANSWER_ROLE_IDS.context;
+  return undefined;
+}
+
+function semanticRelationSurfaceMass(material: SemanticFactMaterial): number {
+  return symbolizeData(`${material.predicateLabel} ${material.objectLabel}`).filter(symbol => symbol.trim()).length;
+}
+
+function semanticSurfaceSymbolMass(value: string): number {
+  return symbolizeData(value).filter(symbol => symbol.trim()).length;
+}
+
+function semanticQuestionFit(material: SemanticFactMaterial, contextText: string): number {
+  const context = featureSet(contextText, 128);
+  if (!context.length) return 0;
+  return weightedJaccard(context, featureSet(`${material.subjectLabel} ${material.predicateLabel} ${material.objectLabel}`, 128));
+}
+
+function rhetoricalRolePriority(roleId: string): number {
+  if (roleId === ANSWER_ROLE_IDS.identity) return 0.92;
+  if (roleId === ANSWER_ROLE_IDS.contribution) return 0.9;
+  if (roleId === ANSWER_ROLE_IDS.significance) return 0.74;
+  if (roleId === ANSWER_ROLE_IDS.context) return 0.62;
+  if (roleId === ANSWER_ROLE_IDS.field) return 0.5;
+  if (roleId === ANSWER_ROLE_IDS.backgroundActor) return 0.18;
+  if (roleId === ANSWER_ROLE_IDS.backgroundRelation) return 0.14;
+  if (roleId === ANSWER_ROLE_IDS.boundary) return 0.08;
+  return 0.24;
+}
+
+function semanticRelationDuplicate(left: string, right: string): boolean {
+  if (semanticSurfaceOverlap(left, right) > 0.72 || containsLoose(left, right) || containsLoose(right, left)) return true;
+  const leftSymbols = new Set(symbolizeData(left).map(normalizeSurfaceKey).filter(Boolean));
+  const rightSymbols = new Set(symbolizeData(right).map(normalizeSurfaceKey).filter(Boolean));
+  if (!leftSymbols.size || !rightSymbols.size) return false;
+  let shared = 0;
+  for (const symbol of leftSymbols) if (rightSymbols.has(symbol)) shared++;
+  return shared / Math.min(leftSymbols.size, rightSymbols.size) >= 0.86 && shared / Math.max(leftSymbols.size, rightSymbols.size) >= 0.62;
+}
+
+function primarySemanticSubject(materials: readonly SemanticFactMaterial[]): string {
+  const preferred = materials
+    .map(material => material.preferredSubjectLabel)
+    .find((label): label is string => Boolean(label));
+  if (preferred) return preferred;
+  const scores = new Map<string, { label: string; score: number }>();
+  for (const material of materials) {
+    const key = normalizeSurfaceKey(material.subjectLabel);
+    const previous = scores.get(key);
+    const score = (previous?.score ?? 0) + material.support + material.relevance * 0.35;
+    scores.set(key, { label: previous?.label ?? material.subjectLabel, score });
+  }
+  return [...scores.values()].sort((a, b) => b.score - a.score || a.label.localeCompare(b.label))[0]?.label ?? materials[0]?.subjectLabel ?? "";
+}
+
+function semanticContextMaterials(primary: readonly SemanticFactMaterial[], secondary: readonly SemanticFactMaterial[]): SemanticFactMaterial[] {
+  if (!secondary.length) return [];
+  const anchors = new Set<string>();
+  for (const material of primary) {
+    anchors.add(normalizeSurfaceKey(material.subjectLabel));
+    anchors.add(normalizeSurfaceKey(material.objectLabel));
+  }
+  return [...secondary]
+    .map(row => ({
+      row,
+      score: row.support + row.relevance * 0.32 + (anchors.has(normalizeSurfaceKey(row.subjectLabel)) || anchors.has(normalizeSurfaceKey(row.objectLabel)) ? 0.36 : 0)
+    }))
+    .sort((a, b) => b.score - a.score || a.row.subjectLabel.localeCompare(b.row.subjectLabel))
+    .map(row => row.row);
+}
+
+function semanticMaterialSupport(materials: readonly SemanticFactMaterial[]): number {
+  return materials.length ? clamp01(mean(materials.map(row => row.support)) + Math.min(0.12, materials.length * 0.025)) : 0;
+}
+
+function uniqueSemanticMaterials(materials: readonly SemanticFactMaterial[]): SemanticFactMaterial[] {
+  const out = new Map<string, SemanticFactMaterial>();
+  for (const material of materials) out.set(material.id, material);
+  return [...out.values()];
+}
+
+function chooseInlineCompressionBoundary(state: LanguageMemoryRuntimeState): DiscourseBoundaryCandidate {
+  let best: DiscourseBoundaryCandidate | undefined;
+  for (const observation of state.importedObservations.slice(0, 4096)) {
+    if (!isInlineCompressionBoundarySymbol(observation.symbol)) continue;
+    const support = clamp01(Math.log2(1 + observation.count) * Math.max(0.1, observation.fieldWeight) / 10);
+    if (!best || support > best.support) best = { text: observation.symbol, source: "ngram_observation", sourceId: observation.id, support };
+  }
+  return best ?? { text: "", source: "unresolved", support: 0 };
+}
+
+function isInlineCompressionBoundarySymbol(value: string): boolean {
+  const code = value.codePointAt(0);
+  return value === "," || value === ";" || value === ":" || code === 0x060c || code === 0x3001 || code === 0xff1b;
+}
+
+function semanticDiscourseShapeId(materials: readonly SemanticFactMaterial[]): string {
+  const subjects = uniqueStrings(materials.map(row => normalizeSurfaceKey(row.subjectLabel))).length;
+  const objects = uniqueStrings(materials.map(row => normalizeSurfaceKey(row.objectLabel))).length;
+  const relations = uniqueStrings(materials.map(row => row.relationId || normalizeSurfaceKey(row.predicateLabel))).length;
+  return `semantic.discourse.shape.${subjects}.${objects}.${relations}.${hashText(materials.map(semanticMaterialKey).join("\u0001")).slice(0, 12)}`;
+}
+
+function semanticMaterialKey(material: SemanticFactMaterial): string {
+  return [material.sourceNodeId || material.subjectLabel, material.relationId || material.predicateLabel, material.targetNodeId || material.objectLabel]
+    .map(normalizeSurfaceKey)
+    .join("\u0001");
+}
+
+function materialRejectedByQuestionSlot(material: SemanticFactMaterial): boolean {
+  return material.questionSlotImportance === "rejected";
+}
+
+function strongerSlotImportance(left: string | undefined, right: string | undefined): string | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return slotImportanceRank(left) <= slotImportanceRank(right) ? left : right;
+}
+
+function slotImportanceRank(value: string): number {
+  if (value === "core") return 0;
+  if (value === "secondary") return 1;
+  if (value === "context") return 2;
+  if (value === "rejected") return 3;
+  return 4;
+}
+
+function semanticMaterialOverlap(a: SemanticFactMaterial, b: SemanticFactMaterial): number {
+  return semanticSurfaceOverlap(`${a.subjectLabel} ${a.predicateLabel} ${a.objectLabel}`, `${b.subjectLabel} ${b.predicateLabel} ${b.objectLabel}`);
+}
+
+function semanticSurfaceOverlap(a: string, b: string): number {
+  return weightedJaccard(featureSet(a, 128), featureSet(b, 128));
+}
+
+function sameSurface(a: string, b: string): boolean {
+  return normalizeSurfaceKey(a) === normalizeSurfaceKey(b);
+}
+
+function normalizeSurfaceKey(value: string): string {
+  return tidyInline(value).normalize("NFKC").toLocaleLowerCase();
+}
+
+function jsonStringArray(value: JsonValue | undefined): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item)) : [];
+}
+
+function shouldMergeDiscourseMoves(existing: LanguageDiscourseMove, text: string, role: string): boolean {
+  if (existing.text === text) return true;
+  const overlaps = containsLoose(existing.text, text) || containsLoose(text, existing.text);
+  if (!overlaps) return false;
+  if (existing.role === role) return true;
+  const existingAnchor = existing.role === "semantic_rhetoric" || existing.role === "language_unit" || existing.role === "phrase_pattern" || existing.role === "observation" || existing.role === "suggestion";
+  const nextAnchor = role === "semantic_rhetoric" || role === "language_unit" || role === "phrase_pattern" || role === "observation" || role === "suggestion";
+  if (existingAnchor !== nextAnchor) return false;
+  return Math.abs(symbolizeData(existing.text).length - symbolizeData(text).length) <= 2;
+}
+
+function discourseRoleRank(role: string): number {
+  if (role === "semantic_rhetoric") return 0;
+  if (role === "language_unit") return 0;
+  if (role === "phrase_pattern") return 1;
+  if (role === "observation") return 2;
+  if (role === "suggestion") return 3;
+  if (role === "claim" || role === "surface" || role === "quantity" || role === "entity" || role === "symbol") return 4;
+  if (role === "semantic_frame") return 5;
+  if (role === "caveat") return 6;
+  if (role === "required_term") return 7;
+  return 8;
+}
+
+function renderBoundary(
+  boundary: string,
+  left: string,
+  right: string,
+  joinProgram?: JoinProgramMixture
+): string {
+  const cleanBoundary = boundary.replace(/\u0000/gu, "").normalize("NFC");
+  // A move that already closed its sentence needs no learned connector:
+  // complete sentences join on whitespace, full stop.
+  const leftClosed = /[\p{Sentence_Terminal}]\s*$/u.test(left.trimEnd());
+  return joinedOrSpaceFallback(
+    cleanBoundary && !leftClosed ? [left, cleanBoundary, right] : [left, right],
+    joinProgram
+  );
+}
+
+function renderLearnedSequence(
+  surfaces: readonly string[],
+  joinProgram?: JoinProgramMixture,
+  connector = ""
+): string {
+  const units = surfaces
+    .map(surface => surface.replace(/\u0000/gu, "").normalize("NFC"))
+    .filter(Boolean);
+  if (units.length <= 1 || !connector) {
+    return joinedOrSpaceFallback(units, joinProgram);
+  }
+  const connectorSurface = connector.replace(/\u0000/gu, "").normalize("NFC");
+  const expanded: string[] = [];
+  for (const unit of units) {
+    if (expanded.length) expanded.push(connectorSurface);
+    expanded.push(unit);
+  }
+  return joinedOrSpaceFallback(expanded, joinProgram);
+}
+
+function admissibleJoinedText(
+  joined: ReturnType<typeof renderJoinedSurface>
+): string {
+  return joined.status === "unresolved" ? "" : joined.text;
+}
+
+// renderJoinedSurface honestly returns "" for an unresolved boundary when it
+// has no learned join-program mixture to pick a joiner with (the same
+// "unresolved -> no fabricated joiner" policy admissibleJoinedText applies
+// above). But every caller here (discourse-move boundary rendering, clause
+// segment sequencing) already deals in plain whitespace-delimited surface
+// tokens, so falling back to a literal space join when unresolved is not a
+// guess -- it's what the tokens already are. Mirrors the identical fix
+// already applied to continueBoundedProse in kneser-ney.ts.
+function joinedOrSpaceFallback(units: readonly string[], joinProgram?: JoinProgramMixture): string {
+  const joined = renderJoinedSurface(units, joinProgram);
+  return joined.status === "unresolved" ? units.filter(Boolean).join(" ") : joined.text;
+}
+
+function chooseDiscourseBoundary(state: LanguageMemoryRuntimeState, contextSymbols: readonly string[]): DiscourseBoundaryCandidate {
+  const candidates = discourseBoundaryCandidates(state, contextSymbols);
+  return candidates[0] ?? { text: "", source: "unresolved", support: 0 };
+}
+
+function chooseSentenceDiscourseBoundary(state: LanguageMemoryRuntimeState): DiscourseBoundaryCandidate {
+  let best: DiscourseBoundaryCandidate | undefined;
+  for (const observation of state.importedObservations.slice(0, 4096)) {
+    if (!isSentenceBoundarySymbol(observation.symbol)) continue;
+    const support = clamp01(Math.log2(1 + observation.count) * Math.max(0.1, observation.fieldWeight) / 10);
+    if (!best || support > best.support) best = { text: observation.symbol, source: "ngram_observation", sourceId: observation.id, support };
+  }
+  return best ?? { text: "", source: "unresolved", support: 0 };
+}
+
+function isSentenceBoundarySymbol(value: string): boolean {
+  return isUnicodeSentenceBoundarySymbol(value);
+}
+
+function terminateDiscourseSurface(text: string, boundary: string): string {
+  const clean = tidyInline(text);
+  if (!clean || !boundary || !isSentenceBoundarySymbol(boundary)) return clean;
+  const last = clean[clean.length - 1] ?? "";
+  return isSentenceBoundarySymbol(last) ? clean : `${clean}${boundary}`;
+}
+
+function discourseBoundaryCandidates(state: LanguageMemoryRuntimeState, contextSymbols: readonly string[]): DiscourseBoundaryCandidate[] {
+  const out: DiscourseBoundaryCandidate[] = [];
+  const add = (text: string, source: string, sourceId: string | undefined, support: number, allowWordConnector: boolean) => {
+    const clean = tidyInline(text);
+    if (!clean || (allowWordConnector ? !looksLikeBoundaryCandidate(clean) : !isBoundaryGlyphSurface(clean))) return;
+    if (!allowWordConnector && !isAtomicBoundaryGlyph(clean)) return;
+    out.push({ text: clean, source, sourceId, support: clamp01(support) });
+  };
+  for (const pattern of state.importedPatterns.slice(0, 512)) {
+    const values = discourseStringsFromJson(pattern.patternJson);
+    for (const value of values) add(value, "language_pattern", pattern.id, pattern.support, true);
+  }
+  for (const unit of state.importedUnits.slice(0, 1024)) {
+    for (const value of discourseStringsFromJson(unit.metadata)) add(value, "language_unit", unit.id, unit.alpha, true);
+  }
+  for (const observation of state.importedObservations.slice(0, 4096)) {
+    add(observation.symbol, "ngram_observation", observation.id, Math.min(1, Math.log2(1 + observation.count) * Math.max(0.1, observation.fieldWeight) / 10), false);
+  }
+  for (const model of state.models) {
+    for (const prediction of predictKneserNey(model, contextSymbols.slice(-(model.order - 1)), 32)) {
+      add(prediction.symbol, "ngram_prediction", undefined, prediction.probability * Math.max(1, model.order), false);
+    }
+  }
+  const best = new Map<string, DiscourseBoundaryCandidate>();
+  for (const row of out) {
+    const key = row.text.normalize("NFKC").toLocaleLowerCase();
+    const existing = best.get(key);
+    if (!existing || row.support > existing.support) best.set(key, row);
+  }
+  return [...best.values()].sort((a, b) => b.support - a.support || a.text.localeCompare(b.text)).slice(0, 16);
+}
+
+function discourseStringsFromJson(value: JsonValue | undefined): string[] {
+  const out: string[] = [];
+  const visit = (node: JsonValue | undefined, keyPath: readonly string[], depth: number) => {
+    if (depth > 5 || out.length >= 128) return;
+    if (typeof node === "string") {
+      if (keyPath.some(isDiscourseMetadataKey) ? looksLikeBoundaryCandidate(node) : isBoundaryGlyphSurface(tidyInline(node))) out.push(node);
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child, keyPath, depth + 1);
+      return;
+    }
+    if (!isRecord(node)) return;
+    for (const [key, child] of Object.entries(node)) visit(child, [...keyPath, key], depth + 1);
+  };
+  visit(value, [], 0);
+  return [...new Set(out)].slice(0, 64);
+}
+
+function isDiscourseMetadataKey(key: string): boolean {
+  const normalized = key.toLocaleLowerCase();
+  return normalized.includes("boundary") || normalized.includes("separator") || normalized.includes("connector") || normalized.includes("transition") || normalized.includes("joiner") || normalized.includes("cadence");
+}
+
+function looksLikeBoundaryCandidate(value: string): boolean {
+  const clean = tidyInline(value);
+  if (!clean || clean.length > 32) return false;
+  // Shape-transition encodings ("L→LLLL") are internal metadata, not speech.
+  if (/\S→\S/u.test(clean)) return false;
+  // Connector punctuation ("_") is source markup, never a discourse boundary.
+  if (/\p{Pc}/u.test(clean)) return false;
+  if (isBoundaryGlyphSurface(clean)) return true;
+  const symbolCount = symbolizeData(clean).filter(symbol => symbol.trim()).length;
+  return symbolCount > 0 && symbolCount <= 3 && clean.length <= 24;
+}
+
+function isBoundaryGlyphSurface(value: string): boolean {
+  if (!value) return false;
+  let glyphs = 0;
+  for (const char of value) {
+    if (isWhitespaceChar(char)) continue;
+    if (isLetterLike(char) || isDigitLike(char) || char === "_" || char === "-") return false;
+    glyphs++;
+  }
+  return glyphs > 0;
+}
+
+function isAtomicBoundaryGlyph(value: string): boolean {
+  let glyphs = 0;
+  for (const char of value) {
+    if (isWhitespaceChar(char)) continue;
+    if (isLetterLike(char) || isDigitLike(char) || char === "_" || char === "-") return false;
+    glyphs++;
+  }
+  return glyphs === 1;
+}
+
+/**
+ * Rejects internal record identifiers, source URIs, and content digests
+ * masquerading as prose. Found live: pattern records whose real content
+ * lives under a nested field (a creative-event bundle) fell through
+ * patternKeys' flat-string fallback, surfacing their sibling provenance
+ * fields (sourceUri, streamUri, a local filesystem path) as if they were
+ * phrase-pattern surfaces -- and isDiscourseBearingPriorSurface/
+ * hasContextAnchor both admitted them because a filename like
+ * "the-time-machine.txt" contains real English words that legitimately
+ * overlap the story's own vocabulary. This is the layer beneath mouth.ts
+ * (which cannot be imported here -- mouth.ts already imports this
+ * module), so the same class of leak needs its own structural check at
+ * this layer: no English word list, just identifier shape.
+ */
+function looksLikeInternalIdentifierSurface(value: string): boolean {
+  if (value.includes("://")) return true;
+  // Request-pattern feature keys and their separator, whatever store they were learned into (units, frames,
+  // observations): every generation piece passes here, and "any:story about" was assembled from one.
+  if (patternKeyIsFeatureKey(value)) return true;
+  if (/^(?:source|stream|profile|evidence|corpus_role|language_profile|source_version|scce2_import_run|source_import_run|graph_node|graph_edge|proof_trace|relation_role|slot_graph|slot_answer)[._][A-Za-z0-9_.:-]{6,}/iu.test(value)) return true;
+  // A long run of hex-shaped characters is a hash/digest, not a word.
+  if (/[0-9a-f]{16,}/iu.test(value)) return true;
+  return false;
+}
+
+function isDiscourseBearingPriorSurface(value: string): boolean {
+  if (isBoundaryGlyphSurface(value)) return false;
+  const symbols = symbolizeData(value).filter(symbol => symbol.trim());
+  const letterSymbols = symbols.filter(symbol => hasLetterLikeSurface(symbol));
+  if (letterSymbols.length < 2) return false;
+  const punctuation = [...value].filter(char => !isWhitespaceChar(char) && !isLetterLike(char) && !isDigitLike(char)).length;
+  const glyphs = [...value].filter(char => !isWhitespaceChar(char)).length;
+  if (glyphs > 0 && punctuation / glyphs > calibrated("language_memory.punctuation_glyph_ratio_ceiling")) return false;
+  return true;
+}
+
+function isGenerationSeedSurface(value: string): boolean {
+  const clean = tidyInline(value);
+  if (!clean || isBoundaryGlyphSurface(clean)) return false;
+  return speechBearingSurface(clean);
+}
+
+function speechBearingSurface(value: string): boolean {
+  for (const char of value) if (isLetterLike(char) || isDigitLike(char)) return true;
+  return false;
+}
+
+function trimBoundaryGlyphSurface(value: string): string {
+  const chars = [...tidyInline(value)];
+  while (chars.length && !isLetterLike(chars[0]!) && !isDigitLike(chars[0]!)) chars.shift();
+  while (chars.length && !isLetterLike(chars[chars.length - 1]!) && !isDigitLike(chars[chars.length - 1]!) && !isSentenceBoundarySymbol(chars[chars.length - 1]!)) chars.pop();
+  return tidyInline(chars.join(""));
+}
+
+function hasLetterLikeSurface(value: string): boolean {
+  for (const char of value) if (isLetterLike(char)) return true;
+  return false;
+}
+
+function hasContextAnchor(value: string, context: ReadonlySet<string>): boolean {
+  if (!context.size) return false;
+  return symbolizeData(value).map(symbol => symbol.toLocaleLowerCase()).some(symbol => isAnchorSymbol(symbol) && context.has(symbol));
+}
+
+function isAnchorSymbol(value: string): boolean {
+  if (value.length >= 4 && hasLetterLikeSurface(value)) return true;
+  return value.length > 0 && [...value].every(isDigitLike);
+}
+
+function requiredTermCoverage(text: string, requiredTerms: readonly LanguageGenerationTerm[]): number {
+  const required = requiredTerms.filter(term => (term.weight ?? 0) >= 0.45).map(term => tidyInline(term.text)).filter(Boolean);
+  if (!required.length) return 1;
+  const covered = required.filter(term => surfaceContainsTerm(text, term)).length;
+  return covered / required.length;
+}
 
 function coveredRequiredTermIds(text: string, requiredTerms: readonly LanguageGenerationTerm[]): string[] {
   return requiredTerms
     .filter(term => (term.weight ?? 0) >= 0.45)
     .filter(term => {
       const clean = tidyInline(term.text);
-      return clean && collapseSurfaceWhitespace(text).normalize("NFKC").toLocaleLowerCase()
-        .includes(collapseSurfaceWhitespace(clean).normalize("NFKC").toLocaleLowerCase());
+      return clean && surfaceContainsTerm(text, clean);
     })
     .map(term => term.id ?? hashText(tidyInline(term.text)))
     .slice(0, 64);
@@ -1670,10 +4476,129 @@ function coveredAtomIds(text: string, atoms: readonly LanguageGenerationAtom[]):
     .slice(0, 64);
 }
 
+function joinTextForAudit(values: readonly string[]): string {
+  return values.map(tidyInline).filter(Boolean).join(" ");
+}
+
+function discourseCohesion(moves: readonly LanguageDiscourseMove[]): number {
+  if (moves.length <= 1) return moves.length ? 0.72 : 0;
+  const scores: number[] = [];
+  for (let i = 1; i < moves.length; i++) scores.push(weightedJaccard(featureSet(moves[i - 1]!.text, 128), featureSet(moves[i]!.text, 128)));
+  return clamp01(mean(scores));
+}
+
+function discourseRepetitionPenalty(text: string): number {
+  const symbols = symbolizeData(text).filter(symbol => symbol.trim());
+  if (symbols.length <= 1) return 0;
+  const seen = new Set<string>();
+  let repeated = 0;
+  for (const symbol of symbols) {
+    if (seen.has(symbol)) repeated++;
+    seen.add(symbol);
+  }
+  return clamp01(repeated / symbols.length);
+}
+
+function discourseMoveInformation(state: LanguageMemoryRuntimeState, text: string): number {
+  if (!state.models.length) return text.trim() ? 16 : 0;
+  return mean(state.models.slice(0, 6).map(model => surfaceInformation(text, model)));
+}
+
+function frameIdsBySurface(frames: readonly LanguageGenerationFrame[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const frame of frames) {
+    for (const atom of frame.propositionAtoms ?? []) {
+      const clean = tidyInline(atom.text);
+      if (!clean) continue;
+      out.set(clean, uniqueStrings([...(out.get(clean) ?? []), frame.id]));
+    }
+  }
+  return out;
+}
+
+function atomIdsBySurface(atoms: readonly LanguageGenerationAtom[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const atom of atoms) {
+    const clean = tidyInline(atom.text);
+    if (!clean) continue;
+    out.set(clean, uniqueStrings([...(out.get(clean) ?? []), atom.id]));
+  }
+  return out;
+}
+
+function ngramPieceSupport(state: LanguageMemoryRuntimeState, text: string, contextSymbols: readonly string[]): { probability: number; order: number } {
+  const symbols = symbolizeData(text).slice(0, 32);
+  if (!symbols.length || !state.models.length) return { probability: 0, order: 0 };
+  let bestProbability = 0;
+  let bestOrder = 0;
+  for (const model of state.models) {
+    let info = 0;
+    const generated: string[] = [];
+    for (const symbol of symbols) {
+      const context = [...contextSymbols, ...generated].slice(-(model.order - 1));
+      const probability = Math.max(1e-12, kneserNeyProbability(model, context, symbol));
+      info += -Math.log(probability);
+      generated.push(symbol);
+    }
+    const activation = Math.exp(-info / Math.max(1, symbols.length));
+    const weighted = activation * Math.max(1, model.order) / 6;
+    if (weighted > bestProbability) {
+      bestProbability = weighted;
+      bestOrder = model.order;
+    }
+  }
+  return { probability: clamp01(bestProbability), order: bestOrder };
+}
+
+function suggestFromModels(state: LanguageMemoryRuntimeState, context: readonly string[], limit: number): LanguageMemorySuggestion[] {
+  const merged = new Map<string, LanguageMemorySuggestion>();
+  for (const model of state.models) {
+    for (const prediction of predictKneserNey(model, context.slice(-(model.order - 1)), Math.max(8, limit) * 2)) {
+      if (prediction.symbol === "</s>" || prediction.symbol === "<s>") continue;
+      const support = prediction.probability * Math.max(1, model.order);
+      const existing = merged.get(prediction.symbol);
+      if (!existing || support > existing.support) merged.set(prediction.symbol, { symbol: prediction.symbol, probability: prediction.probability, order: model.order, support });
+    }
+  }
+  return [...merged.values()].sort((a, b) => b.support - a.support || a.symbol.localeCompare(b.symbol)).slice(0, limit);
+}
+
+function semanticFrameIdsOverlappingSelectedText(state: LanguageMemoryRuntimeState, selectedText: string): string[] {
+  const normalized = selectedText.normalize("NFKC").toLocaleLowerCase();
+  if (!normalized) return [];
+  return state.importedSemanticFrames
+    .filter(frame => semanticFrameSurfaces(frame).some(surface => {
+      const compact = surface.normalize("NFKC").toLocaleLowerCase();
+      return compact.includes(normalized) || symbolizeData(normalized).some(symbol => symbol.length > 2 && compact.includes(symbol));
+    }))
+    .map(frame => frame.id)
+    .slice(0, 32);
+}
+
+function sourcePreference(source: GenerationPiece["source"]): number {
+  if (source === "required_term") return 1;
+  if (source === "semantic_rhetoric") return 0.98;
+  // A structural delta is a learned, evidence-bound surface: the same tier as an imported unit, not a new constant.
+  if (source === "language_unit" || source === "structural_delta") return 0.96;
+  if (source === "phrase_pattern") return 0.88;
+  if (source === "observation") return 0.78;
+  if (source === "semantic_frame") return 0.74;
+  if (source === "proposition_atom") return 0.68;
+  return 0.52;
+}
+
 function containsLoose(text: string, surface: string): boolean {
   const haystack = text.normalize("NFKC").toLocaleLowerCase();
   const needle = surface.normalize("NFKC").toLocaleLowerCase();
   return Boolean(needle && haystack.includes(needle));
+}
+
+function isLetterLike(char: string): boolean {
+  return /\p{Letter}|\p{Mark}/u.test(char);
+}
+
+function isDigitLike(char: string): boolean {
+  return /\p{Number}/u.test(char);
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
@@ -2073,6 +4998,44 @@ function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> {
   return isRecord(value) ? value : {};
 }
 
+function joinProgramsFromPatterns(
+  patterns: readonly LanguagePatternRecord[],
+  compiled: readonly JoinProgramMixture[] = []
+): JoinProgramMixture[] {
+  const byId = new Map<string, JoinProgramMixture>();
+  const available = new Map(compiled.map(program => [program.id, program]));
+  const activeSourceScopes = new Set(patterns.flatMap(pattern => {
+    const row = jsonRecord(pattern.patternJson);
+    const scope = inducedSyntaxSourceScope(pattern.profileId, row);
+    return row.schema === INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA
+      && row.componentRecipe === INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID && scope ? [scope] : [];
+  }));
+  for (const pattern of patterns) {
+    const row = jsonRecord(pattern.patternJson);
+    const scope = inducedSyntaxSourceScope(pattern.profileId, row);
+    if (row.schema === INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA
+      && row.componentRecipe !== INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID && scope && activeSourceScopes.has(scope)) continue;
+    const candidate = row.joinProgram;
+    const candidateRow = jsonRecord(candidate);
+    const candidateId = candidateRow.schema === JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA || candidateRow.schema === JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA
+      ? jsonRecord(candidateRow.mixture).id
+      : candidateRow.id;
+    if (typeof candidateId === "string" && byId.has(candidateId)) continue;
+    const mixture = (typeof candidateId === "string" ? available.get(candidateId) : undefined)
+      ?? joinProgramMixtureFromStorage(candidate);
+    if (!mixture || byId.has(mixture.id)) continue;
+    byId.set(mixture.id, mixture);
+  }
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function inducedSyntaxSourceScope(profileId: string, row: Record<string, JsonValue>): string | undefined {
+  return typeof row.sourceSystem === "string" && row.sourceSystem.length > 0
+    && typeof row.sourceVersionId === "string" && row.sourceVersionId.length > 0
+    ? JSON.stringify([profileId, row.sourceSystem, row.sourceVersionId])
+    : undefined;
+}
+
 function uniqueVocabularySize(models: readonly KneserNeyModel[]): number {
   const symbols = new Set<string>();
   for (const model of models) for (const symbol of model.vocabulary) symbols.add(symbol);
@@ -2180,476 +5143,4 @@ function bestStructuralDeltaForSurface(
     fit: rows[0]?.fit ?? 0,
     ids: rows.slice(0, 4).map(row => row.delta.id)
   };
-}
-
-
-
-function semanticFactMaterialsFromFrames(frames: readonly LanguageGenerationFrame[]): SemanticFactMaterial[] {
-  const out: SemanticFactMaterial[] = [];
-  for (const frame of frames) {
-    const constraints = jsonRecord(frame.realizationConstraints);
-    const fact = jsonRecord(constraints.semanticAnswerFact);
-    const subjectLabel = tidyInline(typeof fact.subject === "string" ? fact.subject : "");
-    const predicateLabel = tidyInline(typeof fact.predicate === "string" ? fact.predicate : "");
-    const objectLabel = tidyInline(typeof fact.object === "string" ? fact.object : "");
-    if (!subjectLabel || !predicateLabel || !objectLabel) continue;
-    const atomSupport = frame.propositionAtoms?.length ? mean(frame.propositionAtoms.map(atom => clamp01(atom.weight ?? 0.5))) : 0.5;
-    const answer = jsonRecord(constraints.semanticAnswer);
-    const alphaRhetoricalPlan = jsonRecord(answer.alphaRhetoricalPlan);
-    out.push({
-      id: `semantic_material:${hashText(`${subjectLabel}\u0001${predicateLabel}\u0001${objectLabel}\u0001${frame.id}`).slice(0, 24)}`,
-      subjectLabel,
-      predicateLabel,
-      objectLabel,
-      slotIds: jsonStringArray(answer.answerSlotIds),
-      support: clamp01(0.68 + atomSupport * 0.28),
-      forceClass: typeof fact.forceClass === "string" ? fact.forceClass : "",
-      relationId: typeof fact.relationId === "string" ? fact.relationId : "",
-      sourceNodeId: typeof fact.sourceNodeId === "string" ? fact.sourceNodeId : "",
-      targetNodeId: typeof fact.targetNodeId === "string" ? fact.targetNodeId : "",
-      frameId: frame.id,
-      relevance: clamp01(typeof fact.support === "number" ? fact.support : atomSupport),
-      preferredSubjectLabel: typeof answer.selectedSubject === "string" ? tidyInline(answer.selectedSubject) : undefined,
-      upstreamRoleId: typeof fact.roleId === "string" ? fact.roleId : undefined,
-      alphaRhetoricalCentrality: typeof fact.alphaRhetoricalCentrality === "number" ? clamp01(fact.alphaRhetoricalCentrality) : undefined,
-      pathScore: typeof fact.pathScore === "number" ? clamp01(fact.pathScore) : undefined,
-      roleScore: typeof fact.roleScore === "number" ? clamp01(fact.roleScore) : undefined,
-      bridgeValue: typeof fact.bridgeValue === "number" ? clamp01(fact.bridgeValue) : undefined,
-      backgroundPenalty: typeof fact.backgroundPenalty === "number" ? clamp01(fact.backgroundPenalty) : undefined,
-      forceMeaning: typeof fact.forceMeaning === "number" ? clamp01(fact.forceMeaning) : undefined,
-      certificationPower: typeof fact.certificationPower === "number" ? clamp01(fact.certificationPower) : undefined,
-      alphaRhetoricalPlannerId: typeof alphaRhetoricalPlan.plannerId === "string" ? alphaRhetoricalPlan.plannerId : undefined,
-      alphaRhetoricalTargetSentenceCount: typeof alphaRhetoricalPlan.targetSentenceCount === "number" ? alphaRhetoricalPlan.targetSentenceCount : undefined,
-      cognitiveEdgeId: typeof fact.cognitiveEdgeId === "string" ? fact.cognitiveEdgeId : undefined,
-      requestedSlotId: typeof fact.requestedSlotId === "string" ? fact.requestedSlotId : undefined,
-      relationRoleId: typeof fact.relationRoleId === "string" ? fact.relationRoleId : undefined,
-      graphQualityClassId: typeof fact.graphQualityClassId === "string" ? fact.graphQualityClassId : undefined,
-      topicSenseId: typeof fact.topicSenseId === "string" ? fact.topicSenseId : undefined,
-      finalQuestionFit: typeof fact.finalQuestionFit === "number" ? clamp01(fact.finalQuestionFit) : undefined,
-      questionSlotId: typeof fact.questionSlotId === "string" ? fact.questionSlotId : undefined,
-      questionSlotImportance: typeof fact.questionSlotImportance === "string" ? fact.questionSlotImportance : undefined,
-      questionSlotScore: typeof fact.questionSlotScore === "number" ? clamp01(fact.questionSlotScore) : undefined,
-      questionSlotReasonIds: jsonStringArray(fact.questionSlotReasonIds)
-    });
-  }
-  const seen = new Map<string, SemanticFactMaterial>();
-  for (const row of out) {
-    const key = semanticMaterialKey(row);
-    const near = [...seen.values()].find(existing => semanticMaterialOverlap(existing, row) > calibrated("language_memory.material_duplicate_overlap_floor"));
-    if (near) {
-      if (row.support > near.support) {
-        near.id = row.id;
-        near.subjectLabel = row.subjectLabel;
-        near.predicateLabel = row.predicateLabel;
-        near.objectLabel = row.objectLabel;
-        near.slotIds = uniqueStrings([...near.slotIds, ...row.slotIds]);
-        near.support = Math.max(near.support, row.support);
-        near.forceClass = row.forceClass || near.forceClass;
-        near.relationId = row.relationId || near.relationId;
-        near.sourceNodeId = row.sourceNodeId || near.sourceNodeId;
-        near.targetNodeId = row.targetNodeId || near.targetNodeId;
-        near.upstreamRoleId = row.upstreamRoleId || near.upstreamRoleId;
-        near.alphaRhetoricalCentrality = Math.max(near.alphaRhetoricalCentrality ?? 0, row.alphaRhetoricalCentrality ?? 0) || near.alphaRhetoricalCentrality;
-        near.pathScore = Math.max(near.pathScore ?? 0, row.pathScore ?? 0) || near.pathScore;
-        near.roleScore = Math.max(near.roleScore ?? 0, row.roleScore ?? 0) || near.roleScore;
-        near.bridgeValue = Math.max(near.bridgeValue ?? 0, row.bridgeValue ?? 0) || near.bridgeValue;
-        near.backgroundPenalty = Math.max(near.backgroundPenalty ?? 0, row.backgroundPenalty ?? 0) || near.backgroundPenalty;
-        near.forceMeaning = Math.max(near.forceMeaning ?? 0, row.forceMeaning ?? 0) || near.forceMeaning;
-        near.certificationPower = Math.max(near.certificationPower ?? 0, row.certificationPower ?? 0) || near.certificationPower;
-        near.alphaRhetoricalPlannerId = row.alphaRhetoricalPlannerId || near.alphaRhetoricalPlannerId;
-        near.alphaRhetoricalTargetSentenceCount = Math.max(near.alphaRhetoricalTargetSentenceCount ?? 0, row.alphaRhetoricalTargetSentenceCount ?? 0) || near.alphaRhetoricalTargetSentenceCount;
-        near.cognitiveEdgeId = row.cognitiveEdgeId || near.cognitiveEdgeId;
-        near.requestedSlotId = row.requestedSlotId || near.requestedSlotId;
-        near.relationRoleId = row.relationRoleId || near.relationRoleId;
-        near.graphQualityClassId = row.graphQualityClassId || near.graphQualityClassId;
-        near.topicSenseId = row.topicSenseId || near.topicSenseId;
-        near.finalQuestionFit = Math.max(near.finalQuestionFit ?? 0, row.finalQuestionFit ?? 0) || near.finalQuestionFit;
-        near.questionSlotId = row.questionSlotId || near.questionSlotId;
-        near.questionSlotImportance = strongerSlotImportance(row.questionSlotImportance, near.questionSlotImportance);
-        near.questionSlotScore = Math.max(near.questionSlotScore ?? 0, row.questionSlotScore ?? 0) || near.questionSlotScore;
-        near.questionSlotReasonIds = uniqueStrings([...(near.questionSlotReasonIds ?? []), ...(row.questionSlotReasonIds ?? [])]);
-      }
-      continue;
-    }
-    const existing = seen.get(key);
-    if (!existing || row.support > existing.support) seen.set(key, row);
-  }
-  return [...seen.values()]
-    .sort((a, b) => b.support - a.support || b.relevance - a.relevance || a.subjectLabel.localeCompare(b.subjectLabel))
-    .slice(0, 24);
-}
-
-
-
-function jsonStringArray(value: JsonValue | undefined): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item)) : [];
-}
-
-
-
-function semanticMaterialKey(material: SemanticFactMaterial): string {
-  return [material.sourceNodeId || material.subjectLabel, material.relationId || material.predicateLabel, material.targetNodeId || material.objectLabel]
-    .map(normalizeSurfaceKey)
-    .join("\u0001");
-}
-
-
-
-function normalizeSurfaceKey(value: string): string {
-  return tidyInline(value).normalize("NFKC").toLocaleLowerCase();
-}
-
-
-
-function semanticMaterialOverlap(a: SemanticFactMaterial, b: SemanticFactMaterial): number {
-  return semanticSurfaceOverlap(`${a.subjectLabel} ${a.predicateLabel} ${a.objectLabel}`, `${b.subjectLabel} ${b.predicateLabel} ${b.objectLabel}`);
-}
-
-
-
-function semanticSurfaceOverlap(a: string, b: string): number {
-  return weightedJaccard(featureSet(a, 128), featureSet(b, 128));
-}
-
-
-
-function strongerSlotImportance(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) return right;
-  if (!right) return left;
-  return slotImportanceRank(left) <= slotImportanceRank(right) ? left : right;
-}
-
-
-
-function slotImportanceRank(value: string): number {
-  if (value === "core") return 0;
-  if (value === "secondary") return 1;
-  if (value === "context") return 2;
-  if (value === "rejected") return 3;
-  return 4;
-}
-
-
-
-function semanticRhetoricalPlanFromMaterials(materials: readonly SemanticFactMaterial[], contextText: string, discoursePrior?: RuntimeDiscoursePriorProfile): RhetoricalPlan | undefined {
-  const ordered = materials.filter(material => !materialRejectedByQuestionSlot(material)).sort((a, b) => b.support - a.support || b.relevance - a.relevance || a.subjectLabel.localeCompare(b.subjectLabel)).slice(0, 16);
-  if (!ordered.length) return undefined;
-  const subjectLabel = primarySemanticSubject(ordered);
-  const assignments = answerRoleAssignmentsFromMaterials(ordered, subjectLabel, contextText);
-  const stageSpecs: Array<{ roleId: string; priority: number; surfaceWeight: number }> = [
-    { roleId: ANSWER_ROLE_IDS.identity, priority: 0.98, surfaceWeight: 0.92 },
-    { roleId: ANSWER_ROLE_IDS.contribution, priority: 0.96, surfaceWeight: 0.96 },
-    { roleId: ANSWER_ROLE_IDS.significance, priority: 0.78, surfaceWeight: 0.82 },
-    { roleId: ANSWER_ROLE_IDS.context, priority: 0.72, surfaceWeight: 0.72 },
-    { roleId: ANSWER_ROLE_IDS.field, priority: 0.62, surfaceWeight: 0.6 },
-    { roleId: ANSWER_ROLE_IDS.backgroundActor, priority: 0.34, surfaceWeight: 0.22 },
-    { roleId: ANSWER_ROLE_IDS.backgroundRelation, priority: 0.3, surfaceWeight: 0.18 }
-  ];
-  const stages = stageSpecs
-    .map(spec => {
-      const rows = assignments.filter(assignment => assignment.roleId === spec.roleId && assignment.shouldSurface);
-      return rows.length ? {
-        id: `rhetorical.stage:${hashText(`${spec.roleId}:${rows.map(row => row.id).join(":")}`).slice(0, 16)}`,
-        roleId: spec.roleId,
-        assignmentIds: rows.map(row => row.id),
-        priority: spec.priority,
-        surfaceWeight: spec.surfaceWeight
-      } : undefined;
-    })
-    .filter((stage): stage is RhetoricalPlanStage => Boolean(stage));
-  const bridgeIds = assignments
-    .filter(assignment => isBridgeAnswerRoleId(assignment.roleId))
-    .map(assignment => assignment.id);
-  const backgroundIds = assignments
-    .filter(assignment => isBackgroundAnswerRoleId(assignment.roleId))
-    .map(assignment => assignment.id);
-  return {
-    id: `rhetorical.plan:${hashText(`${subjectLabel}:${assignments.map(row => `${row.materialId}:${row.roleId}`).join("|")}`).slice(0, 18)}`,
-    subjectLabel,
-    assignments,
-    stages,
-    backgroundAssignmentIds: backgroundIds,
-    significanceBridgeAssignmentIds: bridgeIds,
-    targetMoveCount: rhetoricalTargetMoveCount(ordered, stages, discoursePrior),
-    certificationBoundaryId: assignments.some(assignment => assignment.roleId === ANSWER_ROLE_IDS.boundary) ? ANSWER_ROLE_IDS.boundary : undefined
-  };
-}
-
-
-
-function materialRejectedByQuestionSlot(material: SemanticFactMaterial): boolean {
-  return material.questionSlotImportance === "rejected";
-}
-
-
-
-function primarySemanticSubject(materials: readonly SemanticFactMaterial[]): string {
-  const preferred = materials
-    .map(material => material.preferredSubjectLabel)
-    .find((label): label is string => Boolean(label));
-  if (preferred) return preferred;
-  const scores = new Map<string, { label: string; score: number }>();
-  for (const material of materials) {
-    const key = normalizeSurfaceKey(material.subjectLabel);
-    const previous = scores.get(key);
-    const score = (previous?.score ?? 0) + material.support + material.relevance * 0.35;
-    scores.set(key, { label: previous?.label ?? material.subjectLabel, score });
-  }
-  return [...scores.values()].sort((a, b) => b.score - a.score || a.label.localeCompare(b.label))[0]?.label ?? materials[0]?.subjectLabel ?? "";
-}
-
-
-
-function answerRoleAssignmentsFromMaterials(materials: readonly SemanticFactMaterial[], subjectLabel: string, contextText: string): AnswerRoleAssignment[] {
-  const primaryRows = materials.filter(material => sameSurface(material.subjectLabel, subjectLabel) || sameSurface(material.objectLabel, subjectLabel));
-  const primaryObjectKeys = new Set(primaryRows.map(material => normalizeSurfaceKey(material.objectLabel)).filter(Boolean));
-  const hasContribution = primaryRows.some(material => semanticRelationSurfaceMass(material) > 1 || semanticQuestionFit(material, contextText) > calibrated("language_memory.material_contribution_question_fit_floor"));
-  return materials.map(material => {
-    const subjectMatch = sameSurface(material.subjectLabel, subjectLabel);
-    const objectMatch = sameSurface(material.objectLabel, subjectLabel);
-    const subjectIsContext = primaryObjectKeys.has(normalizeSurfaceKey(material.subjectLabel));
-    const objectIsContext = primaryObjectKeys.has(normalizeSurfaceKey(material.objectLabel));
-    const questionShapeFit = material.finalQuestionFit ?? semanticQuestionFit(material, contextText);
-    const relationUsefulness = clamp01(calibrated("language_memory.relation_support_weight") * material.support + calibrated("language_memory.relation_relevance_weight") * material.relevance + calibrated("language_memory.relation_question_shape_fit_weight") * questionShapeFit);
-    let roleId = rhetoricalRoleFromQuestionSlot(material.questionSlotId, material.questionSlotImportance) || material.upstreamRoleId || rhetoricalRoleFromRelationRole(material.relationRoleId) || ANSWER_ROLE_IDS.field;
-    const slotLocked = Boolean(material.questionSlotId);
-    if (!material.upstreamRoleId && !slotLocked) {
-      if (subjectMatch || objectMatch) {
-        roleId = semanticRelationSurfaceMass(material) <= 3 && semanticSurfaceSymbolMass(material.objectLabel) <= 4 ? ANSWER_ROLE_IDS.identity : ANSWER_ROLE_IDS.contribution;
-      } else if (subjectIsContext) {
-        roleId = ANSWER_ROLE_IDS.context;
-      } else if (objectIsContext) {
-        roleId = hasContribution ? ANSWER_ROLE_IDS.backgroundActor : ANSWER_ROLE_IDS.backgroundRelation;
-      }
-    }
-    const background = isBackgroundAnswerRoleId(roleId);
-    const secondarySlot = material.questionSlotImportance === "secondary" || material.questionSlotImportance === "context";
-    const rejectedSlot = materialRejectedByQuestionSlot(material);
-    const shouldSurface = !rejectedSlot && (!background || (!hasContribution && relationUsefulness > calibrated("language_memory.background_relation_usefulness_floor") && !material.upstreamRoleId && !secondarySlot));
-    const centrality = material.alphaRhetoricalCentrality ?? relationUsefulness;
-    const slotBoost = material.questionSlotImportance === "core" ? 0.18 : material.questionSlotImportance === "secondary" ? -0.05 : material.questionSlotImportance === "context" ? -0.08 : 0;
-    const priority = rhetoricalRolePriority(roleId) + centrality * 0.28 + relationUsefulness * 0.14 + (subjectMatch ? 0.18 : 0) + slotBoost - (material.backgroundPenalty ?? 0) * 0.16;
-    return {
-      id: `answer.role:${hashText(`${material.id}:${roleId}:${subjectLabel}`).slice(0, 18)}`,
-      materialId: material.id,
-      subjectRef: material.sourceNodeId || material.subjectLabel,
-      relationRef: material.relationId || material.predicateLabel,
-      objectRef: material.targetNodeId || material.objectLabel,
-      roleId,
-      priority: clamp01(priority),
-      support: material.support,
-      relationUsefulness: material.roleScore ?? relationUsefulness,
-      questionShapeFit,
-      requestedSlotId: material.requestedSlotId,
-      relationRoleId: material.relationRoleId,
-      topicSenseId: material.topicSenseId,
-      questionSlotId: material.questionSlotId,
-      questionSlotImportance: material.questionSlotImportance,
-      shouldSurface,
-      surfaceWeight: clamp01((shouldSurface ? 0.54 : 0.14) + rhetoricalRolePriority(roleId) * 0.28 + material.support * 0.1 + centrality * 0.22 + slotBoost * 0.6 - (material.backgroundPenalty ?? 0) * 0.2)
-    };
-  }).sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
-}
-
-
-
-function sameSurface(a: string, b: string): boolean {
-  return normalizeSurfaceKey(a) === normalizeSurfaceKey(b);
-}
-
-
-
-function semanticRelationSurfaceMass(material: SemanticFactMaterial): number {
-  return symbolizeData(`${material.predicateLabel} ${material.objectLabel}`).filter(symbol => symbol.trim()).length;
-}
-
-
-
-function semanticQuestionFit(material: SemanticFactMaterial, contextText: string): number {
-  const context = featureSet(contextText, 128);
-  if (!context.length) return 0;
-  return weightedJaccard(context, featureSet(`${material.subjectLabel} ${material.predicateLabel} ${material.objectLabel}`, 128));
-}
-
-
-
-function rhetoricalRoleFromQuestionSlot(slotId: string | undefined, importance: string | undefined): string | undefined {
-  if (!slotId) return undefined;
-  if (importance === "secondary") {
-    if (slotId === ANSWER_SLOT_IDS.context) return ANSWER_ROLE_IDS.context;
-    if (slotId === ANSWER_SLOT_IDS.significance) return ANSWER_ROLE_IDS.significance;
-    return ANSWER_ROLE_IDS.backgroundRelation;
-  }
-  if (importance === "context") return ANSWER_ROLE_IDS.context;
-  if (slotId === ANSWER_SLOT_IDS.roleOrField || slotId === ANSWER_SLOT_IDS.sensePrimary || slotId === ANSWER_SLOT_IDS.selectedSense) return ANSWER_ROLE_IDS.identity;
-  if (slotId === ANSWER_SLOT_IDS.contribution || slotId === ANSWER_SLOT_IDS.knownForContribution || slotId === ANSWER_SLOT_IDS.memberRelation || slotId === ANSWER_SLOT_IDS.effectRelation) return ANSWER_ROLE_IDS.contribution;
-  if (slotId === ANSWER_SLOT_IDS.significance) return ANSWER_ROLE_IDS.significance;
-  if (slotId === ANSWER_SLOT_IDS.context || slotId === ANSWER_SLOT_IDS.sourceConcept || slotId === ANSWER_SLOT_IDS.targetConcept) return ANSWER_ROLE_IDS.context;
-  return undefined;
-}
-
-
-
-function rhetoricalRoleFromRelationRole(value: string | undefined): string | undefined {
-  if (value === RELATION_ROLE_IDS.roleClass || value === RELATION_ROLE_IDS.definitionClass) return ANSWER_ROLE_IDS.identity;
-  if (value === RELATION_ROLE_IDS.contribution || value === RELATION_ROLE_IDS.knownFor || value === RELATION_ROLE_IDS.characterCast) return ANSWER_ROLE_IDS.contribution;
-  if (value === RELATION_ROLE_IDS.effect) return ANSWER_ROLE_IDS.significance;
-  if (value === RELATION_ROLE_IDS.domain) return ANSWER_ROLE_IDS.field;
-  if (value === RELATION_ROLE_IDS.metadata) return ANSWER_ROLE_IDS.backgroundRelation;
-  if (value === RELATION_ROLE_IDS.graphRequestRelation || value === RELATION_ROLE_IDS.graphRequestMembership || value === RELATION_ROLE_IDS.graphExplanatoryPath) return ANSWER_ROLE_IDS.contribution;
-  if (value === RELATION_ROLE_IDS.graphCompactAttribute) return ANSWER_ROLE_IDS.field;
-  if (value === RELATION_ROLE_IDS.graphCompoundAttribute || value === RELATION_ROLE_IDS.graphCompoundMembership || value === RELATION_ROLE_IDS.graphContextRelation) return ANSWER_ROLE_IDS.context;
-  if (value === RELATION_ROLE_IDS.graphNavigation) return ANSWER_ROLE_IDS.backgroundRelation;
-  return undefined;
-}
-
-
-
-function semanticSurfaceSymbolMass(value: string): number {
-  return symbolizeData(value).filter(symbol => symbol.trim()).length;
-}
-
-
-
-function rhetoricalRolePriority(roleId: string): number {
-  if (roleId === ANSWER_ROLE_IDS.identity) return 0.92;
-  if (roleId === ANSWER_ROLE_IDS.contribution) return 0.9;
-  if (roleId === ANSWER_ROLE_IDS.significance) return 0.74;
-  if (roleId === ANSWER_ROLE_IDS.context) return 0.62;
-  if (roleId === ANSWER_ROLE_IDS.field) return 0.5;
-  if (roleId === ANSWER_ROLE_IDS.backgroundActor) return 0.18;
-  if (roleId === ANSWER_ROLE_IDS.backgroundRelation) return 0.14;
-  if (roleId === ANSWER_ROLE_IDS.boundary) return 0.08;
-  return 0.24;
-}
-
-
-
-function rhetoricalTargetMoveCount(materials: readonly SemanticFactMaterial[], stages: readonly RhetoricalPlanStage[], discoursePrior?: RuntimeDiscoursePriorProfile): number {
-  const upstreamTarget = Math.max(0, ...materials.map(material => material.alphaRhetoricalTargetSentenceCount ?? 0));
-  const surfacedStageCount = stages.filter(stage => stage.surfaceWeight >= 0.6).length;
-  const bridgeStageCount = stages.filter(stage => isBridgeAnswerRoleId(stage.roleId)).length;
-  const learnedTarget = discoursePrior?.targetMoveCount ?? 0;
-  const raw = Math.max(upstreamTarget, learnedTarget, 1 + surfacedStageCount + Math.min(1, bridgeStageCount));
-  return Math.max(2, Math.min(12, Math.round(raw)));
-}
-
-
-
-function runtimeDiscoursePriorProfile(
-  state: LanguageMemoryRuntimeState,
-  generationExtent = 0
-): RuntimeDiscoursePriorProfile | undefined {
-  const patterns = state.importedPatterns
-    .filter(pattern => pattern.patternKind === "discourse" || pattern.patternKind === "narrative")
-    .slice(0, 512);
-  if (!patterns.length) return undefined;
-  const patternIds: string[] = [];
-  const sentenceCounts: number[] = [];
-  const paragraphCounts: number[] = [];
-  const sentenceLengths: number[] = [];
-  const paragraphLengths: number[] = [];
-  const dialogueRates: number[] = [];
-  let dialogueTurnMass = 0;
-  let support = 0;
-  for (const pattern of patterns) {
-    const record = jsonRecord(pattern.patternJson);
-    const schema = typeof record.schema === "string" ? record.schema : "";
-    if (schema !== "scce.long_form_discourse_pattern.v1"
-      && schema !== "scce.narrative_surface_pattern.v1") continue;
-    patternIds.push(pattern.id);
-    support += pattern.support;
-    if (schema === "scce.long_form_discourse_pattern.v1") {
-      sentenceCounts.push(numberOf(record.sentenceCount));
-      paragraphCounts.push(numberOf(record.paragraphCount));
-      sentenceLengths.push(...numberArrayFromJson(record.sentenceSymbolLengths).slice(0, 512));
-      paragraphLengths.push(...numberArrayFromJson(record.paragraphSymbolLengths).slice(0, 256));
-      dialogueTurnMass += topEntryMass(record.dialogueTurnMarkers);
-    } else {
-      paragraphCounts.push(Math.max(0, topEntryMass(record.paragraphShapeTransitions)));
-      dialogueRates.push(numberOf(record.dialogueTurnRate));
-    }
-  }
-  if (!patternIds.length) return undefined;
-  const sentenceCount = boundedMax(sentenceCounts, 0, 24);
-  const paragraphCount = boundedMax(paragraphCounts, 0, 12);
-  const sentenceSymbolP75 = percentile(sentenceLengths, 0.75);
-  const paragraphSymbolP50 = percentile(paragraphLengths, 0.5);
-  const dialogueTurnRate = boundedMax(dialogueRates, 0, 8) + dialogueTurnMass / Math.max(1, patternIds.length * 12);
-  const targetSymbolCount = Math.max(
-    generationExtent,
-    paragraphCount > 1 && paragraphSymbolP50 > 0 ? paragraphCount * paragraphSymbolP50 : 0,
-    sentenceCount > 2 && sentenceSymbolP75 > 0 ? sentenceCount * sentenceSymbolP75 : 0,
-    paragraphCount > 1 ? paragraphCount * 32 : 0,
-    sentenceCount > 2 ? sentenceCount * 12 : 0
-  );
-  const targetMoveCount = Math.max(
-    0,
-    Math.min(12, Math.round(Math.max(
-      paragraphCount > 1 ? paragraphCount * 1.5 : 0,
-      sentenceCount > 2 ? sentenceCount / 2 : 0,
-      dialogueTurnRate > 0 ? 4 + dialogueTurnRate : 0
-    )))
-  );
-  return {
-    patternIds: uniqueStrings(patternIds).slice(0, 32),
-    targetMoveCount,
-    targetSymbolCount: Math.max(0, Math.min(256, Math.ceil(targetSymbolCount))),
-    paragraphCount,
-    sentenceCount,
-    sentenceSymbolP75,
-    paragraphSymbolP50,
-    dialogueTurnRate,
-    support: clamp01(support / Math.max(1, patternIds.length))
-  };
-}
-
-
-
-function numberArrayFromJson(value: JsonValue | undefined): number[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is number => typeof item === "number" && Number.isFinite(item))
-    : [];
-}
-
-
-
-function topEntryMass(value: JsonValue | undefined): number {
-  if (!Array.isArray(value)) return 0;
-  return value.reduce<number>((sum, entry) => {
-    if (!Array.isArray(entry) || entry.length < 2) return sum;
-    const count = entry[1];
-    return sum + (typeof count === "number" && Number.isFinite(count) && count > 0 ? count : 0);
-  }, 0);
-}
-
-
-
-function boundedMax(values: readonly number[], min: number, max: number): number {
-  return Math.max(min, Math.min(max, Math.max(min, ...values.filter(value => Number.isFinite(value)))));
-}
-
-
-
-function percentile(values: readonly number[], q: number): number {
-  if (!values.length) return 0;
-  const sorted = [...values].sort((left, right) => left - right);
-  const index = Math.max(0, Math.min(sorted.length - 1, Math.floor(clamp01(q) * (sorted.length - 1))));
-  return sorted[index] ?? 0;
-}
-
-
-
-function discoursePriorAudit(prior: RuntimeDiscoursePriorProfile): JsonValue {
-  return toJsonValue({
-    patternIds: prior.patternIds.slice(0, 16),
-    targetMoveCount: prior.targetMoveCount,
-    targetSymbolCount: prior.targetSymbolCount,
-    paragraphCount: prior.paragraphCount,
-    sentenceCount: prior.sentenceCount,
-    sentenceSymbolP75: prior.sentenceSymbolP75,
-    paragraphSymbolP50: prior.paragraphSymbolP50,
-    dialogueTurnRate: prior.dialogueTurnRate,
-    support: prior.support
-  });
 }
