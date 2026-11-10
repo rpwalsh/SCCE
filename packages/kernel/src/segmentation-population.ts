@@ -148,9 +148,9 @@ export function learnSegmentationPopulations(input: {
 }): SegmentationPopulationModel {
   const hasher = input.hasher ?? createHasher();
   const fitEstimator = createBoundaryEstimatorFitter(hasher);
-  const documents = [...input.documents]
-    .filter(document => document.statistics.positiveMass + document.statistics.negativeMass > 0)
-    .sort((left, right) => left.documentId.localeCompare(right.documentId));
+  const suppliedDocuments = [...input.documents].sort((left, right) => left.documentId.localeCompare(right.documentId));
+  const documents = suppliedDocuments.filter(document => document.statistics.positiveMass + document.statistics.negativeMass > 0);
+  if (!documents.length) throw new Error("cannot fit segmentation populations without positive boundary observation mass");
   const partitions = sourceFamilyDisjointPartitions(documents, hasher);
   const fit = partitions.fit;
   const selection = partitions.modelSelection;
@@ -243,7 +243,7 @@ export function learnSegmentationPopulations(input: {
       }
     };
   });
-  const assignments = documents.map(document =>
+  const assignments = suppliedDocuments.map(document =>
     assignmentForDocument(document, populations));
   const assignmentIndex = Object.fromEntries(assignments.map((assignment, index) => [
     assignment.documentId,
