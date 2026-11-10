@@ -15,7 +15,7 @@ import {
   type ProofLicenseCarrier,
   type ProofLicenseSemiring
 } from "./proof-license-semiring.js";
-import { interleaveConstructions, reassembleLogicalSurface, type DiscontinuousConstruction } from "./discontinuous-construction.js";
+import { interleaveConstructions, type DiscontinuousConstruction } from "./discontinuous-construction.js";
 import type { ReversibleConstruction } from "./reversible-construction.js";
 import { renderJoinedSurface, type JoinProgramMixture } from "./join-program.js";
 import type { GraphSlice, Hyperedge } from "./types.js";
@@ -66,6 +66,7 @@ export interface ConstructionOperator {
   resultType: string;
   argumentTypes: Array<{ portId: string; type: string }>;
   evidenceIds: string[];
+  source?: { sourceFamilyId: string; sourceVersionId: string | null; sourceUtf16Start: number; sourceUtf16End: number };
   /** Realization template: the construction's own observed surface plus which slot each argument port fills. */
   surface: {
     text: string;
@@ -81,29 +82,23 @@ export function constructionOperator(construction: ReversibleConstruction): Cons
   if (!relationId) return undefined;
   const boundaryPortIds = new Set(construction.graph.boundaryPortIds);
   const argumentPorts = construction.graph.ports.filter(port => boundaryPortIds.has(port.id));
-  const slotByPort = new Map<string, { start: number; end: number }>();
-  for (const slot of construction.surface.slots) {
-    for (const portId of slot.graphPortIds) {
-      if (!boundaryPortIds.has(portId)) continue;
-      const existing = slotByPort.get(portId);
-      if (!existing || slot.relativeUtf16Start < existing.start) {
-        slotByPort.set(portId, { start: slot.relativeUtf16Start, end: slot.relativeUtf16End });
-      }
-    }
-  }
   return {
     constructionId: construction.id,
     resultType: relationId,
     ...(construction.surface.discontinuous ? { discontinuous: construction.surface.discontinuous } : {}),
     argumentTypes: argumentPorts.map(port => ({ portId: port.id, type: portArgumentType(port) })),
     evidenceIds: [...new Set(construction.graph.ports.flatMap(port => port.evidenceIds))],
+    source: {
+      sourceFamilyId: construction.surface.sourceFamilyId,
+      sourceVersionId: construction.surface.sourceVersionId,
+      sourceUtf16Start: construction.surface.sourceUtf16Start,
+      sourceUtf16End: construction.surface.sourceUtf16End
+    },
     surface: {
       text: construction.surface.sourceSurface,
       slots: argumentPorts
-        .flatMap(port => {
-          const slot = slotByPort.get(port.id);
-          return slot ? [{ portId: port.id, start: slot.start, end: slot.end }] : [];
-        })
+        .flatMap(port => construction.surface.slots.filter(slot => slot.graphPortIds.includes(port.id))
+          .map(slot => ({ portId: port.id, start: slot.relativeUtf16Start, end: slot.relativeUtf16End })))
         .sort((left, right) => left.start - right.start)
     }
   };
@@ -268,61 +263,104 @@ export function buildConstructionAlgebra(input: {
  * than retrieved. Depth-bounded and cycle-safe via the registry's own
  * ancestor chains.
  */
+export interface RealizedDerivation {
+  constructionId: string;
+  baseConstructionId: string;
+  source?: ConstructionOperator["source"];
+  evidenceIds: string[];
+  children: Array<{ portId: string; derivation: RealizedDerivation }>;
+}
+
+export type DerivationRealization =
+  | { status: "resolved"; text: string; evidenceIds: string[]; derivation: RealizedDerivation }
+  | { status: "unresolved-binding" | "invalid-span" | "unsupported-construction" | "cycle" | "resource-exhausted" | "evidence-unavailable"; constructionId: string; reason: string };
+
+export type DerivationEvidenceAdmission = (evidenceId: string, constructionId: string) => boolean;
+
 export function realizeDerivation(input: {
   constructionId: string;
   algebra: ConstructionAlgebra;
   depth?: number;
   maxDepth?: number;
-}): string {
-  const depth = input.depth ?? 0;
-  const maxDepth = input.maxDepth ?? 8;
-  if (depth > maxDepth) return "";
-  const composite = input.algebra.registry.composed[input.constructionId];
-  const baseId = composite?.baseConstructionId ?? input.constructionId;
-  const operator = input.algebra.operators.get(baseId);
-  if (!operator) return "";
-  // A discontinuous construction reads in its own logical order, not the order its spans happen to sit in.
-  const surfaceText = operator.discontinuous
-    ? reassembleLogicalSurface(operator.discontinuous, operator.surface.text)
-    : operator.surface.text;
-  if (!composite || !operator.surface.slots.length) return surfaceText.trim();
-
-  const childByPort = new Map(composite.ports.map(port => [port.portId, port.childConstructionId]));
-  const realizeChild = (childId: string): string =>
-    realizeDerivation({ constructionId: childId, algebra: input.algebra, depth: depth + 1, maxDepth });
-  // A discontinuous operator with slots must be filled span by span in its own reading order; filling it in byte order
-  // would silently discard the logical order the construction exists to carry.
-  if (operator.discontinuous) {
-    const spans = [...operator.discontinuous.spans].sort((left, right) => left.order - right.order);
-    const pieces = spans.map(span => {
-      let piece = "";
+  maxNodes?: number;
+  maxOutputUtf16?: number;
+  isEvidenceSupported?: DerivationEvidenceAdmission;
+}): DerivationRealization {
+  const maxDepth = input.maxDepth ?? 8, maxNodes = input.maxNodes ?? 1024, maxOutput = input.maxOutputUtf16 ?? 1_048_576;
+  const path = new Set<string>();
+  let nodes = 0;
+  function failure(status: Exclude<DerivationRealization["status"], "resolved">, constructionId: string, reason: string): DerivationRealization {
+    return { status, constructionId, reason };
+  }
+  function walk(id: string, depth: number): DerivationRealization {
+    if (path.has(id)) return failure("cycle", id, "selected child revisits an active construction");
+    if (!Number.isSafeInteger(depth) || depth < 0 || depth > maxDepth || ++nodes > maxNodes) return failure("resource-exhausted", id, "derivation depth or node budget exhausted");
+    const composite = input.algebra.registry.composed[id], baseId = composite?.baseConstructionId ?? id;
+    const operator = input.algebra.operators.get(baseId);
+    if (!operator) return failure("unsupported-construction", id, "selected construction is unavailable");
+    if (!operator.evidenceIds.length || operator.evidenceIds.some(evidenceId => !evidenceId || input.isEvidenceSupported?.(evidenceId, baseId) === false)) return failure("evidence-unavailable", id, "construction has no admitted evidence");
+    const bindings = new Map<string, string>();
+    for (const port of composite?.ports ?? []) {
+      if (bindings.has(port.portId)) return failure("unresolved-binding", id, "duplicate selected port binding");
+      bindings.set(port.portId, port.childConstructionId);
+    }
+    const argumentsByPort = new Map(operator.argumentTypes.map(argument => [argument.portId, argument.type]));
+    for (const portId of bindings.keys()) if (!argumentsByPort.has(portId)) return failure("unresolved-binding", id, "selected binding names no argument port");
+    for (const argument of operator.argumentTypes) {
+      const childId = bindings.get(argument.portId);
+      if (childId === undefined || !operator.surface.slots.some(slot => slot.portId === argument.portId)) return failure("unresolved-binding", id, "argument has no selected child or surface slot");
+      if (path.has(childId) || childId === id) return failure("cycle", childId, "selected child revisits an active construction");
+      const child = input.algebra.operators.get(childId);
+      if (!child) return failure("unsupported-construction", childId, "selected child is unavailable");
+      if (child.resultType !== argument.type) return failure("unsupported-construction", childId, "selected child does not satisfy the argument type");
+    }
+    const sourceText = operator.surface.text;
+    const boundary = (offset: number): boolean => Number.isSafeInteger(offset) && offset >= 0 && offset <= sourceText.length
+      && !(offset > 0 && offset < sourceText.length && /[\uD800-\uDBFF]/u.test(sourceText[offset - 1]!) && /[\uDC00-\uDFFF]/u.test(sourceText[offset]!));
+    const slots = [...operator.surface.slots].sort((left, right) => left.start - right.start || left.end - right.end);
+    for (let index = 0; index < slots.length; index++) {
+      const slot = slots[index]!;
+      if (!boundary(slot.start) || !boundary(slot.end) || slot.end < slot.start || !argumentsByPort.has(slot.portId)) return failure("invalid-span", id, "slot coordinates or port are invalid");
+      if (index && slot.start < slots[index - 1]!.end) return failure("invalid-span", id, "selected surface slots overlap");
+    }
+    const spans = operator.discontinuous
+      ? [...operator.discontinuous.spans].sort((left, right) => left.order - right.order)
+      : [{ order: 0, utf16Start: 0, utf16End: sourceText.length }];
+    const orders = new Set<number>();
+    for (const span of spans) {
+      if (!Number.isSafeInteger(span.order) || orders.has(span.order) || !boundary(span.utf16Start) || !boundary(span.utf16End) || span.utf16End < span.utf16Start) return failure("invalid-span", id, "discontinuous span coordinates or reading order are invalid");
+      orders.add(span.order);
+    }
+    const sourceOrder = [...spans].sort((left, right) => left.utf16Start - right.utf16Start);
+    for (let index = 1; index < sourceOrder.length; index++) if (sourceOrder[index]!.utf16Start < sourceOrder[index - 1]!.utf16End) return failure("invalid-span", id, "discontinuous spans overlap");
+    if (slots.some(slot => spans.filter(span => slot.start >= span.utf16Start && slot.end <= span.utf16End).length !== 1)) return failure("invalid-span", id, "slot must belong to exactly one literal span");
+    path.add(id);
+    const children: RealizedDerivation["children"] = [], childText = new Map<string, string>();
+    for (const argument of operator.argumentTypes) {
+      const child = walk(bindings.get(argument.portId)!, depth + 1);
+      if (child.status !== "resolved") { path.delete(id); return child; }
+      children.push({ portId: argument.portId, derivation: child.derivation });
+      childText.set(argument.portId, child.text);
+    }
+    path.delete(id);
+    let text = "";
+    for (const span of spans) {
       let cursor = span.utf16Start;
-      for (const slot of operator.surface.slots) {
+      for (const slot of slots) {
         if (slot.start < span.utf16Start || slot.end > span.utf16End) continue;
-        const childId = childByPort.get(slot.portId);
-        if (childId === undefined) continue;
-        const start = Math.max(cursor, slot.start);
-        piece += operator.surface.text.slice(cursor, start);
-        piece += realizeChild(childId);
-        cursor = Math.max(start, slot.end);
+        const addition = sourceText.slice(cursor, slot.start) + childText.get(slot.portId)!;
+        if (text.length + addition.length > maxOutput) return failure("resource-exhausted", id, "realized output budget exhausted");
+        text += addition;
+        cursor = slot.end;
       }
-      return piece + operator.surface.text.slice(cursor, span.utf16End);
-    });
-    return pieces.join(" ").replace(/\s+/gu, " ").trim();
+      if (text.length + span.utf16End - cursor > maxOutput) return failure("resource-exhausted", id, "realized output budget exhausted");
+      text += sourceText.slice(cursor, span.utf16End);
+    }
+    const evidenceIds = [...new Set([...operator.evidenceIds, ...children.flatMap(child => child.derivation.evidenceIds)])].sort();
+    return { status: "resolved", text, evidenceIds, derivation: {constructionId: id, baseConstructionId: baseId, ...(operator.source ? {source: operator.source} : {}), evidenceIds, children} };
   }
-  let out = "";
-  let cursor = 0;
-  for (const slot of operator.surface.slots) {
-    const childId = childByPort.get(slot.portId);
-    if (childId === undefined) continue;
-    const start = Math.max(cursor, Math.min(slot.start, operator.surface.text.length));
-    const end = Math.max(start, Math.min(slot.end, operator.surface.text.length));
-    out += operator.surface.text.slice(cursor, start);
-    out += realizeChild(childId);
-    cursor = end;
-  }
-  out += operator.surface.text.slice(cursor);
-  return out.replace(/\s+/gu, " ").trim();
+  if (![maxDepth, maxNodes, maxOutput].every(limit => Number.isSafeInteger(limit) && limit >= 0)) return failure("resource-exhausted", input.constructionId, "invalid realization budget");
+  return walk(input.constructionId, input.depth ?? 0);
 }
 
 /**
