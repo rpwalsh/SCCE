@@ -3,7 +3,7 @@
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import { jsonRecord, kernelString, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import {
-  answerCoversRequest,
+  evidenceTopicMatchesRequest,
   isUnparsedMarkupText,
   requestContentEvidenceUnits,
   requestUnitSharesStem
@@ -156,7 +156,7 @@ export function recitedEvidenceAdmissibility(input: { surface: string; span: Evi
   "admissible" | "markup" | "apparatus" | "uncovered" {
   if (isUnparsedMarkupText(input.surface)) return "markup";
   if (isStructuralResidueSurface(input.surface)) return "apparatus";
-  if (!answerCoversRequest([input.surface], input.span, requestContentEvidenceUnits(input.requestText), input.requestText)) return "uncovered";
+  if (!evidenceTopicMatchesRequest([input.surface], input.span, requestContentEvidenceUnits(input.requestText), input.requestText)) return "uncovered";
   return "admissible";
 }
 

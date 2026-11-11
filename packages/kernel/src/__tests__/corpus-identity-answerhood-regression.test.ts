@@ -18,6 +18,17 @@ const biography = "Allan Dwan was an American film director, producer, and scree
 const supported = "Allan Dwan's blood type was O positive.";
 
 describe("corpus identity answerhood priming", () => {
+  it("requires complete requested content before the closed class is learned", () => {
+    const sentence = "Bees collect pollen in their pollen baskets and carry it back to the hive.";
+    const evidence = span(sentence, "Honey bee", "honey-bee");
+    expect(answerCoversRequest([sentence], evidence, ["honey", "bees", "collect", "nectar"],
+      "Do honey bees collect nectar?", { relationRequired: false })).toBe(false);
+    expect(answerCoversRequest([sentence], evidence, ["honey", "bees", "manufacture", "copper"],
+      "Do honey bees manufacture copper?", { relationRequired: false })).toBe(false);
+    expect(answerCoversRequest([sentence], evidence, ["honey", "bees", "collect", "pollen"],
+      "Do honey bees collect pollen?", { relationRequired: false })).toBe(true);
+  });
+
   beforeEach(() => {
     resetCorpusIdentityMeasurements();
     clearCorpusIdentitySignals();

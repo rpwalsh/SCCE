@@ -16,6 +16,7 @@ import {
 } from "../segmentation-witness-archive-storage.js";
 import { blobContentHash, createPostgresStorageAdapter } from "../postgres.js";
 import { requiredHydrationColumns } from "../postgres-schema.js";
+import { normalizeWikiText, wikipediaLanguageSurface } from "../wikipedia.js";
 
 const hasher = createHasher();
 const profileId = "profile.segmentation-archive.fixture";
@@ -66,6 +67,29 @@ function logicalFixture() {
 }
 
 describe("PostgreSQL segmentation witness archive storage", () => {
+  it("cold-restores the declared learning view without replacing canonical gallery evidence", async () => {
+    const raw = "Honey bees visit flowers.\n<gallery>\nBee 🐝.jpg | A honey bee collects nectar.\n</gallery>\nWorkers collect pollen.";
+    const evidenceText = normalizeWikiText(raw);
+    const languageText = wikipediaLanguageSurface(raw, undefined, evidenceText).text;
+    expect(languageText).not.toBe(evidenceText);
+    const sourceVersionId = "version.gallery" as never;
+    const products = compileSourceInductionWindows({ documents: [{ id: "evidence.gallery", sourceVersionId,
+      text: languageText, evidenceIds: ["evidence.gallery" as never] }], hasher });
+    const witness = products.models[0]!.segmentationWitness.populations.flatMap(p => p.documents)[0]!;
+    const owner = { text: evidenceText, learningText: languageText, sourceVersionId: String(sourceVersionId) };
+    const access = fixtureAccess(new Map([[witness.ownerDocumentId, owner]]));
+    const input = [{ value: witness, profileId }];
+    const encoded = await encodeSegmentationWitnessArchives(input, access);
+    expect((encoded[0]!.value as Record<string, Record<string, unknown>>)[SEGMENTATION_WITNESS_ARCHIVE_KEY]?.textView).toBe("learning");
+    const wire = JSON.parse(JSON.stringify(encoded[0]!.value));
+    const restored = await decodeSegmentationWitnessArchives([{ value: wire, profileId }], access);
+    expect(canonicalStringify(restored[0]!.value)).toBe(canonicalStringify(witness));
+    expect(owner.text).toBe(evidenceText);
+    await expect(decodeSegmentationWitnessArchives([{ value: wire, profileId }],
+      fixtureAccess(new Map([[witness.ownerDocumentId, { text: evidenceText, sourceVersionId: String(sourceVersionId) }]]))))
+      .rejects.toThrow(/learning projection/u);
+  });
+
   it("reuses evidence-owned text, stores replay state without a DAG body, and cold-restores the identical logical witness", async () => {
     const logical = logicalFixture(), storage = fixtureAccess(logical.ownerDocuments);
     const encoded = await encodeSegmentationWitnessArchives([

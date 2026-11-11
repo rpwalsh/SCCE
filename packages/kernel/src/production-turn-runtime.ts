@@ -4990,6 +4990,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const speakInput = {
         requestText: input.text,
         requestControlPatterns: turnRequestControlPatterns,
+        requestClosedClassWords: new Set(requestClosedClassWords()),
         // Corroborated code shape, not a bare language name. "Java", "Ruby", "Swift" and "Python" are ordinary
         // words in encyclopedic prose, and a turn about the island should not reach a code lane at all -- which
         // was harmless only while that lane had no producer to reach.

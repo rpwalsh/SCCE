@@ -761,10 +761,13 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const relationRequired = Boolean(input.closedClassWords?.size);
   const covers = (row: { sentence: string; span: EvidenceSpan; nearDuplicate: boolean }) =>
     row.nearDuplicate || input.explicitContextEvidenceIds?.has(String(row.span.id)) === true
-      || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, {
+      // This stage proposes a source-owned passage; it does not authorize its emission. With no learned
+      // scaffolding, retain relevant candidates (including counterevidence) for the proof and Mouth gates.
+      || (!relationRequired ? evidenceTopicMatchesRequest([row.sentence], row.span, coverageUnits, input.requestText)
+      : answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, {
         relationRequired, languageClosedClassWords: input.functionSymbols,
         boundValues: input.boundValueEvidenceIds?.has(String(row.span.id)) ? input.boundValues : []
-      });
+      }));
   // A request that names its subject and asks nothing else is answered by the subject's own opening sentence when
   // a titled source has one: an encyclopedic lead predicates about its subject by construction, even when it names
   // the subject in a longer form the anchor test cannot see ("Augusta Ada King, Countess of Lovelace ... also known
@@ -1064,7 +1067,18 @@ function precedingSentenceContext(span: EvidenceSpan, answeringText: string): st
   return index > 0 ? spanSentences[index - 1]! : "";
 }
 
-/** Corpus-oriented truth: an answer must carry a third of the request's content units, in its sentences or its source title; a passage sharing none of them is a different topic, however well it scores lexically. Pure. */
+/** Topic overlap admits a passage for inspection, including evidence against a request's premise.
+ * It is deliberately weaker than answerhood and must not license a factual answer. */
+export function evidenceTopicMatchesRequest(sentences: readonly string[], span: EvidenceSpan,
+  contentUnits: readonly string[], requestText = ""): boolean {
+  const { answerContentUnits, subjectUnits } = answerhoodRequestUnits(requestText, contentUnits);
+  if (!subjectUnits.length) return true;
+  const surfaceUnits = answerhoodComparisonUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
+  const matches = (unit: string) => surfaceUnits.some(surfaceUnit => requestUnitMatchesSurface(unit, surfaceUnit));
+  return subjectUnits.some(matches) && answerContentUnits.filter(matches).length >= Math.max(1, Math.ceil(answerContentUnits.length / 3));
+}
+
+/** Factual answer coverage preserves every unresolved content obligation. Pure. */
 export function answerCoversRequest(
   sentences: readonly string[],
   span: EvidenceSpan,
@@ -1097,12 +1111,11 @@ export function answerCoversRequest(
   // that reference the Apollo 11 landing answered who commanded it, and the article's opening sentence answered who
   // Einstein's dentist was. Every relation unit is required, tolerating inflection (commanded/commander, land/landed).
   //
-  // The relation can only be required when the caller could tell scaffolding from relation, which takes a learned
-  // language (a hydrated model or the interaction corpus's request patterns). Without one, "what" and "known" are
-  // indistinguishable from "commanded", and the one-third quota is the honest gate.
+  // Without a learned language the caller cannot distinguish request scaffolding from relation content.
+  // Keep every supplied content obligation in that case: partial topical overlap is not evidence for the
+  // omitted relation or value. Once scaffolding is learned, the typed branch below can remove it explicitly.
   if (!options.relationRequired) {
-    const covered = answerContentUnits.filter(matches).length;
-    return subjectUnits.some(subjectMatches) && covered >= Math.max(1, Math.ceil(answerContentUnits.length / 3));
+    return subjectUnits.some(subjectMatches) && answerContentUnits.length > 0 && answerContentUnits.every(matches);
   }
   // The sentence itself must name the subject it predicates about: with the title standing in, "Their son Eduard was
   // born in Zurich in July 1910" answered when Einstein was born, because the article is about Einstein and the

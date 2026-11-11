@@ -22,6 +22,7 @@ import { tidySurfaceTextMemoStats } from "./surface-linguistics.js";
 import { hydrateLanguageConstructionPatterns, isLanguageConstructionPattern, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type DurableLanguageConstructionBundle } from "./language-construction-memory.js";
 import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, onLanguageMemoryConstructionHydrated, peekLanguageMemoryConstructionState, scopeLanguageMemoryStateToCluster, scopeLanguageMemoryStateToLanguage } from "./language-memory-runtime.js";
 import { languageIdentityProfileIdsForArtifacts, type LanguageResolver } from "./language-identity-runtime.js";
+import { validatePooledLanguageProfileOwnership } from "./pooled-language-profile-binding.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import {
   buildLanguageProfileClusters,
@@ -1432,7 +1433,8 @@ export function createSurfaceLanguageRuntime(options: {
       if (!surfaceProfileCache) return { profiles: [], clusters: [] };
       const requested = new Set(versionKeys);
       const profiles = surfaceProfileCache.value
-        .filter(profile => requested.has(String(profile.sourceVersionId)))
+        .filter(profile => requested.has(String(profile.sourceVersionId))
+          || validatePooledLanguageProfileOwnership(profile, hasher)?.parents.some(parent => requested.has(parent)))
         .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
       return { profiles, clusters: buildLanguageProfileClusters(profiles) };
     }
@@ -1537,7 +1539,8 @@ export function createSurfaceLanguageRuntime(options: {
     if (resident && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return resident;
     const generation = languageMemoryGeneration;
     const owned = await evidenceOwnedLanguageProfilesCached(versionIds as SourceVersionId[]);
-    const profileIds = owned.profiles.filter(profile => versionIds.includes(String(profile.sourceVersionId)))
+    const profileIds = owned.profiles.filter(profile => versionIds.includes(String(profile.sourceVersionId))
+      || validatePooledLanguageProfileOwnership(profile, hasher)?.parents.some(parent => versionIds.includes(parent)))
       .map(profile => profile.id).sort().slice(0, 32);
     if (!profileIds.length) return [];
     // Read only source-owned construction artifacts. Generic models and output-role priors do not compete for this budget.

@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
+import { wikipediaLanguageSurface } from "./wikipedia.js";
 import { isSourceOwnedProjectProjection, SOURCE_OWNED_PROJECT_PROJECTION_PREFIX, projectContractDependencyEligibilitySql } from "./source-owned-project-projection.js";
 import { consolidateCorpusSegmentation, loadCorpusSegmentationContextSlice } from "./corpus-segmentation-producer.js";
 import { createCorpusSegmentationRun, openCorpusSegmentationRun, activateCorpusSegmentationRun, readActiveCorpusSegmentationRun } from "./corpus-segmentation-store.js";
@@ -1507,20 +1508,57 @@ function segmentationArchiveStorageAccess(storage: PostgresStorageAdapter, clien
   return {
     async getOwnerDocuments(ownerDocumentIds) {
       const unique = [...new Set(ownerDocumentIds)];
-      const result = new Map<string, { text: string; sourceVersionId: string }>();
+      const result = new Map<string, { text: string; sourceVersionId: string; learningText?: string }>();
+      const learningSources = new Map<string, readonly string[]>();
       for (let offset = 0; offset < unique.length; offset += 4096) {
         const access = storage.informationAccessPredicate("owner", 2);
-        const rows = await query<{ id: string; source_version_id: string; text_content: string }>(
-          `SELECT owner.id,owner.source_version_id,owner.text_content
+        const sourceAccess = storage.informationAccessPredicate("source", 2 + access.params.length);
+        const rows = await query<{ id: string; source_version_id: string; text_content: string; char_start: string; needs_learning: boolean }>(
+          `SELECT owner.id,owner.source_version_id,owner.text_content,owner.char_start,
+             CASE WHEN source.metadata_json->>'sourceSystem'='wikipedia'
+               AND jsonb_typeof(source.metadata_json#>'{normalization,languageSurface,mappings}')='array'
+             THEN jsonb_array_length(source.metadata_json#>'{normalization,languageSurface,mappings}')>0 ELSE FALSE END AS needs_learning
            FROM ${storage.table("evidence_spans")} owner
-           WHERE owner.id=ANY($1::text[]) AND ${access.sql}`,
-          [unique.slice(offset, offset + 4096), ...access.params]
+           JOIN ${storage.table("source_versions")} source ON source.id=owner.source_version_id
+           WHERE owner.id=ANY($1::text[]) AND ${access.sql} AND ${sourceAccess.sql}`,
+          [unique.slice(offset, offset + 4096), ...access.params, ...sourceAccess.params]
         );
+        // Only role-projected owners need source blobs. Fetch once per source, rather than copying a full article
+        // and its original for every span or loading unrelated transcript/code blobs during archive readback.
+        const projectedIds = [...new Set(rows.filter(row => row.needs_learning
+          && !learningSources.has(row.source_version_id)).map(row => row.source_version_id))];
+        if (projectedIds.length) {
+          const sourceAccess = storage.informationAccessPredicate("source", 2);
+          const originalAccess = storage.informationAccessPredicate("original", 2 + sourceAccess.params.length);
+          const sources = await query<{ id: string; metadata_json: JsonValue; source_content: Buffer; original_content: Buffer | null }>(
+            `SELECT source.id,source.metadata_json,source_blob.content AS source_content,original_blob.content AS original_content
+             FROM ${storage.table("source_versions")} source
+             JOIN ${storage.table("blobs")} source_blob ON source_blob.content_hash=source.content_hash
+             LEFT JOIN ${storage.table("source_versions")} original
+               ON original.id=source.metadata_json#>>'{_scceSourceVersion,derivation,derivedFromSourceVersionId}' AND ${originalAccess.sql}
+             LEFT JOIN ${storage.table("blobs")} original_blob ON original_blob.content_hash=original.content_hash
+             WHERE source.id=ANY($1::text[]) AND ${sourceAccess.sql}`,
+            [projectedIds, ...sourceAccess.params, ...originalAccess.params]
+          );
+          for (const source of sources) {
+            const metadata = sourceVersionMetadataRecord(source.metadata_json);
+            const surface = sourceVersionMetadataRecord(sourceVersionMetadataRecord(metadata.normalization).languageSurface);
+            const derivation = sourceVersionMetadataRecord(sourceVersionMetadataRecord(metadata._scceSourceVersion).derivation);
+            if (derivation.derivedFromSourceVersionId && !source.original_content) throw new Error("Wikipedia segmentation replay requires its original source");
+            const projected = wikipediaLanguageSurface((source.original_content ?? source.source_content).toString("utf8"), undefined, source.source_content.toString("utf8"));
+            if (projected.transformId !== surface.transformId) throw new Error("Wikipedia segmentation replay projection version changed");
+            learningSources.set(source.id, [...projected.text]);
+          }
+          if (projectedIds.some(id => !learningSources.has(id))) throw new Error("segmentation witness learning source is unavailable");
+        }
         for (const row of rows) {
           if (result.has(row.id) || typeof row.text_content !== "string" || typeof row.source_version_id !== "string") {
             throw new Error("invalid segmentation witness evidence owner row");
           }
-          result.set(row.id, { text: row.text_content, sourceVersionId: row.source_version_id });
+          const language = learningSources.get(row.source_version_id);
+          const learningText = language?.slice(Number(row.char_start), Number(row.char_start) + [...row.text_content].length).join("");
+          result.set(row.id, { text: row.text_content, sourceVersionId: row.source_version_id,
+            ...(learningText !== undefined ? { learningText } : {}) });
         }
       }
       return result;
@@ -4511,15 +4549,19 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
              )`
           : "";
         const access = storage.informationAccessPredicate("lp", 3);
+        const params: unknown[] = [sourceVersionIds, boundedLimit, ...access.params];
+        const ownerSql = profileSourceOwnershipSql(storage, params, "lp");
         return (await storage.query<{ profile_json: LanguageProfile }>(
           `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
            FROM ${storage.table("language_profiles")} lp
-           WHERE lp.source_version_id=ANY($1::text[])
+           WHERE (lp.source_version_id=ANY($1::text[])
+             OR (lp.profile_json ? 'pooledSourceBinding'
+               AND (lp.profile_json->'pooledSourceBinding'->'parents') ?| $1::text[]))
              ${referencedFilter}
-             AND ${access.sql}
+             AND ${access.sql} AND ${ownerSql}
            ORDER BY lp.created_at DESC, lp.id ASC
            LIMIT $2`,
-          [sourceVersionIds, boundedLimit, ...access.params]
+          params
         )).map(row => row.profile_json);
       }
       if (typeof query === "object" && query?.referencedByLanguageMemory) {

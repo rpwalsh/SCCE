@@ -140,6 +140,8 @@ describe("Postgres schema contract extraction", () => {
     const pages = pageAdditions(statements, fixture.q);
     const associations = associationAdditions(statements, fixture.q);
     const key = fixture.q.replaceAll('"', "");
+    const pooledParentIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_language_profiles_pooled_parents ON ${fixture.q}.language_profiles USING GIN ((profile_json->'pooledSourceBinding'->'parents')) WHERE profile_json ? 'pooledSourceBinding'`;
+    expect(statements).toContain(pooledParentIndex);
     const addedColumn = `ALTER TABLE ${fixture.q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`;
     const retiredIndex = `DROP INDEX IF EXISTS ${fixture.q}.idx_${key}_semantic_frames_surface_rank`;
     const hashIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_normalized_surface_hash_rank ON ${fixture.q}.semantic_frames(normalized_surface_hash,alpha DESC,created_at DESC,id ASC)`;
@@ -162,8 +164,8 @@ describe("Postgres schema contract extraction", () => {
     expect(statements).toContain(retiredAnchorTable);
     expect(statements).not.toContain(anchorTable);
     expect(statements).not.toContain(anchorIndex);
-    expect(statements).toHaveLength(fixture.statementCount + 5 + schema32.length + pages.length + associations.length);
-    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql) && !associations.includes(sql))
+    expect(statements).toHaveLength(fixture.statementCount + 6 + schema32.length + pages.length + associations.length);
+    const prior = statements.filter(sql => sql !== pooledParentIndex && sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql) && !associations.includes(sql))
       .map(sql => sql === hashIndex ? oldIndex : sql === retiredAnchorTable ? anchorTable : sql);
     const nodeFeatureIndex = prior.indexOf(`CREATE INDEX IF NOT EXISTS idx_${key}_nodes_features ON ${fixture.q}.graph_nodes USING GIN(features)`);
     expect(nodeFeatureIndex).toBeGreaterThan(0);

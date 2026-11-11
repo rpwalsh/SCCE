@@ -32,6 +32,8 @@ const hasher = createHasher();
 export interface SegmentationArchiveOwnerDocument {
   text: string;
   sourceVersionId: string;
+  /** Declared source-role projection; the canonical evidence text remains unchanged. */
+  learningText?: string;
 }
 
 export interface SegmentationArchiveStorageAccess {
@@ -52,6 +54,7 @@ interface SourceArchiveReference {
   schema: typeof SOURCE_SEGMENTATION_WITNESS_ARCHIVE_SCHEMA;
   logicalDigest: string;
   replay: SurfaceSegmentationReplayRecipe;
+  textView?: "learning";
 }
 
 interface ManifestArchiveReference {
@@ -118,7 +121,12 @@ export async function encodeSegmentationWitnessArchives(
       fail("segmentation witness source version differs from its evidence owner");
     }
     if (source.logical.sourceUtf16End > owner.text.length) fail("segmentation witness source range exceeds its evidence owner");
-    const text = owner.text.slice(source.logical.sourceUtf16Start, source.logical.sourceUtf16End);
+    let text = owner.text.slice(source.logical.sourceUtf16Start, source.logical.sourceUtf16End);
+    if (text !== source.logical.text && owner.learningText !== undefined) {
+      if (owner.learningText.length !== owner.text.length) fail("segmentation witness learning projection changes source coordinates");
+      text = owner.learningText.slice(source.logical.sourceUtf16Start, source.logical.sourceUtf16End);
+      source.reference.textView = "learning";
+    }
     if (text !== source.logical.text || hasher.digestHex(text) !== source.logical.lattice.textHash) {
       fail("segmentation witness source slice differs from its evidence owner");
     }
@@ -198,7 +206,9 @@ export async function decodeSegmentationWitnessArchives(
       fail("segmentation witness source version differs from its evidence owner");
     }
     if (source.header.sourceUtf16End > owner.text.length) fail("segmentation witness source range exceeds its evidence owner");
-    const text = owner.text.slice(source.header.sourceUtf16Start, source.header.sourceUtf16End);
+    const ownerText = source.reference.textView === "learning" ? owner.learningText : owner.text;
+    if (ownerText === undefined || ownerText.length !== owner.text.length) fail("segmentation witness learning projection is missing or changes source coordinates");
+    const text = ownerText.slice(source.header.sourceUtf16Start, source.header.sourceUtf16End);
     const lattice = requiredRecord(source.header.lattice, "source segmentation lattice archive");
     if (typeof lattice.textHash !== "string" || hasher.digestHex(text) !== lattice.textHash) {
       fail("segmentation witness source slice differs from its lattice hash");
@@ -316,12 +326,14 @@ function archivePatternId(witnessId: string, profileId: string): string {
 }
 
 function sourceReference(value: Record<string, unknown>): SourceArchiveReference {
-  exactKeys(value, ["schema", "logicalDigest", "replay"], "source witness archive reference");
+  exactKeys(value, ["schema", "logicalDigest", "replay", ...(value.textView !== undefined ? ["textView"] : [])], "source witness archive reference");
+  if (value.textView !== undefined && value.textView !== "learning") fail("invalid source witness text view");
   if (value.schema !== SOURCE_SEGMENTATION_WITNESS_ARCHIVE_SCHEMA || !digest(value.logicalDigest)) {
     fail("invalid source witness archive reference");
   }
   const replay = validateSurfaceSegmentationReplayRecipe(value.replay, hasher);
-  return { schema: value.schema, logicalDigest: value.logicalDigest, replay } as unknown as SourceArchiveReference;
+  return { schema: value.schema, logicalDigest: value.logicalDigest, replay,
+    ...(value.textView === "learning" ? { textView: "learning" as const } : {}) } as unknown as SourceArchiveReference;
 }
 
 function manifestReference(value: Record<string, unknown>): ManifestArchiveReference {

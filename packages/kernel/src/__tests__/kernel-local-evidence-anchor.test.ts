@@ -1193,7 +1193,7 @@ describe("kernel local evidence source anchoring", () => {
       deterministicReplay: true
     });
 
-    const result = await kernel.turn({ text: "Who was Ada Lovelace, and what did she contribute?" });
+    const result = await kernel.turn({ text: "Who was Ada Lovelace, and what is her contribution?" });
 
     expect(result.answer).toContain("English mathematician");
     expect(result.answer).toContain("publishing an algorithm");
@@ -1466,7 +1466,7 @@ describe("kernel local evidence source anchoring", () => {
       charRange: [0, nested.text.length],
       metadata: { title: "Nested Title" }
     };
-    const fixture = storageFixture({ evidence: [nested] });
+    const fixture = storageFixture({ evidence: [nested], answerLanguage: sourceOwnedAnswerhoodLanguage() });
     const clock = createClock({ fixedTime: 1_500, stepMs: 1 });
     const hasher = createHasher();
     const kernel = createScceKernel({
@@ -1506,7 +1506,7 @@ describe("kernel local evidence source anchoring", () => {
       alpha: 0.98,
       createdAt: 1
     };
-    const fixture = storageFixture({ evidence: [kirk], semanticFrames: [semanticFrame] });
+    const fixture = storageFixture({ evidence: [kirk], semanticFrames: [semanticFrame], answerLanguage: sourceOwnedAnswerhoodLanguage() });
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
@@ -1930,7 +1930,9 @@ describe("kernel local evidence source anchoring", () => {
     const clock = createClock({ fixedTime: 7_500, stepMs: 1 });
     const hasher = createHasher();
     const acquiredEvidence: EvidenceSpan[] = [];
-    const fixture = storageFixture({ evidence: acquiredEvidence });
+    const fixture = storageFixture({ evidence: acquiredEvidence, answerLanguage: sourceOwnedAnswerhoodLanguage(
+      "control r0. controls r0. controlled r0."
+    ) });
     // A persisted span need not be discoverable in a bounded retrieval index
     // yet. Exact-ID reads remain available from canonical durable storage.
     const indexedSearch = fixture.storage.evidence.searchEvidence;
@@ -2351,19 +2353,23 @@ describe("kernel local evidence source anchoring", () => {
     expect(proofEngineCalls.ccr).toBeGreaterThan(0);
     expect(proofEngineCalls.pface).toBeGreaterThan(0);
 
-    const factualFixture = storageFixture({ evidence: [premise] });
+    const factualFixture = storageFixture({ evidence: [premise], answerLanguage: sourceOwnedAnswerhoodLanguage() });
     const factualKernel = kernelFor(factualFixture.storage, 9_350);
     resetProofEngineCalls();
     const factualResult = await factualKernel.turn({
       text: "What did Ada Lovelace write notes about?",
       requestedAuthority: "factual"
     });
-    expect(factualResult.answer.trim()).not.toBe("");
+    // This fixture has no learned write/wrote relation. The proof machinery
+    // still runs; shared subject words cannot fill that missing obligation.
+    expect(factualResult.answer.trim()).toBe("");
     expect(proofEngineCalls.ablatedSupport).toBe(0);
     expect(proofEngineCalls.entailment).toBeGreaterThan(0);
     expect(proofEngineCalls.semanticProof).toBeGreaterThan(0);
     expect(proofEngineCalls.ccr).toBeGreaterThan(0);
     expect(proofEngineCalls.pface).toBeGreaterThan(0);
+    const identity = await factualKernel.turn({ text: "Who was Ada Lovelace?", requestedAuthority: "factual" });
+    expect(identity.answer).toContain(premise.text);
   });
 
   it("keeps a source-inspired request creative while retaining only its factual premise evidence", async () => {

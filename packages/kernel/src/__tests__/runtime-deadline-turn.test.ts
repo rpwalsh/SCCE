@@ -71,8 +71,10 @@ describe("runtime deadline integration with a real turn", () => {
     const deadlineMonotonicMs = startedMonotonicMs + budgetMs; // already 1s in the past
     const progress: Array<{ phase: string; cognition?: JsonValue }> = [];
 
+    // Keep deadline qualification independent of untrained temporal paraphrase:
+    // the source itself covers every requested word and carries the checked time.
     const result = await kernel.turn({
-      text: "Tell me the calibration time for the Zephyr valve.",
+      text: "Was the Zephyr valve calibrated?",
       runtimeControl: { onProgress: frame => progress.push({ phase: frame.phase, cognition: frame.cognition }) },
       metadata: {
         runtime: {
@@ -116,7 +118,7 @@ describe("runtime deadline integration with a real turn", () => {
     const deadlineMonotonicMs = startedMonotonicMs + budgetMs;
 
     const result = await kernel.turn({
-      text: "Tell me the calibration time for the Zephyr valve.",
+      text: "Was the Zephyr valve calibrated?",
       metadata: {
         runtime: {
           initialResponseDeadline: {
