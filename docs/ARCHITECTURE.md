@@ -278,7 +278,7 @@ bounded hashes and checkpoints, distinguishes learned priors from direct evidenc
 and writes through the v3 storage contract. Learned priors can affect activation and
 language but cannot certify a factual answer.
 
-PostgreSQL schema version 25 is current (`POSTGRES_SCHEMA_VERSION`, `packages/kernel/src/storage.ts`).
+PostgreSQL schema version 35 is current (`POSTGRES_SCHEMA_VERSION`, `packages/kernel/src/storage.ts`).
 Brain lifecycle states are `CREATED`,
 `IMPORTING`, `VALIDATING`, `READY`, `ACTIVE`, `STOPPED`, `FAILED`, `QUARANTINED`, and
 `INCOMPATIBLE`. Activation is transactional and READY-only. A partial unique index

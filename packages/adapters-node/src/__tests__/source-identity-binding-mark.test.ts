@@ -47,7 +47,8 @@ describe("a binding mark is orthography, not identity", () => {
       if (/source_title/u.test(sql)) return [];
       if (/current_setting/u.test(sql)) return [{ enabled: "off" }];
       if (sql === "SET LOCAL enable_seqscan = off" || /set_config/u.test(sql)) return [];
-      expect(sql).toContain("evidence_anchor_index");
+      expect(sql).toContain("evidence_spans");
+      expect(sql).toContain("evidence.features @> candidate.features");
       expect(sql).toContain("evidence.status='promoted'");
       expect(sql).toContain("evidence.information_label");
       expect(params?.slice(1).length).toBeGreaterThan(0);
@@ -89,7 +90,8 @@ describe("a binding mark is orthography, not identity", () => {
         { run: "alpha beta", features: ["anchor:sym:alpha", "anchor:sym:beta"] },
         { run: "quiet", features: ["anchor:sym:quiet"] }
       ]);
-      expect(sql).toContain("evidence_anchor_index");
+      expect(sql).toContain("evidence_spans");
+      expect(sql).toContain("evidence.features @> candidate.features");
       expect(sql).toContain("evidence.status='promoted'");
       expect(sql).toContain("evidence.information_label");
       expect(params?.slice(1).length).toBeGreaterThan(0);
@@ -170,9 +172,8 @@ describe("a binding mark is orthography, not identity", () => {
       { run: "quiet", features: ["anchor:sym:quiet"] }
     ]);
     expect(reads[3]?.seqscan).toBe("off");
-    expect(reads[3]?.sql).toContain("anchor_index.features @> candidate.features");
-    expect(reads[3]?.sql).toContain("evidence.id=anchor_index.evidence_id");
-    expect(reads[3]?.sql).toContain("OFFSET 0");
+    expect(reads[3]?.sql).toContain("evidence.features @> candidate.features");
+    expect(reads[3]?.sql).not.toContain("evidence_anchor_index");
     expect(reads[3]?.sql.match(/evidence.status='promoted'/gu)).toHaveLength(1);
     expect(reads[3]?.sql).toContain("evidence.information_label");
     expect(reads[3]?.sql).toContain("count(DISTINCT source_id)::int AS sources");
@@ -183,7 +184,7 @@ describe("a binding mark is orthography, not identity", () => {
     expect(measured).toEqual([3, 2]);
   });
 
-  it("uses one fixed-size anchor-first query and deterministic vocabulary selection for repeated large samples", async () => {
+  it("uses one fixed-size canonical-feature query and deterministic vocabulary selection for repeated large samples", async () => {
     const adapter = createPostgresStorageAdapter({ url: "postgres://fixture/fixture", schema: "fixture",
       informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" } });
     const reads: Array<{ sql: string; params: unknown[] }> = [];
@@ -209,7 +210,7 @@ describe("a binding mark is orthography, not identity", () => {
     expect(reads[1]).toEqual(reads[2]);
     expect(reads[0]?.sql).toBe(reads[1]?.sql);
     expect(reads[1]?.sql).not.toContain("UNION ALL");
-    expect(reads[1]?.sql).toContain("OFFSET 0");
+    expect(reads[1]?.sql).toContain("evidence.features @> candidate.features");
     expect(reads[1]?.sql).toContain("LIMIT 1500");
   });
 });

@@ -7,6 +7,7 @@ import { canonicalStringify, clamp01, createHasher, entropy, toJsonValue } from 
 import {
   LANGUAGE_SEGMENTATION_WITNESS_SCHEMA,
   SOURCE_SEGMENTATION_WITNESS_SCHEMA,
+  transferSourceSegmentationReplayRecipe,
   validateLanguageSegmentationWitness,
   validateSourceSegmentationWitness,
   type LanguageSegmentationWitness,
@@ -233,6 +234,10 @@ function sourceSegmentationWitnessPattern(input: {
   updatedAt: number;
   informationLabel?: InformationLabel;
 }): LanguagePatternRecord {
+  const patternJson = transferSourceSegmentationReplayRecipe(
+    input.witness,
+    toJsonValue(input.witness) as unknown as object
+  ) as JsonValue;
   return {
     id: segmentationArchivePatternId(input.witness.id, input.profile.id, input.idFactory),
     profileId: input.profile.id,
@@ -241,7 +246,7 @@ function sourceSegmentationWitnessPattern(input: {
     entropy: 0,
     // This is the one canonical evidence body. Projection/profile ownership
     // belongs to the LanguagePatternRecord columns, never inside the witness.
-    patternJson: toJsonValue(input.witness),
+    patternJson,
     evidenceIds: input.witness.evidenceIds.slice(0, 128) as EvidenceId[],
     updatedAt: input.updatedAt,
     informationLabel: input.informationLabel

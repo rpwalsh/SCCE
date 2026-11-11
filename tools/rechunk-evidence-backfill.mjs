@@ -167,14 +167,6 @@ while (totals.parents < LIMIT) {
         );
         if (res.rowCount === 0) { totals.skipped++; continue; }
         totals.inserted++;
-        const anchors = child.features.filter(f => f.startsWith("anchor:bi:") || f.startsWith("anchor:sym:"));
-        if (anchors.length) {
-          await client.query(
-            `INSERT INTO ${t("evidence_anchor_index")} (evidence_id, features)
-             VALUES ($1,$2) ON CONFLICT (evidence_id) DO UPDATE SET features = EXCLUDED.features`,
-            [String(child.id), anchors]
-          );
-        }
       }
       await client.query("COMMIT");
     } catch (error) {

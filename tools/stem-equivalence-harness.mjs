@@ -12,11 +12,10 @@
 //   node tools/stem-equivalence-harness.mjs [--budget-mb=48] [--json=out.json]
 //
 // No server, no writes: one SELECT of model JSON under the hydration byte budget.
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { databaseSchema, databaseUrl } from "./lib/runtime-config.mjs";
+import { openNgramModelReader } from "./lib/ngram-model-reader.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const flag = (name, fallback) => (process.argv.find(a => a.startsWith(`--${name}=`)) ?? `--${name}=${fallback}`).split("=").slice(1).join("=");
@@ -56,31 +55,18 @@ const PAIRS = [
 // Pairs the answer path reaches by a route this task did not touch, so a disagreement there is reported, not failed.
 const PRE_EXISTING = new Map([["majorian/bajoran", "accepted by the pre-existing similarity floor (0.75 >= units.similarity_floor); answerCoversRequest guards subjects separately"]]);
 
-const pg = createRequire(path.join(here, "..", "packages", "adapters-node", "package.json"))("pg");
-const client = new pg.Client({ connectionString: databaseUrl() });
 const models = [];
+const reader = await openNgramModelReader();
 try {
-  await client.connect();
-  await client.query(`SET search_path TO ${databaseSchema()}, public`);
-  await client.query(`SET statement_timeout = '300s'`);
   // The hydration relevance order and byte budget, so the harness sees what a turn sees.
-  const ids = (await client.query(
-    `SELECT id FROM (
-       SELECT model.id,
-         SUM(pg_column_size(model.model_json)) OVER (
-           ORDER BY COALESCE((model.model_json->'model'->>'totalUnigramCount')::numeric, 0) DESC,
-                    model.updated_at DESC, model.id ASC ROWS UNBOUNDED PRECEDING) AS running
-       FROM ngram_models model
-     ) ranked WHERE running <= $1`,
-    [budgetBytes]
-  )).rows.map(row => row.id);
-  for (const id of ids) {
-    const row = (await client.query(`SELECT stream_id, model_json->'model' AS model FROM ngram_models WHERE id=$1`, [id])).rows[0];
-    if (!row?.model?.counts) continue;
-    models.push({ sourceKey: row.stream_id, order: row.model.order ?? 0, observedSymbolCount: row.model.observedSymbolCount ?? 0, counts: row.model.counts });
+  const records = await reader.storage.languageMemory.listNgramModels({ limit: 1_000_000, maxTotalJsonBytes: budgetBytes });
+  for (const record of records) {
+    const model = reader.materialize(record);
+    if (!model) continue;
+    models.push({ sourceKey: record.streamId, order: model.order, observedSymbolCount: model.observedSymbolCount, counts: model.counts });
   }
 } finally {
-  await client.end();
+  await reader.close();
 }
 
 primeFreeFormLexicon(models);

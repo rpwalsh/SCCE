@@ -5,7 +5,7 @@ import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, canonicalStringify, createH
   type PooledLanguageProfileOwnership } from "@scce/kernel";
 import { pooledProfileOwnershipSql, profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
 import { CREATIVE_EVENT_NORMALIZATION_TABLES, CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA, creativeEventRecord,
-  creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage, verifyCreativeEventDomainRecord,
+  CREATIVE_EVENT_SOURCE_DERIVED_STORAGE_SCHEMA, creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage, verifyCreativeEventDomainRecord,
   type CreativeEventDomainRecord, type CreativeEventOwner } from "./creative-event-normalization.js";
 import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodeDurableArtifact,
   decodedJsonByteLengths, encodeDurableArtifact, verifyDurableArtifactByteLedger } from "./durable-artifact-storage.js";
@@ -23,7 +23,7 @@ export interface CreativeEventStorageHost {
 interface DomainRow { id: string; kind: string; value_json: Record<string, unknown>; information_label?: InformationLabel }
 interface OwnerRow {
   profile_id: string; source_id: string; source_version_id: string; source_content_hash: string; evidence_id: string; evidence_content_hash: string;
-  char_start: number; char_end: number; byte_start: number; byte_end: number;
+  char_start: number; char_end: number; byte_start: number; byte_end: number; evidence_text: string;
   profile_source_version_id: string; has_pooled_binding: boolean; pooled_profile: LanguageProfile | null;
   profile_label: InformationLabel; source_label: InformationLabel; evidence_label: InformationLabel;
 }
@@ -82,6 +82,7 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
             THEN profile.pooled_binding->'evidence' ELSE '[]'::jsonb END) member(value)
         ) SELECT profile.id AS profile_id,version.source_id,version.id AS source_version_id,version.content_hash AS source_content_hash,
         evidence.id AS evidence_id,evidence.content_hash AS evidence_content_hash,evidence.char_start,evidence.char_end,evidence.byte_start,evidence.byte_end,
+        evidence.text_content AS evidence_text,
         profile.source_version_id AS profile_source_version_id,profile.pooled_binding IS NOT NULL AS has_pooled_binding,
         CASE WHEN profile.pooled_binding IS NOT NULL AND ROW_NUMBER() OVER (PARTITION BY profile.id ORDER BY evidence.id)=1 THEN profile.pooled_profile ELSE NULL END AS pooled_profile,
         profile.information_label AS profile_label,version.information_label AS source_label,evidence.information_label AS evidence_label
@@ -115,6 +116,7 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
         } else if (row.has_pooled_binding !== false || row.profile_source_version_id !== row.source_version_id) return fail("invalid direct source profile binding");
         owners.set(key, { profileId: row.profile_id, sourceId: row.source_id, sourceVersionId: row.source_version_id, sourceContentHash: row.source_content_hash,
           evidenceId: row.evidence_id, evidenceContentHash: row.evidence_content_hash, evidenceCharStart: Number(row.char_start), evidenceCharEnd: Number(row.char_end),
+          evidenceText: row.evidence_text,
           informationLabel: join([row.profile_label, row.source_label, row.evidence_label]) });
       }
     }
@@ -126,7 +128,7 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
     for (let offset = 0; offset < records.length; offset += PAGE_ROWS_PER_STATEMENT) {
       const batch = records.slice(offset, offset + PAGE_ROWS_PER_STATEMENT);
       batch.forEach(verifyCreativeEventDomainRecord);
-      const payload = batch.map(row => ({ id: row.id, kind: row.kind, value_json: table === "creative_event_occurrences"
+      const payload = batch.map(row => ({ id: row.id, kind: row.kind, value_json: table === "creative_event_occurrences" && Array.isArray(row.value.lexemes)
         ? { ...row.value, lexemes: creativeLexemePageReferences(row.value.lexemes as string[], locations!) } : row.value,
         ...(labeled ? { information_label: host.requireWritableInformationLabel(row.informationLabel) } : {}) }));
       const serialized = JSON.stringify(payload);
@@ -224,10 +226,16 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
         if (scope.profileId !== page.value.profileId || scope.compilerId !== page.value.compilerId) return fail("changed canonical page owner");
       }
       // Source ownership is checked before any globally shared pure lexical definition is hydrated.
-      for (const page of pages) if (record(page.value.lexemes)?.schema !== CREATIVE_LEXEME_PAGE_REFS_SCHEMA) return fail("invalid lexical page reference");
-      const lexical = await lexicalPages.readReferences(pages.map(page => page.value.lexemes));
+      const lexicalPagesToRead = pages.filter(page => page.value.storageEncoding !== CREATIVE_EVENT_SOURCE_DERIVED_STORAGE_SCHEMA);
+      for (const page of lexicalPagesToRead) if (record(page.value.lexemes)?.schema !== CREATIVE_LEXEME_PAGE_REFS_SCHEMA) return fail("invalid lexical page reference");
+      for (const page of pages) if (page.value.storageEncoding !== undefined && page.value.storageEncoding !== CREATIVE_EVENT_SOURCE_DERIVED_STORAGE_SCHEMA) return fail("invalid occurrence storage encoding");
+      const lexical = await lexicalPages.readReferences(lexicalPagesToRead.map(page => page.value.lexemes));
       lexical.records.forEach(row => records.set(row.id, row));
-      pages.forEach((page, index) => { page.value = { ...page.value, lexemes: lexical.ids[index]! }; verifyCreativeEventDomainRecord(page); records.set(page.id, page); });
+      let lexicalIndex = 0;
+      pages.forEach(page => {
+        if (page.value.storageEncoding !== CREATIVE_EVENT_SOURCE_DERIVED_STORAGE_SCHEMA) page.value = { ...page.value, lexemes: lexical.ids[lexicalIndex++]! };
+        verifyCreativeEventDomainRecord(page); records.set(page.id, page);
+      });
       (await read("creative_event_templates", references("templates"))).forEach(row => records.set(row.id, row));
       return decoded.map((value, index) => {
         const wire = record(values[index]), envelope = wire?.schema === CANONICAL_CREATIVE_EVENT_ARRAY_SCHEMA;
@@ -236,7 +244,7 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
         const restored = replace(envelope ? record(value)!.value : value, row => {
           const ref = record(row.events);
           if (row.schema !== CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA || ref?.schema !== CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA) return undefined;
-          const events = reconstructCreativeEventPage({ reference: ref, records }), next = { ...row, events };
+          const events = reconstructCreativeEventPage({ reference: ref, records, owners: currentOwners }), next = { ...row, events };
           if (records.get(String(ref.pageId))?.value.bundleDigest !== bodyHash(next)) return fail("restored bundle digest mismatch");
           changed = true; return next;
         });

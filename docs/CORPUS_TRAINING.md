@@ -133,7 +133,7 @@ Serving loads language assignments for the exact profile owners present in that 
 
 ## Activation and evidence limits
 
-- PostgreSQL schema v25 enforces at most one ACTIVE lifecycle row, retains the lifecycle repair, stores durable segmentation-population models, and persists arbitrary-arity hyperedge ports, qualifiers, modality and evidence.
+- PostgreSQL schema v35 enforces at most one ACTIVE lifecycle row, retains the lifecycle repair, stores durable segmentation-population models, and persists arbitrary-arity hyperedge ports, qualifiers, modality and evidence.
 - Generic lifecycle CAS cannot enter or leave ACTIVE; activation must use the locked READY-only path.
 - Corpus promotion and language-memory eligibility do not certify facts. Source-backed factual claims require admissible evidence; proof or certification metadata is retained when produced by the relevant operation.
 

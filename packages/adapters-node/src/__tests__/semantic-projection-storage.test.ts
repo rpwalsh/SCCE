@@ -3,8 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalStringify, createHasher, createLanguageInductionEngine, semanticInductionProjection, requestSeedLanguagePattern, type LanguagePatternRecord } from "@scce/kernel";
 import { encodeDurableArtifact, decodeDurableArtifact, decodedJsonByteLengths, DECODED_JSON_BYTE_LEDGER_KEY } from "../durable-artifact-storage.js";
-import { SEMANTIC_PROJECTION_STORAGE_KEY, semanticEntityQueryProjection,
-  semanticLexicalClassQueryProjection } from "../semantic-projection-storage.js";
+import { SEMANTIC_PROJECTION_STORAGE_KEY } from "../semantic-projection-storage.js";
 
 const hasher = createHasher();
 function fixture() {
@@ -24,9 +23,9 @@ describe("sufficient semantic projection persistence", () => {
     const logical = fixture();
     const stored = encodeDurableArtifact(logical) as Record<string, unknown>;
     expect(stored[SEMANTIC_PROJECTION_STORAGE_KEY]).toBeDefined();
-    expect(stored.semanticFrames).toBeUndefined(); expect(stored.relationHypothesisModel).toBeUndefined();
-    expect(stored.graphBoundConstructions).toEqual(semanticEntityQueryProjection(logical.graphBoundConstructions));
-    expect(stored.lexicalClasses).toEqual(semanticLexicalClassQueryProjection(logical.lexicalClasses));
+    for (const field of ["semanticFrames", "graphBoundConstructions", "lexicalClasses", "relationHypothesisModel"]) {
+      expect(stored[field]).toBeUndefined();
+    }
     expect(stored[DECODED_JSON_BYTE_LEDGER_KEY]).toMatchObject(decodedJsonByteLengths(logical));
     const restored = decodeDurableArtifact(JSON.parse(JSON.stringify(stored)));
     expect(restored).toEqual(logical);
@@ -36,12 +35,18 @@ describe("sufficient semantic projection persistence", () => {
     const logical = fixture(), stored = encodeDurableArtifact(logical) as Record<string, unknown>;
     const pattern = (patternJson: unknown) => ({ id: "pattern.notes", profileId: "profile.notes", patternKind: "semantic_role", patternJson,
       support: 1, entropy: 0, evidenceIds: [], updatedAt: 1 } as unknown as LanguagePatternRecord);
-    expect(requestSeedLanguagePattern(pattern(stored))).toEqual(requestSeedLanguagePattern(pattern(logical)));
+    const expected = requestSeedLanguagePattern(pattern(logical));
+    const expectedJson = expected.patternJson as Record<string, unknown>;
+    const physicalSeed = { ...Object.fromEntries(Object.keys(expectedJson).flatMap(key =>
+      key === "graphBoundConstructions" || key === "lexicalClasses" ? [] : [[key, stored[key]]])),
+      semanticInductionProjection: stored.semanticInductionProjection,
+      [SEMANTIC_PROJECTION_STORAGE_KEY]: stored[SEMANTIC_PROJECTION_STORAGE_KEY] };
+    expect(requestSeedLanguagePattern(pattern(decodeDurableArtifact(physicalSeed)))).toEqual(expected);
     const badFacts = structuredClone(stored) as any;
     badFacts.semanticInductionProjection.text += " changed";
     expect(() => decodeDurableArtifact(badFacts)).toThrow("semantic projection");
     const badQuery = structuredClone(stored) as any;
-    badQuery.graphBoundConstructions.push({ evidenceIds: ["unowned"], slots: [] });
+    badQuery.graphBoundConstructions = [];
     expect(() => decodeDurableArtifact(badQuery)).toThrow("semantic projection");
   });
   it("rejects a projection which omits one computed role or attempts to retain conflicting caches", () => {

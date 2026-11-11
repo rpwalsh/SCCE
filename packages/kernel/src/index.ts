@@ -42,6 +42,7 @@ export * from "./detail-signal-adapter.js";
 export * from "./mouth.js";
 export * from "./walsh-surface-energy.js";
 export * from "./kneser-ney.js";
+export * from "./kneser-ney-training-replay.js";
 export * from "./ngram-prose.js";
 export * from "./ngram-memory.js";
 export * from "./translation.js";

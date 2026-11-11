@@ -38,8 +38,12 @@ it("uses the sufficient tape for current genuine human-source publication and re
   const original = projectedPattern.patternJson, packed = record(encodeDurableArtifact(original));
   expect(packed[SEMANTIC_PROJECTION_STORAGE_KEY]).toBeDefined();
   expect(packed.semanticFrames).toBeUndefined();
-  expect(decodeDurableArtifact(cold(packed))).toEqual(original);
-  expect(requestSeedLanguagePattern({ ...projectedPattern, patternJson: packed as LanguagePatternRecord["patternJson"] }))
+  const restored = decodeDurableArtifact<LanguagePatternRecord["patternJson"]>(cold(packed));
+  expect(restored).toEqual(original);
+  // Kernel projections consume the public logical record. The PostgreSQL
+  // request-seed path has its own test proving that the admitted replay tape
+  // is hydrated before this boundary.
+  expect(requestSeedLanguagePattern({ ...projectedPattern, patternJson: restored }))
     .toEqual(requestSeedLanguagePattern(projectedPattern));
 });
 

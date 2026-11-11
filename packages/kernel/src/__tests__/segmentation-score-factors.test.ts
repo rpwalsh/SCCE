@@ -3,11 +3,11 @@
 import { describe, expect, it } from "vitest";
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
-import { buildSurfaceLattice } from "../surface-lattice.js";
+import { buildSurfaceLattice, exportSurfaceSegmentationReplayRecipe, replaySurfaceSegmentationAdjacency } from "../surface-lattice.js";
 import { buildSegmentationForest, exportSegmentationAdjacencyFactors, type SegmentationForestUnit } from "../segmentation-forest.js";
 import { createSegmentationAdjacencyQuery } from "../segmentation-adjacency-factors.js";
 import { replaySegmentationScoreFactors, segmentationScoreFactorsCanonicalSafe, validateSegmentationScoreFactors, type SegmentationScoreFactors } from "../segmentation-score-factors.js";
-import { compileLanguageSegmentationWitness, isLanguageSegmentationWitness } from "../source-segmentation-witness.js";
+import { compileLanguageSegmentationWitness, exportSourceSegmentationReplayRecipe, isLanguageSegmentationWitness } from "../source-segmentation-witness.js";
 import { constructionSourceExampleStorageJson as exactJson } from "../construction-source-example-storage.js";
 import type { BoundaryEstimatorModel } from "../boundary-estimator.js";
 import { createLanguageInductionEngine } from "../language-induction.js";
@@ -15,6 +15,7 @@ import { languageMemoryPatternsFromInducedLanguageModel } from "../language-indu
 import type { LanguageProfile } from "../types.js";
 
 const hasher = createHasher(), cold = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const exactText = "🧪e\u0301 f9 東京。\n甲 f9 🦉乙。\u0000 Ω 19.";
 const estimator: BoundaryEstimatorModel = {
   schema: "scce.boundary_estimator.v2", id: "boundary.numerical.fixture", populationId: "population.fixture",
   featureOrder: ["whitespaceAdjacent", "punctuationAdjacent", "lineBreakAdjacent", "scriptTransition", "structuralBoundary", "localTransitionEntropy",
@@ -29,7 +30,7 @@ const estimator: BoundaryEstimatorModel = {
   audit: { scope: "explicit numerical fixture" }
 };
 function lattice(captureScoreFactors: boolean) {
-  return buildSurfaceLattice({ documentId: "document.exact", text: "🧪e\u0301 f9 東京。\n甲 f9 🦉乙。\u0000 Ω 19.", boundaryEstimator: estimator, hasher, captureScoreFactors });
+  return buildSurfaceLattice({ documentId: "document.exact", text: exactText, boundaryEstimator: estimator, hasher, captureScoreFactors });
 }
 const topology = (graph: ReturnType<typeof exportSegmentationAdjacencyFactors>["factors"]) => graph.arcs.map(([start, end]) => [start, end] as const);
 function resign(recipe: SegmentationScoreFactors) { const { digest: _digest, ...material } = recipe; recipe.digest = hasher.digestHex(exactJson(material)); }
@@ -45,6 +46,14 @@ describe("frozen segmentation score factors", () => {
     for (let i = 0; i < graph.arcs.length; i++) expect(Object.is(graph.arcs[i]![2], measured.factors.arcs[i]![2])).toBe(true);
     const bearing = new Set(graph.arcs.map((_, i) => i));
     expect([...createSegmentationAdjacencyQuery(graph, bearing).pairs()]).toEqual([...createSegmentationAdjacencyQuery(measured.factors, bearing).pairs()]);
+    const producerRecipe = exportSurfaceSegmentationReplayRecipe(captured)!;
+    const producerGraph = replaySurfaceSegmentationAdjacency({ recipe: cold(producerRecipe), documentId: captured.documentId,
+      sourceFamilyId: captured.sourceFamilyId, text: exactText, normalizationContract: captured.normalizationContract, hasher });
+    expect(producerGraph.arcs).toHaveLength(measured.factors.arcs.length);
+    producerGraph.arcs.forEach((arc, index) => {
+      expect(arc.slice(0, 2)).toEqual(measured.factors.arcs[index]!.slice(0, 2));
+      expect(Object.is(arc[2], measured.factors.arcs[index]![2])).toBe(true);
+    });
   });
 
   it("defaults to no capture and preserves segmentation witness identity when redundant scorer metadata is enabled", () => {
@@ -58,6 +67,8 @@ describe("frozen segmentation score factors", () => {
     expect(second).toEqual(first);
     for (const population of second.populations) for (const document of population.documents) {
       expect(document.fullDag).not.toHaveProperty("scoreRecipe");
+      expect(exportSourceSegmentationReplayRecipe(document)).toBeDefined();
+      expect(JSON.stringify(document)).not.toContain("surface_segmentation_replay");
     }
     expect(second.id).toMatch(/^language_segmentation_witness\.[a-f0-9]{40}$/u);
     expect(isLanguageSegmentationWitness(second)).toBe(true);

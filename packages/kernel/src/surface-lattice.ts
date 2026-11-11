@@ -9,6 +9,7 @@ import {
 } from "./boundary-estimator.js";
 import {
   buildSegmentationForest,
+  exportSegmentationAdjacencyFactors,
   measureSegmentationBoundaries,
   resumeSegmentationForest,
   SEGMENTATION_FOREST_SCHEMA,
@@ -16,6 +17,8 @@ import {
   type SegmentationBoundaryMeasurement,
   type SurfaceSegmentationForest
 } from "./segmentation-forest.js";
+import type { SegmentationAdjacencyFactors } from "./segmentation-adjacency-factors.js";
+import { encodeSegmentationAdjacencyFactors } from "./segmentation-adjacency-storage.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
 import type { PreparedCorpusSegmentationMeasurement, CorpusSegmentationContextSlice } from "./corpus-segmentation-cursor.js";
@@ -32,11 +35,14 @@ import {
   createSurfaceFormClassIdentity,
   type CanonicalIdentity
 } from "./canonical-identity.js";
+import { constructionSourceExampleStorageJson as exactJson } from "./construction-source-example-storage.js";
 
 export const SURFACE_LATTICE_SCHEMA = "scce.surface_lattice.v3" as const;
 export const UNTRAINED_BOUNDARY_ESTIMATOR_ID = "boundary_estimator.untrained-neutral.v1" as const;
 export const DEFAULT_SURFACE_LATTICE_MAX_UNITS = 4096 as const;
 export const NGRAM_SURFACE_PROJECTION_SCHEMA = "scce.ngram_surface_projection.v1" as const;
+export const SURFACE_SEGMENTATION_REPLAY_SCHEMA = "scce.surface_segmentation_replay.v1" as const;
+export const BOUNDARY_FEATURE_REPLAY_FACTORS_SCHEMA = "scce.boundary_feature_replay_factors.v1" as const;
 
 export type SurfaceLatticeUnitKind =
   | "grapheme"
@@ -168,6 +174,8 @@ export interface SurfaceLatticeBuildOptions {
   segmentationForestLimits?: Partial<SegmentationForestLimits>;
   boundaryEstimator?: BoundaryEstimatorState;
   boundaryFeatureContext?: CompiledBoundaryFeatureContext;
+  /** Exact non-source facts aligned to source-derived keys; reserved for cold replay. */
+  boundaryFeatureReplayFactors?: BoundaryFeatureReplayFactors;
   normalizationContract?: NormalizationContract;
 }
 
@@ -178,6 +186,27 @@ export interface CompiledBoundaryFeatureContext {
   documentCountBySurfaceFormClass: Record<string, number>;
   classCountByBoundaryContext: Record<string, number>;
 }
+
+export interface BoundaryFeatureReplayFactors {
+  schema: typeof BOUNDARY_FEATURE_REPLAY_FACTORS_SCHEMA;
+  sourceDocumentCount: number;
+  surfaceFormDocumentCounts: number[];
+  boundaryContextClassCounts: number[];
+}
+
+/** Frozen producer state; source text owns candidate topology and this state owns scoring. */
+export interface SurfaceSegmentationReplayRecipe {
+  schema: typeof SURFACE_SEGMENTATION_REPLAY_SCHEMA;
+  maxUnits: number;
+  boundaryEstimator: BoundaryEstimatorState | null;
+  boundaryFeatureFactors: BoundaryFeatureReplayFactors | null;
+  expectedNodeCount: number;
+  expectedArcCount: number;
+  expectedGraphDigest: string;
+  digest: string;
+}
+
+const SURFACE_SEGMENTATION_REPLAY = Symbol("scce.surface_segmentation_replay");
 
 export interface BoundaryAnchor {
   documentId: string;
@@ -304,6 +333,73 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   return buildSurfaceLatticeInternal(options, false);
 }
 
+/** Read producer-only state without adding it to the public lattice object graph. */
+export function exportSurfaceSegmentationReplayRecipe(lattice: SurfaceLattice): Readonly<SurfaceSegmentationReplayRecipe> | undefined {
+  return (lattice as SurfaceLattice & { [SURFACE_SEGMENTATION_REPLAY]?: Readonly<SurfaceSegmentationReplayRecipe> })[SURFACE_SEGMENTATION_REPLAY];
+}
+
+/** Re-run only the frozen source producer; this performs no fitting or evidence acquisition. */
+export function replaySurfaceSegmentationAdjacency(input: {
+  recipe: SurfaceSegmentationReplayRecipe;
+  documentId: string;
+  sourceFamilyId?: string;
+  text: string;
+  sourceVersionId?: SourceVersionId | string;
+  evidenceIds?: readonly (EvidenceId | string)[];
+  normalizationContract: NormalizationContract;
+  hasher?: Hasher;
+}): SegmentationAdjacencyFactors {
+  const hasher = input.hasher ?? createHasher();
+  const recipe = validateSurfaceSegmentationReplayRecipe(input.recipe, hasher);
+  const lattice = buildSurfaceLattice({
+    documentId: input.documentId,
+    ...(input.sourceFamilyId ? { sourceFamilyId: input.sourceFamilyId } : {}),
+    text: input.text,
+    ...(input.sourceVersionId ? { sourceVersionId: input.sourceVersionId } : {}),
+    evidenceIds: input.evidenceIds,
+    normalizationContract: input.normalizationContract,
+    maxUnits: recipe.maxUnits,
+    ...(recipe.boundaryEstimator ? { boundaryEstimator: recipe.boundaryEstimator } : {}),
+    ...(recipe.boundaryFeatureFactors ? { boundaryFeatureReplayFactors: recipe.boundaryFeatureFactors } : {}),
+    hasher
+  });
+  const factors = exportSegmentationAdjacencyFactors(lattice.segmentationForest).factors;
+  if (factors.nodeCount !== recipe.expectedNodeCount || factors.arcs.length !== recipe.expectedArcCount
+    || segmentationReplayGraphDigest(factors, hasher) !== recipe.expectedGraphDigest) {
+    throw new Error("surface segmentation replay changed full-DAG topology or energy");
+  }
+  return factors;
+}
+
+export function validateSurfaceSegmentationReplayRecipe(value: unknown, hasher: Hasher = createHasher()): SurfaceSegmentationReplayRecipe {
+  const row = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  if (!row || Object.keys(row).sort().join(",") !== "boundaryEstimator,boundaryFeatureFactors,digest,expectedArcCount,expectedGraphDigest,expectedNodeCount,maxUnits,schema"
+    || row.schema !== SURFACE_SEGMENTATION_REPLAY_SCHEMA || !Number.isSafeInteger(row.maxUnits) || Number(row.maxUnits) < 64
+    || !Number.isSafeInteger(row.expectedNodeCount) || Number(row.expectedNodeCount) < 1
+    || !Number.isSafeInteger(row.expectedArcCount) || Number(row.expectedArcCount) < 0
+    || typeof row.expectedGraphDigest !== "string" || !/^[a-f0-9]{64}$/u.test(row.expectedGraphDigest)
+    || typeof row.digest !== "string" || !/^[a-f0-9]{64}$/u.test(row.digest)) {
+    throw new Error("invalid surface segmentation replay recipe");
+  }
+  const factors = row.boundaryFeatureFactors;
+  if (factors !== null) {
+    const feature = factors && typeof factors === "object" && !Array.isArray(factors) ? factors as Record<string, unknown> : undefined;
+    const counts = (candidate: unknown): boolean => Array.isArray(candidate)
+      && candidate.every(count => Number.isSafeInteger(count) && Number(count) >= 0);
+    if (!feature || Object.keys(feature).sort().join(",") !== "boundaryContextClassCounts,schema,sourceDocumentCount,surfaceFormDocumentCounts"
+      || feature.schema !== BOUNDARY_FEATURE_REPLAY_FACTORS_SCHEMA
+      || !Number.isSafeInteger(feature.sourceDocumentCount) || Number(feature.sourceDocumentCount) < 0
+      || !counts(feature.surfaceFormDocumentCounts) || !counts(feature.boundaryContextClassCounts)) {
+      throw new Error("invalid surface segmentation replay feature factors");
+    }
+  }
+  const { digest, ...material } = row;
+  let wire: string;
+  try { wire = exactJson(material); } catch { throw new Error("invalid surface segmentation replay recipe"); }
+  if (hasher.digestHex(wire) !== digest) throw new Error("surface segmentation replay recipe digest changed");
+  return JSON.parse(exactJson(row)) as SurfaceSegmentationReplayRecipe;
+}
+
 export function measureSurfaceBoundaries(options: Omit<SurfaceLatticeBuildOptions,
   "maxEdges" | "segmentationPathLimit" | "segmentationResumeToken" | "segmentationForestLimits">): SurfaceBoundaryMeasurement {
   return buildSurfaceLatticeInternal(options, false, true);
@@ -355,6 +451,16 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
   const hasher = options.hasher ?? createHasher();
   const normalizationContract = options.normalizationContract ?? canonicalNormalizationContract(hasher);
   const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS));
+  if (options.boundaryFeatureContext && options.boundaryFeatureReplayFactors) {
+    throw new Error("surface lattice cannot mix live and replay boundary feature state");
+  }
+  const replayState = options.captureScoreFactors
+    ? captureSurfaceSegmentationReplayState(options, maxUnits)
+    : undefined;
+  if (replayState) options = {
+    ...options,
+    boundaryEstimator: replayState.boundaryEstimator ?? undefined
+  };
   const maxEdges = Math.max(64, Math.floor(options.maxEdges ?? 8192));
   const text = options.text;
   const model = segmentUnicodeSurfaceV2(text, hasher);
@@ -452,16 +558,18 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
     candidate.proposalSources.includes("grapheme"));
   const higherCandidates = candidates.filter(candidate =>
     !candidate.proposalSources.includes("grapheme"));
-  const corpusFeaturesByPosition = corpusBoundaryFeaturesByPosition({
+  const corpusProjection = corpusBoundaryFeaturesByPosition({
     candidates: higherCandidates,
     model,
     coordinates,
     context: options.boundaryFeatureContext,
+    replayFactors: options.boundaryFeatureReplayFactors,
     normalizedSurfaceFor,
     normalizedFormIdentityFor,
     surfaceFormClassIdentityFor,
     scriptForSurface
   });
+  const corpusFeaturesByPosition = corpusProjection.features;
 
   for (const candidate of candidates) {
     const key = recurrenceKey(candidate, normalizedSurfaceFor);
@@ -605,7 +713,7 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
   const countsByKind = new Map<SurfaceLatticeUnitKind, number>();
   for (const unit of units) countsByKind.set(unit.kind, (countsByKind.get(unit.kind) ?? 0) + 1);
   const populationPosterior = latticePopulationPosterior(options.boundaryEstimator);
-  return {
+  const lattice: SurfaceLattice = {
     schema: SURFACE_LATTICE_SCHEMA,
     id: latticeId,
     documentId: options.documentId,
@@ -655,6 +763,57 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
       segmentationResumeToken: segmentationForest.resumeState?.token
     })
   };
+  if (replayState) {
+    const recipe = completeSurfaceSegmentationReplayRecipe(
+      { ...replayState, boundaryFeatureFactors: corpusProjection.replayFactors },
+      exportSegmentationAdjacencyFactors(segmentationForest).factors,
+      hasher
+    );
+    if (recipe) Object.defineProperty(lattice, SURFACE_SEGMENTATION_REPLAY, { value: recipe });
+  }
+  return lattice;
+}
+
+type SurfaceSegmentationReplayState = Pick<SurfaceSegmentationReplayRecipe,
+  "schema" | "maxUnits" | "boundaryEstimator">;
+type CompleteSurfaceSegmentationReplayState = SurfaceSegmentationReplayState
+  & Pick<SurfaceSegmentationReplayRecipe, "boundaryFeatureFactors">;
+
+function captureSurfaceSegmentationReplayState(
+  options: SurfaceLatticeBuildOptions,
+  maxUnits: number
+): Readonly<SurfaceSegmentationReplayState> | undefined {
+  const material = {
+    schema: SURFACE_SEGMENTATION_REPLAY_SCHEMA,
+    maxUnits,
+    boundaryEstimator: options.boundaryEstimator ?? null
+  };
+  try {
+    const wire = exactJson(material);
+    return Object.freeze(JSON.parse(wire) as SurfaceSegmentationReplayState);
+  } catch {
+    // Opaque scorer extensions keep the already measured graph; they never get a lossy replay recipe.
+    return undefined;
+  }
+}
+
+function completeSurfaceSegmentationReplayRecipe(
+  state: CompleteSurfaceSegmentationReplayState,
+  factors: SegmentationAdjacencyFactors,
+  hasher: Hasher
+): Readonly<SurfaceSegmentationReplayRecipe> {
+  const material = {
+    ...state,
+    expectedNodeCount: factors.nodeCount,
+    expectedArcCount: factors.arcs.length,
+    expectedGraphDigest: segmentationReplayGraphDigest(factors, hasher)
+  };
+  const wire = exactJson(material);
+  return Object.freeze({ ...material, digest: hasher.digestHex(wire) });
+}
+
+function segmentationReplayGraphDigest(factors: SegmentationAdjacencyFactors, hasher: Hasher): string {
+  return hasher.digestHex(encodeSegmentationAdjacencyFactors(factors, 64 * 1024 * 1024));
 }
 
 function latticePopulationPosterior(
@@ -1488,14 +1647,15 @@ function corpusBoundaryFeaturesByPosition(input: {
   model: ReturnType<typeof segmentUnicodeSurfaceV2>;
   coordinates: SurfaceCoordinateIndex;
   context?: CompiledBoundaryFeatureContext;
+  replayFactors?: BoundaryFeatureReplayFactors;
   normalizedSurfaceFor: (surface: string) => string;
   normalizedFormIdentityFor: (normalized: string) => CanonicalIdentity;
   surfaceFormClassIdentityFor: (normalizedFormIdentity: CanonicalIdentity, script: string) => CanonicalIdentity;
   scriptForSurface: (surface: string) => string;
-}): Map<number, Partial<BoundaryFeatureVector>> {
+}): { features: Map<number, Partial<BoundaryFeatureVector>>; replayFactors: BoundaryFeatureReplayFactors | null } {
   const out = new Map<number, Partial<BoundaryFeatureVector>>();
-  if (!input.context) return out;
-  for (const candidate of input.candidates) {
+  if (!input.context && !input.replayFactors) return { features: out, replayFactors: null };
+  const rows = input.candidates.map(candidate => {
     const normalizedIdentity = input.normalizedFormIdentityFor(
       input.normalizedSurfaceFor(candidate.surface)
     );
@@ -1507,8 +1667,29 @@ function corpusBoundaryFeaturesByPosition(input: {
       contextSketch(input.model.lexicalSegments, candidate.codePointStart, "left"),
       contextSketch(input.model.lexicalSegments, candidate.codePointEnd, "right")
     );
-    const documentSupport = input.context.documentCountBySurfaceFormClass[classId] ?? 0;
-    const classSupport = input.context.classCountByBoundaryContext[contextKey] ?? 0;
+    return { candidate, classId, contextKey };
+  });
+  const classIds = [...new Set(rows.map(row => row.classId))].sort();
+  const contextKeys = [...new Set(rows.map(row => row.contextKey))].sort();
+  const replayFactors: BoundaryFeatureReplayFactors = input.replayFactors ?? {
+    schema: BOUNDARY_FEATURE_REPLAY_FACTORS_SCHEMA,
+    sourceDocumentCount: input.context!.sourceDocumentCount,
+    surfaceFormDocumentCounts: classIds.map(key => input.context!.documentCountBySurfaceFormClass[key] ?? 0),
+    boundaryContextClassCounts: contextKeys.map(key => input.context!.classCountByBoundaryContext[key] ?? 0)
+  };
+  if (replayFactors.schema !== BOUNDARY_FEATURE_REPLAY_FACTORS_SCHEMA
+    || !Number.isSafeInteger(replayFactors.sourceDocumentCount) || replayFactors.sourceDocumentCount < 0
+    || replayFactors.surfaceFormDocumentCounts.length !== classIds.length
+    || replayFactors.boundaryContextClassCounts.length !== contextKeys.length
+    || ![...replayFactors.surfaceFormDocumentCounts, ...replayFactors.boundaryContextClassCounts]
+      .every(value => Number.isSafeInteger(value) && value >= 0)) {
+    throw new Error("boundary feature replay factors differ from source-derived keys");
+  }
+  const classIndex = new Map(classIds.map((key, index) => [key, index]));
+  const contextIndex = new Map(contextKeys.map((key, index) => [key, index]));
+  for (const { candidate, classId, contextKey } of rows) {
+    const documentSupport = replayFactors.surfaceFormDocumentCounts[classIndex.get(classId)!]!;
+    const classSupport = replayFactors.boundaryContextClassCounts[contextIndex.get(contextKey)!]!;
     const recurrence = clamp01(Math.log1p(Math.max(0, documentSupport - 1)) / 6);
     const substitution = clamp01(Math.log1p(Math.max(0, classSupport - 1)) / 6);
     const graphemeStart = input.coordinates.utf16ToGraphemeStart[candidate.utf16Start] ?? 0;
@@ -1526,7 +1707,7 @@ function corpusBoundaryFeaturesByPosition(input: {
       });
     }
   }
-  return out;
+  return { features: out, replayFactors: JSON.parse(exactJson(replayFactors)) as BoundaryFeatureReplayFactors };
 }
 
 function structuralBoundaryAt(startUtf16: number, endUtf16: number, text: string): number {

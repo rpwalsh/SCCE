@@ -9,7 +9,7 @@ import { canonicalStringify, createClock, createHasher, createIdFactory, createL
 import { PostgresStorageAdapter } from "../postgres.js";
 import { canonicalCreativeEventSchemaStatements, createCanonicalCreativeEventCodec } from "../canonical-creative-event-store.js";
 import { CREATIVE_EVENT_NORMALIZATION_SCHEMA, CREATIVE_EVENT_NORMALIZATION_TABLES, CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA,
-  creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage,
+  CREATIVE_EVENT_SOURCE_DERIVED_STORAGE_SCHEMA, creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage,
   type CreativeEventDomainRecord, type CreativeEventOwner } from "../creative-event-normalization.js";
 import { DECODED_JSON_BYTE_LEDGER_KEY, decodedJsonByteLengths } from "../durable-artifact-storage.js";
 
@@ -34,7 +34,7 @@ beforeAll(() => {
   if (compiled.status !== "compiled") throw Error("genuine human source did not compile");
   patterns = (compiled.patterns ?? [compiled.pattern]).filter(pattern => object(pattern.patternJson).bundle).map(pattern => ({ ...pattern, informationLabel: label }));
   owner = { profileId: profile.id, sourceId, sourceVersionId, sourceContentHash: contentHash, evidenceId: evidence.id, evidenceContentHash: contentHash,
-    evidenceCharStart: evidence.charStart, evidenceCharEnd: evidence.charEnd, informationLabel: label };
+    evidenceCharStart: evidence.charStart, evidenceCharEnd: evidence.charEnd, evidenceText: evidence.text, informationLabel: label };
 });
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -67,7 +67,7 @@ function fixture() {
         && (!sql.includes("evidence.status='promoted'") || state.promoted) && informationLabelAllowsRead(state.sourceLabel, access));
       return { rows: selected.map(() => ({ profile_id: state.source.profileId, source_id: state.source.sourceId, source_version_id: state.source.sourceVersionId, source_content_hash: state.source.sourceContentHash,
         evidence_id: state.source.evidenceId, evidence_content_hash: state.source.evidenceContentHash, char_start: state.source.evidenceCharStart,
-        char_end: state.source.evidenceCharEnd, byte_start: evidence.byteStart, byte_end: evidence.byteEnd,
+        char_end: state.source.evidenceCharEnd, byte_start: evidence.byteStart, byte_end: evidence.byteEnd, evidence_text: state.source.evidenceText,
         profile_source_version_id: state.source.sourceVersionId, has_pooled_binding: false, pooled_profile: null,
         profile_label: state.sourceLabel, source_label: state.sourceLabel, evidence_label: state.sourceLabel })) };
     }
@@ -128,7 +128,7 @@ describe("canonical creative-event domain normalization", () => {
     await adapter.languageMemory.putLanguagePatterns(patterns);
     expect(components.get("creative_event_templates")!.size).toBe(2);
     expect(components.get("creative_event_lexemes")!.size).toBe(0);
-    expect(lexicalPages.size).toBeGreaterThan(0);
+    expect(lexicalPages.size).toBe(0);
     expect(components.get("creative_event_witnesses")!.size).toBe(1);
     expect(components.get("creative_event_occurrences")!.size).toBe(patterns.length);
     for (const row of rows.patterns) {
@@ -179,7 +179,7 @@ describe("canonical creative-event domain normalization", () => {
       (f: ReturnType<typeof fixture>) => { f.state.source = { ...owner, evidenceContentHash: "changed.hash" }; },
       (f: ReturnType<typeof fixture>) => { f.state.source = { ...owner, sourceContentHash: "changed.raw.source.hash" }; },
       (f: ReturnType<typeof fixture>) => { f.state.sourceLabel = { ...label, tenantId: "tenant.foreign", exportClass: "restricted", principals: ["foreign"] }; },
-      (f: ReturnType<typeof fixture>) => { f.lexicalPages.clear(); },
+      (f: ReturnType<typeof fixture>) => { f.components.get("creative_event_templates")!.clear(); },
       (f: ReturnType<typeof fixture>) => { object(object(f.rows.patterns[0]!.pattern_json)[DECODED_JSON_BYTE_LEDGER_KEY]).decodedJsonBytes = 1; }
     ]) {
       const f = fixture(); await f.adapter.languageMemory.putLanguagePattern(patterns[0]!); mutate(f);
@@ -220,12 +220,28 @@ describe("canonical creative-event domain normalization", () => {
     const secondBundle = { ...bundle, profileId: secondOwner.profileId, events: (bundle.events as Parameters<typeof deriveUniversalCreativeEvent>[0][])
       .map(event => deriveUniversalCreativeEvent({ ...event, profileId: secondOwner.profileId, sourceVersionId: secondOwner.sourceVersionId, evidenceId: secondOwner.evidenceId }, hasher)) };
     const second = normalizeCreativeEventPage({ bundle: secondBundle, owners: new Map([[creativeEventStorageJson([secondOwner.profileId, secondOwner.evidenceId]), secondOwner]]) });
+    expect(first.records.creative_event_lexemes).toEqual([]);
+    expect(first.records.creative_event_occurrences[0]!.value).toMatchObject({ storageEncoding: CREATIVE_EVENT_SOURCE_DERIVED_STORAGE_SCHEMA });
+    expect(first.records.creative_event_occurrences[0]!.value).not.toHaveProperty("lexemes");
     expect(second.records.creative_event_templates.map(row => row.id)).toEqual(first.records.creative_event_templates.map(row => row.id));
     expect(second.records.creative_event_lexemes.map(row => row.id)).toEqual(first.records.creative_event_lexemes.map(row => row.id));
     expect(second.reference.pageId).not.toBe(first.reference.pageId);
     const records = new Map<string, CreativeEventDomainRecord>();
     for (const rows of Object.values(second.records)) for (const row of rows) records.set(row.id, cold(row));
-    expect(reconstructCreativeEventPage({ reference: second.reference, records })).toEqual(secondBundle.events);
+    const secondOwners = new Map([[creativeEventStorageJson([secondOwner.profileId, secondOwner.evidenceId]), secondOwner]]);
+    expect(reconstructCreativeEventPage({ reference: second.reference, records, owners: secondOwners })).toEqual(secondBundle.events);
+  });
+
+  it("retains the exact lexical-record fallback when source derivation is unavailable", () => {
+    const bundle = object(object(patterns[0]!.patternJson).bundle);
+    const { evidenceText: _text, ...legacyOwner } = owner;
+    const owners = new Map([[creativeEventStorageJson([legacyOwner.profileId, legacyOwner.evidenceId]), legacyOwner]]);
+    const plan = normalizeCreativeEventPage({ bundle, owners });
+    expect(plan.records.creative_event_lexemes.length).toBeGreaterThan(0);
+    expect(plan.records.creative_event_occurrences[0]!.value).not.toHaveProperty("storageEncoding");
+    const records = new Map<string, CreativeEventDomainRecord>();
+    for (const rows of Object.values(plan.records)) for (const row of rows) records.set(row.id, cold(row));
+    expect(reconstructCreativeEventPage({ reference: plan.reference, records })).toEqual(bundle.events);
   });
 
   it("preserves Unicode, NUL and future JSON extensions without repairing noncanonical identities", () => {
@@ -236,10 +252,10 @@ describe("canonical creative-event domain normalization", () => {
     const owners = new Map([[creativeEventStorageJson([owner.profileId, owner.evidenceId]), owner]]), plan = normalizeCreativeEventPage({ bundle, owners });
     const records = new Map<string, CreativeEventDomainRecord>();
     for (const rows of Object.values(plan.records)) for (const row of rows) records.set(row.id, cold(row));
-    const restored = reconstructCreativeEventPage({ reference: plan.reference, records });
+    const restored = reconstructCreativeEventPage({ reference: plan.reference, records, owners });
     expect(creativeEventStorageJson(restored)).toBe(creativeEventStorageJson(events));
     object(restored[0]!.futureData).text = "changed";
-    expect(creativeEventStorageJson(reconstructCreativeEventPage({ reference: plan.reference, records }))).toBe(creativeEventStorageJson(events));
+    expect(creativeEventStorageJson(reconstructCreativeEventPage({ reference: plan.reference, records, owners }))).toBe(creativeEventStorageJson(events));
     const invalid = cold(bundle); object((invalid.events as unknown[])[0]).id = "forged";
     expect(() => normalizeCreativeEventPage({ bundle: invalid, owners })).toThrow("noncanonical");
     object((invalid.events as unknown[])[0]).compilerId = "compiler.unknown";

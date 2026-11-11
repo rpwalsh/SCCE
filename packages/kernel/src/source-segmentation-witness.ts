@@ -10,7 +10,10 @@ import {
 } from "./segmentation-score-factors.js";
 import {
   SURFACE_LATTICE_SCHEMA,
+  exportSurfaceSegmentationReplayRecipe,
+  validateSurfaceSegmentationReplayRecipe,
   validateSurfaceLattice,
+  type SurfaceSegmentationReplayRecipe,
   type SurfaceLattice
 } from "./surface-lattice.js";
 import type { SegmentationForestLimits } from "./segmentation-forest.js";
@@ -55,6 +58,36 @@ export interface SourceSegmentationWitness {
   fullDag: {
     factors: SegmentationAdjacencyFactors;
   };
+}
+
+const SOURCE_SEGMENTATION_REPLAY = Symbol("scce.source_segmentation_replay");
+
+/** Producer-only replay state for a physical store that replaces, then hydrates, the measured DAG cache. */
+export function exportSourceSegmentationReplayRecipe(witness: SourceSegmentationWitness): Readonly<SurfaceSegmentationReplayRecipe> | undefined {
+  return (witness as SourceSegmentationWitness & {
+    [SOURCE_SEGMENTATION_REPLAY]?: Readonly<SurfaceSegmentationReplayRecipe>;
+  })[SOURCE_SEGMENTATION_REPLAY];
+}
+
+/** Preserve producer-only state across the logical JSON projection without exposing it on the wire. */
+export function transferSourceSegmentationReplayRecipe<T extends object>(
+  source: SourceSegmentationWitness,
+  target: T
+): T {
+  const recipe = exportSourceSegmentationReplayRecipe(source);
+  if (recipe) Object.defineProperty(target, SOURCE_SEGMENTATION_REPLAY, { value: recipe });
+  return target;
+}
+
+/** Restore validated producer state after a cold physical archive hydration. */
+export function attachSourceSegmentationReplayRecipe<T extends object>(
+  target: T,
+  recipe: SurfaceSegmentationReplayRecipe,
+  hasher: Hasher = createHasher()
+): T {
+  const validated = validateSurfaceSegmentationReplayRecipe(recipe, hasher);
+  Object.defineProperty(target, SOURCE_SEGMENTATION_REPLAY, { value: Object.freeze(validated) });
+  return target;
 }
 
 export interface SourceSegmentationForestAudit {
@@ -333,6 +366,7 @@ function compileSourceWitness(document: LanguageSegmentationWitnessDocument, has
     && document.sourceVersionId !== document.lattice.sourceVersionId) throw new Error("segmentation witness source versions differ");
   const exported = exportSegmentationAdjacencyFactors(document.lattice.segmentationForest);
   validateSegmentationAdjacencyFactors(exported.factors);
+  const replayRecipe = exportSurfaceSegmentationReplayRecipe(document.lattice);
   if (exported.unitIds.length !== exported.factors.arcs.length) throw new Error("segmentation witness DAG unit count differs from arc count");
   const unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
   const unitIdSet = new Set<string>();
@@ -442,6 +476,7 @@ function compileSourceWitness(document: LanguageSegmentationWitnessDocument, has
     ...canonical,
     id: `source_segmentation_witness.${canonicalDigestHex(canonical, hasher).slice(0, 40)}`
   };
+  if (replayRecipe) Object.defineProperty(result, SOURCE_SEGMENTATION_REPLAY, { value: replayRecipe });
   return result;
 }
 
@@ -455,7 +490,8 @@ export function validateSourceSegmentationWitness(value: unknown, hasher: Hasher
     || !Number.isSafeInteger(witness.sourceUtf16End) || witness.sourceUtf16End - witness.sourceUtf16Start !== witness.text.length
     || !Array.isArray(witness.evidenceIds) || !witness.evidenceIds.every(id => typeof id === "string")
     || new Set(witness.evidenceIds).size !== witness.evidenceIds.length || !witness.fullDag
-    || Object.hasOwn(witness.fullDag, "scoreRecipe")) {
+    || Object.hasOwn(witness.fullDag, "scoreRecipe")
+    || Object.keys(witness.fullDag).sort().join(",") !== "factors") {
     throw new Error("invalid source segmentation witness");
   }
   validateSegmentationAdjacencyFactors(witness.fullDag.factors);

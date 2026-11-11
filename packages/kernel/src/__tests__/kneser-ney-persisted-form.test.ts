@@ -16,6 +16,13 @@ import { languageSurfaceTrigrams } from "../language.js";
 import { createNgramMemoryCompiler } from "../ngram-memory.js";
 import { createClock, createHasher, featureSet } from "../primitives.js";
 import type { EvidenceSpan, LanguageProfile } from "../types.js";
+import {
+  captureKneserNeyTrainingReplay,
+  exportNgramModelTrainingReplay,
+  persistedKneserNeyDigest,
+  replayKneserNeyTraining,
+  validateKneserNeyTrainingReplay
+} from "../kneser-ney-training-replay.js";
 
 const DERIVED_KEYS = ["contextCounts", "contextContinuationTypes", "successorIndex", "successorOverflowCounts", "backoffWeights", "baseContinuations"];
 
@@ -29,6 +36,60 @@ function corpus(): string {
 }
 
 describe("a persisted Kneser-Ney model carries its sufficient statistics only", () => {
+  it("replays exact sufficient statistics from the producer symbol tape", () => {
+    const hasher = createHasher();
+    const symbols = ["constructor", "\u0000", "snow", "constructor", "rare", "snow", "tail"];
+    const trained = trainKneserNey(symbols, { order: 4, discount: 0.625, vocabularyLimit: 4 });
+    const recipe = captureKneserNeyTrainingReplay({ symbols, model: trained, vocabularyLimit: 4, hasher });
+    const stored = JSON.parse(JSON.stringify(recipe));
+    const replayed = replayKneserNeyTraining({ recipe: stored, hasher });
+    expect(persistedKneserNey(replayed)).toEqual(persistedKneserNey(trained));
+    expect(persistedKneserNeyDigest(replayed, hasher)).toBe(recipe.expectedPersistedModelDigest);
+    expect(recipe.vocabulary).toContain("\u0000");
+    expect(recipe).not.toHaveProperty("counts");
+  });
+
+  it("rejects changed replay parameters, symbol order, and expected model identity", () => {
+    const hasher = createHasher();
+    const symbols = ["a", "b", "a", "c", "d", "a"];
+    const trained = trainKneserNey(symbols, { order: 3, vocabularyLimit: 3 });
+    const recipe = captureKneserNeyTrainingReplay({ symbols, model: trained, vocabularyLimit: 3, hasher });
+    for (const mutate of [
+      (row: Record<string, unknown>) => { row.order = 2; },
+      (row: Record<string, unknown>) => { (row.symbolIds as number[]).reverse(); },
+      (row: Record<string, unknown>) => { row.expectedPersistedModelDigest = "0".repeat(64); }
+    ]) {
+      const changed = JSON.parse(JSON.stringify(recipe)) as Record<string, unknown>;
+      mutate(changed);
+      expect(() => validateKneserNeyTrainingReplay(changed, hasher)).toThrow("invalid Kneser-Ney training replay recipe");
+    }
+  });
+
+  it("keeps compiler replay state ephemeral and smaller than expanded count keys", () => {
+    const hasher = createHasher();
+    const compiler = createNgramMemoryCompiler({
+      hasher,
+      idFactory: createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher, deterministicReplay: true })
+    });
+    const languageProfile = profile("profile.replay", "fixture language survey");
+    const record = compiler.compile({
+      streamId: "stream.replay",
+      profile: languageProfile,
+      sourceVersionId: languageProfile.sourceVersionId,
+      text: corpus(),
+      evidence: [span("evidence.replay", corpus())],
+      createdAt: 1,
+      maxOrder: 6,
+      vocabularyLimit: 4000
+    }).models[0]!;
+    const recipe = exportNgramModelTrainingReplay(record)!;
+    const logical = JSON.parse(JSON.stringify(record.modelJson)) as Record<string, unknown>;
+    expect(logical).not.toHaveProperty("trainingReplay");
+    expect(exportNgramModelTrainingReplay({ ...record })).toBe(recipe);
+    expect(JSON.stringify(recipe).length).toBeLessThan(JSON.stringify(logical.model).length / 2);
+    expect(persistedKneserNey(replayKneserNeyTraining({ recipe, hasher }))).toEqual(logical.model);
+  });
+
   it("copies core statistics without allocating entry-pair lists and preserves own prototype-named counts", () => {
     const trained = trainKneserNey(["constructor", "toString", "valueOf", "constructor"], { order: 3 });
     const stored = JSON.parse(JSON.stringify(persistedKneserNey(trained)));

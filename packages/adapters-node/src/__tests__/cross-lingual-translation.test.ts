@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createClock, createHasher, createIdFactory, createNgramMemoryCompiler, type InformationLabel, type JsonValue, type LanguageIdentityRecord, type LanguageProfile, type NgramModelRecord } from "@scce/kernel";
-import { closedClassFor, compileCrossLingualTranslationSeeds, type CrossLingualTranslationStorage } from "../cross-lingual-translation.js";
+import { closedClassFor, compileCrossLingualTranslationSeeds, readLanguageBigrams, type CrossLingualTranslationStorage } from "../cross-lingual-translation.js";
 import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
 
 // Brick 2b wiring: read per-language bigrams and closed class, align by structure, store seeds. Validated with
@@ -34,6 +34,7 @@ const closedClass = (w: number[][], relabel: (i: number) => number) =>
 function fakeStorage(w: number[][], permutation: number[], options: { optimized?: boolean; models?: { source: JsonValue; target: JsonValue } } = {}) {
   const stored: Array<{ sourceLanguage: string; targetLanguage: string; seeds: unknown[] }> = [];
   let observationQueries = 0;
+  let compiledQuery = "";
   const storage: CrossLingualTranslationStorage = {
     table: name => name,
     async query<T>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
@@ -45,6 +46,7 @@ function fakeStorage(w: number[][], permutation: number[], options: { optimized?
       const source = profileIds?.includes("profile:source");
       const rows = source ? bigramRows(w, i => i) : bigramRows(w, i => 100 + permutation[i]!);
       if (sql.includes("ngram_models")) {
+        compiledQuery = sql;
         if (!options.optimized) return [] as T[];
         const modelJson = options.models?.[source ? "source" : "target"];
         const counts = modelJson && typeof modelJson === "object" && !Array.isArray(modelJson)
@@ -74,10 +76,10 @@ function fakeStorage(w: number[][], permutation: number[], options: { optimized?
       async putSeeds(input) { stored.push({ sourceLanguage: input.sourceLanguage, targetLanguage: input.targetLanguage, seeds: [...input.seeds] }); }
     }
   };
-  return { storage, stored, observationQueries: () => observationQueries };
+  return { storage, stored, observationQueries: () => observationQueries, compiledQuery: () => compiledQuery };
 }
 
-function compiledModelJson(profileId: string, script: string, text: string): JsonValue {
+function compiledModelJson(profileId: string, script: string, text: string, vocabularyLimit = 24000): JsonValue {
   const hasher = createHasher();
   const compiler = createNgramMemoryCompiler({
     hasher,
@@ -100,7 +102,8 @@ function compiledModelJson(profileId: string, script: string, text: string): Jso
     text,
     evidence: [],
     createdAt: 1,
-    maxOrder: 3
+    maxOrder: 3,
+    vocabularyLimit
   }).models[0]!.modelJson;
 }
 
@@ -147,7 +150,7 @@ describe("compiling cross-lingual translation seeds from ingested statistics", (
     const targetModel = compiledModelJson("profile:target", "script:Tgt", targetText);
     const sourceCounts = (sourceModel as Record<string, unknown>).model as Record<string, unknown>;
     expect(sourceCounts.counts).toBeTruthy();
-    const { storage, stored, observationQueries } = fakeStorage(w, permutation, {
+    const { storage, stored, observationQueries, compiledQuery } = fakeStorage(w, permutation, {
       optimized: true,
       models: { source: sourceModel, target: targetModel }
     });
@@ -158,6 +161,9 @@ describe("compiling cross-lingual translation seeds from ingested statistics", (
     expect(result.seedCount).toBeGreaterThan(0);
     expect(stored).toHaveLength(1);
     expect(observationQueries()).toBe(0);
+    expect(compiledQuery()).toContain("->'replay'->'symbolIds'");
+    expect(compiledQuery()).toContain("->'vocabularyPartition'->'symbolIds'");
+    expect(compiledQuery()).not.toContain("bigramCountTriples");
   });
 
   it("is a no-op, not a failure, when a language has no structure yet", async () => {
@@ -218,9 +224,17 @@ describe("cross-lingual translation against PostgreSQL", () => {
         { profileId: targetProfileId, languageId: targetIdentityId }
       ]);
       const models: NgramModelRecord[] = [
-        { id: "model.live.source", streamId: "stream.live.source", languageHint: "script:Latin;direction:ltr", maxOrder: 3, discount: 0.75, modelJson: compiledModelJson(sourceProfileId, "script:Latin", "a b c a b d a c b a d c a b"), updatedAt: 1, informationLabel: label },
-        { id: "model.live.target", streamId: "stream.live.target", languageHint: "script:Latin;direction:ltr", maxOrder: 3, discount: 0.75, modelJson: compiledModelJson(targetProfileId, "script:Latin", "x y z x y w x z y x w z x y"), updatedAt: 1, informationLabel: label }
+        { id: "model.live.source", streamId: "stream.live.source", languageHint: "script:Latin;direction:ltr", maxOrder: 3, discount: 0.75, modelJson: compiledModelJson(sourceProfileId, "script:Latin", "a b c a b d a c b a d c a b", 4), updatedAt: 1, informationLabel: label },
+        { id: "model.live.target", streamId: "stream.live.target", languageHint: "script:Latin;direction:ltr", maxOrder: 3, discount: 0.75, modelJson: compiledModelJson(targetProfileId, "script:Latin", "x y z x y w x z y x w z x y", 4), updatedAt: 1, informationLabel: label }
       ];
+      const logicalCounts = ((models[0]!.modelJson as Record<string, unknown>).model as Record<string, unknown>).counts as Record<string, number>;
+      const expectedBigrams = Object.entries(logicalCounts)
+        .filter(([key]) => key.indexOf("\u0001") >= 0 && key.indexOf("\u0001") === key.lastIndexOf("\u0001"))
+        .map(([key, count]) => {
+          const [previous, next] = key.split("\u0001");
+          return [key, { previous, next, count }] as const;
+        }).sort(([left], [right]) => left.localeCompare(right));
+      expect(expectedBigrams.some(([key]) => key.includes("<unk>"))).toBe(true);
       await adapter.languageMemory.putNgramModels!(models);
       const raw = await adapter.query<{ count: string }>(`SELECT COUNT(*)::bigint AS count FROM ${adapter.table("ngram_observations")}`);
       expect(Number(raw[0]?.count)).toBe(0);
@@ -229,6 +243,10 @@ describe("cross-lingual translation against PostgreSQL", () => {
         { id: sourceProfileId, language_id: sourceIdentityId },
         { id: targetProfileId, language_id: targetIdentityId }
       ]);
+      const replayBigrams = (await readLanguageBigrams(adapter, sourceIdentityId, 20_000))
+        .map(row => [`${row.previous}\u0001${row.next}`, row] as const)
+        .sort(([left], [right]) => left.localeCompare(right));
+      expect(replayBigrams).toEqual(expectedBigrams);
       const result = await compileCrossLingualTranslationSeeds(adapter, {
         sourceLanguage: sourceIdentityId, targetLanguage: targetIdentityId,
         sourceScript: "script:Latin", targetScript: "script:Latin", observedAt: 1_700_000_000_000

@@ -130,12 +130,16 @@ it.each([false,true])("logical unit/model merges retain unknown keys and regener
   expect(object(model.modelJson).sourceMetadata).toEqual(value.metadata.sourceMetadata);expect(object(unit.metadata).sourceMetadata).toEqual(value.metadata.sourceMetadata);
 });
 
-it("the canonical pattern writer enables scalar sharing while other family writers stay unchanged",async()=>{
+it("canonical pattern and unit writers share repeated scalar provenance",async()=>{
   const f=fixture(),value=producer("construction","scce.language_construction_pattern.v1");await f.write(value);
   const stored=f.table("language_patterns").get("pattern.metadata")!;
   expect(object(stored.pattern_json).sourceUri).toBeUndefined();expect(object(stored.pattern_json).title).toBeUndefined();
-  for(const [table,column] of [["ngram_models","model_json"],["language_units","metadata_json"],["semantic_frames","frame_json"]]){
+  const unit=f.table("language_units").get("unit.metadata")!;
+  expect(object(unit.metadata_json).sourceUri).toBeUndefined();expect(object(unit.metadata_json).title).toBeUndefined();
+  expect(object(unit.metadata_json).sourceSystem).toBe("fixture");
+  for(const [table,column] of [["ngram_models","model_json"],["semantic_frames","frame_json"]]){
     const row=[...f.table(table!).values()][0]!;expect(object(row[column!]).sourceUri).toBe(value.metadata.sourceUri);expect(object(row[column!]).title).toBe(value.metadata.title);
   }
+  expect((await f.adapter.languageMemory.listLanguageUnits({limit:10}))[0]!.metadata).toEqual(value.units[0]!.metadata);
   expect((await f.adapter.languageMemory.listLanguagePatterns({patternIds:["pattern.metadata"],limit:10}))[0]!.patternJson).toEqual(value.patterns[0]!.patternJson);
 });

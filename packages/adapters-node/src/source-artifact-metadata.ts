@@ -14,9 +14,12 @@ const record = (value: unknown): Record<string, unknown> | undefined => value !=
 const fail = (): never => { throw new Error("canonical source artifact metadata is missing, inaccessible or changed"); };
 // Keep SQL roots inline; share proven semantic provenance scalars only.
 const SCALAR_PROVENANCE_FIELDS = new Set(["sourceUri", "sourceHash", "sourceSystemId", "title", "authorship", "corpusRole", "forceClass", "provenanceClass", "transcriptSchema", "annotatedTurns"]);
+// `sourceSystem` stays inline because listLanguageUnits and its ranked index
+// filter on that physical scalar before logical metadata hydration.
+const UNIT_SCALAR_PROVENANCE_FIELDS = new Set([...SCALAR_PROVENANCE_FIELDS, "streamUri", "relativePath"]);
 const SCALAR_PROVENANCE_SCHEMAS = new Set(["scce.language_construction_pattern.v1", "scce.induced_language_model.semantic_memory.v1"]);
 const QUERY_ROOTS = new Set<string>([...REQUEST_SEED_PATTERN_JSON_FIELDS, ...REQUEST_SEED_FRAME_JSON_FIELDS, "graphBoundConstructions", "lexicalClasses", "sourceCompilation", "compilation", "inheritedMetadata", "bundle", "segmentationWitness", "profileBinding", "sourceDependencies", "requestDependencies", "trainingWitnesses", "pooledSourceBinding", "requirementCoefficients", "model", "identity", "sourceAdmission", "sourceMetadataBinding", "transcriptArchive"]);
-interface Input { artifactFamily?: "language_pattern"; value: unknown; logicalValue?: unknown; profileId?: string; sourceVersionId?: string; informationLabel?: InformationLabel }
+interface Input { artifactFamily?: "language_pattern" | "language_unit"; value: unknown; logicalValue?: unknown; profileId?: string; sourceVersionId?: string; informationLabel?: InformationLabel }
 interface Holder { id: string; profile_id: string; pattern_json: Record<string, unknown>; information_label: InformationLabel }
 interface ValidatedHolder { metadata: Record<string, unknown>; digest: string; compilationId: string; profileId: string; sourceVersionId: unknown; label: string }
 interface Reference { keys: string[]; introducedLedger: boolean; recordDigest: string }
@@ -98,12 +101,16 @@ export function createSourceArtifactMetadataCodec(host: Omit<CreativeEventStorag
         if (root[SOURCE_ARTIFACT_METADATA_KEY] !== undefined) return fail();
         const id = compilationId(root); if (!id) return input.value;
         const shared = validate(input, owners.get(`source.language.compilation.${id}`), id, validated); if (!shared) return input.value;
-        const scalarProvenance = input.artifactFamily === "language_pattern" && typeof root.schema === "string" && SCALAR_PROVENANCE_SCHEMAS.has(root.schema);
+        const scalarProvenance = input.artifactFamily === "language_unit"
+          ? UNIT_SCALAR_PROVENANCE_FIELDS
+          : input.artifactFamily === "language_pattern" && typeof root.schema === "string" && SCALAR_PROVENANCE_SCHEMAS.has(root.schema)
+            ? SCALAR_PROVENANCE_FIELDS
+            : undefined;
         const keys = Object.keys(shared.metadata).filter(key => !QUERY_ROOTS.has(key) && key !== DECODED_JSON_BYTE_LEDGER_KEY && key !== SOURCE_ARTIFACT_METADATA_KEY
           && root[key] !== undefined && same(root[key], shared.metadata[key])
           && (root[key] !== null && typeof root[key] === "object"
             ? !Array.isArray(root[key]) || (root[key] as unknown[]).some(value => value !== null && typeof value === "object")
-            : scalarProvenance && SCALAR_PROVENANCE_FIELDS.has(key)));
+            : scalarProvenance?.has(key)));
         if (!keys.length) return input.value;
         const existingLedger = record(root[DECODED_JSON_BYTE_LEDGER_KEY]);
         if (Object.hasOwn(root, DECODED_JSON_BYTE_LEDGER_KEY)) {

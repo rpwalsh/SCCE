@@ -10,7 +10,19 @@ import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js
 import { createCanonicalCreativeEventCodec, type CreativeEventStorageHost } from "./canonical-creative-event-store.js";
 import { createConstructionSourceDecisionStore } from "./construction-source-decision-store.js";
 import { createSourceArtifactMetadataCodec } from "./source-artifact-metadata.js";
-import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA } from "./decoded-json-byte-ledger.js";
+import { LEGACY_SEMANTIC_PROJECTION_STORAGE_SCHEMA, SEMANTIC_PROJECTION_STORAGE_KEY,
+  SEMANTIC_PROJECTION_STORAGE_SCHEMA, decodeSemanticProjectionStorageV2ForMigration } from "./semantic-projection-storage.js";
+import { decodeNgramModelTrainingReplay, encodeNgramModelTrainingReplay,
+  storedNgramModelTrainingReplay } from "./ngram-model-training-replay-storage.js";
+import {
+  SEGMENTATION_WITNESS_ARCHIVE_KEY,
+  SOURCE_SEGMENTATION_WITNESS_ARCHIVE_SCHEMA,
+  decodeSegmentationWitnessArchives,
+  encodeSegmentationWitnessArchives,
+  type SegmentationArchiveStorageAccess
+} from "./segmentation-witness-archive-storage.js";
+import { decodeDurableArtifact, encodeDurableArtifact, verifyDurableArtifactByteLedger } from "./durable-artifact-storage.js";
+import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, isDecodedJsonByteLedger } from "./decoded-json-byte-ledger.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "./dialogue-conversational-checkpoint.js";
 import { pooledProfileOwnershipSql, profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
 import {
@@ -25,6 +37,8 @@ import {
   canonicalStringify,
   codeLanguageForModelRecord,
   createHasher,
+  bindNgramModelTrainingReplay,
+  exportNgramModelTrainingReplay,
   validatePooledLanguageProfileOwnership,
   isPreparedPooledLanguageProfileOwnership,
   languageProfileSignature,
@@ -64,6 +78,7 @@ import {
   SOURCE_COMPUTATION_SOURCE_SYSTEM,
   CONTEXTUAL_QA_CONSTRUCTION_RECIPE,
   CONTEXTUAL_QA_SOURCE_SYSTEM,
+  requestSeedLanguagePattern,
   requestSeedSemanticFrame,
   type AlphaTraceRecord,
   type AlphaTrace,
@@ -422,6 +437,8 @@ export class PostgresStorageAdapter implements ScceStorage {
         }
         await client.query(statement);
       }
+      await migrateSemanticProjectionStorage(this, client);
+      await migrateSegmentationWitnessArchives(this, client);
       if (freshSchema) for (const statement of freshSchemaIndexStatements(this.q)) await client.query(statement);
       await backfillSemanticFrameSurfaceHashes(this, client);
       const schemaErrors = await requiredSchemaErrors(client, this.schema);
@@ -476,6 +493,13 @@ export class PostgresStorageAdapter implements ScceStorage {
       const version = await storedSchemaVersion(this).catch(() => undefined);
       if (version === undefined) errors.push("missing schema version");
       else if (version !== POSTGRES_SCHEMA_VERSION) errors.push(`schema version mismatch: expected ${POSTGRES_SCHEMA_VERSION}, found ${version}`);
+    }
+    if (tables.includes("storage_meta") && tables.includes("language_patterns")) {
+      const archive = await this.query<{ marker: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM ${this.table("storage_meta")} WHERE key=$1) AS marker`,
+        ["segmentation_witness_archive_storage"]
+      ).catch(() => []);
+      if (!archive[0]?.marker) errors.push("missing segmentation witness replay-storage migration");
     }
     if (!vector[0]?.installed) errors.push("missing extension: vector");
     if (tables.includes("storage_meta")) {
@@ -933,8 +957,117 @@ async function readEvidenceBatch(host: Pick<CreativeEventStorageHost, "table" | 
   return rows.map(rowToEvidence);
 }
 
-function sourceArtifactMetadataCodec(storage: PostgresStorageAdapter) {
-  return createSourceArtifactMetadataCodec(canonicalCodecHost(storage));
+function sourceArtifactMetadataCodec(storage: PostgresStorageAdapter, client?: PoolClient) {
+  return createSourceArtifactMetadataCodec(canonicalCodecHost(storage, client));
+}
+
+interface LegacySemanticProjectionRow {
+  id: string;
+  profile_id: string;
+  pattern_json: JsonValue;
+  information_label: InformationLabel;
+}
+
+/** One transactional upgrade; runtime hydration accepts only the resulting v3 form. */
+async function migrateSemanticProjectionStorage(storage: PostgresStorageAdapter, client: PoolClient): Promise<void> {
+  const codec = sourceArtifactMetadataCodec(storage, client);
+  let afterId = "";
+  for (;;) {
+    const rows = (await client.query<LegacySemanticProjectionRow>(
+      `SELECT id,profile_id,pattern_json,information_label FROM ${storage.table("language_patterns")}
+       WHERE id>$1 AND pattern_json->'${SEMANTIC_PROJECTION_STORAGE_KEY}'->>'schema'=$2
+       ORDER BY id ASC LIMIT 128 FOR UPDATE`,
+      [afterId, LEGACY_SEMANTIC_PROJECTION_STORAGE_SCHEMA]
+    )).rows;
+    if (!rows.length) break;
+    const metadataDecoded = await codec.decodeMany(rows.map(row => ({
+      value: row.pattern_json,
+      profileId: row.profile_id,
+      informationLabel: row.information_label
+    })));
+    const decoded = metadataDecoded.map((value, index) => {
+      const root = objectRecord(value);
+      if (!root) throw new Error(`invalid semantic projection v2 migration row ${rows[index]!.id}`);
+      let withLedger: Record<string, unknown>;
+      try {
+        withLedger = decodeSemanticProjectionStorageV2ForMigration(root);
+      } catch (cause) {
+        throw new Error(`semantic projection v2 migration row ${rows[index]!.id} failed exact replay validation`, { cause });
+      }
+      const ledger = objectRecord(withLedger)?.[DECODED_JSON_BYTE_LEDGER_KEY];
+      if (!isDecodedJsonByteLedger(ledger)) throw new Error(`semantic projection v2 migration row ${rows[index]!.id} has no valid logical byte ledger`);
+      const restored = decodeDurableArtifact<JsonValue>(withLedger);
+      verifyDurableArtifactByteLedger(withLedger, restored);
+      return { logical: restored, ledger };
+    });
+    const logical = decoded.map(value => value.logical);
+    const durable = decoded.map((value, index) => {
+      const encoded = encodeDurableArtifact(value.logical);
+      const nextLedger = objectRecord(encoded)?.[DECODED_JSON_BYTE_LEDGER_KEY];
+      if (canonicalStringify(value.ledger) !== canonicalStringify(nextLedger as JsonValue)) {
+        throw new Error(`semantic projection v2 migration row ${rows[index]!.id} changed its logical byte ledger`);
+      }
+      return encoded;
+    });
+    const physical = await codec.encodeMany(rows.map((row, index) => ({
+      artifactFamily: "language_pattern" as const,
+      value: durable[index],
+      logicalValue: logical[index],
+      profileId: row.profile_id,
+      informationLabel: row.information_label
+    })));
+    const roundTripMetadata = await codec.decodeMany(rows.map((row, index) => ({
+      value: physical[index], profileId: row.profile_id, informationLabel: row.information_label
+    })));
+    for (const [index, value] of roundTripMetadata.entries()) {
+      const restored = decodeDurableArtifact<JsonValue>(value);
+      verifyDurableArtifactByteLedger(value, restored);
+      if (canonicalStringify(restored) !== canonicalStringify(logical[index])) {
+        throw new Error(`semantic projection v2 migration row ${rows[index]!.id} changed during rewrite`);
+      }
+    }
+    const payload = rows.map((row, index) => ({ id: row.id, pattern_json: physical[index] }));
+    const updated = await client.query<{ id: string }>(
+      `UPDATE ${storage.table("language_patterns")} AS pattern SET pattern_json=rewritten.pattern_json
+       FROM jsonb_to_recordset($1::jsonb) AS rewritten(id text,pattern_json jsonb)
+       WHERE pattern.id=rewritten.id
+         AND pattern.pattern_json->'${SEMANTIC_PROJECTION_STORAGE_KEY}'->>'schema'=$2
+       RETURNING pattern.id`,
+      [JSON.stringify(payload), LEGACY_SEMANTIC_PROJECTION_STORAGE_SCHEMA]
+    );
+    if (updated.rows.length !== rows.length || new Set(updated.rows.map(row => row.id)).size !== rows.length) {
+      throw new Error("semantic projection v2 migration changed during rewrite");
+    }
+    afterId = rows.at(-1)!.id;
+  }
+  const unsupported = (await client.query<{ id: string }>(
+    `SELECT id FROM ${storage.table("language_patterns")}
+     WHERE pattern_json ? '${SEMANTIC_PROJECTION_STORAGE_KEY}'
+       AND pattern_json->'${SEMANTIC_PROJECTION_STORAGE_KEY}'->>'schema' IS DISTINCT FROM $1
+     ORDER BY id LIMIT 1`, [SEMANTIC_PROJECTION_STORAGE_SCHEMA]
+  )).rows[0];
+  if (unsupported) throw new Error(`unsupported semantic projection storage row ${unsupported.id}`);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+async function migrateSegmentationWitnessArchives(storage: PostgresStorageAdapter, client: PoolClient): Promise<void> {
+  // Existing logical witness rows contain the complete learned DAG and remain
+  // valid cognitive data.  They cannot be converted to the smaller replay
+  // recipe without inventing producer state, so migration records the format
+  // capability and leaves them intact.  All newly induced writes are required
+  // to carry exact replay state by the encoder.
+  await client.query(
+    `INSERT INTO ${storage.table("storage_meta")}(key,value_json,updated_at)
+     VALUES($1,$2::jsonb,NOW())
+     ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=NOW()`,
+    ["segmentation_witness_archive_storage", JSON.stringify({
+      schema: SOURCE_SEGMENTATION_WITNESS_ARCHIVE_SCHEMA,
+      legacyLogicalRows: "read_only"
+    })]
+  );
 }
 
 function sourceArtifactJsonBytesSql(expression: string): string {
@@ -953,7 +1086,10 @@ async function mergedSourceArtifactValues(storage: PostgresStorageAdapter, table
   const rows = await storage.query<{ id: string; value: JsonValue; source_version_id?: string; information_label: InformationLabel }>(
     `SELECT id,${column} AS value,information_label${table === "language_units" ? ",source_version_id" : ""} FROM ${storage.table(table)} WHERE id=ANY($1::text[]) FOR UPDATE`, [inputs.map(input => input.id)]);
   if (!rows.length) return inputs.map(input => input.value);
-  const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.value, informationLabel: row.information_label })));
+  const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({
+    value: table === "ngram_models" ? decodeNgramModelTrainingReplay(row.value) : row.value,
+    informationLabel: row.information_label
+  })));
   if (table === "language_units") {
     const merged = await storage.query<{ id: string; value: JsonValue }>(
       `SELECT lu.id,${languageUnitMetadataMergeSql(storage.table("source_versions"))} AS value
@@ -1172,6 +1308,73 @@ export function blobContentHash(content: Uint8Array | Buffer): ContentHash {
   return `sha256_${sha256(Buffer.from(content))}` as ContentHash;
 }
 
+const BLOB_INSERT_ROWS_PER_STATEMENT = Math.floor(POSTGRES_BIND_PARAMETER_LIMIT / 4);
+
+async function putBlobBatch(
+  storage: PostgresStorageAdapter,
+  items: readonly { content: Uint8Array; mediaType: string }[],
+  client?: PoolClient
+): Promise<ContentHash[]> {
+  if (!items.length) return [];
+  const byHash = new Map<string, { hash: ContentHash; mediaType: string; content: Uint8Array }>();
+  const order: ContentHash[] = [];
+  for (const item of items) {
+    const hash = blobContentHash(item.content);
+    order.push(hash);
+    if (!byHash.has(hash)) byHash.set(hash, { hash, mediaType: item.mediaType, content: item.content });
+  }
+  const unique = [...byHash.values()];
+  const query = async (sql: string, params: unknown[]): Promise<void> => {
+    if (client) await client.query(sql, params);
+    else await storage.query(sql, params);
+  };
+  for (let offset = 0; offset < unique.length; offset += BLOB_INSERT_ROWS_PER_STATEMENT) {
+    const rows = unique.slice(offset, offset + BLOB_INSERT_ROWS_PER_STATEMENT);
+    const values = rows.map((_, index) => {
+      const first = index * 4 + 1;
+      return `($${first},$${first + 1},$${first + 2},$${first + 3})`;
+    });
+    const params = rows.flatMap(row => [row.hash, row.mediaType, row.content.length, Buffer.from(row.content)]);
+    // Bind BYTEA as BYTEA. The former jsonb_to_recordset path expanded every
+    // binary body into base64 and then made PostgreSQL decode it again.
+    await query(
+      `INSERT INTO ${storage.table("blobs")}(content_hash,media_type,byte_length,content)
+       VALUES ${values.join(",")}
+       ON CONFLICT(content_hash) DO NOTHING`,
+      params
+    );
+  }
+  return order;
+}
+
+function segmentationArchiveStorageAccess(storage: PostgresStorageAdapter, client?: PoolClient): SegmentationArchiveStorageAccess {
+  const query = async <T>(sql: string, params: unknown[]): Promise<T[]> => client
+    ? (await client.query(sql, params)).rows as T[]
+    : storage.query<T>(sql, params);
+  return {
+    async getOwnerDocuments(ownerDocumentIds) {
+      const unique = [...new Set(ownerDocumentIds)];
+      const result = new Map<string, { text: string; sourceVersionId: string }>();
+      for (let offset = 0; offset < unique.length; offset += 4096) {
+        const access = storage.informationAccessPredicate("owner", 2);
+        const rows = await query<{ id: string; source_version_id: string; text_content: string }>(
+          `SELECT owner.id,owner.source_version_id,owner.text_content
+           FROM ${storage.table("evidence_spans")} owner
+           WHERE owner.id=ANY($1::text[]) AND ${access.sql}`,
+          [unique.slice(offset, offset + 4096), ...access.params]
+        );
+        for (const row of rows) {
+          if (result.has(row.id) || typeof row.text_content !== "string" || typeof row.source_version_id !== "string") {
+            throw new Error("invalid segmentation witness evidence owner row");
+          }
+          result.set(row.id, { text: row.text_content, sourceVersionId: row.source_version_id });
+        }
+      }
+      return result;
+    }
+  };
+}
+
 function createBlobStore(storage: PostgresStorageAdapter): BlobStore {
   return {
     async put(content, mediaType) {
@@ -1180,31 +1383,7 @@ function createBlobStore(storage: PostgresStorageAdapter): BlobStore {
       return hash;
     },
     async putBatch(items) {
-      if (!items.length) return [];
-      // Deduplicated before the write: a page's spans routinely repeat a boilerplate line, and the same hash
-      // twice in one statement is a self-conflict Postgres would reject rather than ignore.
-      const byHash = new Map<string, { hash: string; mediaType: string; content: Uint8Array }>();
-      const order: string[] = [];
-      for (const item of items) {
-        const hash = blobContentHash(item.content);
-        order.push(hash);
-        if (!byHash.has(hash)) byHash.set(hash, { hash, mediaType: item.mediaType, content: item.content });
-      }
-      const unique = [...byHash.values()];
-      await storage.query(
-        `INSERT INTO ${storage.table("blobs")}(content_hash, media_type, byte_length, content)
-         SELECT r.content_hash, r.media_type, r.byte_length, decode(r.content_b64, 'base64')
-         FROM jsonb_to_recordset($1::jsonb) AS r(content_hash text, media_type text, byte_length bigint, content_b64 text)
-         ON CONFLICT(content_hash) DO NOTHING`,
-        [JSON.stringify(unique.map(row => ({
-          content_hash: row.hash,
-          media_type: row.mediaType,
-          byte_length: row.content.length,
-          content_b64: Buffer.from(row.content).toString("base64")
-        })))]
-      );
-      // Returned in the caller's order, including the repeats, so a caller can index straight back.
-      return order as ContentHash[];
+      return putBlobBatch(storage, items);
     },
     async get(hash) {
       const rows = await storage.query<{ content: Buffer }>(`SELECT content FROM ${storage.table("blobs")} WHERE content_hash=$1`, [hash]);
@@ -1433,17 +1612,17 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            feature_postings AS (
              SELECT requested.feature, requested.feature_ord,
                     (SELECT COUNT(*) FROM (
-                       SELECT 1 FROM ${storage.table("evidence_anchor_index")} probe
+                       SELECT 1 FROM ${storage.table("evidence_spans")} probe
                        WHERE probe.features @> ARRAY[requested.feature]::text[]
                        LIMIT ${EVIDENCE_FEATURE_POSTING_CAP + 1}
                      ) bounded) AS posting_count
              FROM requested_features requested
            ),
            seed_hits AS (
-             SELECT anchor_index.evidence_id AS id, postings.feature, postings.feature_ord
+              SELECT feature_evidence.id, postings.feature, postings.feature_ord
              FROM feature_postings postings
-             JOIN ${storage.table("evidence_anchor_index")} anchor_index
-               ON anchor_index.features @> ARRAY[postings.feature]::text[]
+              JOIN ${storage.table("evidence_spans")} feature_evidence
+                ON feature_evidence.features @> ARRAY[postings.feature]::text[]
              WHERE postings.posting_count <= ${EVIDENCE_FEATURE_POSTING_CAP}
            ),
            -- The subject seeds even when it is over the cap: "ada|lovelace" carries 409 postings against a cap
@@ -1457,32 +1636,31 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            -- of them cost 25s on one question (measured); the title check scans every posting, so a phrase seeds this way
            -- only while its postings are within twice the selectivity cap.
            subject_hits AS (
-             SELECT anchor_index.evidence_id AS id, chosen.feature, chosen.feature_ord
+              SELECT evidence.id, chosen.feature, chosen.feature_ord
              FROM (
                SELECT feature, feature_ord FROM feature_postings
                WHERE posting_count > ${EVIDENCE_FEATURE_POSTING_CAP}
                  AND feature LIKE 'anchor:bi:%'
                  AND (SELECT COUNT(*) FROM (
-                        SELECT 1 FROM ${storage.table("evidence_anchor_index")} probe
+                         SELECT 1 FROM ${storage.table("evidence_spans")} probe
                         WHERE probe.features @> ARRAY[feature_postings.feature]::text[]
                         LIMIT ${EVIDENCE_FEATURE_POSTING_CAP * 2 + 1}
                       ) bounded) <= ${EVIDENCE_FEATURE_POSTING_CAP * 2}
                ORDER BY feature_ord ASC
                LIMIT 1
              ) chosen
-             JOIN ${storage.table("evidence_anchor_index")} anchor_index
-               ON anchor_index.features @> ARRAY[chosen.feature]::text[]
-             JOIN ${storage.table("evidence_spans")} evidence ON evidence.id = anchor_index.evidence_id
+              JOIN ${storage.table("evidence_spans")} evidence
+                ON evidence.features @> ARRAY[chosen.feature]::text[]
              WHERE ${titleMatchExpression("evidence", 4 + access.params.length)}
              LIMIT ${EVIDENCE_FEATURE_FALLBACK_CAP}
            ),
            common_hits AS (
              SELECT seeds.id, postings.feature, postings.feature_ord
              FROM (SELECT id FROM seed_hits UNION SELECT id FROM subject_hits) seeds
-             JOIN ${storage.table("evidence_anchor_index")} anchor_index ON anchor_index.evidence_id = seeds.id
+              JOIN ${storage.table("evidence_spans")} feature_evidence ON feature_evidence.id = seeds.id
              JOIN feature_postings postings
                ON postings.posting_count > ${EVIDENCE_FEATURE_POSTING_CAP}
-              AND anchor_index.features @> ARRAY[postings.feature]::text[]
+               AND feature_evidence.features @> ARRAY[postings.feature]::text[]
            ),
            -- A request whose every feature is over the cap still has to be searched.
            --
@@ -1499,15 +1677,15 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
              SELECT COUNT(*) AS n FROM feature_postings WHERE posting_count <= ${EVIDENCE_FEATURE_POSTING_CAP}
            ),
            fallback_hits AS (
-             SELECT anchor_index.evidence_id AS id, chosen.feature, chosen.feature_ord
+              SELECT feature_evidence.id, chosen.feature, chosen.feature_ord
              FROM (
                SELECT feature, feature_ord FROM feature_postings
                WHERE (SELECT n FROM selective_features) = 0
                ORDER BY posting_count ASC, feature_ord ASC
                LIMIT 1
              ) chosen
-             JOIN ${storage.table("evidence_anchor_index")} anchor_index
-               ON anchor_index.features @> ARRAY[chosen.feature]::text[]
+              JOIN ${storage.table("evidence_spans")} feature_evidence
+                ON feature_evidence.features @> ARRAY[chosen.feature]::text[]
              LIMIT ${EVIDENCE_FEATURE_FALLBACK_CAP}
            ),
            feature_hits AS (
@@ -1839,29 +2017,8 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        provenance_json=ev.provenance_json || EXCLUDED.provenance_json,
        information_label=EXCLUDED.information_label,
        features=ARRAY(SELECT DISTINCT value FROM unnest(ev.features || EXCLUDED.features) AS merged(value) ORDER BY value)
-     RETURNING id,status,alpha,trust_vector,provenance_json,information_label,features
-     ), anchors AS (
-     INSERT INTO ${storage.table("evidence_anchor_index")} AS anchor_index(evidence_id,features)
-     SELECT upserted.id,
-            ARRAY(
-              SELECT feature
-              FROM unnest(upserted.features) AS feature
-              WHERE feature LIKE 'anchor:bi:%' OR feature LIKE 'anchor:sym:%'
-              ORDER BY feature
-            )
-     FROM upserted
-     WHERE EXISTS (
-       SELECT 1
-       FROM unnest(upserted.features) AS feature
-       WHERE feature LIKE 'anchor:bi:%' OR feature LIKE 'anchor:sym:%'
-     )
-     ON CONFLICT(evidence_id) DO UPDATE SET
-       features=ARRAY(
-         SELECT DISTINCT feature
-         FROM unnest(anchor_index.features || EXCLUDED.features) AS feature
-         ORDER BY feature
-       ) RETURNING evidence_id
-     ) SELECT 1 AS language_memory_changed FROM upserted LEFT JOIN prior USING(id)
+      RETURNING id,status,alpha,trust_vector,provenance_json,information_label,features
+      ) SELECT 1 AS language_memory_changed FROM upserted LEFT JOIN prior USING(id)
        WHERE prior.id IS NULL OR (upserted.status,upserted.alpha,upserted.trust_vector,upserted.provenance_json,upserted.information_label,upserted.features)
          IS DISTINCT FROM (prior.status,prior.alpha,prior.trust_vector,prior.provenance_json,prior.information_label,prior.features)`,
         [payloadChunk]
@@ -2227,7 +2384,7 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
  */
 const SPREAD_SCAN_CAP = 1500;
 
-/** Anchor postings lead; accessibility is checked by exact evidence id before the shared sampling bound. */
+/** Canonical evidence postings lead; accessibility is checked before the shared sampling bound. */
 async function measureCanonicalSourceSpreads(storage: PostgresStorageAdapter, runs: readonly string[]): Promise<Array<{ run: string; sources: number }>> {
   if (!runs.length) return [];
   const access = storage.informationAccessPredicate("evidence", 2);
@@ -2236,13 +2393,9 @@ async function measureCanonicalSourceSpreads(storage: PostgresStorageAdapter, ru
      FROM jsonb_to_recordset($1::jsonb) AS candidate(run text, features text[])
      CROSS JOIN LATERAL (
        SELECT count(DISTINCT source_id)::int AS sources FROM (
-         SELECT admitted.source_id FROM ${storage.table("evidence_anchor_index")} anchor_index
-         CROSS JOIN LATERAL (
-           SELECT evidence.source_id FROM ${storage.table("evidence_spans")} evidence
-           WHERE evidence.id=anchor_index.evidence_id AND evidence.status='promoted' AND ${access.sql}
-           OFFSET 0
-         ) admitted
-         WHERE cardinality(candidate.features)>0 AND anchor_index.features @> candidate.features
+          SELECT evidence.source_id FROM ${storage.table("evidence_spans")} evidence
+          WHERE cardinality(candidate.features)>0 AND evidence.features @> candidate.features
+            AND evidence.status='promoted' AND ${access.sql}
          LIMIT ${SPREAD_SCAN_CAP}
        ) sampled
      ) measured`,
@@ -4172,6 +4325,10 @@ function requestSeedPatternJsonSql(value: string, schema: string): string {
           FROM jsonb_array_elements(${jsonbArraySql("lexical.value->'members'")}) WITH ORDINALITY member(value,ordinality))) ORDER BY lexical.ordinality),'[]'::jsonb)
         FROM jsonb_array_elements(${jsonbArraySql(`${value}->'lexicalClasses'`)}) WITH ORDINALITY lexical(value,ordinality)
         WHERE jsonb_typeof(lexical.value->'id')='string' AND lexical.value->>'id' IN (SELECT id FROM seed_entity_classes))))`;
+  const semantic = `(CASE WHEN (${value}) ? '${SEMANTIC_PROJECTION_STORAGE_KEY}' THEN jsonb_build_object(
+      'semanticInductionProjection',${value}->'semanticInductionProjection',
+      '${SEMANTIC_PROJECTION_STORAGE_KEY}',${value}->'${SEMANTIC_PROJECTION_STORAGE_KEY}')
+    ELSE ${entities} END)`;
   return `(CASE WHEN ${schema}='scce.request_requirement_pattern.v1' THEN ${value}
     ELSE ${jsonbFieldsSql(value, REQUEST_SEED_PATTERN_JSON_FIELDS)} || CASE
       WHEN ${schema}='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}' OR left(${schema},length('scce.creative_event_construction_pattern.'))='scce.creative_event_construction_pattern.'
@@ -4180,7 +4337,7 @@ function requestSeedPatternJsonSql(value: string, schema: string): string {
           'sourceConstructionCandidate',CASE WHEN ${schema}='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}'
           THEN COALESCE(${declared("roles", "sourceConstructionCandidate")},FALSE) ELSE FALSE END)
       WHEN ${schema}='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' THEN jsonb_build_object('templates','[]'::jsonb)
-      WHEN ${schema}='scce.induced_language_model.semantic_memory.v1' THEN ${entities}
+      WHEN ${schema}='scce.induced_language_model.semantic_memory.v1' THEN ${semantic}
       ELSE '{}'::jsonb END END)`;
 }
 
@@ -4549,20 +4706,37 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       appendInformationAccess(storage, "model", params, modelAccess);
       profileWhere.push(profileSourceOwnershipSql(storage, params, "lp"));
       const modelWhere = [
-        `model.model_json->>'profileId'=ANY(ARRAY(
+        `model.profile_id=ANY(ARRAY(
            SELECT lp.id FROM ${storage.table("language_profiles")} lp WHERE ${profileWhere.join(" AND ")}
          ))`, ...modelAccess
       ];
+      // Expanded legacy models expose continuationCounts; replay-backed models
+      // expose the same exact counts as continuationCountPairs plus their symbol
+      // tables. Aggregate both in SQL so a corpus-sized population never expands
+      // every training tape in Node.
       const rows = await storage.query<{ symbol: string | null; contexts: string | null; model_count: number }>(
         `WITH population AS MATERIALIZED (
-           SELECT model.id, model.model_json->'model'->'continuationCounts' AS counts
+           SELECT model.id, model.model_json->'model' AS stored_model
            FROM ${storage.table("ngram_models")} model
            WHERE ${modelWhere.join(" AND ")}
-         ), totals AS (
+         ), projected AS (
            SELECT item.key AS symbol, SUM(item.value::numeric) AS contexts
            FROM population
-           CROSS JOIN LATERAL jsonb_each_text(COALESCE(population.counts, '{}'::jsonb)) item
+           CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(population.stored_model->'continuationCounts')='object'
+             THEN population.stored_model->'continuationCounts' ELSE '{}'::jsonb END) item
            GROUP BY item.key
+           UNION ALL
+           SELECT CASE WHEN pair.value::int<jsonb_array_length(population.stored_model->'replay'->'vocabulary')
+                  THEN population.stored_model->'replay'->'vocabulary'->>pair.value::int
+                  ELSE population.stored_model->'projectionSymbols'->>(pair.value::int-jsonb_array_length(population.stored_model->'replay'->'vocabulary')) END AS symbol,
+                  SUM((population.stored_model->'continuationCountPairs'->>(pair.ordinality::int))::numeric) AS contexts
+           FROM population
+           CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(population.stored_model->'continuationCountPairs')='array'
+             THEN population.stored_model->'continuationCountPairs' ELSE '[]'::jsonb END) WITH ORDINALITY pair(value,ordinality)
+           WHERE pair.ordinality % 2 = 1
+           GROUP BY 1
+         ), totals AS (
+           SELECT symbol,SUM(contexts) AS contexts FROM projected GROUP BY symbol
          )
          SELECT totals.symbol, totals.contexts::text, measured.model_count
          FROM (SELECT COUNT(*)::int AS model_count FROM population) measured
@@ -4619,6 +4793,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         where.push(`${ngramModelProfileIdExpression("model")}=ANY($${params.length}::text[])`);
       }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`${ngramModelSourceSystemExpression("model")}=$${params.length}`); }
+      if (query.afterId !== undefined) {
+        params.push(query.afterId);
+        where.push(`model.id COLLATE "C">$${params.length} COLLATE "C"`);
+      }
       if (query.formalLanguage !== undefined) {
         if (!query.formalLanguage.trim()) return [];
         const legacyParams = [...params];
@@ -4649,6 +4827,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       params.push(query.limit ?? 100);
       const limitParam = params.length;
       const trainedMass = ngramModelTrainedMassExpression("model");
+      const modelOrder = query.afterId !== undefined
+        ? `model.id COLLATE "C" ASC`
+        : `${trainedMass} DESC, model.updated_at DESC, model.id ASC`;
       // Cumulative byte budget in the same relevance order as the count
       // limit: whole-novel training grew single model_json blobs to tens
       // of MB, so a count limit alone stopped bounding memory (a 4GB
@@ -4682,7 +4863,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
              pg_column_size(model.model_json) AS stored_bytes
            FROM ${storage.table("ngram_models")} model
            WHERE ${where.join(" AND ")}
-           ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC
+           ORDER BY ${modelOrder}
            LIMIT $${limitParam}`,
           params.slice(0, limitParam)
         );
@@ -4732,13 +4913,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           return [candidateToNgramModel({ ...row, updated_at: new Date(held.updatedAtMs) }, held.json)];
         }).filter(record => query.formalLanguage === undefined || codeLanguageForModelRecord(record) === query.formalLanguage)
           .slice(0, Number(params[limitParam - 1]));
-        const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(records.map(record => ({ value: record.modelJson, informationLabel: record.informationLabel })));
-        return records.map((record, index) => ({ ...record, modelJson: decoded[index] as JsonValue }));
+        return decodeNgramModelRecords(storage, records);
       }
-      const records = (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel)
+      const records = (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY ${modelOrder} LIMIT $${limitParam}`, params)).map(rowToNgramModel)
         .filter(record => query.formalLanguage === undefined || codeLanguageForModelRecord(record) === query.formalLanguage);
-      const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(records.map(record => ({ value: record.modelJson, informationLabel: record.informationLabel })));
-      return records.map((record, index) => ({ ...record, modelJson: decoded[index] as JsonValue }));
+      return decodeNgramModelRecords(storage, records);
     },
     async listNgramObservations(query = {}) {
       const profileIds = query.profileIds?.length ? [...query.profileIds] : undefined;
@@ -5297,11 +5476,19 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         const returnedPatternIds = new Set(rows.map(row => row.id));
         if (rows.length !== requestedPatternIds.length || requestedPatternIds.some(id => !returnedPatternIds.has(id))) return [];
       }
-      const patterns = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.pattern_json, profileId: row.profile_id, informationLabel: row.information_label })));
-      const indices = patterns.flatMap((value, index) => isSourceCompilationMetadataHolder(value) ? [] : [index]);
+      const metadata = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.pattern_json, profileId: row.profile_id, informationLabel: row.information_label })));
+      const archives = await decodeSegmentationWitnessArchives(
+        metadata.map((value, index) => ({ value, profileId: rows[index]!.profile_id })),
+        segmentationArchiveStorageAccess(storage)
+      );
+      const patterns = archives.map(result => result.value);
+      const indices = patterns.flatMap((value, index) => archives[index]!.handled || isSourceCompilationMetadataHolder(value) ? [] : [index]);
       const decoded = await canonicalCreativeCodec(storage).decodeMany(indices.map(index => patterns[index]));
       indices.forEach((index, position) => { patterns[index] = decoded[position]; });
-      return rows.map((row, index) => rowToLanguagePattern({ ...row, pattern_json: patterns[index] as JsonValue }));
+      return rows.map((row, index) => {
+        const pattern = rowToLanguagePattern({ ...row, pattern_json: patterns[index] as JsonValue });
+        return query.view === "request_seed" ? requestSeedLanguagePattern(pattern) : pattern;
+      });
     },
     async listSemanticFrames(query = {}) {
       const params: unknown[] = [];
@@ -5351,6 +5538,26 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
   };
 }
 
+async function decodeNgramModelRecords(
+  storage: PostgresStorageAdapter,
+  records: readonly NgramModelRecord[]
+): Promise<NgramModelRecord[]> {
+  const replays = records.map(record => storedNgramModelTrainingReplay(record.modelJson));
+  const physical = records.map(record => ({
+    ...record,
+    modelJson: decodeNgramModelTrainingReplay(record.modelJson)
+  }));
+  const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(physical.map(record => ({
+    value: record.modelJson,
+    informationLabel: record.informationLabel
+  })));
+  return physical.map((record, index) => {
+    const logical = { ...record, modelJson: decoded[index] as JsonValue };
+    if (replays[index]) bindNgramModelTrainingReplay(logical, replays[index]!);
+    return logical;
+  });
+}
+
 async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: readonly NgramModelRecord[]): Promise<void> {
   if (!models.length) return;
   await storage.transaction(async () => {
@@ -5362,13 +5569,17 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
     }
     const merged = await mergedSourceArtifactValues(storage, "ngram_models", "model_json", models.map(model => ({ id: model.id, value: model.modelJson })));
     const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(models.map((model, index) => ({ value: merged[index], informationLabel: labels.get(model.id)! })));
+    const physical = encoded.map((value, index) => encodeNgramModelTrainingReplay(
+      value as JsonValue,
+      exportNgramModelTrainingReplay(models[index]!)
+    ));
     const payload = models.map((model, index) => ({
       id: model.id,
       stream_id: model.streamId,
       language_hint: model.languageHint,
       max_order: model.maxOrder,
       discount: model.discount,
-      model_json: encoded[index],
+      model_json: physical[index],
       updated_at_ms: model.updatedAt,
       information_label: labels.get(model.id)!
     }));
@@ -5400,7 +5611,7 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "language_units", units.map(unit => ({ id: unit.id, informationLabel: unit.informationLabel })));
     const merged = await mergedSourceArtifactValues(storage, "language_units", "metadata_json", units.map(unit => ({ id: unit.id, value: unit.metadata, sourceVersionId: unit.sourceVersionId, informationLabel: labels.get(unit.id)! })));
-    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(units.map((unit, index) => ({ value: merged[index], profileId: unit.profileId, sourceVersionId: unit.sourceVersionId, informationLabel: labels.get(unit.id)! })));
+    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(units.map((unit, index) => ({ artifactFamily: "language_unit" as const, value: merged[index], profileId: unit.profileId, sourceVersionId: unit.sourceVersionId, informationLabel: labels.get(unit.id)! })));
     const payload = units.map((unit, index) => ({
     id: unit.id,
     profile_id: unit.profileId,
@@ -5459,8 +5670,12 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "language_patterns", patterns.map(pattern => ({ id: pattern.id, informationLabel: pattern.informationLabel })));
     const codec = canonicalCreativeCodec(storage), payload = [];
-    const values: unknown[] = patterns.map(pattern => pattern.patternJson);
-    const indices = values.flatMap((value, index) => isSourceCompilationMetadataHolder(value) ? [] : [index]);
+    const archives = await encodeSegmentationWitnessArchives(
+      patterns.map(pattern => ({ value: pattern.patternJson, profileId: pattern.profileId })),
+      segmentationArchiveStorageAccess(storage)
+    );
+    const values: unknown[] = archives.map(result => result.value);
+    const indices = values.flatMap((value, index) => archives[index]!.handled || isSourceCompilationMetadataHolder(value) ? [] : [index]);
     const creative = await codec.encodeMany(indices.map(index => ({ value: values[index], informationLabel: labels.get(patterns[index]!.id)! })));
     indices.forEach((index, position) => { values[index] = creative[position]; });
     const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(patterns.map((pattern, index) => ({ artifactFamily: "language_pattern" as const, value: values[index], logicalValue: pattern.patternJson, profileId: pattern.profileId, informationLabel: labels.get(pattern.id)! })));

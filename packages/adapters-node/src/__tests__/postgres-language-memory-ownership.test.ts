@@ -664,6 +664,14 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls[2]?.sql).not.toContain("running_json_bytes");
   });
 
+  it("supports a stable id cursor for decoded-byte-bounded model scans", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listNgramModels({ afterId: "model.cursor", limit: 16, maxTotalJsonBytes: 64 * 1024 * 1024 });
+    expect(calls[0]!.sql).toContain('model.id COLLATE "C">$1 COLLATE "C"');
+    expect(calls[0]!.sql).toContain('ORDER BY model.id COLLATE "C" ASC');
+    expect(calls[0]!.params[0]).toBe("model.cursor");
+  });
+
   // The budget bounds the bytes this process hydrates, so the deciding quantity is the uncompressed JSON text
   // length; pg_column_size reports compressed, possibly-TOASTed storage and under-counts the heap it must bound.
   it("bounds the budget by uncompressed JSON text length, not by compressed storage size", async () => {

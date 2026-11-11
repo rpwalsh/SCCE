@@ -49,7 +49,6 @@
     "benchmark:code-repair": "node tools/code-repair-benchmark.mjs",
     "benchmark:brain-compiler": "node tools/benchmark-brain-compiler.mjs",
     "benchmark:alignment-batch": "node tools/benchmark-alignment-batch.mjs",
-    "maintenance:evidence-anchors": "pnpm --dir packages/adapters-node backfill:evidence-anchors",
     "maintenance:rechunk-evidence": "node tools/rechunk-evidence-backfill.mjs",
     "maintenance:demote-runtime-html": "node tools/demote-runtime-acquired-html.mjs",
     "validate": "pnpm mcp:verify && pnpm proprietary:check && pnpm test && pnpm eval:kit:verify",

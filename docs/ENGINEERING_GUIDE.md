@@ -318,7 +318,7 @@ Key adapter/runtime files:
 - `packages/server/src/index.ts`
 - `packages/vscode/src/extension.ts`
 
-PostgreSQL schema version 25 is current (`POSTGRES_SCHEMA_VERSION`, `packages/kernel/src/storage.ts`).
+PostgreSQL schema version 35 is current (`POSTGRES_SCHEMA_VERSION`, `packages/kernel/src/storage.ts`).
 Its brain lifecycle contract permits
 `CREATED`, `IMPORTING`, `VALIDATING`, `READY`, `ACTIVE`, `STOPPED`, `FAILED`,
 `QUARANTINED`, and `INCOMPATIBLE`; activation is READY-only and transactional, and a

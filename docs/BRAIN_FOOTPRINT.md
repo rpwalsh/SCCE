@@ -82,9 +82,15 @@ Each change has a test that fails without it and reads records written in the ol
    list again. Readers use per-port evidence, so this is a schema question, not a writer one.
 3. **Construction bundle `sourceExamples`** repeat each example text ~11 times across a shard's bundles; the
    bundle digest covers them, so referencing evidence ids changes the digest scheme.
-4. **`evidence_anchor_index`** duplicates the anchor subset of `evidence_spans.features` with a second GIN; the
-   retrieval SQL's posting-cap probes read it.
-5. **Plain `edges_source`/`edges_target`** indexes: drop from the schema contract.
+4. **Plain `edges_source`/`edges_target`** indexes: drop from the schema contract.
+
+Resolved in schema 35: `evidence_anchor_index` was a deterministic subset of `evidence_spans.features`.
+Retrieval now uses the canonical feature GIN, and migration drops the duplicate array table and its second GIN.
+
+Also resolved for new schema-35 writes: Kneser-Ney rows persist an exact, digest-bound training replay plus compact
+continuation and vocabulary-partition query projections. Hydration reconstructs and verifies the complete order-1
+through order-6 sufficient statistics; expanded `counts`, `continuationCounts`, and `unigramCounts` are no longer
+stored alongside that replay.
 
 ## Operational limits found while measuring
 

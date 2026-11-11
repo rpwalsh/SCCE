@@ -1,10 +1,12 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, expect, it } from "vitest";
-import { createHasher, requestSeedLanguagePattern, requestSeedSemanticFrame, type LanguagePatternRecord, type SemanticFrameRecord } from "@scce/kernel";
+import { createHasher, createLanguageInductionEngine, requestSeedLanguagePattern, requestSeedSemanticFrame, semanticInductionProjection,
+  toJsonValue, type LanguagePatternRecord, type SemanticFrameRecord } from "@scce/kernel";
 import { normalizePriorKey } from "../../../kernel/src/kernel-answer-primitives.js";
 import { PostgresStorageAdapter } from "../postgres.js";
-import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths } from "../durable-artifact-storage.js";
+import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths, encodeDurableArtifact } from "../durable-artifact-storage.js";
+import { SEMANTIC_PROJECTION_STORAGE_KEY } from "../semantic-projection-storage.js";
 
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });
@@ -39,7 +41,16 @@ function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRe
     }
     if (!sql.includes("pattern_headers AS MATERIALIZED")) return [];
     const seeded = sql.includes("jsonb_object_agg(seed_field.key,seed_field.value)");
-    let rows = seeded ? patterns.map(requestSeedLanguagePattern) : patterns;
+    let rows = seeded ? patterns.map(row => {
+      const physical = row.patternJson as Record<string, unknown>;
+      if (!Object.hasOwn(physical, SEMANTIC_PROJECTION_STORAGE_KEY)) return requestSeedLanguagePattern(row);
+      const seed = requestSeedLanguagePattern(row), json = seed.patternJson as Record<string, unknown>;
+      const { graphBoundConstructions: _graphs, lexicalClasses: _classes, ...headers } = json;
+      return { ...seed, patternJson: { ...headers,
+        semanticInductionProjection: physical.semanticInductionProjection,
+        [SEMANTIC_PROJECTION_STORAGE_KEY]: physical[SEMANTIC_PROJECTION_STORAGE_KEY]
+      } as LanguagePatternRecord["patternJson"] };
+    }) : patterns;
     const ids = sql.includes("pattern.id=ANY(") ? params.find(Array.isArray) as string[] | undefined : undefined;
     if (ids) rows = rows.filter(row => ids.includes(row.id));
     const numbers = params.filter((value): value is number => typeof value === "number");
@@ -146,6 +157,27 @@ it("keeps source-conditioned requirements intact and projects only entity classe
   expect(sql).not.toContain("'relationHypothesisModel'");
   expect(sql).not.toContain("'segmentationWitness'");
   expect(await adapter.languageMemory.listLanguagePatterns({ limit: 8 })).toEqual(rows);
+});
+
+it("carries only admitted semantic replay state through SQL, then cold-projects the exact entity request seed", async () => {
+  const hasher = createHasher();
+  const model = createLanguageInductionEngine({ hasher }).induce({ documents: [{ id: "source.semantic",
+    text: "Alice follows Bob. Bob follows Alice. Mira directs Neralis.", evidenceIds: ["evidence.semantic" as never], trust: 0.9 }] });
+  const logicalJson = toJsonValue({ schema: "scce.induced_language_model.semantic_memory.v1", profileId: "profile.owned",
+    sourceVersionId: "version.owned", semanticFrames: model.semanticFrames, graphBoundConstructions: model.graphBoundConstructions,
+    lexicalClasses: model.lexicalClasses, relationHypothesisModel: model.relationHypothesisModel,
+    semanticInductionProjection: semanticInductionProjection({ factors: model.semanticInductionFactors!, semanticFrames: model.semanticFrames,
+      graphBoundConstructions: model.graphBoundConstructions, lexicalClasses: model.lexicalClasses,
+      relationHypothesisModel: model.relationHypothesisModel, hasher }), counts: { follows: 2 } });
+  const logical = pattern("semantic.replay", logicalJson);
+  const physical = { ...logical, patternJson: encodeDurableArtifact(logicalJson) as LanguagePatternRecord["patternJson"] };
+  const { adapter, calls } = fixture([physical]);
+  expect(await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", limit: 8, maxTotalJsonBytes: 1024 * 1024 }))
+    .toEqual([requestSeedLanguagePattern(logical)]);
+  const sql = calls.at(-1)!.sql;
+  expect(sql).toContain(`(${"pattern.pattern_json"}) ? '${SEMANTIC_PROJECTION_STORAGE_KEY}'`);
+  expect(sql).toContain(`'semanticInductionProjection',pattern.pattern_json->'semanticInductionProjection'`);
+  expect(sql).toContain(`'${SEMANTIC_PROJECTION_STORAGE_KEY}',pattern.pattern_json->'${SEMANTIC_PROJECTION_STORAGE_KEY}'`);
 });
 
 it("keeps exact deferred header IDs and their shared prerequisite budget under owner checks", async () => {

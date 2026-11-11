@@ -282,7 +282,10 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `ALTER TABLE ${q}.source_versions DROP COLUMN IF EXISTS trust`,
     `CREATE TABLE IF NOT EXISTS ${q}.evidence_spans (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id), chunk_id TEXT NOT NULL, content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, byte_start BIGINT NOT NULL, byte_end BIGINT NOT NULL, char_start BIGINT NOT NULL, char_end BIGINT NOT NULL, text_preview TEXT NOT NULL, text_content TEXT NOT NULL, language_hints JSONB NOT NULL, script_hints JSONB NOT NULL, trust_vector JSONB NOT NULL, provenance_json JSONB NOT NULL, features TEXT[] NOT NULL, status TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, observed_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     ...evidenceTextDigestSchemaStatements(q),
-    `CREATE TABLE IF NOT EXISTS ${q}.evidence_anchor_index (evidence_id TEXT PRIMARY KEY REFERENCES ${q}.evidence_spans(id) ON DELETE CASCADE, features TEXT[] NOT NULL)`,
+    // Anchor features are a deterministic prefix projection of evidence_spans.features.  The former helper
+    // table stored that subset a second time and maintained a second GIN over the same postings.  Existing
+    // brains can discard it losslessly; all retrieval now uses the canonical evidence feature array/index.
+    `DROP TABLE IF EXISTS ${q}.evidence_anchor_index`,
     `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS visual_embedding vector(512)`,
     `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS visual_regions JSONB`,
     // Computed once by the database from provenance: ranking reads a short column instead of decoding a 32 KB
@@ -539,7 +542,6 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source_name_trgm ON ${q}.evidence_spans USING gin(source_name gin_trgm_ops)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_status ON ${q}.evidence_spans(status)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_status_rank ON ${q}.evidence_spans(status, alpha DESC, observed_at DESC)`,
-    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_anchor_features ON ${q}.evidence_anchor_index USING GIN(features)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_features ON ${q}.graph_nodes USING GIN(features)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_evidence ON ${q}.graph_nodes USING GIN(evidence_ids)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_nodes_updated ON ${q}.graph_nodes(updated_at DESC)`,
@@ -685,7 +687,6 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     sources: ["id", "namespace", "canonical_uri"],
     source_versions: ["id", "source_id", "content_hash", "media_type", "observed_at", "byte_length", "trust_vector", "metadata_json", "information_label"],
     evidence_spans: ["id", "source_id", "source_version_id", "content_hash", "byte_start", "byte_end", "text_content", "text_sha256", "trust_vector", "provenance_json", "features", "status", "alpha", "information_label"],
-    evidence_anchor_index: ["evidence_id", "features"],
     graph_nodes: ["id", "type_id", "representation_json", "alpha", "evidence_ids", "features", "metadata_json", "information_label"],
     graph_edges: ["id", "source_node_id", "target_node_id", "relation_id", "alpha", "weight", "evidence_ids", "metadata_json", "information_label"],
     graph_hyperedges: ["id", "schema_id", "relation_id", "participant_ports", "member_node_ids", "qualifiers_json", "modality_json", "evidence_ids", "weight_vector", "provenance_refs", "information_label"],

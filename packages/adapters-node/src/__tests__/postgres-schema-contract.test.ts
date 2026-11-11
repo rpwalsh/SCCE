@@ -131,6 +131,9 @@ describe("Postgres schema contract extraction", () => {
     const historyIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_source_versions_history ON ${fixture.q}.source_versions(source_id,observed_at DESC,id DESC)`;
     const computationIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_source_computation_binding_lookup ON ${fixture.q}.language_patterns(source_system,(pattern_json->>'bindingId'),support DESC,updated_at DESC,id) WHERE pattern_json->>'schema'='${SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA}'`;
     const contextualQaIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_contextual_qa_request_lookup ON ${fixture.q}.language_patterns USING GIN ((pattern_json->'contextualQaRequestFeatures')) WHERE pattern_kind='semantic_role' AND pattern_json->>'schema'='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}' AND pattern_json->>'componentRecipe'='${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}' AND source_system='${CONTEXTUAL_QA_SOURCE_SYSTEM}'`;
+    const anchorTable = `CREATE TABLE IF NOT EXISTS ${fixture.q}.evidence_anchor_index (evidence_id TEXT PRIMARY KEY REFERENCES ${fixture.q}.evidence_spans(id) ON DELETE CASCADE, features TEXT[] NOT NULL)`;
+    const anchorIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_evidence_anchor_features ON ${fixture.q}.evidence_anchor_index USING GIN(features)`;
+    const retiredAnchorTable = `DROP TABLE IF EXISTS ${fixture.q}.evidence_anchor_index`;
     const headerStatements = statements.filter(sql => sql.startsWith(`ALTER TABLE ${fixture.q}.language_patterns`) && sql.includes("pattern_schema"));
     expect(headerStatements).toHaveLength(1);
     expect(statements).toContain(addedColumn);
@@ -140,8 +143,15 @@ describe("Postgres schema contract extraction", () => {
     expect(statements).toContain(historyIndex);
     expect(statements).toContain(computationIndex);
     expect(statements).toContain(contextualQaIndex);
-    expect(statements).toHaveLength(fixture.statementCount + 6 + schema32.length + pages.length);
-    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql)).map(sql => sql === hashIndex ? oldIndex : sql);
+    expect(statements).toContain(retiredAnchorTable);
+    expect(statements).not.toContain(anchorTable);
+    expect(statements).not.toContain(anchorIndex);
+    expect(statements).toHaveLength(fixture.statementCount + 5 + schema32.length + pages.length);
+    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql))
+      .map(sql => sql === hashIndex ? oldIndex : sql === retiredAnchorTable ? anchorTable : sql);
+    const nodeFeatureIndex = prior.indexOf(`CREATE INDEX IF NOT EXISTS idx_${key}_nodes_features ON ${fixture.q}.graph_nodes USING GIN(features)`);
+    expect(nodeFeatureIndex).toBeGreaterThan(0);
+    prior.splice(nodeFeatureIndex, 0, anchorIndex);
     expect(digest(prior)).toBe(fixture.sha256);
     expect(postgres.schemaStatements(fixture.q, fixture.access)).toEqual(statements);
   });
@@ -158,7 +168,7 @@ describe("Postgres schema contract extraction", () => {
     const headers = ["pattern_schema", "component_recipe", "source_compilation_id", "owned_source_version_id", "pattern_language", "has_source_compilation", "has_source_version", "decoded_artifact_jsonb_bytes"];
     expect(digest({ ...priorColumns, evidence_spans: columns.evidence_spans!.filter(column => column !== "text_sha256"),
       semantic_frames: columns.semantic_frames!.filter(column => column !== "normalized_surface_hash"),
-      language_patterns: columns.language_patterns!.filter(column => !headers.includes(column)) })).toBe("6cb43753bb07de0a5bdb96e1b27459d8861bf292b5f9ba6f9b31b50770df0f22");
+      language_patterns: columns.language_patterns!.filter(column => !headers.includes(column)) })).toBe("6d64b59743095f63ec2a19f7a2bfe9a38558acda0e00e86e11f1d40ce682c31a");
     expect(digest(schema.freshSchemaIndexStatements("fixture"))).toBe("b9869ea350648b3a938f9f7e210ce2f01c038626a72cdf7f663dd276fb4f4ffd");
     expect(digest(schema.freshSchemaIndexStatements("\"fixture\""))).toBe("99d5d211dbddc3ac3eb50d88e2d08a178e1115a04b7068a75cf9c78ca2f5b8f5");
   });

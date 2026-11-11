@@ -19,6 +19,7 @@ import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { openNgramModelReader } from "./lib/ngram-model-reader.mjs";
 const pg = createRequire(pathToFileURL(path.resolve("packages/adapters-node/package.json")))("pg");
 
 const flag = (name, fallback) => (process.argv.find(a => a.startsWith(`--${name}=`)) ?? `--${name}=${fallback}`).split("=").slice(1).join("=");
@@ -42,29 +43,26 @@ await client.query(`SET search_path TO "${local?.database?.schema ?? base?.datab
 await client.query("SET statement_timeout='300s'");
 
 // The two families, told apart by the stream each model was trained from -- not by any label a tool wrote later.
-// Counts are aggregated in the database: pulling every model's JSON into this process exhausts the heap.
-async function familyCounts(label, whereSql) {
-  const rows = await client.query(`
-    SELECT unit AS key, sum(value::numeric)::bigint AS count
-    FROM ngram_models m, jsonb_each_text(m.model_json->'model'->'unigramCounts') AS kv(unit, value)
-    WHERE ${whereSql}
-    GROUP BY 1`);
-  const counts = new Map();
-  let total = 0;
-  for (const row of rows.rows) {
-    const value = Number(row.count) || 0;
-    counts.set(row.key, value);
-    total += value;
-  }
-  console.log(`  ${label}: ${counts.size} units, ${total} tokens`);
-  return { counts, total };
-}
+// Replay-backed models are hydrated in decoded-byte-bounded pages; only the aggregate maps survive each page.
+const ngrams = await openNgramModelReader();
 const orders = await client.query("SELECT DISTINCT max_order, stream_id LIKE 'wikipedia://%' AS wiki FROM ngram_models ORDER BY 1");
 console.log("model families:");
 const families = {
-  prose: await familyCounts("prose", "m.stream_id NOT LIKE 'wikipedia://%' AND m.stream_id LIKE '%.txt%' AND m.max_order >= 3"),
-  encyclopedic: await familyCounts("encyclopedic", "m.stream_id LIKE 'wikipedia://%'")
+  prose: { counts: new Map(), total: 0 },
+  encyclopedic: { counts: new Map(), total: 0 }
 };
+await ngrams.forEach({}, (record, model) => {
+  const family = record.streamId.startsWith("wikipedia://") ? families.encyclopedic
+    : record.streamId.includes(".txt") && record.maxOrder >= 3 ? families.prose : undefined;
+  if (!family) return;
+  for (const [unit, raw] of Object.entries(model.unigramCounts)) {
+    const value = Number(raw) || 0;
+    family.counts.set(unit, (family.counts.get(unit) ?? 0) + value);
+    family.total += value;
+  }
+}, { limit: 8, maxTotalJsonBytes: 64 * 1024 * 1024 });
+await ngrams.close();
+for (const [label, family] of Object.entries(families)) console.log(`  ${label}: ${family.counts.size} units, ${family.total} tokens`);
 console.log("orders present: " + orders.rows.map(r => (r.wiki ? "wiki" : "other") + ":" + r.max_order).join(", "));
 
 const units = text => String(text).toLocaleLowerCase().split(/\s+/u).map(u => u.replace(/^[^\p{L}\p{N}']+|[^\p{L}\p{N}']+$/gu, "")).filter(Boolean);

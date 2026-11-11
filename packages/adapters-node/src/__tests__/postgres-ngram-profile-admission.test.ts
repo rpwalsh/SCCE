@@ -1,10 +1,12 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, expect, it } from "vitest";
-import { createClock, createHasher, createIdFactory, createLanguageMemoryRuntime, informationLabelAllowsRead,
+import { createClock, createHasher, createIdFactory, createLanguageMemoryRuntime, exportNgramModelTrainingReplay, informationLabelAllowsRead,
   type JsonValue, type LanguageProfile, type NgramModelRecord } from "@scce/kernel";
 import { pooledProfileOwnerFixture } from "../../../kernel/src/__tests__/fixtures/pooled-profile-owner.js";
 import { PostgresStorageAdapter } from "../postgres.js";
+import { NGRAM_MODEL_TRAINING_REPLAY_STORAGE_SCHEMA } from "../ngram-model-training-replay-storage.js";
+import { DECODED_JSON_BYTE_LEDGER_KEY } from "../decoded-json-byte-ledger.js";
 
 const label = { tenantId: "fixture", principals: ["operator"], compartments: [], exportClass: "restricted" as const, mergePolicy: "same_owner" as const };
 const access = { tenantId: "fixture", principalId: "operator", compartments: [], maximumExportClass: "restricted" as const };
@@ -58,7 +60,21 @@ async function fixture() {
 
 it("cold-reads actual producer models only through accessible direct or verified pooled owners and indexed profile filtering", async () => {
   const f = await fixture();
-  expect((await f.adapter.languageMemory.listNgramModels({ sourceSystem: "wikipedia" })).map(row => row.id).sort()).toEqual([f.directModel.id, f.pooledModel.id].sort());
+  const stored = object(f.models.get(f.directModel.id)!.model_json), storedModel = object(stored.model ?? null);
+  expect(storedModel.schema).toBe(NGRAM_MODEL_TRAINING_REPLAY_STORAGE_SCHEMA);
+  expect(storedModel.counts).toBeUndefined();
+  expect(object(stored[DECODED_JSON_BYTE_LEDGER_KEY] ?? null).decodedJsonbBytes).toBeGreaterThan(JSON.stringify(stored).length);
+  const cold = await f.adapter.languageMemory.listNgramModels({ sourceSystem: "wikipedia" });
+  expect(cold.map(row => row.id).sort()).toEqual([f.directModel.id, f.pooledModel.id].sort());
+  const coldDirect = cold.find(row => row.id === f.directModel.id)!;
+  expect(coldDirect.modelJson).toEqual(f.directModel.modelJson);
+  expect(exportNgramModelTrainingReplay(coldDirect)).toBeDefined();
+  await f.adapter.languageMemory.putNgramModel(coldDirect);
+  const rewritten = object(f.models.get(f.directModel.id)!.model_json), rewrittenModel = object(rewritten.model ?? null);
+  expect(rewrittenModel.schema).toBe(NGRAM_MODEL_TRAINING_REPLAY_STORAGE_SCHEMA);
+  expect(rewrittenModel.vocabularyPartition).toBeDefined();
+  expect(rewrittenModel.bigramCountTriples).toBeUndefined();
+  expect(rewrittenModel.counts).toBeUndefined();
   expect((await f.adapter.languageMemory.listNgramModels({ profileIds: [f.direct.id], limit: 7 })).map(row => row.id)).toEqual([f.directModel.id]);
   const sql = f.calls.at(-1)!.sql;
   expect(sql).toContain("model.profile_id=ANY($1::text[])"); expect(f.calls.at(-1)!.params[0]).toEqual([f.direct.id]);

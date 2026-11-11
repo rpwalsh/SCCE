@@ -50,6 +50,7 @@ import {
   sourceLanguageInductionDocuments,
   sourceLanguageTrainingStreamId,
   stampSourceLanguageCompilation,
+  transferNgramModelTrainingReplay,
   LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA,
   SOURCE_SEGMENTATION_WITNESS_SCHEMA,
   prepareLanguageTrainingSegmentation,
@@ -1578,7 +1579,9 @@ function stampObservation(observation: NgramObservation, sourceSystem: string, s
 }
 
 function stampModel(model: NgramModelRecord, sourceSystem: string, sourceSystemId: string, metadata: JsonValue): NgramModelRecord {
-  return { ...model, modelJson: toJsonValue({ ...jsonRecord(model.modelJson), ...jsonRecord(metadata), sourceSystem, sourceSystemId, forceClass: "learned_language_prior" }) };
+  const stamped = { ...model, modelJson: toJsonValue({ ...jsonRecord(model.modelJson), ...jsonRecord(metadata), sourceSystem, sourceSystemId, forceClass: "learned_language_prior" }) };
+  transferNgramModelTrainingReplay(model, stamped);
+  return stamped;
 }
 
 function stampUnit(unit: LanguageUnitRecord, sourceSystem: string, sourceSystemId: string, metadata: JsonValue): LanguageUnitRecord {

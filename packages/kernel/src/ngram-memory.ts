@@ -22,6 +22,10 @@ import { buildNgramSurfaceProjection } from "./surface-lattice.js";
 import { CORPUS_ROLE_IDS, corpusSourceAlias, corpusRoleIdForSourceSystem } from "./corpus-registry.js";
 import { codeSurfaceTokens } from "./code-surface.js";
 import { canonicalNgramModelId } from "./source-language-training-identity.js";
+import {
+  bindNgramModelTrainingReplay,
+  captureKneserNeyTrainingReplay
+} from "./kneser-ney-training-replay.js";
 
 export interface NgramMemoryCompilation {
   observations: NgramObservation[];
@@ -105,23 +109,33 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
           } satisfies NgramObservation;
         });
       });
-      const kneserNeyModels = [trainKneserNey(symbols, { order: maxOrder, discount: 0.75, vocabularyLimit: input.vocabularyLimit ?? 24000 })];
-      const models = kneserNeyModels.map(model => ({
-        id: canonicalNgramModelId({ streamId: input.streamId, sourceSystem, profileId: input.profile.id, languageHint, order: model.order, sourceVersionId: input.sourceVersionId, hasher: options.hasher }),
-        streamId: input.streamId,
-        languageHint,
-        maxOrder: model.order,
-        discount: model.discount,
-        modelJson: toJsonValue({
-          sourceVersionId: input.sourceVersionId,
-          profileId: input.profile.id,
-          ...(sourceSystem ? { sourceSystem: sourceSystem } : {}),
+      const vocabularyLimit = input.vocabularyLimit ?? 24000;
+      const kneserNeyModels = [trainKneserNey(symbols, { order: maxOrder, discount: 0.75, vocabularyLimit })];
+      const models = kneserNeyModels.map(model => {
+        const record = {
+          id: canonicalNgramModelId({ streamId: input.streamId, sourceSystem, profileId: input.profile.id, languageHint, order: model.order, sourceVersionId: input.sourceVersionId, hasher: options.hasher }),
+          streamId: input.streamId,
           languageHint,
-          model: persistedKneserNey(model),
-          compact: compactKneserNeyForProfile(model, input.text)
-        }),
-        updatedAt: input.createdAt
-      } satisfies NgramModelRecord));
+          maxOrder: model.order,
+          discount: model.discount,
+          modelJson: toJsonValue({
+            sourceVersionId: input.sourceVersionId,
+            profileId: input.profile.id,
+            ...(sourceSystem ? { sourceSystem: sourceSystem } : {}),
+            languageHint,
+            model: persistedKneserNey(model),
+            compact: compactKneserNeyForProfile(model, input.text)
+          }),
+          updatedAt: input.createdAt
+        } satisfies NgramModelRecord;
+        bindNgramModelTrainingReplay(record, captureKneserNeyTrainingReplay({
+          symbols,
+          model,
+          vocabularyLimit,
+          hasher: options.hasher
+        }));
+        return record;
+      });
       const units = formalCode ? [] : compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: sourceSystem, symbols, graphemes, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
       const patterns = formalCode ? [] : compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: sourceSystem, text: input.text, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory, hasher: options.hasher });
       const semanticFrames = formalCode || input.retainSemanticFrames === false ? [] : input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(

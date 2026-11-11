@@ -122,6 +122,8 @@ export interface NgramModelRecord {
 export interface NgramModelQuery {
   streamId?: string;
   languageHint?: string;
+  /** Stable id cursor for bounded corpus scans; switches ordering to id ascending. */
+  afterId?: string;
   /** Source-owned formal identity, applied before count and JSON byte budgets. */
   formalLanguage?: string;
   profileIds?: readonly string[];
@@ -1380,7 +1382,7 @@ export interface KernelRuntimePorts {
 }
 
 // Includes bounded lexical pages and source-owned construction decision pages.
-export const POSTGRES_SCHEMA_VERSION = 34;
+export const POSTGRES_SCHEMA_VERSION = 35;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -1391,7 +1393,6 @@ export const POSTGRES_REQUIRED_TABLES = [
   "sources",
   "source_versions",
   "evidence_spans",
-  "evidence_anchor_index",
   "graph_nodes",
   "graph_edges",
   "graph_hyperedges",

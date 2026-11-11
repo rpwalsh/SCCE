@@ -17,6 +17,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { deriveSourceIdentityUnits, deriveClosedClassWords, sourceTitleFromUri } from "../packages/kernel/dist/index.js";
+import { openNgramModelReader } from "./lib/ngram-model-reader.mjs";
 // Resolved from the repository, not from one machine's checkout path (same recipe as scripts/db.mjs).
 const pg = createRequire(pathToFileURL(path.resolve("packages/adapters-node/package.json")))("pg");
 
@@ -78,23 +79,28 @@ if (!titleless.rowCount) { await client.end(); process.exit(0); }
 // attempt derived it from only the documents being backfilled and returned "that with chapter this from whale"
 // for Moby-Dick: with a denominator of eight documents, function words looked rare. The models know better.
 console.log("loading corpus term frequencies from the learned language models...");
-const models = await client.query("SELECT model_json->'model'->'unigramCounts' AS counts, model_json->'model'->'continuationCounts' AS continuations FROM ngram_models");
-// The corpus's own notion of function material, by continuation count -- the same derivation the runtime uses.
-const closedClass = deriveClosedClassWords({
-  models: models.rows.map(row => ({ continuationCounts: row.continuations ?? {}, unigramCounts: row.counts ?? {} })),
-  limit: 160
-});
-console.log(`  closed class: ${closedClass.size} units`);
-const corpusFrequency = new Map();
-let corpusTokens = 0;
-for (const row of models.rows) {
-  for (const [unit, count] of Object.entries(row.counts ?? {})) {
+const ngrams = await openNgramModelReader();
+const corpusFrequency = new Map(), continuationCounts = new Map();
+let corpusTokens = 0, modelCount = 0;
+try { await ngrams.forEach({}, (_record, model) => {
+  modelCount++;
+  for (const [unit, raw] of Object.entries(model.unigramCounts)) {
     if ([...unit].length < 4) continue;
-    const value = Number(count) || 0;
+    const value = Number(raw) || 0;
     corpusFrequency.set(unit, (corpusFrequency.get(unit) ?? 0) + value);
     corpusTokens += value;
   }
-}
+  for (const [unit, raw] of Object.entries(model.continuationCounts)) {
+    const value = Number(raw) || 0;
+    continuationCounts.set(unit, (continuationCounts.get(unit) ?? 0) + value);
+  }
+}, { limit: 8, maxTotalJsonBytes: 64 * 1024 * 1024 }); } finally { await ngrams.close(); }
+// The corpus's own notion of function material, by continuation count -- the same derivation the runtime uses.
+const closedClass = deriveClosedClassWords({
+  continuationPopulation: { languageId: "tool.corpus", modelCount, continuationCounts: Object.fromEntries(continuationCounts) },
+  limit: 160
+});
+console.log(`  closed class: ${closedClass.size} units`);
 console.log(`  ${corpusFrequency.size} units, ${corpusTokens} tokens\n`);
 // deriveSourceIdentityUnits takes document frequencies, so express corpus token frequency on the same scale:
 // a unit seen f times out of T behaves like one present in f/T of a corpus of T documents.

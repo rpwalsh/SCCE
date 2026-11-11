@@ -11,6 +11,7 @@ import {
   type CooccurrenceBigram,
   type TranslationSeed
 } from "@scce/kernel";
+import { NGRAM_MODEL_TRAINING_REPLAY_STORAGE_SCHEMA } from "./ngram-model-training-replay-storage.js";
 
 /** The minimum storage surface this needs; the real PostgreSQL adapter satisfies it, and tests fake it. */
 export interface CrossLingualTranslationStorage {
@@ -39,7 +40,7 @@ interface ProfileRow {
  * observation rows: the trainer emits the same order-two counts into each model, while optimized training can omit
  * the much larger observation table. The raw table remains a compatibility fallback for older brains.
  */
-async function readLanguageBigrams(
+export async function readLanguageBigrams(
   storage: CrossLingualTranslationStorage,
   languageId: string,
   maxBigrams: number
@@ -51,19 +52,87 @@ async function readLanguageBigrams(
   const profileIds = [...new Set(profiles.map(row => row.id).filter(Boolean))];
   if (!profileIds.length) return [];
 
-  // A model contains counts for every order. Extract and aggregate only order-two keys in Postgres so a full corpus
-  // does not load every model/count object into Node. This is the same symbol-level count envelope emitted by the
-  // trainer (`model_json.model.counts`), and the LIMIT bounds the result handed to the quadratic aligner.
+  // Replay-backed rows derive exact order-two counts from their source-symbol
+  // tape and compact vocabulary partition. Legacy expanded rows expose the
+  // same facts through counts. PostgreSQL aggregates both without hydrating
+  // full Kneser-Ney models or retaining a corpus-sized JS map.
   const modelRows = await storage.query<NgramObservationRow>(
-    `SELECT split_part(gram.key, chr(1), 1) AS previous,
-            split_part(gram.key, chr(1), 2) AS next,
-            SUM(gram.value::double precision) AS total
+    `WITH population AS MATERIALIZED (
+       SELECT model.id,model.model_json->'model' AS stored_model
        FROM ${storage.table("ngram_models")} model
-       CROSS JOIN LATERAL jsonb_each_text(COALESCE(model.model_json->'model'->'counts', '{}'::jsonb)) gram
-      WHERE model.profile_id = ANY($1::text[])
-        AND cardinality(string_to_array(gram.key, chr(1))) = 2
+       WHERE model.profile_id = ANY($1::text[])
+     ), replay_population AS MATERIALIZED (
+       SELECT population.id,population.stored_model,
+              (population.stored_model->'replay'->>'order')::int AS model_order,
+              jsonb_array_length(population.stored_model->'replay'->'symbolIds') AS symbol_count,
+              population.stored_model->'vocabularyPartition'->>'listed' AS partition_listed
+       FROM population
+       WHERE population.stored_model->>'schema'='${NGRAM_MODEL_TRAINING_REPLAY_STORAGE_SCHEMA}'
+         AND jsonb_typeof(population.stored_model->'replay'->'order')='number'
+         AND population.stored_model->'replay'->>'order' ~ '^[1-6]$'
+         AND jsonb_typeof(population.stored_model->'replay'->'symbolIds')='array'
+         AND jsonb_typeof(population.stored_model->'replay'->'vocabulary')='array'
+         AND NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements(population.stored_model->'replay'->'vocabulary') vocabulary_symbol(value)
+           WHERE jsonb_typeof(vocabulary_symbol.value)<>'string'
+         )
+         AND population.stored_model->'vocabularyPartition'->>'listed' IN ('retained','excluded')
+         AND jsonb_typeof(population.stored_model->'vocabularyPartition'->'symbolIds')='array'
+         AND NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements_text(population.stored_model->'replay'->'symbolIds') source_id(value)
+           WHERE CASE WHEN source_id.value ~ '^(0|[1-9][0-9]*)$'
+             THEN source_id.value::numeric >= jsonb_array_length(population.stored_model->'replay'->'vocabulary')
+             ELSE TRUE END
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements_text(population.stored_model->'vocabularyPartition'->'symbolIds') partition_id(value)
+           WHERE CASE WHEN partition_id.value ~ '^(0|[1-9][0-9]*)$'
+             THEN partition_id.value::numeric >= jsonb_array_length(population.stored_model->'replay'->'vocabulary')
+             ELSE TRUE END
+         )
+     ), partition_ids AS MATERIALIZED (
+       SELECT DISTINCT replay.id AS model_id,listed.value::int AS symbol_id
+       FROM replay_population replay
+       CROSS JOIN LATERAL jsonb_array_elements_text(replay.stored_model->'vocabularyPartition'->'symbolIds') listed(value)
+     ), padded_replay AS (
+       SELECT replay.id AS model_id,prefix.position::bigint AS position,'<s>'::text AS symbol
+       FROM replay_population replay
+       CROSS JOIN LATERAL generate_series(2-replay.model_order,0) prefix(position)
+       WHERE replay.model_order>=2
+       UNION ALL
+       SELECT replay.id AS model_id,source.ordinality::bigint AS position,
+              CASE WHEN (replay.partition_listed='retained')=(partition.symbol_id IS NOT NULL)
+                THEN replay.stored_model->'replay'->'vocabulary'->>source.value::int
+                ELSE '<unk>' END AS symbol
+       FROM replay_population replay
+       CROSS JOIN LATERAL jsonb_array_elements_text(replay.stored_model->'replay'->'symbolIds') WITH ORDINALITY source(value,ordinality)
+       LEFT JOIN partition_ids partition ON partition.model_id=replay.id AND partition.symbol_id=source.value::int
+       WHERE replay.model_order>=2
+       UNION ALL
+       SELECT replay.id AS model_id,(replay.symbol_count+1)::bigint AS position,'</s>'::text AS symbol
+       FROM replay_population replay
+       WHERE replay.model_order>=2
+     ), replay_grams AS (
+       SELECT model_id,LAG(symbol) OVER(PARTITION BY model_id ORDER BY position) AS previous,symbol AS next
+       FROM padded_replay
+     ), grams AS (
+       SELECT legacy.key,legacy.value::double precision AS value
+       FROM population
+       CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(population.stored_model->'counts')='object'
+         THEN population.stored_model->'counts' ELSE '{}'::jsonb END) legacy
+       UNION ALL
+       SELECT replay.previous||chr(1)||replay.next AS key,COUNT(*)::double precision AS value
+       FROM replay_grams replay
+       WHERE replay.previous IS NOT NULL
+       GROUP BY replay.previous,replay.next
+     )
+     SELECT split_part(gram.key, chr(1), 1) AS previous,
+            split_part(gram.key, chr(1), 2) AS next,
+            SUM(gram.value) AS total
+       FROM grams gram
+      WHERE cardinality(string_to_array(gram.key, chr(1))) = 2
       GROUP BY split_part(gram.key, chr(1), 1), split_part(gram.key, chr(1), 2)
-      ORDER BY SUM(gram.value::double precision) DESC
+      ORDER BY SUM(gram.value) DESC
       LIMIT $2`,
     [profileIds, Math.max(1, maxBigrams)]
   );

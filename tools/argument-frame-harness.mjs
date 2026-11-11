@@ -8,15 +8,14 @@
 // adjacency distributions of a surface restricted to that induced frame vocabulary. Read-only, full corpus.
 //
 //   node --max-old-space-size=7168 tools/argument-frame-harness.mjs --cache=<dir> [--heldout-rank=3]
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
+import { openNgramModelReader } from "./lib/ngram-model-reader.mjs";
 
 const flag = (n, d) => (process.argv.find(a => a.startsWith(`--${n}=`)) ?? `--${n}=${d}`).split("=").slice(1).join("=");
 const MAIN = flag("repo", "C:/Users/react/fuggit");
 const cacheDir = flag("cache", path.join(MAIN, ".cache-t11a"));
 const heldoutRank = Number(flag("heldout-rank", 3));
-const req = createRequire(path.join(MAIN, "packages", "adapters-node", "package.json"));
 const SEP = String.fromCharCode(1);
 const WORD = new RegExp("^[" + String.fromCharCode(92) + "p{L}" + String.fromCharCode(92) + "p{M}'\u2019-]+$", "u");
 
@@ -31,17 +30,7 @@ const metaPath = path.join(cacheDir, "meta.json");
 // ---------------------------------------------------------------- pass 1: full corpus -> local triple file
 async function buildCache() {
   fs.mkdirSync(cacheDir, { recursive: true });
-  const local = JSON.parse(fs.readFileSync(path.join(MAIN, "scce.config.local.json"), "utf8"));
-  const base = JSON.parse(fs.readFileSync(path.join(MAIN, "scce.config.json"), "utf8"));
-  const url = local.database?.url ?? base.database?.url;
-  const schema = local.database?.schema ?? base.database?.schema ?? "scce3_runtime";
-  const pg = req("pg");
-  const client = new pg.Client({ connectionString: url });
-  await client.connect();
-  await client.query(`SET search_path TO ${schema}, public`);
-  await client.query("SET default_transaction_read_only = on");
-  await client.query("SET statement_timeout = '900s'");
-  const ids = (await client.query("SELECT id FROM ngram_models ORDER BY id")).rows.map(r => r.id);
+  const reader = await openNgramModelReader({ root: MAIN });
   const vocab = [], index = new Map(), norm = new Map();
   const idOf = (s) => {
     let c = norm.get(s);
@@ -53,11 +42,10 @@ async function buildCache() {
     return c;
   };
   const out = fs.createWriteStream(triplesPath);
-  let buf = new Int32Array(3 * 200000), fill = 0, triples = 0;
+  let buf = new Int32Array(3 * 200000), fill = 0, triples = 0, modelCount = 0;
   const flush = () => { if (fill) { out.write(Buffer.from(buf.buffer.slice(0, fill * 4))); fill = 0; } };
-  for (let i = 0; i < ids.length; i++) {
-    const row = (await client.query("SELECT model_json->'model'->'counts' AS counts FROM ngram_models WHERE id=$1", [ids[i]])).rows[0];
-    const counts = row?.counts; if (!counts) continue;
+  try { await reader.forEach({}, (_record, model) => {
+    const counts = model.counts;
     for (const gram in counts) {
       const cut = gram.indexOf(SEP);
       if (cut < 0 || gram.indexOf(SEP, cut + 1) >= 0) continue;
@@ -66,13 +54,13 @@ async function buildCache() {
       buf[fill++] = h; buf[fill++] = k; buf[fill++] = counts[gram]; triples++;
       if (fill === buf.length) flush();
     }
-    if ((i + 1) % 200 === 0) { process.stderr.write(`  models ${i + 1}/${ids.length} triples ${triples}\n`); }
-  }
+    modelCount++;
+    if (modelCount % 200 === 0) process.stderr.write(`  models ${modelCount} triples ${triples}\n`);
+  }, { limit: 8, maxTotalJsonBytes: 64 * 1024 * 1024 }); } finally { await reader.close(); }
   flush();
   await new Promise(r => out.end(r));
-  await client.end();
-  fs.writeFileSync(metaPath, JSON.stringify({ models: ids.length, vocab, triples }));
-  return { models: ids.length, vocab, triples };
+  fs.writeFileSync(metaPath, JSON.stringify({ models: modelCount, vocab, triples }));
+  return { models: modelCount, vocab, triples };
 }
 
 if (!fs.existsSync(metaPath)) { console.error("building cache from the full corpus (read-only)…"); await buildCache(); }

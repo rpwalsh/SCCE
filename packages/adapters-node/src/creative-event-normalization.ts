@@ -6,11 +6,12 @@ import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, CREATIVE_EVENT_ARGUMENT_FRA
 
 export const CREATIVE_EVENT_NORMALIZATION_SCHEMA = "scce.creative_event_normalization.v1";
 export const CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA = "scce.creative_event_occurrence_page_ref.v1";
+export const CREATIVE_EVENT_SOURCE_DERIVED_STORAGE_SCHEMA = "scce.creative_event_source_derived_storage.v1";
 export const CREATIVE_EVENT_NORMALIZATION_TABLES = ["creative_event_templates", "creative_event_lexemes", "creative_event_witnesses", "creative_event_occurrences"] as const;
 export type CreativeEventNormalizationTable = typeof CREATIVE_EVENT_NORMALIZATION_TABLES[number];
 export interface CreativeEventOwner {
   profileId: string; sourceId: string; sourceVersionId: string; sourceContentHash: string; evidenceId: string; evidenceContentHash: string;
-  evidenceCharStart: number; evidenceCharEnd: number; informationLabel: InformationLabel;
+  evidenceCharStart: number; evidenceCharEnd: number; evidenceText?: string; informationLabel: InformationLabel;
 }
 export interface CreativeEventDomainRecord {
   id: string; kind: string; value: Record<string, unknown>; informationLabel?: InformationLabel;
@@ -116,12 +117,71 @@ function retainedBindings(bindings: unknown): Record<string, unknown>[] {
   });
 }
 
+function sourcePoints(owner: CreativeEventOwner): string[] | undefined {
+  if (typeof owner.evidenceText !== "string") return undefined;
+  const points = [...owner.evidenceText];
+  return points.length === owner.evidenceCharEnd - owner.evidenceCharStart ? points : undefined;
+}
+
+function ownedSurface(points: readonly string[], start: unknown, end: unknown): string | undefined {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || Number(start) < 0 || Number(end) <= Number(start) || Number(end) > points.length) return undefined;
+  return points.slice(Number(start), Number(end)).join("");
+}
+
+function sourceDerivedBinding(raw: unknown, points: readonly string[]): boolean {
+  const binding = creativeEventRecord(raw);
+  if (ownedSurface(points, binding.startCodePoint, binding.endCodePoint) !== binding.surface) return false;
+  if (binding.connector !== undefined) {
+    const connector = creativeEventRecord(binding.connector);
+    if (ownedSurface(points, connector.startCodePoint, connector.endCodePoint) !== connector.surface) return false;
+  }
+  return true;
+}
+
+function sourceDerivableEvent(event: Record<string, unknown>, owner: CreativeEventOwner): boolean {
+  const points = sourcePoints(owner), frame = creativeEventRecord(event.argumentFrame), forms = creativeEventRecord(event.forms);
+  if (!points) return false;
+  const sourceLabel = ownedSurface(points, event.labelStartCodePoint, event.labelEndCodePoint)?.normalize("NFC").toLowerCase();
+  if (sourceLabel !== event.sourceLabel || event.sourceOrdinal !== owner.evidenceCharStart + Number(event.labelStartCodePoint)) return false;
+  const formNames = ["gerund", "infinitive", "participle", "past", "present"];
+  if (Object.keys(forms).sort().join(",") !== formNames.join(",") || formNames.some(name => forms[name] !== sourceLabel)) return false;
+  return array(frame.bindings).every(binding => sourceDerivedBinding(binding, points));
+}
+
+function sourceDerivedBindings(bindings: unknown): Record<string, unknown>[] {
+  return array(bindings).map(raw => {
+    const row = creativeEventRecord(raw), { surface: _surface, surfaceDigest: _digest, ...binding } = row;
+    if (binding.connector !== undefined) {
+      const { surface: _connectorSurface, surfaceDigest: _connectorDigest, ...connector } = creativeEventRecord(binding.connector);
+      binding.connector = connector;
+    }
+    return binding;
+  });
+}
+
+function restoreSourceDerivedBindings(bindings: unknown, points: readonly string[]): Record<string, unknown>[] {
+  return array(bindings).map(raw => {
+    const binding = creativeEventRecord(raw), surface = ownedSurface(points, binding.startCodePoint, binding.endCodePoint);
+    if (surface === undefined) return fail();
+    const connector = binding.connector === undefined ? undefined : creativeEventRecord(binding.connector);
+    const connectorSurface = connector ? ownedSurface(points, connector.startCodePoint, connector.endCodePoint) : undefined;
+    if (connector && connectorSurface === undefined) return fail();
+    return { ...binding, surface, surfaceDigest: "pending", ...(connector ? { connector: { ...connector, surface: connectorSurface, surfaceDigest: "pending" } } : {}) };
+  });
+}
+
 export function normalizeCreativeEventPage(input: {
   bundle: Record<string, unknown>; owners: ReadonlyMap<string, CreativeEventOwner>; informationLabel?: InformationLabel; explicitMergeAuthority?: boolean;
 }): CreativeEventPagePlan {
   if (input.bundle.schema !== CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA) return fail();
   const compilerId = text(input.bundle.compilerId), profileId = text(input.bundle.profileId), events = array(input.bundle.events);
   if (events.length < 4 || events.length > 2048) return fail();
+  const sourceDerived = events.every(raw => {
+    const event = creativeEventRecord(raw), owner = input.owners.get(creativeEventStorageJson([profileId, text(event.evidenceId)]));
+    return Boolean(owner && owner.profileId === profileId && owner.sourceVersionId === event.sourceVersionId && owner.evidenceId === event.evidenceId
+      && owner.evidenceContentHash === event.evidenceContentHash && owner.evidenceCharStart === event.evidenceCharStart
+      && owner.evidenceCharEnd === event.evidenceCharEnd && sourceDerivableEvent(event, owner));
+  });
   const records: CreativeEventPagePlan["records"] = { creative_event_templates: [], creative_event_lexemes: [], creative_event_witnesses: [], creative_event_occurrences: [] };
   const ids = new Map<CreativeEventNormalizationTable, Set<string>>(CREATIVE_EVENT_NORMALIZATION_TABLES.map(name => [name, new Set()]));
   const add = (table: CreativeEventNormalizationTable, kind: string, value: Record<string, unknown>, informationLabel?: InformationLabel): string => {
@@ -149,23 +209,29 @@ export function normalizeCreativeEventPage(input: {
     const scope = { normalization: CREATIVE_EVENT_NORMALIZATION_SCHEMA, compilerId, profileId, informationLabel: label };
     const template = add(TEMPLATE, "template_definition", { ...fields(event, ["tenseId", "valencyId", "roleIds"]),
       argumentFrame: fields(frame, ["schema", "compilerId", "roleIds"]) });
-    const lexeme = add(LEXEME, "lexical_forms", fields(event, ["sourceLabel", "forms"]));
+    const lexeme = sourceDerived ? undefined : add(LEXEME, "lexical_forms", fields(event, ["sourceLabel", "forms"]));
     const witness = add(WITNESS, "occurrence_witness", { scope, sourceId: owner.sourceId, sourceContentHash: owner.sourceContentHash,
       ...fields(event, ["sourceVersionId", "evidenceId", "evidenceContentHash", "evidenceCharStart", "evidenceCharEnd"]) }, label);
-    return [local(template, templateIds, templateIndices), local(lexeme, lexemeIds, lexemeIndices), local(witness, witnessIds, witnessIndices),
-      coordinate(event.labelStartCodePoint), coordinate(event.labelEndCodePoint), coordinate(event.sourceOrdinal),
-      coordinate(frame.sourceSentenceStartCodePoint), coordinate(frame.sourceSentenceEndCodePoint), retainedBindings(frame.bindings),
-      { event: extensions(event, EVENT_FIELDS), argumentFrame: extensions(frame, FRAME_FIELDS) }];
+    return sourceDerived
+      ? [local(template, templateIds, templateIndices), local(witness, witnessIds, witnessIndices),
+        coordinate(event.labelStartCodePoint), coordinate(event.labelEndCodePoint),
+        coordinate(frame.sourceSentenceStartCodePoint), coordinate(frame.sourceSentenceEndCodePoint), sourceDerivedBindings(frame.bindings),
+        { event: extensions(event, EVENT_FIELDS), argumentFrame: extensions(frame, FRAME_FIELDS) }]
+      : [local(template, templateIds, templateIndices), local(lexeme!, lexemeIds, lexemeIndices), local(witness, witnessIds, witnessIndices),
+        coordinate(event.labelStartCodePoint), coordinate(event.labelEndCodePoint), coordinate(event.sourceOrdinal),
+        coordinate(frame.sourceSentenceStartCodePoint), coordinate(frame.sourceSentenceEndCodePoint), retainedBindings(frame.bindings),
+        { event: extensions(event, EVENT_FIELDS), argumentFrame: extensions(frame, FRAME_FIELDS) }];
   });
   if (!occurrences.length) return fail();
   const label = joinInformationLabels(labels, input);
   const pageId = add(PAGE, "occurrence_page", { schema: CREATIVE_EVENT_NORMALIZATION_SCHEMA, compilerId, profileId,
-    bundleDigest: hash.digestHex(canonicalStringify(input.bundle)), templates: templateIds, lexemes: lexemeIds, witnesses: witnessIds, occurrences }, label);
+    bundleDigest: hash.digestHex(canonicalStringify(input.bundle)), templates: templateIds,
+    ...(sourceDerived ? { storageEncoding: CREATIVE_EVENT_SOURCE_DERIVED_STORAGE_SCHEMA } : { lexemes: lexemeIds }), witnesses: witnessIds, occurrences }, label);
   return { reference: { schema: CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA, pageId, count: occurrences.length }, records };
 }
 
 export function reconstructCreativeEventPage(input: {
-  reference: Record<string, unknown>; records: ReadonlyMap<string, CreativeEventDomainRecord>;
+  reference: Record<string, unknown>; records: ReadonlyMap<string, CreativeEventDomainRecord>; owners?: ReadonlyMap<string, CreativeEventOwner>;
 }): Record<string, unknown>[] {
   if (input.reference.schema !== CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA || Object.keys(input.reference).length !== 3) return fail();
   const get = (id: unknown, kind: string): Record<string, unknown> => {
@@ -176,25 +242,40 @@ export function reconstructCreativeEventPage(input: {
   };
   const page = get(input.reference.pageId, "occurrence_page");
   if (page.schema !== CREATIVE_EVENT_NORMALIZATION_SCHEMA) return fail();
-  const templates = array(page.templates), lexemes = array(page.lexemes), witnesses = array(page.witnesses), occurrences = array(page.occurrences);
+  const sourceDerived = page.storageEncoding === CREATIVE_EVENT_SOURCE_DERIVED_STORAGE_SCHEMA;
+  if (!sourceDerived && page.storageEncoding !== undefined) return fail();
+  const templates = array(page.templates), lexemes = sourceDerived ? [] : array(page.lexemes), witnesses = array(page.witnesses), occurrences = array(page.occurrences);
   if (occurrences.length < 4 || occurrences.length > 2048) return fail();
   if (coordinate(input.reference.count) !== occurrences.length) return fail();
   const at = (values: unknown[], index: unknown): unknown => values[coordinate(index)] ?? fail();
   return occurrences.map(raw => {
-    const occurrence = array(raw); if (occurrence.length !== 10) return fail();
-    const template = get(at(templates, occurrence[0]), "template_definition"), lexeme = get(at(lexemes, occurrence[1]), "lexical_forms");
-    const witness = get(at(witnesses, occurrence[2]), "occurrence_witness"), scope = creativeEventRecord(witness.scope);
+    const occurrence = array(raw); if (occurrence.length !== (sourceDerived ? 8 : 10)) return fail();
+    const template = get(at(templates, occurrence[0]), "template_definition");
+    const lexeme = sourceDerived ? undefined : get(at(lexemes, occurrence[1]), "lexical_forms");
+    const witnessIndex = sourceDerived ? occurrence[1] : occurrence[2];
+    const witness = get(at(witnesses, witnessIndex), "occurrence_witness"), scope = creativeEventRecord(witness.scope);
     if (scope.normalization !== CREATIVE_EVENT_NORMALIZATION_SCHEMA || scope.compilerId !== page.compilerId || scope.profileId !== page.profileId) return fail();
-    if (!input.records.get(text(at(witnesses, occurrence[2])))!.informationLabel
+    if (!input.records.get(text(at(witnesses, witnessIndex)))!.informationLabel
       || creativeEventStorageJson(normalizeInformationLabel(scope.informationLabel as InformationLabel))
-        !== creativeEventStorageJson(input.records.get(text(at(witnesses, occurrence[2])))!.informationLabel)) return fail();
-    const extra = creativeEventRecord(occurrence[9]);
+        !== creativeEventStorageJson(input.records.get(text(at(witnesses, witnessIndex)))!.informationLabel)) return fail();
+    const owner = sourceDerived ? input.owners?.get(creativeEventStorageJson([text(scope.profileId), text(witness.evidenceId)])) : undefined;
+    const points = owner ? sourcePoints(owner) : undefined;
+    if (sourceDerived && (!owner || !points || owner.sourceVersionId !== witness.sourceVersionId || owner.evidenceId !== witness.evidenceId
+      || owner.evidenceContentHash !== witness.evidenceContentHash || owner.evidenceCharStart !== witness.evidenceCharStart
+      || owner.evidenceCharEnd !== witness.evidenceCharEnd)) return fail();
+    const labelStart = coordinate(occurrence[sourceDerived ? 2 : 3]), labelEnd = coordinate(occurrence[sourceDerived ? 3 : 4]);
+    const sourceLabel = sourceDerived ? ownedSurface(points!, labelStart, labelEnd)?.normalize("NFC").toLowerCase() : undefined;
+    if (sourceDerived && sourceLabel === undefined) return fail();
+    const extra = creativeEventRecord(occurrence[sourceDerived ? 7 : 9]);
     const frame = extend({ ...creativeEventRecord(template.argumentFrame),
-      sourceSentenceStartCodePoint: coordinate(occurrence[6]), sourceSentenceEndCodePoint: coordinate(occurrence[7]), bindings: array(occurrence[8]) }, extra.argumentFrame);
+      sourceSentenceStartCodePoint: coordinate(occurrence[sourceDerived ? 4 : 6]), sourceSentenceEndCodePoint: coordinate(occurrence[sourceDerived ? 5 : 7]),
+      bindings: sourceDerived ? restoreSourceDerivedBindings(occurrence[6], points!) : array(occurrence[8]) }, extra.argumentFrame);
     const event = extend({ compilerId: page.compilerId, profileId: page.profileId,
       ...fields(witness, ["sourceVersionId", "evidenceId", "evidenceContentHash", "evidenceCharStart", "evidenceCharEnd"]),
-      ...fields(lexeme, ["sourceLabel", "forms"]), ...fields(template, ["tenseId", "valencyId", "roleIds"]),
-      labelStartCodePoint: coordinate(occurrence[3]), labelEndCodePoint: coordinate(occurrence[4]), sourceOrdinal: coordinate(occurrence[5]), argumentFrame: frame }, extra.event);
+      ...(sourceDerived ? { sourceLabel, forms: { infinitive: sourceLabel, past: sourceLabel, present: sourceLabel, gerund: sourceLabel, participle: sourceLabel } }
+        : fields(lexeme!, ["sourceLabel", "forms"])), ...fields(template, ["tenseId", "valencyId", "roleIds"]),
+      labelStartCodePoint: labelStart, labelEndCodePoint: labelEnd,
+      sourceOrdinal: sourceDerived ? owner!.evidenceCharStart + labelStart : coordinate(occurrence[5]), argumentFrame: frame }, extra.event);
     return JSON.parse(creativeEventStorageJson(canonicalEvent(event, false))) as Record<string, unknown>;
   });
 }

@@ -6,10 +6,12 @@ import { canonicalStringify, createHasher } from "../primitives.js";
 import { compileSourceInductionWindows } from "../source-window-induction.js";
 import { createSegmentationAdjacencyQuery } from "../segmentation-adjacency-factors.js";
 import {
+  exportSourceSegmentationReplayRecipe,
   sourceSegmentationArcObservation,
   sourceSegmentationSurfaceBearingArcIndices,
   validateLanguageSegmentationWitness
 } from "../source-segmentation-witness.js";
+import { replaySurfaceSegmentationAdjacency } from "../surface-lattice.js";
 import type { EvidenceId } from "../types.js";
 
 describe("real source segmentation witness", () => {
@@ -48,6 +50,18 @@ describe("real source segmentation witness", () => {
       expect(document.evidenceIds).toEqual([evidenceId]);
       expect(Object.keys(document.fullDag.factors).sort()).toEqual(["arcs", "nodeCount", "schema"]);
       expect(document.fullDag).not.toHaveProperty("scoreRecipe");
+      const replayRecipe = exportSourceSegmentationReplayRecipe(document);
+      expect(replayRecipe).toBeDefined();
+      const replayed = replaySurfaceSegmentationAdjacency({ recipe: JSON.parse(JSON.stringify(replayRecipe)),
+        documentId: document.documentId, sourceFamilyId: document.lattice.sourceFamilyId, text: document.text,
+        ...(document.sourceVersionId ? { sourceVersionId: document.sourceVersionId } : {}), evidenceIds: document.lattice.evidenceIds,
+        normalizationContract: document.lattice.normalizationContract, hasher });
+      expect(replayed.arcs.length).toBe(document.fullDag.factors.arcs.length);
+      replayed.arcs.forEach((arc, index) => {
+        expect(arc[0]).toBe(document.fullDag.factors.arcs[index]![0]);
+        expect(arc[1]).toBe(document.fullDag.factors.arcs[index]![1]);
+        expect(Object.is(arc[2], document.fullDag.factors.arcs[index]![2])).toBe(true);
+      });
 
       retainedPathCount += document.lattice.segmentationForest.retainedPathCount;
       expect(document.lattice.segmentationForest.retainedPathDigest).toMatch(/^[a-f0-9]{64}$/u);

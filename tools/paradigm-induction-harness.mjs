@@ -9,11 +9,10 @@
 // diagnostic pairs are scored; the diagnostic set is a diagnostic, never the objective.
 //
 //   node --max-old-space-size=7168 tools/paradigm-induction-harness.mjs [--budget-mb=48] [--cache=file] [--mode=aggregate] [--json=out.json]
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { databaseSchema, databaseUrl } from "./lib/runtime-config.mjs";
+import { openNgramModelReader } from "./lib/ngram-model-reader.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const flag = (name, fallback) => (process.argv.find(a => a.startsWith(`--${name}=`)) ?? `--${name}=${fallback}`).split("=").slice(1).join("=");
@@ -25,27 +24,15 @@ const SEP = "";
 const WORD = new RegExp("^[\p{L}\p{M}'’-]+$", "u");
 
 async function loadFromDatabase() {
-  const pg = createRequire(path.join(here, "..", "packages", "adapters-node", "package.json"))("pg");
-  const client = new pg.Client({ connectionString: databaseUrl() });
+  const reader = await openNgramModelReader();
   const models = [];
   try {
-    await client.connect();
-    await client.query(`SET search_path TO ${databaseSchema()}, public`);
-    await client.query("SET default_transaction_read_only = on");
-    await client.query("SET statement_timeout = '600s'");
-    const ids = (await client.query(
-      `SELECT id FROM (
-         SELECT model.id,
-           SUM(pg_column_size(model.model_json)) OVER (
-             ORDER BY COALESCE((model.model_json->'model'->>'totalUnigramCount')::numeric, 0) DESC,
-                      model.updated_at DESC, model.id ASC ROWS UNBOUNDED PRECEDING) AS running
-         FROM ngram_models model
-       ) ranked WHERE running <= $1`, [budgetBytes])).rows.map(r => r.id);
-    for (const id of ids) {
-      const row = (await client.query("SELECT model_json->'model' AS model FROM ngram_models WHERE id=$1", [id])).rows[0];
-      if (row && row.model && row.model.counts) models.push(row.model.counts);
+    const records = await reader.storage.languageMemory.listNgramModels({ limit: 1_000_000, maxTotalJsonBytes: budgetBytes });
+    for (const record of records) {
+      const model = reader.materialize(record);
+      if (model) models.push(model.counts);
     }
-  } finally { await client.end(); }
+  } finally { await reader.close(); }
   const ids2 = new Map(), vocabList = [], norm = new Map();
   const idOf = (symbol) => {
     let cached = norm.get(symbol);

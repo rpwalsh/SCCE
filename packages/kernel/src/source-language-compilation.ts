@@ -10,6 +10,7 @@ import { toJsonValue } from "./primitives.js";
 import { SOURCE_SEGMENTATION_WITNESS_SCHEMA } from "./source-segmentation-witness.js";
 import type { LanguageUnitRecord, LanguagePatternRecord, SemanticFrameRecord, NgramModelRecord } from "./storage.js";
 import type { ContentHash, Hasher, JsonValue, SourceId, SourceVersionId } from "./types.js";
+import { transferNgramModelTrainingReplay } from "./kneser-ney-training-replay.js";
 
 export interface SourceCompilationOwner { sourceId: SourceId; sourceVersionId: SourceVersionId; contentHash: ContentHash }
 
@@ -90,8 +91,12 @@ export function stampSourceLanguageCompilation(input: {
   const compilationId = canonicalDigestHex(common, input.hasher);
   let offset = 0;
   const chunks = input.chunks.map((text, index) => { const start = offset; offset += text.length; return { index, start, end: offset, textHash: input.hasher.digestHex(text) }; });
-  return { models: input.models.map((record, index) => ({ ...record, modelJson: toJsonValue({ ...jsonRecord(record.modelJson),
-    sourceCompilation: { ...common, compilationId, chunk: chunks[index], modelDigest: canonicalDigestHex(modelMaterial(record), input.hasher) } }) })),
+  return { models: input.models.map((record, index) => {
+    const stamped = { ...record, modelJson: toJsonValue({ ...jsonRecord(record.modelJson),
+      sourceCompilation: { ...common, compilationId, chunk: chunks[index], modelDigest: canonicalDigestHex(modelMaterial(record), input.hasher) } }) };
+    transferNgramModelTrainingReplay(record, stamped);
+    return stamped;
+  }),
     units: input.artifacts.units.map(record => ({ ...record, metadata: toJsonValue({ ...jsonRecord(record.metadata), sourceCompilationId: compilationId }) })),
     patterns: [...sourceArtifacts.patterns.map(record => isCanonicalSegmentationArchiveSchema(jsonRecord(record.patternJson).schema) ? record
       : { ...record, patternJson: toJsonValue({ ...jsonRecord(record.patternJson), sourceCompilationId: compilationId }) }), ...componentReceipts,
