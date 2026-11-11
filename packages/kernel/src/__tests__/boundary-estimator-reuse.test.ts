@@ -114,26 +114,26 @@ describe("boundary fitting repeated-work equivalence", () => {
         expect(window.startUtf16).toBe(index ? windows[index - 1]!.endUtf16 : 0);
         expect(window.contentDigest).toBe(hasher.digestHex(text.slice(window.startUtf16, window.endUtf16)));
       }
-      const nonJoinModelDigests: string[] = [];
+      const nonSegmentationModelDigests: string[] = [];
       const outputs = batches.map(batch => {
         const model = createLanguageInductionEngine({ hasher }).induce({ documents: batch.documents });
-        const { id: _modelId, joinProgram: _joinProgram, semanticInductionFactors: _sufficientFacts, audit: fullAudit, ...nonJoin } = model;
-        const { joinProgramId: _joinId, joinProgramComponentIds: _componentIds, ...audit } = fullAudit as Record<string, unknown>;
-        nonJoinModelDigests.push(hasher.digestHex(canonicalStringify({ ...nonJoin, audit })));
+        const { id: _modelId, segmentationWitness: _segmentationWitness, semanticInductionFactors: _sufficientFacts, audit: fullAudit, ...nonSegmentation } = model;
+        const { segmentationWitnessId: _witnessId, segmentationWitnessPopulationIds: _populationIds, ...audit } = fullAudit as Record<string, unknown>;
+        nonSegmentationModelDigests.push(hasher.digestHex(canonicalStringify({ ...nonSegmentation, audit })));
         return { id: model.id, boundaryEstimator: model.boundaryEstimator, statisticsId: model.boundaryStatistics.id,
-          joinProgramId: model.joinProgram.id, relationModelId: model.relationHypothesisModel.id,
+          segmentationWitnessId: model.segmentationWitness.id, relationModelId: model.relationHypothesisModel.id,
           frameIds: model.semanticFrames.map(frame => frame.id), constructionIds: model.graphBoundConstructions.map(construction => construction.id) };
       });
       const elapsedMs = performance.now() - start;
       const computedFits = boundary.boundaryEstimatorNumericalFitCount() - computationStart;
       const result = { inputDigest: hasher.digestHex(text), outputs, fitted };
       const reference = JSON.parse(readFileSync(new URL("./fixtures/boundary-alice-19k-reference.json", import.meta.url), "utf8"));
-      // Full non-JOIN payloads match the v2 pre-JOIN-repair artifacts at 5bd251b1.
-      expect(nonJoinModelDigests).toEqual([
+      // All independently learned fields remain pinned while the evidence-only segmentation witness evolves.
+      expect(nonSegmentationModelDigests).toEqual([
         "c87a3b7fa7e2d311791a366596bd1914c081827678a96f02d8f968ecee0ceb93",
         "41229eac592952b03b3e11c74295e153a7ac83c216d1c31ffdf2e5411e838bb8"
       ]);
-      expect(hasher.digestHex(JSON.stringify(outputs.map(({ id: _id, joinProgramId: _joinId, ...stable }) => stable))))
+      expect(hasher.digestHex(JSON.stringify(outputs.map(({ id: _id, segmentationWitnessId: _witnessId, ...stable }) => stable))))
         .toBe("efbf62bfa27b794aeed7c2ae1d8bb2e68308cd840f1b431f89518860ddb9064c");
       const calibrations = outputs.map(output => {
         const estimator = output.boundaryEstimator;
@@ -148,11 +148,11 @@ describe("boundary fitting repeated-work equivalence", () => {
       expect(fitted.length).toBe(reference.convergedPopulationReuse.fits);
       expect(fitted.length).toBeLessThan(reference.fits);
       expect(outputs.length).toBe(reference.outputModels);
-      // JOIN v4 changes versioned model/program IDs; all non-JOIN fields are
+      // The segmentation witness changes versioned model/artifact IDs; all independent fields are
       // independently pinned to the complete original source artifacts above.
-      expect(hasher.digestHex(JSON.stringify(outputs))).toBe("6124db91d94c5d98ef319383b4270c81cb066710d7348a61047891b83bde54d6");
+      expect(hasher.digestHex(JSON.stringify(outputs))).toBe("c6d39d3878b2aa9e7378f99c84dfe9112c67dfce75298a71ea43e13f36e15747");
       expect(hasher.digestHex(JSON.stringify([...new Set(fitted.map(model => JSON.stringify(model)))].sort()))).toBe("8f7031295e4fca92b3a24b396e524f2f7d6513739be73ecdf79ef123d47a09c4");
-      expect(hasher.digestHex(JSON.stringify(result))).toBe("904cca0719e7d31f2008114c7b470fc12ff8d3b40a4a1c5e0b7de9d03fbd7cca");
+      expect(hasher.digestHex(JSON.stringify(result))).toBe("4fb7ba141f61e98613e0146a822d1e93b66117f689f7411f0c957740b1a14fff");
       process.stdout.write(`\nAlice 19k total=${elapsedMs.toFixed(1)}ms boundary-fit=${fittingMs.toFixed(1)}ms requested=${fitted.length} computed=${computedFits}\n`);
       expect(outputs.length).toBeGreaterThan(1);
       expect(fitted.length).toBeGreaterThan(1);

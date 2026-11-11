@@ -4,5 +4,5 @@
 set -e
 cd "$(dirname "$0")/.."
 CONFIG="${1:-scce.config.new.json}"
-node --max-old-space-size=2048 packages/cli/dist/index.js --config "$CONFIG" db indexes status
+node --max-old-space-size=7168 packages/cli/dist/index.js --config "$CONFIG" db indexes status
 node scripts/brain-progress.mjs "$CONFIG"

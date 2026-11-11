@@ -10,7 +10,7 @@ import { learnPagedSegmentationPopulations } from "../../../kernel/src/paged-seg
 import { fixtureSegmentationScratch } from "../../../kernel/src/__tests__/fixtures/corpus-segmentation-scratch.js";
 import { segmentationOrdinalKey } from "../corpus-segmentation-store.js";
 import { BOUNDARY_MERGE_PAGE_SCHEMA, createPackedBoundaryMergeScratch, withPackedBoundaryMerges } from "../corpus-segmentation-merge-scratch.js";
-import { durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import { decodedJsonByteLengths } from "../decoded-json-byte-ledger.js";
 import { sortSegmentationScratch } from "../../../kernel/src/corpus-segmentation-sort.js";
 
 function fixture(pageRows = 4096, maxPageBytes = 16000) {
@@ -20,7 +20,7 @@ function fixture(pageRows = 4096, maxPageBytes = 16000) {
   const store: CorpusSegmentationScratch = { ...memory,
     async putMany(collection, rows) { for (const row of rows) { writes.push({ collection, value: row.value });
       if (row.value && typeof row.value === "object" && !Array.isArray(row.value) && row.value.schema === BOUNDARY_MERGE_PAGE_SCHEMA)
-        expect(durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(maxPageBytes); }
+        expect(decodedJsonByteLengths(row).decodedJsonbBytes + 2).toBeLessThanOrEqual(maxPageBytes); }
       names.add(collection); await memory.putMany(collection, rows); },
     pages(query) { physicalReads.push(query.pageRows); return memory.pages(query); } };
   return { memory, store, writes, physicalReads, names };

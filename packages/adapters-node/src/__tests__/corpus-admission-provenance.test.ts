@@ -6,7 +6,13 @@ import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText } from "../
 import { trainStoredCorpusConstructions } from "../stored-corpus-construction-training.js";
 import { blobContentHash } from "../postgres.js";
 import { prepareLanguageTrainingSegmentationInput } from "../language-training-segmentation.js";
-import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory } from "@scce/kernel";
+import {
+  canonicalCorpusSourceSystemId,
+  createClock,
+  createHasher,
+  createIdFactory,
+  isCanonicalSegmentationArchiveSchema
+} from "@scce/kernel";
 import type {
   EvidenceSpan,
   EvidenceBackedSourceVersionQuery,
@@ -333,6 +339,20 @@ describe("corpus trainer admission and provenance", () => {
       if (metadata.schema === "scce.source_language_compilation_receipt.v1") {
         expect(pattern.evidenceIds).toEqual([]);
         expect(metadata.forceClass).toBeUndefined();
+        continue;
+      }
+      if (isCanonicalSegmentationArchiveSchema(metadata.schema)) {
+        // Segmentation archives are exact evidence bodies, not active language
+        // projections. Their owner remains in the profile/record columns and
+        // their source provenance remains in the evidence spans checked above;
+        // copying projection metadata into the body would duplicate it for
+        // every retained full-DAG witness.
+        expect(pattern.patternKind).toBe("segmentation");
+        expect(pattern.id).toMatch(/^segmentation_archive\./u);
+        expect(pattern.evidenceIds.length).toBeGreaterThan(0);
+        expect(metadata.forceClass).toBeUndefined();
+        expect(metadata.sourceUri).toBeUndefined();
+        expect(metadata.sourceCompilationId).toBeUndefined();
         continue;
       }
       if (pattern.patternKind === "source_compilation") {

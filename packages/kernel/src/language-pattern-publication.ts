@@ -5,7 +5,7 @@ import { jsonRecord } from "./kernel-answer-primitives.js";
 import { LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "./language-construction-memory.js";
 import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS } from "./language-induction-memory.js";
 import { canonicalStringify, toJsonValue } from "./primitives.js";
-import type { SourceCompilationOwner } from "./source-language-compilation.js";
+import { isCanonicalSegmentationArchiveSchema, type SourceCompilationOwner } from "./source-language-compilation.js";
 import type { LanguageMemoryStore, LanguagePatternRecord } from "./storage.js";
 import type { InformationLabel } from "./types.js";
 
@@ -31,6 +31,9 @@ export async function publishCompiledLanguagePatterns(input: {
   const sourceSystem = corpusSourceAlias(input.sourceSystem);
   const schemas = new Set(input.projections.map(scope => scope.patternSchema));
   if (schemas.size !== input.projections.length) throw new Error("duplicate compiled language-pattern projection schema");
+  if ([...schemas].some(isCanonicalSegmentationArchiveSchema)) {
+    throw new Error("canonical segmentation archives cannot be published as active language-memory projections");
+  }
   if (input.projections.length && !input.store.replaceLanguagePatternProjection) {
     throw new Error("compiled language patterns require active projection publication");
   }

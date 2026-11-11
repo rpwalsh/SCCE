@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { createHasher, constructionSourceExampleStorageJson as exact, requestSeedLanguagePattern, encodeConstructionSourceExamples,
   type EvidenceSpan, type InformationLabel, type JsonValue } from "@scce/kernel";
 import { createConstructionSourceDecisionStore, constructionSourceDecisionSchemaStatements, type ConstructionSourceDecisionStorageHost } from "../construction-source-decision-store.js";
-import { decodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import { decodeDurableArtifact, DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths } from "../durable-artifact-storage.js";
 const label: InformationLabel = { tenantId: "tenant", principals: ["owner"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" };
 const object = (value: unknown): Record<string, unknown> => value as Record<string, unknown>;
 const cold = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -50,8 +50,8 @@ it("stores shared pages transactionally and restores every original body before 
   const stored = await f.store.encodeMany(originals.map(value => ({ value, informationLabel: label, logicalValue: value })));
   expect(f.pages.size).toBeGreaterThan(0);
   const restored = await f.store.decodeMany(cold(stored));
-  expect(restored.map(value => decodeDurableJoinPrograms(value))).toEqual(originals);
-  stored.forEach((value, i) => expect(object(value)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).toEqual({ schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(originals[i]) }));
+  expect(restored.map(value => decodeDurableArtifact(value))).toEqual(originals);
+  stored.forEach((value, i) => expect(object(value)[DECODED_JSON_BYTE_LEDGER_KEY]).toEqual({ schema: DECODED_JSON_BYTE_LEDGER_SCHEMA, ...decodedJsonByteLengths(originals[i]) }));
   const namespace = createHasher().digestHex(exact(label));
   expect([...f.pages.values()].every(row => row.value_json.namespace === namespace)).toBe(true);
   expect(constructionSourceDecisionSchemaStatements('"fixture"')[0]).toContain("construction_source_decision_pages");
@@ -60,26 +60,26 @@ it("stores shared pages transactionally and restores every original body before 
 it("keeps exact label namespaces separate and preserves a preexisting valid original byte ledger", async () => {
   const f = fixture(), originals = values(), other: InformationLabel = { ...label, exportClass: "confidential" };
   f.state.evidence[0]!.informationLabel = { ...label, exportClass: "internal" };
-  const ledger = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(originals[0]) };
+  const ledger = { schema: DECODED_JSON_BYTE_LEDGER_SCHEMA, ...decodedJsonByteLengths(originals[0]) };
   const stored = await f.store.encodeMany([...originals.map(value => ({ value, logicalValue: value, informationLabel: label })),
     ...originals.map(value => ({ value, logicalValue: value, informationLabel: other }))]);
   expect(new Set([...f.pages.values()].map(row => row.value_json.namespace)).size).toBe(2);
-  const [again] = await f.store.encodeMany([{ value: { ...originals[0], [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: ledger }, logicalValue: originals[0], informationLabel: label }, ...originals.slice(1).map(value => ({ value, informationLabel: label }))]);
-  expect(object(again)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).toEqual(ledger);
-  const restored = await f.store.decodeMany(stored); expect(restored.map(value => decodeDurableJoinPrograms(value))).toEqual([...originals, ...originals]);
+  const [again] = await f.store.encodeMany([{ value: { ...originals[0], [DECODED_JSON_BYTE_LEDGER_KEY]: ledger }, logicalValue: originals[0], informationLabel: label }, ...originals.slice(1).map(value => ({ value, informationLabel: label }))]);
+  expect(object(again)[DECODED_JSON_BYTE_LEDGER_KEY]).toEqual(ledger);
+  const restored = await f.store.decodeMany(stored); expect(restored.map(value => decodeDurableArtifact(value))).toEqual([...originals, ...originals]);
 });
 
 it("factors nested model and event projections while charging only the original parent payload", async () => {
   const f = fixture(), source = values();
   const model = { schema: "model", memoryProjections: source.map(patternJson => ({ patternJson, informationLabel: label })) };
   const event = { schema: "event", payload: { projections: source.slice(0, 16) } };
-  const existing = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(event) };
+  const existing = { schema: DECODED_JSON_BYTE_LEDGER_SCHEMA, ...decodedJsonByteLengths(event) };
   const stored = await f.store.encodeMany([{ value: model, informationLabel: label, logicalValue: model },
-    { value: { ...event, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: existing }, informationLabel: label, logicalValue: event }]);
-  expect(object(stored[1])[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).toEqual(existing);
+    { value: { ...event, [DECODED_JSON_BYTE_LEDGER_KEY]: existing }, informationLabel: label, logicalValue: event }]);
+  expect(object(stored[1])[DECODED_JSON_BYTE_LEDGER_KEY]).toEqual(existing);
   const nested = object(stored[0]).memoryProjections as Array<{ patternJson: Record<string, unknown> }>;
-  expect(nested.every(row => !Object.hasOwn(row.patternJson, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY))).toBe(true);
-  expect((await f.store.decodeMany(cold(stored))).map(value => decodeDurableJoinPrograms(value))).toEqual([model, event]);
+  expect(nested.every(row => !Object.hasOwn(row.patternJson, DECODED_JSON_BYTE_LEDGER_KEY))).toBe(true);
+  expect((await f.store.decodeMany(cold(stored))).map(value => decodeDurableArtifact(value))).toEqual([model, event]);
 });
 
 it("rejects incompatible nested information labels before inserting any page", async () => {
@@ -115,7 +115,7 @@ it("passes unrelated families through and rejects preencoded references and coun
   expect(await f.store.encodeMany([{ value: unrelated }])).toEqual([unrelated]);expect(await f.store.decodeMany([unrelated])).toEqual([unrelated]);expect(f.calls).toHaveLength(0);expect(f.state.transactions).toBe(0);
   const originals = values(), stored = await f.store.encodeMany(originals.map(value => ({ value, informationLabel: label })));
   await expect(f.store.encodeMany([{ value: stored[0], informationLabel: label }])).rejects.toThrow();
-  await expect(f.store.encodeMany(originals.map(value => ({ value: { ...value, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, decodedJsonBytes: 1, decodedJsonbBytes: 1 } }, logicalValue: value, informationLabel: label })))).rejects.toThrow();
+  await expect(f.store.encodeMany(originals.map(value => ({ value: { ...value, [DECODED_JSON_BYTE_LEDGER_KEY]: { schema: DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonBytes: 1, decodedJsonbBytes: 1 } }, logicalValue: value, informationLabel: label })))).rejects.toThrow();
 });
 
 it.each([["roles", "sourceConstructionCandidate"], ["nullRoles", "requestConstructionCandidate"]] as const)(
@@ -136,7 +136,7 @@ it.each([["roles", "sourceConstructionCandidate"], ["nullRoles", "requestConstru
     const paged = await f.store.encodeMany(originals.map(value => ({ value, logicalValue: value, informationLabel: label })));
     expect(f.pages.size).toBeGreaterThan(0);
     expect(paged.map(seed)).toEqual(originals.map(seed));
-    expect((await f.store.decodeMany(cold(paged))).map(decodeDurableJoinPrograms)).toEqual(originals);
+    expect((await f.store.decodeMany(cold(paged))).map(decodeDurableArtifact)).toEqual(originals);
   });
 
 it("checks graph declarations inside compact source examples without adding visible query flags", async () => {
@@ -158,7 +158,7 @@ it("writes bounded 64 KiB pages while retaining the existing 256 KiB read contra
   const priorWriter = createConstructionSourceDecisionStore(f.host, { writePageBytes: 256 * 1024 });
   const old = await priorWriter.encodeMany(originals.map(value => ({ value, informationLabel: label })));
   expect([...f.pages.values()].some(row => Buffer.byteLength(exact(row.value_json)) > 64 * 1024)).toBe(true);
-  expect((await f.store.decodeMany(cold(old))).map(decodeDurableJoinPrograms)).toEqual(originals);
+  expect((await f.store.decodeMany(cold(old))).map(decodeDurableArtifact)).toEqual(originals);
   f.state.headerBytes = 1;
   const narrowReader = createConstructionSourceDecisionStore(f.host, { maxPageBytes: 64 * 1024 });
   await expect(narrowReader.decodeMany(cold(old))).rejects.toThrow();
@@ -167,7 +167,7 @@ it("writes bounded 64 KiB pages while retaining the existing 256 KiB read contra
   const current = await f.store.encodeMany(originals.map(value => ({ value, informationLabel: label })));
   expect(f.pages.size).toBeGreaterThan(1);
   expect([...f.pages.values()].every(row => Buffer.byteLength(exact(row.value_json)) <= 64 * 1024)).toBe(true);
-  expect((await f.store.decodeMany(cold(current))).map(decodeDurableJoinPrograms)).toEqual(originals);
+  expect((await f.store.decodeMany(cold(current))).map(decodeDurableArtifact)).toEqual(originals);
 });
 
 it("preserves raw array roots without adding a ledger envelope or performing I/O", async () => {

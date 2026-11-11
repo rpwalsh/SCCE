@@ -1,20 +1,25 @@
 {
- "generatedAt": "2026-09-11T09:24:26.429Z",
+ "generatedAt": "2026-11-11T00:43:59.438Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 1727,
-  "reached": 1238,
-  "internalHelpersOnly": 471,
-  "orphans": 18,
-  "declaredConstants": 0,
-  "compatibilityAliases": 1,
+  "exports": 2942,
+  "reached": 2139,
+  "internalHelpersOnly": 694,
+  "orphans": 109,
+  "declaredConstants": 5,
+  "compatibilityAliases": 14,
   "legacyMigration": 0,
   "hostContracts": 1,
-  "testOnlyHelpers": 9,
-  "implementedButUncalled": 16,
-  "ofWhichCoveredByTestsOnly": 9,
-  "ofWhichNoCallerAnywhere": 0,
-  "ofWhichDeliberatelyUnwired": 14
+  "testOnlyHelpers": 60,
+  "implementedButUncalled": 89,
+  "ofWhichCoveredByTestsOnly": 60,
+  "ofWhichNoCallerAnywhere": 22,
+  "ofWhichDeliberatelyUnwired": 13,
+  "retiredLanguageJoinProductionReferences": 0
+ },
+ "retiredLanguageJoinSubsystem": {
+  "status": "absent",
+  "forbiddenReferences": []
  },
  "orphans": [
   {
@@ -23,6 +28,141 @@
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "findCodeVerifierForPath",
+   "file": "packages/adapters-node/src/code-verifier-discovery.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "prepareCorefUDSourceTrainingMaterial",
+   "file": "packages/adapters-node/src/corefud-source-reader.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "assertCorefUDSourceDisjoint",
+   "file": "packages/adapters-node/src/corefud-source-reader.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "extractDocumentWasm",
+   "file": "packages/adapters-node/src/document-wasm-extraction.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "clearSourceTitleCache",
+   "file": "packages/adapters-node/src/postgres.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "residentNgramModelJsonCount",
+   "file": "packages/adapters-node/src/postgres.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "repairProgramArtifacts",
+   "file": "packages/adapters-node/src/program-repair.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "manifestFileNames",
+   "file": "packages/adapters-node/src/project-artifact-declarations.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "artifactRoleForProjectPath",
+   "file": "packages/adapters-node/src/project-artifact-declarations.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "createSourceInductionWorkerSession",
+   "file": "packages/adapters-node/src/source-induction-worker-session.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "SOURCE_OWNED_TEST_CONTRACT_SCHEMA",
+   "file": "packages/adapters-node/src/source-owned-test-contracts.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "verifiedResumeOffset",
+   "file": "packages/adapters-node/src/wikipedia-v3-ingestor.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "residentSafetyBoundMiBForTest",
+   "file": "packages/adapters-node/src/wikipedia-v3-ingestor.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "alignmentEventPayloadFor",
+   "file": "packages/adapters-node/src/wikipedia-v3-ingestor.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "calibratedAlignmentProbability",
+   "file": "packages/kernel/src/alignment-calibration.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
    "hostContract": false,
    "testOnly": true
   },
@@ -37,6 +177,42 @@
    "testOnly": false
   },
   {
+   "name": "measureApparatusLines",
+   "file": "packages/kernel/src/apparatus-lines.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "boundaryEstimatorNumericalFitCount",
+   "file": "packages/kernel/src/boundary-estimator.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "canonicalJsonFragments",
+   "file": "packages/kernel/src/bounded-alignment-artifacts.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "createPortableCognitiveRuntime",
+   "file": "packages/kernel/src/browser-cognitive-runtime.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
    "name": "structuredSurface",
    "file": "packages/kernel/src/candidate.ts",
    "caller": "",
@@ -47,8 +223,260 @@
    "testOnly": false
   },
   {
-   "name": "languageProfileSignature",
+   "name": "assertCanonicalIdentityAudit",
+   "file": "packages/kernel/src/canonical-identity.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "compileCanonicalReplayManifest",
+   "file": "packages/kernel/src/canonical-replay.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "verifyCanonicalReplayManifest",
+   "file": "packages/kernel/src/canonical-replay.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "sourceOwnedBehaviorRequirementsFromDocumentation",
+   "file": "packages/kernel/src/code-intent.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL",
+   "file": "packages/kernel/src/code-request.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "COGNITIVE_CAPABILITY_IDS",
+   "file": "packages/kernel/src/cognitive-capability-manifest.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "realizeLearnedSurfaceFromMemory",
+   "file": "packages/kernel/src/construction-cycle-consistency.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "constructionCycleSelectionScore",
+   "file": "packages/kernel/src/construction-cycle-consistency.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "normalizeConstructionRoleGeometry",
+   "file": "packages/kernel/src/construction-role-geometry-storage.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "restoreConstructionRoleGeometry",
+   "file": "packages/kernel/src/construction-role-geometry-storage.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "restoreConstructionSourceDecision",
+   "file": "packages/kernel/src/construction-source-decision-storage.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "conversationBoundMoveMayAssertAsKnown",
+   "file": "packages/kernel/src/conversational-act-binding.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "resetCorpusIdentityMeasurements",
+   "file": "packages/kernel/src/corpus-identity-runtime.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "verifyCreativeSourceCorrespondence",
+   "file": "packages/kernel/src/creative-source-correspondence.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "buildTranslationLexicon",
+   "file": "packages/kernel/src/cross-lingual-alignment.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "translateSymbols",
+   "file": "packages/kernel/src/cross-lingual-alignment.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "interpretationAdjustmentDeltaForTypedCandidateV2",
+   "file": "packages/kernel/src/discourse-state.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "createJsonlEvalProvider",
+   "file": "packages/kernel/src/eval/blind-eval.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "runBlindPairwiseEval",
+   "file": "packages/kernel/src/eval/blind-eval.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "blindEvalReportMarkdown",
+   "file": "packages/kernel/src/eval/blind-eval.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "clearFreeFormLexicon",
+   "file": "packages/kernel/src/free-form-lexicon.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "preparedLanguageInductionModel",
+   "file": "packages/kernel/src/graph-surface-alignment.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "attributionReport",
+   "file": "packages/kernel/src/ingest-stage-trace.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "REQUESTED_AUTHORITY_ROUTING_SCHEMA",
+   "file": "packages/kernel/src/invention-planner.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "kneserNeyMaterializationCounts",
+   "file": "packages/kernel/src/kneser-ney.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "compileUniversalCreativeEventConstructionPattern",
+   "file": "packages/kernel/src/language-construction-memory.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "majorityClosedClass",
    "file": "packages/kernel/src/language-identity.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "interpretLearnedSurface",
+   "file": "packages/kernel/src/learned-surface-interpretation.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "requestLeadingScaffoldingUnit",
+   "file": "packages/kernel/src/local-evidence-runtime.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
@@ -92,6 +520,42 @@
    "usedInOwnFile": false,
    "alias": false,
    "deliberatelyUnwired": "Merges MultilingualLanguageProfile records sharing a sourceClusterId. The production translation lane carries LanguageProfile from language memory, a different type built by a different path, so there is no set of these profiles anywhere in the runtime to cluster -- only translation.ts's own pairwise buildLanguageProfile calls, which produce exactly two and share no cluster.",
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "deriveNumericTokenStatistics",
+   "file": "packages/kernel/src/numeric-token-statistics.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "numericTokenDerivationCount",
+   "file": "packages/kernel/src/numeric-token-statistics.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "clearNumericTokenStatisticsCache",
+   "file": "packages/kernel/src/numeric-token-statistics.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "activateCognitiveOperatorsWithOutcomeSupport",
+   "file": "packages/kernel/src/operator-outcome-loop.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
    "hostContract": false,
    "testOnly": true
   },
@@ -145,12 +609,164 @@
    "testOnly": false
   },
   {
-   "name": "scoreRelationPotential",
-   "file": "packages/kernel/src/relation-potential.ts",
+   "name": "recitedEvidenceAdmissibility",
+   "file": "packages/kernel/src/production-turn-runtime.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
-   "deliberatelyUnwired": "Validates the model on every call, which is right for a single score and wrong for the only production use: scoreGraphEdgesWithRelationPotential freezes the model once and scores every edge against it. Routing that loop through here would re-validate per edge. Relation promotion, the other place a potential score would fit, decides by description length rather than by this model.",
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "learnedSurfaceConsultsSourceBound",
+   "file": "packages/kernel/src/production-turn-runtime.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "learnedSurfaceTruncatesSourceBound",
+   "file": "packages/kernel/src/production-turn-runtime.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "sourceIndependentDialogueSurfaceAcceptable",
+   "file": "packages/kernel/src/production-turn-runtime.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "validateProgramCompositionBehavior",
+   "file": "packages/kernel/src/program-composition.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "claimScopedEvidenceProofBoundaries",
+   "file": "packages/kernel/src/proof-boundary.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES",
+   "file": "packages/kernel/src/relation-promotion.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "requestLanguageFormScopeGeneration",
+   "file": "packages/kernel/src/request-language-form-scope.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "reversibleConstructionCycle",
+   "file": "packages/kernel/src/reversible-construction.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "segmentationSurfaceAdjacencies",
+   "file": "packages/kernel/src/segmentation-forest.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "segmentationScoreStorageWireSizes",
+   "file": "packages/kernel/src/segmentation-score-factors.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "segmentationScoreFactorsCanonicalSafe",
+   "file": "packages/kernel/src/segmentation-score-factors.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "evidenceSourceDeclaredLicense",
+   "file": "packages/kernel/src/source-declared-license.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "deriveSourceIdentityTitle",
+   "file": "packages/kernel/src/source-identity.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "sourceSegmentationSurfaceBearingArcIndices",
+   "file": "packages/kernel/src/source-segmentation-witness.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "sourceSegmentationArcObservation",
+   "file": "packages/kernel/src/source-segmentation-witness.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "summarizeAdmittedSource",
+   "file": "packages/kernel/src/source-summary.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "sparseAlignmentCandidatesForUnit",
+   "file": "packages/kernel/src/sparse-alignment-candidates.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
    "hostContract": false,
    "testOnly": true
   },
@@ -165,6 +781,159 @@
    "testOnly": false
   },
   {
+   "name": "evaluateStateTransition",
+   "file": "packages/kernel/src/state-transition-search.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "parseStatefulBehaviorScenarioCorpus",
+   "file": "packages/kernel/src/stateful-behavior-scenarios.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "translationCorrectionPriorToJson",
+   "file": "packages/kernel/src/translation-correction-engine.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "translationCorrectionPriorFromJson",
+   "file": "packages/kernel/src/translation-correction-engine.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "fitBaselineField",
+   "file": "packages/kernel/src/visual-baseline-field.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "straighten",
+   "file": "packages/kernel/src/visual-baseline-field.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "readConstructions",
+   "file": "packages/kernel/src/visual-construction-graph.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "readImageWithAlternatives",
+   "file": "packages/kernel/src/visual-eye.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "describeDisagreement",
+   "file": "packages/kernel/src/visual-hypothesis-lattice.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "permutedIdentities",
+   "file": "packages/kernel/src/visual-hypothesis-lattice.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "shapeDistance",
+   "file": "packages/kernel/src/visual-shape-signature.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "shapesAreMirrored",
+   "file": "packages/kernel/src/visual-shape-signature.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "wordModelOf",
+   "file": "packages/kernel/src/visual-sign-roles.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "rolesOf",
+   "file": "packages/kernel/src/visual-sign-roles.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "learnSignRoles",
+   "file": "packages/kernel/src/visual-sign-roles.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "alignVariableArity",
+   "file": "packages/kernel/src/visual-variable-arity-alignment.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "readThroughCorrespondences",
+   "file": "packages/kernel/src/visual-variable-arity-alignment.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
    "name": "workingMemoryEntriesForTask",
    "file": "packages/kernel/src/working-memory.ts",
    "caller": "",
@@ -173,6 +942,15 @@
    "deliberatelyUnwired": "Filters working memory by taskId, and the two id spaces do not meet. A turn writes entries under a turn-scoped id (task.turn.<episodeId>.candidate_selection) while the task resumption snapshot carries the program decomposition graph, whose node ids come from the program planner. Scoping the snapshot by that graph was tried and dropped every entry, emptying the summary; the caller already passes exactly the working memory it means to summarise.",
    "hostContract": false,
    "testOnly": true
+  },
+  {
+   "name": "workspaceContractOwnerIsCurrent",
+   "file": "packages/kernel/src/workspace-code-contracts.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": false
   },
   {
    "name": "dialoguePersistenceTailsSizeForTest",
@@ -192,6 +970,51 @@
    "alias": false,
    "hostContract": true,
    "testOnly": false
+  },
+  {
+   "name": "BrowserGraphqlApplication",
+   "file": "packages/workbench/src/browser/graphql-application.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "assertWorkerRequest",
+   "file": "packages/workbench/src/browser/protocol.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "openBrowserStateRepository",
+   "file": "packages/workbench/src/browser/sqlite-opfs.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "createLocalEnvironment",
+   "file": "packages/workbench/src/network.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "createBrowserEnvironment",
+   "file": "packages/workbench/src/network.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
   }
  ]
 }

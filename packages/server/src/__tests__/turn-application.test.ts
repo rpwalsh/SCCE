@@ -52,7 +52,13 @@ describe("local turn application", () => {
     await registry.drain(reserved.taskId);
     expect(execute).not.toHaveBeenCalled();
     expect((await registry.get(reserved.taskId))?.persistence).toBe("pending");
-    await expect(new TurnTaskRegistry(storage).get(reserved.taskId)).rejects.toThrow("sequence");
+    expect(storage.events.append).toHaveBeenCalledTimes(2);
+    await expect(new TurnTaskRegistry(storage).get(reserved.taskId)).resolves.toMatchObject({
+      status: "interrupted",
+      persistence: "durable",
+      latestSequence: 1,
+      frames: [{ type: "accepted", sequence: 1 }]
+    });
   });
 
   it("marks a claimed turn interrupted after restart and refuses to execute it again", async () => {

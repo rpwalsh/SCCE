@@ -5,8 +5,8 @@ import { beforeAll, expect, it } from "vitest";
 import { canonicalStringify, createClock, createHasher, createIdFactory, createLanguageInductionEngine,
   languageMemoryPatternsFromInducedLanguageModel, requestSeedLanguagePattern, type LanguagePatternRecord, type LanguageProfile } from "@scce/kernel";
 import { decodeSemanticFrames, encodeSemanticFrames, SEMANTIC_FRAME_STORAGE_SCHEMA, SEMANTIC_MEMORY_SCHEMA } from "../semantic-frame-storage.js";
-import { decodeDurableJoinPrograms, durableJoinProgramJsonByteLengths, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY,
-  encodeDurableJoinPrograms } from "../durable-join-program-storage.js";
+import { decodeDurableArtifact, decodedJsonByteLengths, DECODED_JSON_BYTE_LEDGER_KEY,
+  encodeDurableArtifact } from "../durable-artifact-storage.js";
 import { SEMANTIC_PROJECTION_STORAGE_KEY } from "../semantic-projection-storage.js";
 
 const cold = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -35,31 +35,31 @@ beforeAll(() => {
 });
 
 it("uses the sufficient tape for current genuine human-source publication and restores the complete record", () => {
-  const original = projectedPattern.patternJson, packed = record(encodeDurableJoinPrograms(original));
+  const original = projectedPattern.patternJson, packed = record(encodeDurableArtifact(original));
   expect(packed[SEMANTIC_PROJECTION_STORAGE_KEY]).toBeDefined();
   expect(packed.semanticFrames).toBeUndefined();
-  expect(decodeDurableJoinPrograms(cold(packed))).toEqual(original);
+  expect(decodeDurableArtifact(cold(packed))).toEqual(original);
   expect(requestSeedLanguagePattern({ ...projectedPattern, patternJson: packed as LanguagePatternRecord["patternJson"] }))
     .toEqual(requestSeedLanguagePattern(projectedPattern));
 });
 
 it("normalizes genuine human-source frames through the production durable boundary with exact public digest and counters", () => {
-  const original = pattern.patternJson, packed = encodeDurableJoinPrograms(original), stored = record(record(packed).semanticFrames);
+  const original = pattern.patternJson, packed = encodeDurableArtifact(original), stored = record(record(packed).semanticFrames);
   expect(stored.schema).toBe(SEMANTIC_FRAME_STORAGE_SCHEMA);
   const frames = record(original).semanticFrames as Array<Record<string, unknown>>;
   expect((stored.sentences as string[]).length).toBeLessThan(frames.flatMap(frame => frame.examples as string[]).length);
   expect(bytes(packed)).toBeLessThan(bytes(original));
-  const restored = decodeDurableJoinPrograms(cold(packed));
+  const restored = decodeDurableArtifact(cold(packed));
   expect(restored).toEqual(original);
   expect(hasher.digestHex(canonicalStringify(restored))).toBe(hasher.digestHex(canonicalStringify(original)));
-  expect(record(packed)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).toMatchObject(durableJoinProgramJsonByteLengths(original));
-  expect(encodeDurableJoinPrograms(packed)).toBe(packed);
+  expect(record(packed)[DECODED_JSON_BYTE_LEDGER_KEY]).toMatchObject(decodedJsonByteLengths(original));
+  expect(encodeDurableArtifact(packed)).toBe(packed);
   expect(record(restored).graphBoundConstructions).toEqual(record(original).graphBoundConstructions);
   expect(record(restored).relationHypothesisModel).toEqual(record(original).relationHypothesisModel);
 });
 
 it("retains the exact nongenerative seed projection without interpreting normalized frame rows", () => {
-  const packed = encodeDurableJoinPrograms(pattern.patternJson);
+  const packed = encodeDurableArtifact(pattern.patternJson);
   const storedPattern = { ...pattern, patternJson: packed as LanguagePatternRecord["patternJson"] };
   expect(requestSeedLanguagePattern(storedPattern)).toEqual(requestSeedLanguagePattern(pattern));
   expect(JSON.stringify(requestSeedLanguagePattern(storedPattern))).not.toContain(SEMANTIC_FRAME_STORAGE_SCHEMA);
@@ -67,9 +67,9 @@ it("retains the exact nongenerative seed projection without interpreting normali
 
 it("uses the same boundary in nested model and event payloads without changing source ownership", () => {
   const original = { projection: { patterns: [pattern] }, eventPayload: { learned: pattern.patternJson }, retained: null };
-  const encoded = encodeDurableJoinPrograms(original);
+  const encoded = encodeDurableArtifact(original);
   expect(JSON.stringify(encoded)).toContain(SEMANTIC_FRAME_STORAGE_SCHEMA);
-  expect(decodeDurableJoinPrograms(cold(encoded))).toEqual(original);
+  expect(decodeDurableArtifact(cold(encoded))).toEqual(original);
 });
 
 it("preserves unknown fields, Unicode, NUL, prototype names, missing and explicit null members", () => {
@@ -87,7 +87,7 @@ it("preserves unknown fields, Unicode, NUL, prototype names, missing and explici
 });
 
 it.each(["missing_sentence", "changed_sentence", "missing_evidence", "changed_evidence", "negative_reference", "changed_role", "missing_digest", "unknown_marker"])("refuses %s before restoring a public frame", kind => {
-  const packed = record(cold(encodeDurableJoinPrograms(pattern.patternJson))), marker = record(packed.semanticFrames);
+  const packed = record(cold(encodeDurableArtifact(pattern.patternJson))), marker = record(packed.semanticFrames);
   const frames = marker.frames as Array<Record<string, unknown>>;
   if (kind === "missing_sentence") marker.sentences = [];
   if (kind === "changed_sentence") (marker.sentences as string[])[0] += " altered";
@@ -97,12 +97,12 @@ it.each(["missing_sentence", "changed_sentence", "missing_evidence", "changed_ev
   if (kind === "changed_role") (frames[0]!.roles as unknown[][])[0]![1] = "foreign";
   if (kind === "missing_digest") delete marker.digest;
   if (kind === "unknown_marker") marker.extra = true;
-  expect(() => decodeDurableJoinPrograms(packed)).toThrow("invalid semantic frame storage");
+  expect(() => decodeDurableArtifact(packed)).toThrow("invalid semantic frame storage");
 });
 
 it("does not interpret unrelated or malformed semantic lookalikes", () => {
   const value = { schema: "unrelated", semanticFrames: [{ examples: ["source"], evidenceIds: [], roles: [], predicateAlternatives: [] }] };
-  expect(encodeDurableJoinPrograms(value)).toBe(value);
+  expect(encodeDurableArtifact(value)).toBe(value);
   expect(encodeSemanticFrames([{ examples: null, evidenceIds: [] }])).toBeUndefined();
   expect(() => decodeSemanticFrames({ schema: SEMANTIC_FRAME_STORAGE_SCHEMA, sentences: [], evidence: [], frames: [] })).toThrow("invalid semantic frame storage");
 });

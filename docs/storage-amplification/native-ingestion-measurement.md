@@ -14,7 +14,7 @@ The tool uses local deterministic training and PostgreSQL. It does not call an L
 ## Complete local UTF-8 text
 
 ```powershell
-node --max-old-space-size=4096 tools/measure-ingestion-storage.mjs --config=scce.local.json --input=examples/first.txt --input=examples/second.txt --out=.scce/verification/text-storage-run --readback --request-seed
+node --max-old-space-size=7168 tools/measure-ingestion-storage.mjs --config=scce.local.json --input=examples/first.txt --input=examples/second.txt --out=.scce/verification/text-storage-run --readback --request-seed
 ```
 
 Plain-text inputs use the registered `workspace` source system unless `--source-system` is supplied. Each input is one sequential prepare/commit batch. Invalid UTF-8 is rejected. The existing corpus text normalizer defines the admitted text; the tool records both the original file SHA-256 and normalized text SHA-256/UTF-8 byte length. It does not select a prefix, split a source into substitute files, or truncate content.
@@ -24,7 +24,7 @@ Plain-text inputs use the registered `workspace` source system unless `--source-
 ## Declared transcripts
 
 ```powershell
-node --max-old-space-size=4096 tools/measure-ingestion-storage.mjs --config=scce.local.json --input=path/to/declared-transcript.json --transcript --out=.scce/verification/transcript-storage-run --skip-observations --ngram-max-order=4 --ngram-max-counters=12000 --ngram-vocabulary-limit=24000 --max-evidence-chunk-bytes=65536 --created-at=1000 --readback --request-seed
+node --max-old-space-size=7168 tools/measure-ingestion-storage.mjs --config=scce.local.json --input=path/to/declared-transcript.json --transcript --out=.scce/verification/transcript-storage-run --skip-observations --ngram-max-order=4 --ngram-max-counters=12000 --ngram-vocabulary-limit=24000 --max-evidence-chunk-bytes=65536 --created-at=1000 --readback --request-seed
 ```
 
 `--transcript` explicitly treats every supplied input as a declared human-authored transcript. It calls the existing transcript validator and trains the complete declared text with all declared turns. Its default source system is `dialogue`. Without this flag a JSON file is ordinary text, not silently interpreted as a transcript.
@@ -48,11 +48,43 @@ TOAST is already included in `pg_table_size` and `pg_total_relation_size`; do no
 
 `--readback` fetches every pattern published by the current batch through the public adapter, with exact IDs, explicit kind/schema filters, complete 32-row pages and a 64 MiB decoded budget per request. It compares complete canonical records with the compiler's publication. `--request-seed` checks the public request-seed projection against `requestSeedLanguagePattern` for the same records, including explicit receipt-family queries. Missing rows, an exceeded readback bound, or a canonical mismatch fail the run; verification does not silently accept a partial result. These checks qualify pattern persistence and projections, not every served answer or every storage family.
 
-The only credential artifact is `fixture.local.json`, written by the existing ignored-config helper. Receipts omit connection strings and raw driver error messages. A failure records its stage, error class and error code; the new database and its config remain available for inspection. Never point a continuation at that partially measured database: run a new invocation with a new output directory.
+The only credential artifact is `fixture.local.json`, written by the existing ignored-config helper. Receipts omit connection strings and raw driver error messages. A failure records its stage, error class and error code; verification failures additionally record a bounded reason, family, row counts and canonical hashes. A committed batch is checkpointed before optional readback so a verifier failure cannot erase its physical measurement. The new database and its config remain available for inspection. Never point a continuation at that partially measured database: run a new invocation with a new output directory.
 
 Compare runs using identical source hashes, input order, explicit options and build identities. A short text or transcript result is not a whole-Wikipedia throughput result. These measurements do not establish a whole-machine memory limit, predictive learning quality or production answer quality.
 
-## Measured four-source qualification, 2026-11-10
+## Sufficient-state producer measurement, 2026-11-10
+
+After removing unqualified construction rows, large event diagnostics, and denormalized segmentation arrays from the ingestion producer, the same four complete Dolly transcripts were measured again at the machine's 7 GiB Node heap setting. The language JOIN subsystem was absent. Source segmentation archives retained exact source ownership/evidence, population evidence, and every full-DAG arc energy, while retained paths, boundary-marginal arrays, grapheme-offset arrays, surface-arc indexes, and resume bodies were no longer persisted as duplicate producer output.
+
+```powershell
+node --max-old-space-size=7168 tools/measure-ingestion-storage.mjs --config=scce.brain-20261109-r003.local.json --input=.scce/corpus-bootstrap/dolly15k-v1/transcripts/dialogue-00041.json --input=.scce/corpus-bootstrap/dolly15k-v1/transcripts/dialogue-00042.json --input=.scce/corpus-bootstrap/dolly15k-v1/transcripts/dialogue-00043.json --input=.scce/corpus-bootstrap/dolly15k-v1/transcripts/dialogue-00044.json --out=.scce/verification/native-dolly41-44-final-7g-20261110 --transcript --skip-observations --ngram-max-order=4 --ngram-max-counters=12000 --ngram-vocabulary-limit=24000 --max-evidence-chunk-bytes=65536 --created-at=1000 --readback --request-seed
+```
+
+The final run completed in fresh database `scce_brain_3e470d908c25026348453fe9`. Empty-schema allocation was 3,276,800 bytes. Final growth was **29,319,168 bytes for 369,050 admitted bytes, or 79.4450 times**. This is 14,819,328 bytes (33.57%) less physical growth than the identical 119.6003-times baseline below. The 10-times storage objective is a goal rather than a hard admission gate, but it is **not met** by this result.
+
+| Complete input | Cumulative admitted bytes | Growth added by input | Cumulative growth bytes | Cumulative ratio | Full rows verified | Seed rows verified | Audit archives excluded from seed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `00041` | 95,088 | 8,364,032 | 8,364,032 | 87.9610 | 121 | 64 | 57 |
+| `00042` | 189,631 | 7,094,272 | 15,458,304 | 81.5178 | 125 | 68 | 57 |
+| `00043` | 278,380 | 7,036,928 | 22,495,232 | 80.8076 | 122 | 70 | 52 |
+| `00044` | 369,050 | 6,823,936 | 29,319,168 | 79.4450 | 122 | 69 | 53 |
+
+Every full-record and request-seed comparison passed. The seed verifier explicitly proved that 219 exact-ID segmentation archive rows were absent from request hydration; it did not count their deliberate absence as missing data.
+
+The final read-only storage audit identifies the remaining amplification rather than hiding it:
+
+- `language_patterns`: 16,793,600 allocated bytes. The 193 exact full-DAG source witnesses account for 10,121,834 stored JSONB datum bytes.
+- `ngram_models`: 2,727,936 allocated bytes.
+- `creative_event_occurrences`: 2,195,456 allocated bytes.
+- `evidence_spans`: 2,170,880 allocated bytes, including 1,581,056 bytes of indexes.
+- `language_units`: 2,015,232 allocated bytes.
+- Distinct per-window induced semantic, syntax and morphology memories account for another 4,032,662 stored JSONB datum bytes. A uniqueness audit found their learned rules, templates, boundary signals and graph constructions are effectively all distinct, so collapsing them as profile duplicates would discard cognitive evidence rather than fix duplication.
+
+The 193 witnesses contain 670,779 exact DAG arcs and 464,079 distinct learned Float64 energies. Their compact SCDG payload is 6,321,329 bytes, already **17.13 times the admitted source before any PostgreSQL row, index, evidence, n-gram or semantic-memory cost**. Externalizing the same bytes to `BYTEA` could remove at most 2,107,371 gross base64 bytes before adding blob rows, keys and references, yielding an estimated roughly 74-times whole-run ratio. That is not a path to the 10-times goal. Further material reduction requires a new exact energy factorization with parity proof, not generic compression or deletion of the required full DAG.
+
+The qualified compiled identities were kernel `fc4bd6b0473a1137c768128c446e0f90e5da703f943d690dee4e749974b45658` and adapters `7a66886d903d1c113ae8bab4d0f9263012896723ab88ed8e25207c9868259f8b`. The receipt and read-only table/family audit are preserved in `.scce/verification/native-dolly41-44-final-7g-20261110/`.
+
+## Historical four-source baseline, 2026-11-10
 
 The checked-in CLI completed four genuine, complete Dolly transcript files, `dialogue-00041.json` through `dialogue-00044.json`, sequentially in one fresh physical database. The original JSON files total 1,040,576 bytes and contain 970 declared turns. The expansion denominator is their **369,050 unique admitted and learned normalized UTF-8 bytes**, with four distinct content hashes and no conflicting lengths. No old learned state was copied.
 

@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CorpusSegmentationScratch, CorpusSegmentationScratchRow, JsonValue } from "@scce/kernel";
 import { CORPUS_COUNT_PAGE_SCHEMA, CORPUS_MEMBERSHIP_SCHEMA, corpusMembershipHash } from "../../corpus-segmentation-membership.js";
-import { durableJoinProgramJsonByteLengths } from "../../durable-join-program-storage.js";
+import { decodedJsonByteLengths } from "../../decoded-json-byte-ledger.js";
 
 export async function corpusMembershipSqlFixture(sql: string, params: unknown[], memory: CorpusSegmentationScratch, blockSize = 8192): Promise<unknown[] | undefined> {
   const all = async (collection: string) => {
@@ -40,15 +40,15 @@ export async function corpusMembershipSqlFixture(sql: string, params: unknown[],
     };
     for (const [hash, members] of entries) {
       const atomic = { [hash]: Object.fromEntries(members) }, candidate = { ...packed, ...atomic };
-      const atomicBytes = durableJoinProgramJsonByteLengths(row(atomic)).decodedJsonbBytes + 2;
+      const atomicBytes = decodedJsonByteLengths(row(atomic)).decodedJsonbBytes + 2;
       if (atomicBytes > Number(params[2])) return [{ authorized: true, valid: false, expected: "0", matched: "0" }];
-      if (Object.keys(packed).length && durableJoinProgramJsonByteLengths(row(candidate)).decodedJsonbBytes + 2 > target) { stored.push(row(packed)); packed = {}; }
+      if (Object.keys(packed).length && decodedJsonByteLengths(row(candidate)).decodedJsonbBytes + 2 > target) { stored.push(row(packed)); packed = {}; }
       if (atomicBytes > target) stored.push(row(atomic)); else packed = { ...packed, ...atomic };
     }
     if (Object.keys(packed).length) stored.push(row(packed));
     await memory.putMany(`input/${kind}-counts`, stored);
     return [{ authorized: true, valid: true, expected: String(stored.length), matched: String(stored.length),
-      leaf_byte_capacity: Math.max(target, ...stored.map(row => durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2)) }];
+      leaf_byte_capacity: Math.max(target, ...stored.map(row => decodedJsonByteLengths(row).decodedJsonbBytes + 2)) }];
   }
   if (sql.includes("WITH requested AS MATERIALIZED") && sql.includes("FROM located q")) {
     const requested = JSON.parse(String(params[2])) as Array<{ key: string; hash: string }>;

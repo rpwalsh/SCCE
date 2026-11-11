@@ -245,10 +245,32 @@ describe("production owner program turn through the API", () => {
     const source = creativeLanguageSource();
     const fixtureIds = createIdFactory({ clock: createClock({ fixedTime: 102_000, stepMs: 1 }), hasher: createHasher(), deterministicReplay: true });
     const profile = createLanguageAcquisitionEngine({ idFactory: fixtureIds }).acquire({ sourceVersionId: source.sourceVersionId, text: source.text, createdAt: 102_000 });
-    const trainedLanguage = compileLanguageTrainingBatch({ runtime: createLanguageMemoryRuntime({ idFactory: fixtureIds, hasher: createHasher() }), hasher: createHasher(),
-      batch: { streamId: "source:production-creative-language", sourceSystem: "gutenberg", profile, sourceVersionId: source.sourceVersionId, text: source.text, evidence: [source], createdAt: 102_000, maxOrder: 4, maxCountersPerOrder: 256 } });
     const compiled = createUniversalCreativeEventConstructionCompiler().compile({ profileId: profile.id, evidence: [source], hasher: createHasher(), updatedAt: 102_000 });
     if (compiled.status !== "compiled") throw new Error(`creative API fixture did not compile: ${JSON.stringify(compiled)}`);
+    const speechGrammar = {
+      bindingId: "production.creative.source.speech",
+      observations: (compiled.bundle.creativeEvents ?? []).map(event => ({
+        sourceVersionId: event.sourceVersionId,
+        evidenceId: event.evidenceId,
+        surfaceStartCodePoint: event.argumentFrame.sourceSentenceStartCodePoint,
+        surfaceEndCodePoint: event.argumentFrame.sourceSentenceEndCodePoint,
+        roles: [
+          {
+            slotIndex: 0,
+            startCodePoint: event.labelStartCodePoint - event.argumentFrame.sourceSentenceStartCodePoint,
+            endCodePoint: event.labelEndCodePoint - event.argumentFrame.sourceSentenceStartCodePoint
+          },
+          ...event.argumentFrame.bindings.map((binding, index) => ({
+            slotIndex: index + 1,
+            startCodePoint: binding.startCodePoint - event.argumentFrame.sourceSentenceStartCodePoint,
+            endCodePoint: binding.endCodePoint - event.argumentFrame.sourceSentenceStartCodePoint
+          }))
+        ]
+      }))
+    };
+    const trainedLanguage = compileLanguageTrainingBatch({ runtime: createLanguageMemoryRuntime({ idFactory: fixtureIds, hasher: createHasher() }), hasher: createHasher(),
+      batch: { streamId: "source:production-creative-language", sourceSystem: "gutenberg", profile, sourceVersionId: source.sourceVersionId, text: source.text,
+        evidence: [source], constructionSets: [speechGrammar], createdAt: 102_000, maxOrder: 4, maxCountersPerOrder: 256 } });
     const bundle = hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [source], hasher: createHasher() }).bundles[0];
     if (!bundle?.creativeEvents?.length) throw new Error("creative API fixture has no events");
     const requestText = "Invent two alternative indexing algorithms for this graph, each with a distinct structural approach.";

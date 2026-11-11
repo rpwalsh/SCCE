@@ -1,9 +1,19 @@
+scalar JSON
 interface Node { id: ID! }
 type Query {
   node(id: ID!): Node
   nodes(ids: [ID!]!): [Node]!
   runtime: RuntimeStatus!
   turnTask(id: ID!): TurnTask
+  sources(first: Int! = 20, after: String): SourceVersionConnection!
+  vscodeReady: VscodeReadyResult!
+  vscodeProjectSummary(path: String!): VscodeProjectSummaryResult!
+  vscodeWorkspaceStatus: VscodeWorkspaceStatusResult!
+  vscodeLearningCurriculum: VscodeLearningCurriculumResult!
+  vscodeHeldSources(first: Int! = 20): VscodeHeldSourcesResult!
+  vscodeSettings: VscodeSettingsResult!
+  vscodeModels: VscodeModelsResult!
+  vscodeCodeValidationPolicies: VscodeCodeValidationPoliciesResult!
 }
 type RuntimeStatus {
   protocolVersion: String!
@@ -28,7 +38,20 @@ type TurnResult implements Node {
   error: String
   httpStatus: Int
   episodeId: String
+  value: JSON
+  detail: JSON
+  dialogue: TurnDialogue
+  entailment: JSON
+  proofCarryingAnswer: JSON
+  events: [TurnAnswerEvent!]
+  evidence: [TurnAnswerEvidence!]
+  guardFlags: TurnGuardFlags
+  index: JSON
 }
+type TurnDialogue { conversationId: String, turnId: String }
+type TurnAnswerEvent { typeId: String, id: String }
+type TurnAnswerEvidence { id: String, sourceId: String, textPreview: String, provenance: JSON }
+type TurnGuardFlags { sourceBacked: Boolean }
 type TurnFrame implements Node {
   id: ID!
   sequence: Int!
@@ -37,6 +60,11 @@ type TurnFrame implements Node {
   answer: String
   error: String
   observedAt: Float!
+  status: Int
+  elapsedMs: Float
+  value: JSON
+  detail: JSON
+  assistantForce: String
 }
 type TurnFrameConnection { edges: [TurnFrameEdge!]!, pageInfo: PageInfo! }
 type TurnFrameEdge { cursor: String!, node: TurnFrame! }
@@ -52,12 +80,18 @@ type EvidenceSpan implements Node {
 }
 type SourceVersion implements Node {
   id: ID!
+  sourceId: String!
+  namespace: String!
   canonicalUri: String!
   contentHash: String!
   mediaType: String!
   byteLength: Float!
   observedAt: Float!
+  maxAlpha: Float
+  promotedSpanCount: Int
 }
+type SourceVersionConnection { edges: [SourceVersionEdge!]!, pageInfo: PageInfo! }
+type SourceVersionEdge { cursor: String!, node: SourceVersion! }
 enum RequestedAuthority { factual reasoned creative translation program action }
 input StartTurnInput {
   operationId: ID!
@@ -70,9 +104,79 @@ input StartTurnInput {
 input ReserveTurnInput { clientMutationId: String }
 input CancelTurnInput { taskId: ID!, clientMutationId: String }
 type TurnTaskPayload { task: TurnTask!, clientMutationId: String }
+input LearnSourceInput {
+  operationId: ID!
+  namespace: String!
+  canonicalUri: String!
+  mediaType: String!
+  bytesBase64: String!
+  title: String
+  observedAt: Float
+  clientMutationId: String
+}
+type LearnSourcePayload {
+  source: SourceVersion!
+  evidenceId: ID!
+  languageProfileId: ID!
+  clientMutationId: String
+}
+type VscodeReadyResult { ok: Boolean!, postgres: JSON, serverUrl: String!, manifest: Int!, exactCounts: Boolean!, warmup: JSON }
+type VscodeProjectSummaryResult { schema: String!, workspace: JSON!, summary: JSON! }
+type VscodeWorkspaceStatusResult { workspace: VscodeWorkspace, sources: [VscodeWorkspaceSource!]! }
+type VscodeWorkspace { id: ID!, rootPath: String!, updatedAt: Float! }
+type VscodeWorkspaceSource { path: String! }
+type VscodeLearningCurriculumResult { schema: String!, items: [VscodeCurriculumItem!]! }
+type VscodeCurriculumItem { planId: ID!, query: String!, rationale: String! }
+type VscodeHeldSourcesResult { schema: String!, held: [VscodeHeldSource!]! }
+type VscodeHeldSource { id: ID!, uri: String!, title: String!, preview: String!, evidenceCount: Int! }
+type VscodeSettingsResult { schema: String!, configPath: String!, fields: [VscodeSettingField!]! }
+type VscodeSettingField { key: String!, label: String!, kind: String!, choices: [String!], value: JSON }
+type VscodeModelsResult { schema: String!, modelDir: String!, models: [VscodeModel!]!, totalBytes: Float! }
+type VscodeModel { id: ID!, path: String!, bytes: Float!, files: Int!, active: Boolean!, size: String! }
+type VscodeCodeValidationPoliciesResult { policies: [VscodeCodeValidationPolicy!]!, provider: String! }
+type VscodeCodeValidationPolicy { id: ID!, checks: [String!]! }
+type VscodeJsonMutationPayload { value: JSON!, clientMutationId: String }
+type VscodeWorkspaceInitializePayload { workspace: VscodeWorkspace!, clientMutationId: String }
+type VscodeWorkspaceIngestPayload {
+  schema: String!, importBatchId: ID!, ingested: Int!, unchanged: Int!, changed: Int!, missing: Int!, failed: Int!, unsupported: Int!,
+  workspace: JSON!, project: JSON!, clientMutationId: String
+}
+type VscodeWorkspaceAnswerPayload { schema: String!, question: String!, answer: String!, confidence: Float!, sourceRefs: [JSON!]!, clientMutationId: String }
+type VscodeLearningPursuePayload { schema: String!, answer: String!, held: [VscodeHeldSource!]!, clientMutationId: String }
+type VscodeReviewHeldSourcePayload { schema: String!, review: VscodeHeldSourceReview!, clientMutationId: String }
+type VscodeHeldSourceReview { id: ID!, decision: String!, promotedEvidence: Int! }
+type VscodeApprovalPayload { approved: VscodeApprovalDecision!, session: JSON, clientMutationId: String }
+type VscodeRejectionPayload { rejected: VscodeApprovalDecision!, session: JSON, clientMutationId: String }
+type VscodeApprovalDecision { planId: ID!, capabilityId: String! }
+type VscodeSettingUpdatePayload { schema: String!, key: String!, value: JSON, configPath: String!, restartRequired: Boolean!, clientMutationId: String }
+type VscodeModelDownloadPayload { schema: String!, model: VscodeModel!, clientMutationId: String }
+type VscodeModelRemovePayload { schema: String!, modelId: ID!, removed: Boolean!, clientMutationId: String }
+input VscodePathCommandInput { operationId: String!, path: String!, clientMutationId: String }
+input VscodeAskCommandInput { operationId: String!, path: String!, question: String!, clientMutationId: String }
+input VscodeJsonCommandInput { operationId: String!, value: JSON!, clientMutationId: String }
+input VscodePlanCommandInput { operationId: String!, planId: String!, clientMutationId: String }
+enum VscodeReviewDecision { promoted rejected }
+input VscodeReviewCommandInput { operationId: String!, id: String!, decision: VscodeReviewDecision!, clientMutationId: String }
+input VscodeSettingCommandInput { operationId: String!, key: String!, value: JSON!, clientMutationId: String }
+input VscodeModelCommandInput { operationId: String!, modelId: String!, clientMutationId: String }
+input VscodeCodeCommandInput { operationId: String!, path: String!, request: String!, attempts: Int, validationPolicyId: String, clientMutationId: String }
 type Mutation {
   reserveTurn(input: ReserveTurnInput!): TurnTaskPayload!
   startTurn(input: StartTurnInput!): TurnTaskPayload!
   cancelTurn(input: CancelTurnInput!): TurnTaskPayload!
+  learnSource(input: LearnSourceInput!): LearnSourcePayload!
+  vscodeWorkspaceInitialize(input: VscodePathCommandInput!): VscodeWorkspaceInitializePayload!
+  vscodeWorkspaceIngest(input: VscodePathCommandInput!): VscodeWorkspaceIngestPayload!
+  vscodeWorkspaceAsk(input: VscodeAskCommandInput!): VscodeWorkspaceAnswerPayload!
+  vscodeWorkspaceCodingPatchPlan(input: VscodeJsonCommandInput!): VscodeJsonMutationPayload!
+  vscodeWorkspacePatch(input: VscodeJsonCommandInput!): VscodeJsonMutationPayload!
+  vscodeLearningPursue(input: VscodePlanCommandInput!): VscodeLearningPursuePayload!
+  vscodeReviewHeldSource(input: VscodeReviewCommandInput!): VscodeReviewHeldSourcePayload!
+  vscodeApprovePlan(input: VscodePlanCommandInput!): VscodeApprovalPayload!
+  vscodeRejectPlan(input: VscodePlanCommandInput!): VscodeRejectionPayload!
+  vscodeUpdateSetting(input: VscodeSettingCommandInput!): VscodeSettingUpdatePayload!
+  vscodeDownloadModel(input: VscodeModelCommandInput!): VscodeModelDownloadPayload!
+  vscodeRemoveModel(input: VscodeModelCommandInput!): VscodeModelRemovePayload!
+  vscodeEditCode(input: VscodeCodeCommandInput!): VscodeJsonMutationPayload!
 }
 type Subscription { turnTaskUpdated(id: ID!, afterSequence: Int! = 0): TurnTask! }

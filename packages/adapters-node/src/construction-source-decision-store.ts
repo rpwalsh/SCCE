@@ -7,7 +7,7 @@ import { createHasher, normalizeInformationLabel, joinInformationLabels, decodeC
   CONSTRUCTION_SOURCE_DECISION_MAX_PAGE_BYTES
 } from "@scce/kernel";
 import type { CreativeEventStorageHost } from "./canonical-creative-event-store.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, durableJoinProgramJsonByteLengths } from "./durable-join-program-storage.js";
+import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths } from "./durable-artifact-storage.js";
 
 export interface ConstructionSourceDecisionStorageHost extends CreativeEventStorageHost {
   evidence(ids: readonly string[]): Promise<readonly EvidenceSpan[]>;
@@ -76,20 +76,17 @@ export function createConstructionSourceDecisionStore(host: ConstructionSourceDe
   };
   const withLedger = (value: unknown, input: ConstructionSourceDecisionInput): unknown => {
     const root = record(value) ?? fail(), original = record(input.value) ?? fail();
-    const existing = record(original[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
-    if (Object.hasOwn(original, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) {
-      if (existing?.schema !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA || !natural(existing.decodedJsonBytes) || !natural(existing.decodedJsonbBytes)) return fail();
-      if (input.logicalValue !== undefined) { if (Object.hasOwn(record(input.logicalValue) ?? {}, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) return fail();
-        const sizes = durableJoinProgramJsonByteLengths(input.logicalValue);
+    const existing = record(original[DECODED_JSON_BYTE_LEDGER_KEY]);
+    if (Object.hasOwn(original, DECODED_JSON_BYTE_LEDGER_KEY)) {
+      if (existing?.schema !== DECODED_JSON_BYTE_LEDGER_SCHEMA || !natural(existing.decodedJsonBytes) || !natural(existing.decodedJsonbBytes)) return fail();
+      if (input.logicalValue !== undefined) { if (Object.hasOwn(record(input.logicalValue) ?? {}, DECODED_JSON_BYTE_LEDGER_KEY)) return fail();
+        const sizes = decodedJsonByteLengths(input.logicalValue);
         if (existing.decodedJsonBytes !== sizes.decodedJsonBytes || existing.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail(); }
       return root;
     }
     const logical = input.logicalValue ?? input.value;
-    if (Object.hasOwn(record(logical) ?? {}, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) return fail();
-    const logicalRoot = record(logical);
-    return { ...root, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(logical),
-      ...(logicalRoot && Object.hasOwn(logicalRoot, "joinProgram") ? { joinProgramMemberJsonbBytes: durableJoinProgramJsonByteLengths(logicalRoot.joinProgram).decodedJsonbBytes
-        + Buffer.byteLength(JSON.stringify("joinProgram")) + 2 + (Object.keys(logicalRoot).length > 1 ? 2 : 0) } : {}) } };
+    if (Object.hasOwn(record(logical) ?? {}, DECODED_JSON_BYTE_LEDGER_KEY)) return fail();
+    return { ...root, [DECODED_JSON_BYTE_LEDGER_KEY]: { schema: DECODED_JSON_BYTE_LEDGER_SCHEMA, ...decodedJsonByteLengths(logical) } };
   };
   return {
     encodeMany: async (inputs: readonly ConstructionSourceDecisionInput[]): Promise<unknown[]> => {

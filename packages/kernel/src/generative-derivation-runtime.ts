@@ -17,7 +17,6 @@ import {
 } from "./proof-license-semiring.js";
 import { interleaveConstructions, type DiscontinuousConstruction } from "./discontinuous-construction.js";
 import type { ReversibleConstruction } from "./reversible-construction.js";
-import { renderJoinedSurface, type JoinProgramMixture } from "./join-program.js";
 import type { GraphSlice, Hyperedge } from "./types.js";
 import { toJsonValue } from "./primitives.js";
 import type { JsonValue } from "./types.js";
@@ -271,8 +270,18 @@ export interface RealizedDerivation {
   children: Array<{ portId: string; derivation: RealizedDerivation }>;
 }
 
+export interface DerivationOutputMapping {
+  kind: "literal" | "child";
+  constructionId: string;
+  portId?: string;
+  sourceUtf16Start: number;
+  sourceUtf16End: number;
+  outputUtf16Start: number;
+  outputUtf16End: number;
+}
+
 export type DerivationRealization =
-  | { status: "resolved"; text: string; evidenceIds: string[]; derivation: RealizedDerivation }
+  | { status: "resolved"; text: string; evidenceIds: string[]; derivation: RealizedDerivation; outputMappings: DerivationOutputMapping[] }
   | { status: "unresolved-binding" | "invalid-span" | "unsupported-construction" | "cycle" | "resource-exhausted" | "evidence-unavailable"; constructionId: string; reason: string };
 
 export type DerivationEvidenceAdmission = (evidenceId: string, constructionId: string) => boolean;
@@ -335,29 +344,56 @@ export function realizeDerivation(input: {
     for (let index = 1; index < sourceOrder.length; index++) if (sourceOrder[index]!.utf16Start < sourceOrder[index - 1]!.utf16End) return failure("invalid-span", id, "discontinuous spans overlap");
     if (slots.some(slot => spans.filter(span => slot.start >= span.utf16Start && slot.end <= span.utf16End).length !== 1)) return failure("invalid-span", id, "slot must belong to exactly one literal span");
     path.add(id);
-    const children: RealizedDerivation["children"] = [], childText = new Map<string, string>();
+    const children: RealizedDerivation["children"] = [];
+    const childRealizations = new Map<string, Extract<DerivationRealization, { status: "resolved" }>>();
     for (const argument of operator.argumentTypes) {
       const child = walk(bindings.get(argument.portId)!, depth + 1);
       if (child.status !== "resolved") { path.delete(id); return child; }
       children.push({ portId: argument.portId, derivation: child.derivation });
-      childText.set(argument.portId, child.text);
+      childRealizations.set(argument.portId, child);
     }
     path.delete(id);
     let text = "";
+    const outputMappings: DerivationOutputMapping[] = [];
+    const appendLiteral = (start: number, end: number): DerivationRealization | undefined => {
+      const literal = sourceText.slice(start, end);
+      if (text.length + literal.length > maxOutput) return failure("resource-exhausted", id, "realized output budget exhausted");
+      const outputStart = text.length;
+      text += literal;
+      outputMappings.push({ kind: "literal", constructionId: id, sourceUtf16Start: start, sourceUtf16End: end,
+        outputUtf16Start: outputStart, outputUtf16End: text.length });
+      return undefined;
+    };
+    const appendChild = (slot: { portId: string; start: number; end: number }): DerivationRealization | undefined => {
+      const child = childRealizations.get(slot.portId)!;
+      if (text.length + child.text.length > maxOutput) return failure("resource-exhausted", id, "realized output budget exhausted");
+      const outputStart = text.length;
+      text += child.text;
+      outputMappings.push({ kind: "child", constructionId: id, portId: slot.portId,
+        sourceUtf16Start: slot.start, sourceUtf16End: slot.end, outputUtf16Start: outputStart, outputUtf16End: text.length });
+      for (const mapping of child.outputMappings) outputMappings.push({
+        ...mapping,
+        outputUtf16Start: outputStart + mapping.outputUtf16Start,
+        outputUtf16End: outputStart + mapping.outputUtf16End
+      });
+      return undefined;
+    };
     for (const span of spans) {
       let cursor = span.utf16Start;
       for (const slot of slots) {
         if (slot.start < span.utf16Start || slot.end > span.utf16End) continue;
-        const addition = sourceText.slice(cursor, slot.start) + childText.get(slot.portId)!;
-        if (text.length + addition.length > maxOutput) return failure("resource-exhausted", id, "realized output budget exhausted");
-        text += addition;
+        const literalFailure = appendLiteral(cursor, slot.start);
+        if (literalFailure) return literalFailure;
+        const childFailure = appendChild(slot);
+        if (childFailure) return childFailure;
         cursor = slot.end;
       }
-      if (text.length + span.utf16End - cursor > maxOutput) return failure("resource-exhausted", id, "realized output budget exhausted");
-      text += sourceText.slice(cursor, span.utf16End);
+      const literalFailure = appendLiteral(cursor, span.utf16End);
+      if (literalFailure) return literalFailure;
     }
     const evidenceIds = [...new Set([...operator.evidenceIds, ...children.flatMap(child => child.derivation.evidenceIds)])].sort();
-    return { status: "resolved", text, evidenceIds, derivation: {constructionId: id, baseConstructionId: baseId, ...(operator.source ? {source: operator.source} : {}), evidenceIds, children} };
+    return { status: "resolved", text, evidenceIds, outputMappings,
+      derivation: {constructionId: id, baseConstructionId: baseId, ...(operator.source ? {source: operator.source} : {}), evidenceIds, children} };
   }
   if (![maxDepth, maxNodes, maxOutput].every(limit => Number.isSafeInteger(limit) && limit >= 0)) return failure("resource-exhausted", input.constructionId, "invalid realization budget");
   return walk(input.constructionId, input.depth ?? 0);
@@ -445,11 +481,68 @@ export interface DerivationSearchResult {
   bestScore: number;
   text: string;
   evidenceIds: string[];
+  realization: DerivationRealization;
+  selectedDerivation?: { operatorIds: string[]; ruleIds: string[] };
   /** k-best rivals of the selected derivation, walked from the packed chart with shared subderivations. */
   alternatives: Array<{ constructionId: string; ruleIds: string[]; text: string }>;
   chart: DerivationChart<DerivationLicense>;
   treewidth: number;
   audit: JsonValue;
+}
+
+function unavailableRealization(reason: string): DerivationRealization {
+  return { status: "evidence-unavailable", constructionId: "derivation.none", reason };
+}
+
+function realizedText(realization: DerivationRealization): string {
+  return realization.status === "resolved" ? realization.text : "";
+}
+
+function realizedConstructionIds(derivation: RealizedDerivation): Set<string> {
+  const ids = new Set<string>();
+  const visit = (node: RealizedDerivation): void => {
+    ids.add(node.constructionId);
+    ids.add(node.baseConstructionId);
+    for (const child of node.children) visit(child.derivation);
+  };
+  visit(derivation);
+  return ids;
+}
+
+interface MaterializedChartDerivation {
+  operatorIds: string[];
+  ruleIds: string[];
+  rootConstructionId: string;
+  realization: Extract<DerivationRealization, { status: "resolved" }>;
+}
+
+function materializeChartDerivations(input: {
+  chart: DerivationChart<DerivationLicense>;
+  goalKey: ChartKey;
+  atomOperator: ReadonlyMap<string, string>;
+  algebra: ConstructionAlgebra;
+  maxDerivations?: number;
+}): MaterializedChartDerivation[] {
+  const materialized: MaterializedChartDerivation[] = [];
+  const seen = new Set<string>();
+  for (const extracted of extractDerivations(input.chart, input.goalKey, input.maxDerivations ?? 256)) {
+    const operatorIds = [...new Set(extracted.ruleIds
+      .filter(ruleId => ruleId.startsWith("atom."))
+      .map(ruleId => input.atomOperator.get(ruleId.slice("atom.".length)))
+      .filter((operatorId): operatorId is string => Boolean(operatorId)))];
+    if (!operatorIds.length) continue;
+    for (const rootConstructionId of operatorIds) {
+      const realization = realizeDerivation({ constructionId: rootConstructionId, algebra: input.algebra });
+      if (realization.status !== "resolved") continue;
+      const realizedIds = realizedConstructionIds(realization.derivation);
+      if (operatorIds.some(operatorId => !realizedIds.has(operatorId))) continue;
+      const key = `${rootConstructionId}\u001f${extracted.ruleIds.join("\u001f")}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      materialized.push({ operatorIds, ruleIds: extracted.ruleIds, rootConstructionId, realization });
+    }
+  }
+  return materialized;
 }
 
 /**
@@ -473,11 +566,11 @@ export function searchBestDerivation(input: {
     unionStates: (left, right) => ({ evidenceIds: [...new Set([...left.evidenceIds, ...right.evidenceIds])] }),
     // A derivation with no evidence behind it is not a license SCCE may
     // emit -- the empty state is legitimate only as the semiring identity.
-    isSupported: () => true
+    isSupported: state => state.evidenceIds.length > 0
   });
 
   const candidates = [...input.algebra.operators.entries()]
-    .filter(([id]) => input.algebra.registry.depths[id] !== undefined);
+    .filter(([id, operator]) => input.algebra.registry.depths[id] !== undefined && operator.evidenceIds.length > 0);
   const atoms: Array<BoundedDecodingAtom<DerivationLicense>> = candidates.map(([id, operator]) => {
     const key: ChartKey = { coverage: id, discourseStateId: "discourse.generative", populationId: "population.generative" };
     const state: DerivationLicense = { evidenceIds: [...operator.evidenceIds].sort() };
@@ -532,9 +625,9 @@ export function searchBestDerivation(input: {
     }
   }
 
-  const text = bestConstructionId
+  const realization = bestConstructionId
     ? realizeDerivation({ constructionId: bestConstructionId, algebra: input.algebra })
-    : "";
+    : unavailableRealization("no proof-licensed derivation was available");
 
   // The chart holds every licensed derivation, not just the argmax; the rivals are what a caller needs to see that a
   // choice was made rather than forced.
@@ -548,16 +641,20 @@ export function searchBestDerivation(input: {
         const constructionId = [...new Set(coverage)].sort((left, right) =>
           (input.algebra.registry.depths[right] ?? 0) - (input.algebra.registry.depths[left] ?? 0))[0];
         if (!constructionId || constructionId === bestConstructionId) return [];
-        return [{ constructionId, ruleIds: derivation.ruleIds, text: realizeDerivation({ constructionId, algebra: input.algebra }) }];
+        const rival = realizeDerivation({ constructionId, algebra: input.algebra });
+        return rival.status === "resolved" ? [{ constructionId, ruleIds: derivation.ruleIds, text: rival.text }] : [];
       })
-      .filter(row => row.text)
     : [];
 
   return {
     ...(bestConstructionId ? { bestConstructionId } : {}),
     bestScore,
-    text,
-    evidenceIds: bestEvidence,
+    text: realizedText(realization),
+    evidenceIds: realization.status === "resolved" ? realization.evidenceIds : [],
+    realization,
+    ...(bestConstructionId && realization.status === "resolved"
+      ? { selectedDerivation: { operatorIds: [bestConstructionId], ruleIds: bestCell ? extractDerivations(decoded.chart, bestCell.key, 1)[0]?.ruleIds ?? [] : [] } }
+      : {}),
     alternatives,
     chart: decoded.chart,
     treewidth: decoded.treewidth,
@@ -589,7 +686,6 @@ export function searchBestDerivation(input: {
 export function searchTargetConditionedDerivation(input: {
   target: SemanticTarget;
   algebra: ConstructionAlgebra;
-  joinMixture?: JoinProgramMixture;
   treewidthBudget?: number;
 }): DerivationSearchResult & { coveredPartIds: string[] } {
   const semiring = createProofLicenseSemiring<DerivationLicense>({
@@ -597,7 +693,7 @@ export function searchTargetConditionedDerivation(input: {
     stateKey: state => [...state.evidenceIds].sort().join(","),
     emptyState: { evidenceIds: [] },
     unionStates: (left, right) => ({ evidenceIds: [...new Set([...left.evidenceIds, ...right.evidenceIds])] }),
-    isSupported: () => true
+    isSupported: state => state.evidenceIds.length > 0
   });
 
   const atoms: Array<BoundedDecodingAtom<DerivationLicense>> = [];
@@ -607,10 +703,15 @@ export function searchTargetConditionedDerivation(input: {
       const atomId = `${part.id}::${operator.constructionId}`;
       atomOperator.set(atomId, operator.constructionId);
       // Evidence shared between the target part and the operator is what
-      // licenses using this operator for this part.
-      const shared = operator.evidenceIds.filter(id => part.evidenceIds.includes(id));
-      const state: DerivationLicense = { evidenceIds: [...new Set(shared.length ? shared : operator.evidenceIds)].sort() };
-      const support = Math.max(1, shared.length || operator.evidenceIds.length);
+      // licenses using this operator for this part. A union would let two
+      // unrelated observations manufacture a license merely by coexisting
+      // in the same chart cell.
+      if (!part.evidenceIds.length || !operator.evidenceIds.length) continue;
+      const targetEvidence = new Set(part.evidenceIds);
+      const sharedEvidence = [...new Set(operator.evidenceIds.filter(evidenceId => targetEvidence.has(evidenceId)))].sort();
+      if (!sharedEvidence.length) continue;
+      const state: DerivationLicense = { evidenceIds: sharedEvidence };
+      const support = operator.evidenceIds.length;
       atoms.push({
         id: atomId,
         key: { coverage: part.id, discourseStateId: "discourse.target", populationId: "population.target" },
@@ -648,6 +749,7 @@ export function searchTargetConditionedDerivation(input: {
   let bestScore = Number.NEGATIVE_INFINITY;
   let bestCoverage: string[] = [];
   let bestEvidence: string[] = [];
+  let bestCell: DerivationChart<DerivationLicense>["cells"] extends Map<string, infer Cell> ? Cell | undefined : never;
   for (const [, cell] of decoded.chart.cells) {
     const covered = cell.key.coverage.split(",").filter(Boolean);
     for (const [, entry] of cell.carrier) {
@@ -658,45 +760,33 @@ export function searchTargetConditionedDerivation(input: {
       bestScore = score;
       bestCoverage = covered;
       bestEvidence = entry.state.evidenceIds;
+      bestCell = cell;
     }
   }
 
-  // Realize each covered part through its best operator, then join the
-  // realized units with the learned join program rather than concatenating.
-  const units: string[] = [];
-  for (const partId of bestCoverage) {
-    const atom = atoms.find(row => row.key.coverage === partId);
-    const operatorId = atom ? atomOperator.get(atom.id) : undefined;
-    if (!operatorId) continue;
-    const realized = realizeDerivation({ constructionId: operatorId, algebra: input.algebra });
-    if (realized) units.push(realized);
-  }
-  const joined = renderJoinedSurface(units, input.joinMixture);
-
-  // Each covered part's rival operators, from the same packed chart the coverage was chosen in.
-  const alternatives = bestCoverage.flatMap(partId => {
-    const atom = atoms.find(row => row.key.coverage === partId);
-    const selected = atom ? atomOperator.get(atom.id) : undefined;
-    if (!atom) return [];
-    return extractDerivations(decoded.chart, atom.key, 4).flatMap(derivation => {
-      const constructionId = derivation.leafKeyIds
-        .flatMap(leafKeyId => (decoded.chart.cells.get(leafKeyId)?.key.coverage ?? "").split(","))
-        .map(coverage => atomOperator.get(coverage))
-        .find(operatorId => operatorId && operatorId !== selected);
-      if (!constructionId) return [];
-      const text = realizeDerivation({ constructionId, algebra: input.algebra });
-      return text ? [{ constructionId, ruleIds: derivation.ruleIds, text }] : [];
-    });
-  });
+  const materialized = bestCell
+    ? materializeChartDerivations({ chart: decoded.chart, goalKey: bestCell.key, atomOperator, algebra: input.algebra })
+    : [];
+  const selected = materialized.find(candidate => bestEvidence.every(evidenceId => candidate.realization.evidenceIds.includes(evidenceId)));
+  const realization = selected?.realization
+    ?? unavailableRealization(bestCell
+      ? "the selected proof chart has no construction that licenses its complete surface"
+      : "no proof-licensed target derivation was available");
+  const alternatives = materialized
+    .filter(candidate => candidate !== selected)
+    .map(candidate => ({ constructionId: candidate.rootConstructionId, ruleIds: candidate.ruleIds, text: candidate.realization.text }));
 
   return {
+    ...(selected ? { bestConstructionId: selected.rootConstructionId } : {}),
     bestScore,
-    text: joined.text,
-    evidenceIds: bestEvidence,
+    text: realizedText(realization),
+    evidenceIds: realization.status === "resolved" ? realization.evidenceIds : [],
+    realization,
+    ...(selected ? { selectedDerivation: { operatorIds: selected.operatorIds, ruleIds: selected.ruleIds } } : {}),
     alternatives,
     chart: decoded.chart,
     treewidth: decoded.treewidth,
-    coveredPartIds: bestCoverage,
+    coveredPartIds: selected ? bestCoverage : [],
     audit: toJsonValue({
       source: "scce.generative_derivation.target_search.v1",
       targetParts: input.target.parts.length,
@@ -706,9 +796,8 @@ export function searchTargetConditionedDerivation(input: {
       coveredParts: bestCoverage.length,
       coverageRatio: input.target.parts.length ? bestCoverage.length / input.target.parts.length : 0,
       treewidth: decoded.treewidth,
-      joinStatus: joined.status,
-      unresolvedBoundaries: joined.unresolvedBoundaries,
-      realizationPath: "join-program",
+      realizationStatus: realization.status,
+      realizationPath: "proof-carrying-construction",
       bestScore: Number.isFinite(bestScore) ? bestScore : null
     })
   };

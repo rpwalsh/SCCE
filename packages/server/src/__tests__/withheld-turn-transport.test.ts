@@ -16,7 +16,7 @@ vi.mock("@scce/adapters-node", async importOriginal => {
 
 import { RUNTIME_WITHHELD_REASON_IDS, RUNTIME_WITHHELD_SURFACE_SCHEMA, withheldSurfaceForTurn, type TurnResult } from "@scce/kernel";
 import {createApprovalSession} from "../../../adapters-node/src/approval-session.js";
-import {programValidationApprovalInput,type CapabilityPlan,type ProgramGraph,type ScceEvent} from "@scce/kernel";
+import {programValidationApprovalInput,type CapabilityPlan,type EpisodeId,type ProgramGraph,type ScceEvent} from "@scce/kernel";
 import { handleRequest, type ApiContext } from "../routes.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -132,11 +132,19 @@ function withheldTurn(): TurnResult {
 }
 
 async function fixtureServer(result: TurnResult | null, failure?: Error, approvals?:ReturnType<typeof createApprovalSession>): Promise<number> {
+  const events: ScceEvent[] = [];
   const context = {
     maxBodyBytes: 1_000_000,
     runtime: {
       ...(approvals?{approvals}:{}),
       storage: {
+        events: {
+          append: async (event: ScceEvent) => { events.push(structuredClone(event)); },
+          appendBatch: async (batch: ScceEvent[]) => { events.push(...structuredClone(batch)); },
+          readEpisode: async (episodeId: EpisodeId) => structuredClone(events.filter(event => event.episodeId === episodeId)),
+          readRange: async () => structuredClone(events),
+          latestLedgerHash: async () => events.at(-1)?.hash ?? ""
+        },
         evidence: { sourceIdentityArbitration: async () => ({ identities: [], spread: new Map<string, number>() }) },
         conversation: { listTurns: async () => [] },
         dialogueMemory: { listStyleSnapshots: async () => [], listInteractionStates: async () => [] }

@@ -10,9 +10,6 @@ import {
   createMouth,
   createDeterministicMouth,
   createSemanticEntailmentEngine,
-  buildSurfaceLattice,
-  compileJoinProgram,
-  compileJoinProgramMixture,
   deriveTurnRequirementField,
   detectCannedAnswerSpeech,
   featureSet,
@@ -1260,6 +1257,7 @@ describe("Mouth runtime surface planning", () => {
     const spoken = await mouth.speak({
       construct: taughtConstruct(evidence),
       field,
+      requestText: fixture.claim,
       languageProfile: teaching(evidence).profile,
       evidence: [evidence],
       entailment,
@@ -1287,8 +1285,10 @@ describe("Mouth runtime surface planning", () => {
   });
 
   it("keeps caveat discourse after generated answer/support and preserves uncertainty", async () => {
-    const source = sourceVersion();
-    const evidence = directEvidence(source);
+    const caveatSurface = `${fixture.evidenceText} ${fixture.caveatText}`;
+    const source = sourceVersion(caveatSurface);
+    const evidence = directEvidence(source, fixture.evidenceText);
+    const caveatEvidence = directEvidence(source, caveatSurface);
     const field = emptyField();
     const base = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
       text: fixture.claim,
@@ -1314,14 +1314,38 @@ describe("Mouth runtime surface planning", () => {
         audit: { surfaceDispositionId: "surface.caveat.append" }
       }]
     };
+    const selectedCandidate: CandidateSurface = {
+      id: "candidate:source-owned-caveat",
+      kind: "proof-answer",
+      answer: caveatSurface,
+      force: "inferred",
+      evidenceIds: [caveatEvidence.id],
+      scores: {
+        support: 0.9,
+        contradiction: 0,
+        faithfulness: 1,
+        alphaPressure: 0.8,
+        actionability: 0.5,
+        evidenceCoverage: 1,
+        novelty: 0,
+        realizability: 1,
+        risk: 0
+      },
+      claimBases: ["direct_evidence"],
+      boundaries: ["selected-evidence-bound"],
+      audit: { source: "source-owned-caveat-fixture" }
+    };
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
     const spoken = await mouth.speak({
       construct: taughtConstruct(evidence),
       field,
       languageProfile: teaching(evidence).profile,
-      evidence: [evidence],
+      evidence: [evidence, caveatEvidence],
       entailment: caveat,
-      languageMemory: importedMemory(source, evidence, "caveat-discourse", true),
+      languageMemory: importedMemory(source, evidence, "caveat-discourse", true, false, [
+        sourceSurfaceUnit(source, caveatEvidence, caveatSurface, "unit:greenhouse-caveat")
+      ]),
+      selectedCandidate,
       targetLanguage: "fixture-language",
       brainMarker: { activeBrainVersion: "fixture-brain", activeImportRunIds: ["caveat-discourse"] }
     });
@@ -1777,7 +1801,7 @@ describe("Mouth runtime surface planning", () => {
       evidence: [],
       entailment,
       languageMemory: languageRuntime.hydrateFromImportedBrain({
-        importRunId: "semantic-answer-with-join-program",
+        importRunId: "semantic-answer-with-source-surface",
         models: [],
         observations: [],
         units: [{
@@ -1793,7 +1817,7 @@ describe("Mouth runtime surface planning", () => {
           evidenceIds: [],
           metadata: { sourceSystem: "scce2", provenanceClass: "learned_language_prior" }
         }],
-        patterns: [joinProgramPattern(), ...semanticSourcePatterns(directEvidence(source, semanticSourceText))],
+        patterns: semanticSourcePatterns(directEvidence(source, semanticSourceText)),
         semanticFrames: [],
         constructionEvidence: [directEvidence(source, semanticSourceText)]
       }),
@@ -1921,6 +1945,7 @@ describe("Mouth runtime surface planning", () => {
     const spoken = await mouth.speak({
       construct: semanticStarTrekConstructGraph(),
       field,
+      requestText: question,
       languageProfile: languageProfile(source),
       evidence: [],
       entailment,
@@ -1943,7 +1968,10 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.text).toContain("James T. Kirk");
     expect(spoken.text).not.toContain("Original Series characters");
     expect(spoken.text).not.toContain("in-category");
-    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:rhetorical-lattice");
+    // The emitted bytes are an admitted imported surface, so the selected
+    // candidate must retain that surface owner's identity instead of
+    // relabelling the same text as generic rhetorical generation.
+    expect(spoken.realizationTrace.selected.id).toContain("candidate:learned-prior-surface");
   });
 
   it("keeps an unsupported semantic continuation internal when no source surface exists", async () => {
@@ -2516,59 +2544,16 @@ describe("Mouth runtime surface planning", () => {
     ] });
   }
 
-  function importedMemory(source: SourceVersion, evidence: EvidenceSpan, importRunId: string, sourceTeaching = false, semanticTeaching = false) {
+  function importedMemory(source: SourceVersion, evidence: EvidenceSpan, importRunId: string, sourceTeaching = false, semanticTeaching = false, additionalUnits: LanguageUnitRecord[] = []) {
     return languageRuntime.hydrateFromImportedBrain({
       importRunId,
       models: [ngramModel()],
       observations: [ngramObservation(source)],
-      units: [languageUnit(source)],
-      patterns: [languagePattern(), joinProgramPattern(), ...(sourceTeaching ? [teaching(evidence).pattern] : []), ...(semanticTeaching ? semanticSourcePatterns(evidence) : [])],
+      units: [languageUnit(source), ...additionalUnits],
+      patterns: [languagePattern(), ...(sourceTeaching ? [teaching(evidence).pattern] : []), ...(semanticTeaching ? semanticSourcePatterns(evidence) : [])],
       semanticFrames: [semanticFrame(evidence)],
       constructionEvidence: [...(sourceTeaching ? teaching(evidence).lessons : []), ...(semanticTeaching ? [evidence] : [])]
     });
-  }
-
-  function joinProgramPattern(): LanguagePatternRecord {
-    const documentId = "doc:fixture-join-corpus";
-    const text = "alpha beta. gamma delta. one two, three four.";
-    const program = compileJoinProgram({
-      populationId: "population:fixture-join",
-      documents: [{
-        documentId,
-        sourceFamilyId: "source-family:fixture-join",
-        text,
-        lattice: buildSurfaceLattice({
-          documentId,
-          text,
-          evidenceIds: ["evidence:fixture-join"],
-          hasher
-        })
-      }],
-      hasher
-    });
-    const joinProgram = compileJoinProgramMixture({
-      populationModelId: "population-model:fixture-join",
-      components: [{
-        populationId: program.populationId,
-        weight: 1,
-        program
-      }],
-      hasher
-    });
-    return {
-      id: "pattern:fixture-join",
-      profileId: "profile:greenhouse",
-      patternKind: "syntax",
-      support: 1,
-      entropy: 0,
-      patternJson: toJsonValue({
-        sourceSystem: "scce2",
-        provenanceClass: "learned_program_prior",
-        joinProgram
-      }),
-      evidenceIds: [],
-      updatedAt: clock.now()
-    };
   }
 
   function starTrekMemory(source: SourceVersion, importRunId: string) {
@@ -2611,7 +2596,7 @@ describe("Mouth runtime surface planning", () => {
         patternJson: { sourceSystem: "scce2", provenanceClass: "learned_language_prior", counts: { [text]: 3 } },
         evidenceIds: [],
         updatedAt: clock.now()
-      }, joinProgramPattern()],
+      }],
       semanticFrames: []
     });
   }
@@ -2645,6 +2630,27 @@ describe("Mouth runtime surface planning", () => {
       alpha: 0.94,
       evidenceIds: [],
       metadata: { sourceSystem: "scce2", provenanceClass: "learned_language_prior" }
+    };
+  }
+
+  function sourceSurfaceUnit(
+    source: SourceVersion,
+    evidence: EvidenceSpan,
+    text: string,
+    id: string
+  ): LanguageUnitRecord {
+    return {
+      id,
+      profileId: "profile:greenhouse",
+      sourceVersionId: source.sourceVersionId,
+      script: "fixture-script",
+      unitKind: "phrase",
+      text,
+      features: featureSet(text, 128),
+      competenceVector: [1],
+      alpha: 0.98,
+      evidenceIds: [evidence.id],
+      metadata: { sourceSystem: "fixture", provenanceClass: "learned_language_prior" }
     };
   }
 

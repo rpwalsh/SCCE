@@ -20,7 +20,7 @@ describe("Mouth temporal counterexample realization", () => {
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
   const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
 
-  it("uses a learned negative bridge before source-grounded counterexample context", async () => {
+  it("withholds a learned negative bridge when no single source owns the composed surface", async () => {
     const question = "Did Martha Washington invent the idea of using flags to represent nation states?";
     const counterText = "* The national flag of France was designed in 1794. On 12 April 1606, a new union flag was specified. The flag of Denmark, the Dannebrog, is attested in 1478, and is the oldest national flag still in use.";
     const subjectText = "Martha Washington (1731–1802) was the wife of George Washington.";
@@ -61,17 +61,9 @@ describe("Mouth temporal counterexample realization", () => {
       targetLanguage: "fixture-language"
     });
 
-    expect(spoken.text).toMatch(/^Martha Washington did not invent the idea of using flags to represent nation states\./u);
-    expect(spoken.text).toContain("The flag of Denmark, the Dannebrog, is attested in 1478");
-    expect(spoken.text).toContain("The national flag of France was designed in 1794");
-    expect(spoken.text).toContain("On 12 April 1606");
-    expect(spoken.text).not.toContain("On 12.");
-    expect(spoken.text.indexOf("1478")).toBeLessThan(spoken.text.indexOf("1794"));
-    expect(spoken.text).not.toContain("*");
-    expect(spoken.text).not.toMatch(/[¬\[\]]|rel\.|semantic\./u);
-    expect(spoken.evidenceRefs).toEqual(expect.arrayContaining([counter.id, subject.id]));
-    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:semantic-temporal-counterexample");
-    expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("frame:negative-bridge:0");
+    expect(spoken.text).toBe("");
+    expect(spoken.realizationAvailability.status).toBe("realization_unavailable");
+    expect(spoken.evidenceRefs).toEqual([]);
   });
 
   it("falls back to the contextual counterexample instead of realizing the rejected premise as positive", async () => {

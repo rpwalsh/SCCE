@@ -1,5 +1,5 @@
 /**
- * @generated SignedSource<<feda06d18fcf7f7f147b06fe895b39ba>>
+ * @generated SignedSource<<23c7f3703c91165fe1ef2e43e6549f92>>
  * @lightSyntaxTransform
  */
 
@@ -23,20 +23,35 @@ export type WorkbenchTask_task$data = {
   readonly id: string;
   readonly latestFrame: {
     readonly answer: string | null | undefined;
+    readonly assistantForce: string | null | undefined;
+    readonly detail: any | null | undefined;
     readonly error: string | null | undefined;
     readonly id: string;
     readonly kind: string;
     readonly phase: string | null | undefined;
     readonly sequence: number;
+    readonly status: number | null | undefined;
   } | null | undefined;
   readonly latestSequence: number;
   readonly persistence: string;
   readonly result: {
     readonly answer: string | null | undefined;
+    readonly detail: any | null | undefined;
+    readonly entailment: any | null | undefined;
     readonly episodeId: string | null | undefined;
     readonly error: string | null | undefined;
+    readonly evidence: ReadonlyArray<{
+      readonly id: string | null | undefined;
+      readonly provenance: any | null | undefined;
+      readonly sourceId: string | null | undefined;
+      readonly textPreview: string | null | undefined;
+    }> | null | undefined;
+    readonly guardFlags: {
+      readonly sourceBacked: boolean | null | undefined;
+    } | null | undefined;
     readonly httpStatus: number | null | undefined;
     readonly id: string;
+    readonly value: any | null | undefined;
   } | null | undefined;
   readonly status: string;
   readonly " $fragmentType": "WorkbenchTask_task";
@@ -63,35 +78,49 @@ v2 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "phase",
+  "name": "status",
   "storageKey": null
 },
 v3 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "kind",
+  "name": "phase",
   "storageKey": null
 },
 v4 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "answer",
+  "name": "kind",
   "storageKey": null
 },
 v5 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "error",
+  "name": "answer",
   "storageKey": null
 },
 v6 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
+  "name": "error",
+  "storageKey": null
+},
+v7 = {
+  "alias": null,
+  "args": null,
+  "kind": "ScalarField",
   "name": "sequence",
+  "storageKey": null
+},
+v8 = {
+  "alias": null,
+  "args": null,
+  "kind": "ScalarField",
+  "name": "detail",
   "storageKey": null
 };
 return {
@@ -139,13 +168,7 @@ return {
   "name": "WorkbenchTask_task",
   "selections": [
     (v1/*:: as any*/),
-    {
-      "alias": null,
-      "args": null,
-      "kind": "ScalarField",
-      "name": "status",
-      "storageKey": null
-    },
+    (v2/*:: as any*/),
     {
       "alias": null,
       "args": null,
@@ -169,11 +192,20 @@ return {
       "plural": false,
       "selections": [
         (v1/*:: as any*/),
-        (v2/*:: as any*/),
         (v3/*:: as any*/),
         (v4/*:: as any*/),
         (v5/*:: as any*/),
-        (v6/*:: as any*/)
+        (v6/*:: as any*/),
+        (v7/*:: as any*/),
+        (v2/*:: as any*/),
+        (v8/*:: as any*/),
+        {
+          "alias": null,
+          "args": null,
+          "kind": "ScalarField",
+          "name": "assistantForce",
+          "storageKey": null
+        }
       ],
       "storageKey": null
     },
@@ -186,8 +218,8 @@ return {
       "plural": false,
       "selections": [
         (v1/*:: as any*/),
-        (v4/*:: as any*/),
         (v5/*:: as any*/),
+        (v6/*:: as any*/),
         {
           "alias": null,
           "args": null,
@@ -200,6 +232,72 @@ return {
           "args": null,
           "kind": "ScalarField",
           "name": "episodeId",
+          "storageKey": null
+        },
+        {
+          "alias": null,
+          "args": null,
+          "kind": "ScalarField",
+          "name": "value",
+          "storageKey": null
+        },
+        (v8/*:: as any*/),
+        {
+          "alias": null,
+          "args": null,
+          "kind": "ScalarField",
+          "name": "entailment",
+          "storageKey": null
+        },
+        {
+          "alias": null,
+          "args": null,
+          "concreteType": "TurnGuardFlags",
+          "kind": "LinkedField",
+          "name": "guardFlags",
+          "plural": false,
+          "selections": [
+            {
+              "alias": null,
+              "args": null,
+              "kind": "ScalarField",
+              "name": "sourceBacked",
+              "storageKey": null
+            }
+          ],
+          "storageKey": null
+        },
+        {
+          "alias": null,
+          "args": null,
+          "concreteType": "TurnAnswerEvidence",
+          "kind": "LinkedField",
+          "name": "evidence",
+          "plural": true,
+          "selections": [
+            (v1/*:: as any*/),
+            {
+              "alias": null,
+              "args": null,
+              "kind": "ScalarField",
+              "name": "sourceId",
+              "storageKey": null
+            },
+            {
+              "alias": null,
+              "args": null,
+              "kind": "ScalarField",
+              "name": "textPreview",
+              "storageKey": null
+            },
+            {
+              "alias": null,
+              "args": null,
+              "kind": "ScalarField",
+              "name": "provenance",
+              "storageKey": null
+            }
+          ],
           "storageKey": null
         }
       ],
@@ -230,9 +328,9 @@ return {
               "plural": false,
               "selections": [
                 (v1/*:: as any*/),
-                (v6/*:: as any*/),
+                (v7/*:: as any*/),
+                (v4/*:: as any*/),
                 (v3/*:: as any*/),
-                (v2/*:: as any*/),
                 {
                   "alias": null,
                   "args": null,
@@ -287,6 +385,6 @@ return {
 };
 })();
 
-(node as any).hash = "21bf990af383759d9e9e1ea9c3701906";
+(node as any).hash = "1f9c63d4f0f1a862ee54209d37381521";
 
 export default node;

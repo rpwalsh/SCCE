@@ -133,9 +133,13 @@ answer lane.
   bounded resume state, and no fixed recurrence/predictability production credits.
 - `segmentation-population.ts`: generative document-NLL population posteriors and
   description-length plus per-child held-out non-regression merge admissibility.
-- `join-program.ts`: opaque source-exact joins conditioned on lattice/derivation,
-  construction, discourse, boundary and population context; uncertainty remains an
-  explicit runtime state rather than a global join guess.
+- `source-segmentation-witness.ts`: evidence-owned full-DAG segmentation and
+  adjacency energies retained for deterministic reconstruction; derived path,
+  marginal and coordinate arrays are not duplicated in durable storage.
+- `generative-derivation-runtime.ts`, `source-owned-surface.ts`: exact typed
+  construction realization with parent-owned literals, recursive child placement,
+  selected backpointers and proof evidence. Unresolved composition remains an
+  explicit state; there is no independent language JOIN predictor or fallback.
 - `structured-semantic-candidate.ts`, `typed-ingest.ts`: channel-separated candidates,
   decomposed provenance, opaque induced identities, isolated proposal state, and
   exact-evidence-gated zero-arity source-state/source-event extraction.

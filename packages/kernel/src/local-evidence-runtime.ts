@@ -9,7 +9,7 @@ import { type IdFactory } from "./ids.js";
 import { collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { isProseSentence } from "./evidence-gist.js";
 import { isStructuralResidueSurface } from "./structural-residue.js";
-import { traceEvent } from "./debug/trace.js";
+import { traceEvent } from "./debug/trace-event.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import { createStringMemo } from "./pure-memo.js";
 import { anchorSymbolUnits, codeBearingLines, featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";

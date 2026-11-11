@@ -37,7 +37,19 @@ function fixture() {
     list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
   storage.languageMemory.replaceLanguagePatternProjection = async input => {
     for (const pattern of input.patterns) {
-      expect(object(pattern.patternJson).sourceSystem).toBe(input.projection.sourceSystem);
+      const metadata = object(pattern.patternJson);
+      if (kernel.isCanonicalSegmentationArchiveSchema(metadata.schema)) {
+        // Full-DAG witnesses are audit-only evidence bodies carried through
+        // the first atomic publication, not active conversational patterns.
+        // Their owner is already represented by the record/profile/evidence
+        // columns, so the compact body deliberately omits projection fields.
+        expect(pattern.patternKind).toBe("segmentation");
+        expect(pattern.id).toMatch(/^segmentation_archive\./u);
+        expect(pattern.evidenceIds.length).toBeGreaterThan(0);
+        expect(metadata.sourceSystem).toBeUndefined();
+      } else {
+        expect(metadata.sourceSystem).toBe(input.projection.sourceSystem);
+      }
       await storage.languageMemory.putLanguagePattern(pattern);
     }
     projections.set(key(input.projection), structuredClone(input.projection));

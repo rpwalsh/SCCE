@@ -42,7 +42,7 @@ describe("surface language resident-only cache", () => {
     expect(warm.state).toBe(hydrated.state);
     expect(snapshots).toHaveLength(1);
   });
-  it("keeps a cluster request seed distinct from realization and omits only generative join payloads", async () => {
+  it("keeps a cluster request seed distinct from realization and omits source realization programs", async () => {
     const fixture = runtimeFixture({ cacheMs: 100000 });
     const hasher = createHasher();
     const compiled = createNgramMemoryCompiler({ hasher, idFactory: createIdFactory({ hasher, clock: createClock(), deterministicReplay: true }) }).compile({
@@ -50,15 +50,15 @@ describe("surface language resident-only cache", () => {
       text: "alpha beta alpha gamma", evidence: [], createdAt: 1, retainObservations: false });
     fixture.storage.languageMemory.listNgramModels = async () => compiled.models;
     const pattern = { id: "syntax.fixture", profileId: fixture.profile.id, patternKind: "syntax" as const, support: 1, entropy: 0,
-      patternJson: { schema: "scce.induced_language_model.syntax_memory.v1", componentRecipe: "kernel.induced_language_memory_projection.v3",
+      patternJson: { schema: "scce.induced_language_model.syntax_memory.v2", componentRecipe: "kernel.induced_language_memory_projection.v5",
         sourceSystem: "wikipedia", sourceVersionId: fixture.profile.sourceVersionId, templates: [], boundarySignals: [], counts: { alpha: 2 },
-        joinProgram: { retainedGenerativeHistory: ["source-owned-join"] } }, evidenceIds: [], updatedAt: 1 };
+        surfaceRealizationProgram: { sourceSurfaceIds: ["source-surface.fixture"] } }, evidenceIds: [], updatedAt: 1 };
     const queries: NonNullable<Parameters<typeof fixture.storage.languageMemory.listLanguagePatterns>[0]>[] = [];
     fixture.storage.languageMemory.listLanguagePatterns = async query => {
       if (query?.patternSchemas) return [];
       queries.push(query ?? {});
       if (query?.view === "request_seed") {
-        const { joinProgram: _join, ...patternJson } = pattern.patternJson;
+        const { surfaceRealizationProgram: _program, ...patternJson } = pattern.patternJson;
         return [{ ...pattern, patternJson }];
       }
       return [pattern];
@@ -66,12 +66,13 @@ describe("surface language resident-only cache", () => {
     const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
     const seed = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "seed", undefined, "", { purpose: "request_seed" });
     expect(seed.state.models.length).toBeGreaterThan(0);
-    expect(seed.patterns[0]?.patternJson).toEqual(expect.objectContaining({ counts: { alpha: 2 }, templates: [], boundarySignals: [] }));
-    expect(seed.patterns[0]?.patternJson).not.toHaveProperty("joinProgram");
+    expect(seed.patterns[0]?.patternJson).toEqual(expect.objectContaining({ counts: { alpha: 2 }, boundarySignals: [] }));
+    expect(seed.patterns[0]?.patternJson).not.toHaveProperty("templates");
+    expect(seed.patterns[0]?.patternJson).not.toHaveProperty("surfaceRealizationProgram");
     expect(queries.every(query => query.view === "request_seed" && query.profileIds?.includes(fixture.profile.id))).toBe(true);
     const realized = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "realization");
     expect(realized).not.toBe(seed);
-    expect(realized.patterns[0]?.patternJson).toHaveProperty("joinProgram", pattern.patternJson.joinProgram);
+    expect(realized.patterns[0]?.patternJson).toHaveProperty("surfaceRealizationProgram", pattern.patternJson.surfaceRealizationProgram);
     const seedAgain = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "seed", undefined, "", { purpose: "request_seed", residentOnly: true });
     expect(seedAgain).toBe(seed);
   });

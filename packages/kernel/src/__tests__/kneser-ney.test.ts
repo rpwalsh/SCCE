@@ -64,13 +64,15 @@ describe("Kneser-Ney bounded candidate generation (plan item L1)", () => {
     }
   });
 
-  it("still produces bounded, non-empty generation via continueBoundedProse after the candidate-set change", () => {
+  it("keeps predicted multi-symbol continuations diagnostic until one source owns the surface", () => {
     const model = trainKneserNey(
       "the cat sat on the mat the cat ran to the door the cat slept by the fire the cat watched the rain"
     );
     const continuation = continueBoundedProse(model, ["the", "cat"], { generationExtent: 12, deterministicChoiceSeed: "test-seed", minSymbolsBeforeEos: 3 });
     expect(continuation.symbols.length).toBeGreaterThan(0);
-    expect(continuation.text.length).toBeGreaterThan(0);
+    expect(continuation.text).toBe("");
+    expect(continuation.realizationStatus).toBe("unresolved");
+    expect(continuation.requiredAction).toBe("try_alternate_derivation");
   });
 
   it("keeps 80-symbol generation wall-time bounded by observed candidates, not full vocabulary size (plan item L2)", () => {

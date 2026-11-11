@@ -4,12 +4,16 @@ import { describe, expect, it } from "vitest";
 import {createHasher,decodeProgramArtifactWire,encodeProgramArtifactWire,hashEvent, type EpisodeId, type ScceEvent, type ScceStorage } from "@scce/kernel";
 import { TurnTaskRegistry } from "../turn-task-registry.js";
 
-function storageFixture(): ScceStorage {
+function storageFixture(options: {
+  append?: (event: ScceEvent, commit: () => void) => Promise<void>;
+} = {}): ScceStorage {
   const events: ScceEvent[] = [];
   return {
     events: {
       append: async (event: ScceEvent) => {
-        events.push(JSON.parse(JSON.stringify(event)) as ScceEvent);
+        const commit = () => events.push(JSON.parse(JSON.stringify(event)) as ScceEvent);
+        if (options.append) await options.append(event, commit);
+        else commit();
       },
       appendBatch: async (batch: ScceEvent[]) => {
         events.push(...batch.map(event=>JSON.parse(JSON.stringify(event)) as ScceEvent));
@@ -19,6 +23,20 @@ function storageFixture(): ScceStorage {
       latestLedgerHash: async () => events.at(-1)?.hash ?? ""
     }
   } as unknown as ScceStorage;
+}
+
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: () => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<void>((accept, decline) => {
+    resolve = accept;
+    reject = decline;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("turn task registry", () => {
@@ -65,6 +83,122 @@ describe("turn task registry", () => {
       type: "cancelled",
       error: "user stopped the task"
     });
+  });
+
+  it("publishes a frame only after its ledger append commits", async () => {
+    const gate = deferred();
+    const storage = storageFixture({ append: async (_event, commit) => {
+      await gate.promise;
+      commit();
+    } });
+    const registry = new TurnTaskRegistry(storage);
+    const task = registry.create({ requestId: "request.commit-before-publish" });
+    const published: number[] = [];
+    registry.subscribe(task.taskId, frame => published.push(frame.sequence));
+
+    await Promise.resolve();
+    expect(published).toEqual([]);
+    expect(await storage.events.readEpisode(task.taskId as EpisodeId)).toEqual([]);
+    expect(await registry.get(task.taskId)).toMatchObject({ persistence: "pending", latestSequence: 1 });
+
+    gate.resolve();
+    await registry.drain(task.taskId);
+    expect(await storage.events.readEpisode(task.taskId as EpisodeId)).toHaveLength(1);
+    expect(published).toEqual([1]);
+    expect(await registry.get(task.taskId)).toMatchObject({ persistence: "durable", latestSequence: 1 });
+  });
+
+  it("keeps a failed frame and every later frame pending without publishing a durable gap", async () => {
+    let appendAttempts = 0;
+    const storage = storageFixture({ append: async () => {
+      appendAttempts++;
+      throw new Error("ledger unavailable");
+    } });
+    const registry = new TurnTaskRegistry(storage);
+    const task = registry.create({ requestId: "request.persistence-failure" });
+    const published: number[] = [];
+    registry.subscribe(task.taskId, frame => published.push(frame.sequence));
+    registry.append(task.taskId, { type: "progress", phase: "graph.resolve" });
+    registry.append(task.taskId, { type: "result", status: 200, value: { answer: "not durable" } });
+
+    await registry.drain(task.taskId);
+    expect(appendAttempts).toBe(1);
+    expect(published).toEqual([]);
+    expect(await storage.events.readEpisode(task.taskId as EpisodeId)).toEqual([]);
+    expect(await registry.get(task.taskId)).toMatchObject({
+      status: "succeeded",
+      persistence: "pending",
+      latestSequence: 3
+    });
+    expect(await new TurnTaskRegistry(storage).get(task.taskId)).toBeUndefined();
+  });
+
+  it("serializes concurrent appends, publishes in sequence, and replays the exact committed payloads after restart", async () => {
+    const firstCommit = deferred();
+    const started: number[] = [];
+    let active = 0;
+    let maxActive = 0;
+    const storage = storageFixture({ append: async (event, commit) => {
+      const record = event.payload as Record<string, unknown>;
+      const frame = JSON.parse(String(record.frameJsonText)) as { sequence: number };
+      started.push(frame.sequence);
+      active++;
+      maxActive = Math.max(maxActive, active);
+      if (frame.sequence === 1) await firstCommit.promise;
+      commit();
+      active--;
+    } });
+    const registry = new TurnTaskRegistry(storage);
+    const task = registry.create({ requestId: "request.concurrent" });
+    const published: number[] = [];
+    registry.subscribe(task.taskId, frame => published.push(frame.sequence));
+    const progressValue = { exact: "A\u030a" };
+    const resultValue = { answer: "done\u0000exactly" };
+    const progress = registry.append(task.taskId, { type: "progress", phase: "graph.resolve", value: progressValue });
+    const result = registry.append(task.taskId, { type: "result", status: 200, value: resultValue });
+    progressValue.exact = "mutated after append";
+    resultValue.answer = "mutated after append";
+
+    await Promise.resolve();
+    expect(started).toEqual([1]);
+    expect(published).toEqual([]);
+    firstCommit.resolve();
+    await registry.drain(task.taskId);
+
+    expect(maxActive).toBe(1);
+    expect(started).toEqual([1, 2, 3]);
+    expect(published).toEqual([1, 2, 3]);
+    const recovered = await new TurnTaskRegistry(storage).get(task.taskId);
+    expect(recovered).toMatchObject({ status: "succeeded", persistence: "durable", latestSequence: 3 });
+    expect(recovered?.frames).toEqual([task.frames[0], progress, result]);
+    expect(recovered?.frames[1]?.value).toEqual({ exact: "A\u030a" });
+    expect(recovered?.frames[2]?.value).toEqual({ answer: "done\u0000exactly" });
+  });
+
+  it("aborts cancellation immediately but publishes its frame only after commit", async () => {
+    const cancelCommit = deferred();
+    let appendCount = 0;
+    const storage = storageFixture({ append: async (_event, commit) => {
+      appendCount++;
+      if (appendCount === 2) await cancelCommit.promise;
+      commit();
+    } });
+    const registry = new TurnTaskRegistry(storage);
+    const task = registry.create({ requestId: "request.cancel-after-commit" });
+    await registry.drain(task.taskId);
+    const published: number[] = [];
+    registry.subscribe(task.taskId, frame => published.push(frame.sequence));
+
+    const cancelled = registry.cancel(task.taskId, "operator cancelled");
+    expect(registry.controller(task.taskId)?.signal.aborted).toBe(true);
+    expect(cancelled).toMatchObject({ status: "cancelled", persistence: "pending", latestSequence: 2 });
+    expect(published).toEqual([]);
+    expect(await storage.events.readEpisode(task.taskId as EpisodeId)).toHaveLength(1);
+
+    cancelCommit.resolve();
+    await registry.drain(task.taskId);
+    expect(published).toEqual([2]);
+    expect(await registry.get(task.taskId)).toMatchObject({ status: "cancelled", persistence: "durable" });
   });
 });
 

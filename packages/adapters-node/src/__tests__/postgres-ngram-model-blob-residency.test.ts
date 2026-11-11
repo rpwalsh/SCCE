@@ -57,9 +57,9 @@ function fixture(rows: Row[]) {
       })) as T[];
     }
     if (sql.includes("model.model_json") && sql.includes(" AS json_bytes")) {
-      expect(sql).toContain("CASE WHEN model.model_json->'_scceJoinProgramStorage'->>'schema'='scce.durable_join_program.byte_ledger.v1'");
-      expect(sql).toContain("jsonb_typeof(model.model_json->'_scceJoinProgramStorage'->'decodedJsonbBytes')='number'");
-      expect(sql).toContain("THEN (model.model_json->'_scceJoinProgramStorage'->>'decodedJsonbBytes')::numeric ELSE octet_length(model.model_json::text) END");
+      expect(sql).toContain("CASE WHEN model.model_json->'_scceDecodedJsonByteLedger'->>'schema'='scce.decoded_json.byte_ledger.v1'");
+      expect(sql).toContain("jsonb_typeof(model.model_json->'_scceDecodedJsonByteLedger'->'decodedJsonbBytes')='number'");
+      expect(sql).toContain("THEN (model.model_json->'_scceDecodedJsonByteLedger'->>'decodedJsonbBytes')::numeric ELSE octet_length(model.model_json::text) END");
       blobSql.push(sql);
       const ids = params[0] as string[];
       blobIds.push([...ids]);

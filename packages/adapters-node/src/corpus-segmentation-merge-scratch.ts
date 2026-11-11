@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { CorpusSegmentationScratch, CorpusSegmentationScratchRow, JsonValue } from "@scce/kernel";
-import { durableJoinProgramJsonByteLengths } from "./durable-join-program-storage.js";
+import { decodedJsonByteLengths } from "./decoded-json-byte-ledger.js";
 import { createBoundaryFitNumericFile } from "./boundary-fit-numeric-file.js";
 
 export const BOUNDARY_MERGE_PAGE_SCHEMA = "scce.boundary_merge_scratch_page.v1";
@@ -27,7 +27,7 @@ export function createPackedBoundaryMergeScratch(store: CorpusSegmentationScratc
   let pending: { collection: string; rows: CorpusSegmentationScratchRow[]; bytes: number; headerBytes: number } | undefined;
   let disposed = false;
   const active = () => { if (disposed) throw Error("Boundary merge scratch lease is disposed"); };
-  const headerBase = durableJoinProgramJsonByteLengths({ orderKey: "", value: { schema: BOUNDARY_MERGE_PAGE_SCHEMA, rows: [] } }).decodedJsonbBytes;
+  const headerBase = decodedJsonByteLengths({ orderKey: "", value: { schema: BOUNDARY_MERGE_PAGE_SCHEMA, rows: [] } }).decodedJsonbBytes;
   const headerBytes = (key: string) => headerBase + Buffer.byteLength(JSON.stringify(key));
   const flush = async () => {
     if (!pending?.rows.length) return;
@@ -46,7 +46,7 @@ export function createPackedBoundaryMergeScratch(store: CorpusSegmentationScratc
       for (const input of rows) {
         const row = logical(JSON.parse(JSON.stringify(input)) as JsonValue), state = states.get(collection) ?? { count: 0, lastKey: "" };
         if (row.orderKey <= state.lastKey) throw Error("Boundary merge scratch requires ordered append or collection reset");
-        const bytes = durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2;
+        const bytes = decodedJsonByteLengths(row).decodedJsonbBytes + 2;
         if (headerBytes(row.orderKey) + bytes > store.maxPageBytes) throw Error("Boundary merge scratch row exceeds decoded page bytes");
         if (pending && pending.headerBytes + pending.bytes + bytes > store.maxPageBytes) await flush();
         pending ??= { collection, rows: [], bytes: 0, headerBytes: headerBytes(row.orderKey) };
@@ -72,7 +72,7 @@ export function createPackedBoundaryMergeScratch(store: CorpusSegmentationScratc
           if (first && stored.orderKey !== row.orderKey || row.orderKey <= previous) return invalid();
           first = false; previous = row.orderKey; count++;
           if (query.afterKey && row.orderKey <= query.afterKey || query.prefix && !row.orderKey.startsWith(query.prefix)) continue;
-          const size = durableJoinProgramJsonByteLengths(row).decodedJsonbBytes + 2;
+          const size = decodedJsonByteLengths(row).decodedJsonbBytes + 2;
           if (size > query.maxPageBytes) throw Error("Boundary merge scratch row exceeds requested decoded page bytes");
           if (output.length && (output.length >= query.pageRows || bytes + size > query.maxPageBytes)) { yield output; output = []; bytes = 0; }
           output.push(row); bytes += size;

@@ -3,15 +3,22 @@
 import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { corpusSourceAlias } from "./corpus-registry.js";
 import { jsonRecord } from "./kernel-answer-primitives.js";
+import { LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA } from "./language-induction-memory.js";
 import { LANGUAGE_TRAINING_BATCH_RECIPE_ID, LANGUAGE_TRAINING_MIN_CHUNK_UTF16_LENGTH } from "./language-training-recipe.js";
 import { canonicalNgramModelId, sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
 import { toJsonValue } from "./primitives.js";
+import { SOURCE_SEGMENTATION_WITNESS_SCHEMA } from "./source-segmentation-witness.js";
 import type { LanguageUnitRecord, LanguagePatternRecord, SemanticFrameRecord, NgramModelRecord } from "./storage.js";
 import type { ContentHash, Hasher, JsonValue, SourceId, SourceVersionId } from "./types.js";
 
 export interface SourceCompilationOwner { sourceId: SourceId; sourceVersionId: SourceVersionId; contentHash: ContentHash }
 
 const READABLE_SOURCE_COMPILATION_RECIPES = new Set([LANGUAGE_TRAINING_BATCH_RECIPE_ID, "kernel.language_training_batch.v3", "kernel.language_training_batch.v4", "kernel.language_training_batch.v5", "kernel.language_training_batch.v6", "kernel.language_training_batch.v7"]);
+
+/** Canonical segmentation evidence is durable archival material, never an active language-memory projection. */
+export function isCanonicalSegmentationArchiveSchema(schema: unknown): boolean {
+  return schema === SOURCE_SEGMENTATION_WITNESS_SCHEMA || schema === LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA;
+}
 
 export function sourceLanguageCompilationReceiptId(compilationId: string): string {
   return `source.language.compilation.${compilationId}`;
@@ -70,9 +77,11 @@ export function stampSourceLanguageCompilation(input: {
 }): { models: NgramModelRecord[]; units: LanguageUnitRecord[]; patterns: LanguagePatternRecord[]; semanticFrames: SemanticFrameRecord[] } {
   if (input.models.length !== input.chunks.length) throw new Error("canonical source compiler must produce its complete chunk set");
   const sourceArtifacts = { ...input.artifacts, patterns: input.artifacts.patterns.filter(record => record.patternKind !== "source_compilation") };
+  const compilationArtifacts = { ...sourceArtifacts, patterns: sourceArtifacts.patterns.filter(record =>
+    !isCanonicalSegmentationArchiveSchema(jsonRecord(record.patternJson).schema)) };
   const componentReceipts = input.artifacts.patterns.filter(record => record.patternKind === "source_compilation"
     && jsonRecord(record.patternJson).schema !== "scce.source_language_compilation_receipt.v1");
-  const artifacts = Object.fromEntries(Object.entries(sourceArtifacts).map(([kind, rows]) => [kind,
+  const artifacts = Object.fromEntries(Object.entries(compilationArtifacts).map(([kind, rows]) => [kind,
     { count: rows.length, identityDigest: canonicalDigestHex(rows.map(row => row.id).sort(), input.hasher) }]));
   const common = { schema: "scce.source_language_compilation.v1", compilerRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID, ...input.owner,
     profileId: input.profileId, sourceSystem: corpusSourceAlias(input.sourceSystem), parentStreamId: input.streamId,
@@ -84,7 +93,8 @@ export function stampSourceLanguageCompilation(input: {
   return { models: input.models.map((record, index) => ({ ...record, modelJson: toJsonValue({ ...jsonRecord(record.modelJson),
     sourceCompilation: { ...common, compilationId, chunk: chunks[index], modelDigest: canonicalDigestHex(modelMaterial(record), input.hasher) } }) })),
     units: input.artifacts.units.map(record => ({ ...record, metadata: toJsonValue({ ...jsonRecord(record.metadata), sourceCompilationId: compilationId }) })),
-    patterns: [...sourceArtifacts.patterns.map(record => ({ ...record, patternJson: toJsonValue({ ...jsonRecord(record.patternJson), sourceCompilationId: compilationId }) })), ...componentReceipts,
+    patterns: [...sourceArtifacts.patterns.map(record => isCanonicalSegmentationArchiveSchema(jsonRecord(record.patternJson).schema) ? record
+      : { ...record, patternJson: toJsonValue({ ...jsonRecord(record.patternJson), sourceCompilationId: compilationId }) }), ...componentReceipts,
       { id: sourceLanguageCompilationReceiptId(compilationId), profileId: input.profileId, patternKind: "source_compilation", support: 1, entropy: 0,
         evidenceIds: [], updatedAt: input.models[0]!.updatedAt, patternJson: toJsonValue({ schema: "scce.source_language_compilation_receipt.v1", sourceSystem: common.sourceSystem,
           ...(input.inheritedMetadata === undefined ? {} : { inheritedMetadata: { schema: "scce.source_artifact_metadata.v1", digest: canonicalDigestHex(input.inheritedMetadata, input.hasher), value: input.inheritedMetadata } }),

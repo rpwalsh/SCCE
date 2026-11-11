@@ -18,6 +18,7 @@ import type { LanguagePatternRecord, ScceKernelDeps, SemanticFrameRecord } from 
 import { conversationalActBindingId } from "../conversational-act-binding.js";
 import { requestCommunicativeActIdForSignature } from "../request-communicative-act.js";
 import { DIALOGUE_ACT_IDS } from "../dialogue-pragmatics.js";
+import { INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_SEGMENTATION_WITNESS_REFERENCE_SCHEMA } from "../language-induction-memory.js";
 
 const hasher = createHasher();
 const clock = createClock({ fixedTime: 1 });
@@ -53,15 +54,18 @@ const pattern = (id: string, patternJson: LanguagePatternRecord["patternJson"], 
 it("never reads generic frames or source evidence during request seeding, and keeps realization queries complete", async () => {
   const page = pattern("source.page", { schema: "scce.language_construction_pattern.v1", bundle: {
     sourceExamples: [{ surface: "source body", roles: [], nullRoles: [] }], constructions: [{ sourceBody: "source body" }] } });
-  const syntax = pattern("syntax", { schema: "scce.induced_language_model.syntax_memory.v1", counts: { alpha: 2 }, boundarySignals: [],
-    templates: [{ shape: ["alpha", "beta"] }], joinProgram: { histories: ["source program"] } }, "syntax");
+  const syntax = pattern("syntax", { schema: INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, counts: { alpha: 2 }, boundarySignals: [],
+    segmentationWitness: { schema: LANGUAGE_SEGMENTATION_WITNESS_REFERENCE_SCHEMA, manifestPatternId: "manifest.secret" },
+    templates: [{ shape: ["alpha", "beta"] }], surfaceRealizationProgram: { sourceSurfaceIds: ["source-surface.alpha-beta"] } }, "syntax");
   const f = fixture([page, syntax]);
   const seed = await f.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "seed", undefined, "", { purpose: "request_seed" });
   expect(f.calls.frames).toEqual([{ view: "request_seed", profileIds: [profile.id], sourceSystem: undefined, limit: 128 }]);
   expect(f.calls.evidence).toBe(0);
   expect(seed.state.importedConstructionBundles).toEqual([]);
   expect(seed.patterns.find(row => row.id === page.id)?.patternJson).not.toHaveProperty("bundle");
-  expect(seed.patterns.find(row => row.id === syntax.id)?.patternJson).toEqual({ schema: "scce.induced_language_model.syntax_memory.v1", counts: { alpha: 2 }, boundarySignals: [], templates: [] });
+  expect(seed.patterns.find(row => row.id === syntax.id)?.patternJson).toEqual({ schema: INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
+    counts: { alpha: 2 }, boundarySignals: [], templates: [] });
+  expect(JSON.stringify(seed.patterns)).not.toContain("manifest.secret");
   const reads = f.calls.patterns.length;
   expect(await f.runtime.requestConstructionBundles(seed.patterns, seed.state.scope)).toEqual([]);
   expect(f.calls.patterns).toHaveLength(reads);

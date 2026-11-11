@@ -24,7 +24,7 @@ const systems = [
   {
     systemId: "scce", conditionId: "full", displayName: "SCCE persistent CPU runtime",
     mode: "jsonl-stdio", command: [process.execPath, path.join(kit, "integration/scce-jsonl-adapter.mjs")], cwd: kit,
-    env: { SCCE_EVAL_CONDITION: "full", SCCE_EVAL_CONFIG_PATH: path.resolve(args.get("config") ?? path.join(repo, "scce.config.json")), NODE_OPTIONS: "--max-old-space-size=8192" },
+    env: { SCCE_EVAL_CONDITION: "full", SCCE_EVAL_CONFIG_PATH: path.resolve(args.get("config") ?? path.join(repo, "scce.config.json")), NODE_OPTIONS: "--max-old-space-size=7168" },
     timeoutMs: 1500000, networkPolicy: "local PostgreSQL; source allowlist enforced by existing adapter", assistance: "none"
   },
   {

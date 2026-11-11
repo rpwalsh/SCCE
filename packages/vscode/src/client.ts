@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { randomUUID } from "node:crypto";
 import { parseCodeEditApproval, parseCodeEditAttempt, parseCodeValidationPolicies, type CodeEditAttempt } from "./code-edit-flow.js";
 import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken, type ScceConnectionConfig } from "./config.js";
 import {
@@ -34,16 +35,15 @@ import { parseWithheldSurface } from "./withheld-surface.js";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_STREAM_BYTES = 32 * 1024 * 1024;
+const LOCAL_GRAPHQL_PROTOCOL = "scce.graphql.v1";
 
 export interface TurnStreamFrame {
-  schema: "scce.turn_stream.v1";
+  schema: "scce.graphql.turn_task_update.v1";
   type: "accepted" | "progress" | "result" | "error" | "cancelled";
   taskId?: string;
-  requestId?: string;
   phase?: string;
   elapsedMs?: number;
   sequence?: number;
-  streamUrl?: string;
   status?: number;
   error?: string;
   /** Typed runtime data behind a non-2xx terminal frame -- a withheld-surface record, never wording. */
@@ -142,23 +142,15 @@ export class ScceWithheldTurnError extends ScceHttpError {
   }
 }
 
-function httpFailure(status: number, payload: unknown): ScceHttpError {
-  const message = errorMessage(payload, status);
-  const detail = payload && typeof payload === "object" && !Array.isArray(payload)
-    ? (payload as Record<string, unknown>).detail
-    : undefined;
-  const withheld = parseWithheldSurface(detail);
-  return withheld ? new ScceWithheldTurnError(status, message, withheld) : new ScceHttpError(status, message);
-}
-
 function turnStreamFailure(frame: TurnStreamFrame): Error {
   const withheld = parseWithheldSurface(frame.detail);
   const message = frame.error ?? "SCCE turn stream failed";
-  return withheld ? new ScceWithheldTurnError(frame.status ?? 422, message, withheld) : new Error(message);
+  return withheld ? new ScceWithheldTurnError(frame.status ?? 422, message, withheld) : new ScceHttpError(frame.status ?? 500, message);
 }
 
 export class ScceClient {
   private readonly config: ScceConnectionConfig;
+  private graphqlGeneration: string | undefined;
 
   constructor(config: ScceConnectionConfig, private readonly transport: HttpTransport = fetch) {
     this.config = {
@@ -169,29 +161,33 @@ export class ScceClient {
   }
 
   ready(): Promise<ReadyResponse> {
-    return this.request("GET", "/api/ready", undefined, parseReadyResponse);
+    return this.vscodeQuery("VscodeReadyQuery", "vscodeReady", {}, parseReadyResponse);
   }
 
-  workspaceInitialize(path: string): Promise<unknown> {
-    return this.request("POST", "/api/workspace/init", { path: requireWorkspacePath(path) }, identity);
+  workspaceInitialize(path: string): Promise<WorkspaceStatusResponse["workspace"]> {
+    return this.vscodeMutation("VscodeWorkspaceInitializeMutation", "vscodeWorkspaceInitialize",
+      { path: requireWorkspacePath(path) }, parseWorkspaceInitialize);
   }
 
   workspaceIngest(path: string): Promise<WorkspaceIngestResponse> {
-    return this.request("POST", "/api/workspace/ingest", { path: requireWorkspacePath(path) }, parseWorkspaceIngestResponse);
+    return this.vscodeMutation("VscodeWorkspaceIngestMutation", "vscodeWorkspaceIngest",
+      { path: requireWorkspacePath(path) }, parseWorkspaceIngestResponse);
   }
 
   workspaceAsk(path: string, question: string): Promise<WorkspaceAnswerResponse> {
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion) throw new Error("workspace question must not be empty");
-    return this.request("POST", "/api/workspace/ask", { path: requireWorkspacePath(path), question: normalizedQuestion }, parseWorkspaceAnswerResponse);
+    return this.vscodeMutation("VscodeWorkspaceAskMutation", "vscodeWorkspaceAsk",
+      { path: requireWorkspacePath(path), question: normalizedQuestion }, parseWorkspaceAnswerResponse);
   }
 
   projectSummary(path: string): Promise<ProjectSummaryResponse> {
-    return this.request("GET", `/api/project/summary?path=${encodeURIComponent(requireWorkspacePath(path))}`, undefined, parseProjectSummaryResponse);
+    return this.vscodeQuery("VscodeProjectSummaryQuery", "vscodeProjectSummary",
+      { path: requireWorkspacePath(path) }, parseProjectSummaryResponse);
   }
 
   workspaceStatus(): Promise<WorkspaceStatusResponse> {
-    return this.request("GET", "/api/workspace/sources", undefined, parseWorkspaceStatus);
+    return this.vscodeQuery("VscodeWorkspaceStatusQuery", "vscodeWorkspaceStatus", {}, parseWorkspaceStatus);
   }
 
   workspaceCodingPatchPlan(input: {
@@ -203,188 +199,245 @@ export class ScceClient {
     diagnosticCodes: readonly number[];
   }): Promise<WorkspaceCodingPatchPlanResult> {
     const request = codingPatchPlanRequest(input);
-    return this.request("POST", "/api/workspace/patch/plan/request", request, value => parseWorkspaceCodingPatchPlanResult(value, request));
+    return this.vscodeMutation("VscodeWorkspaceCodingPatchPlanMutation", "vscodeWorkspaceCodingPatchPlan",
+      { value: request }, value => parseWorkspaceCodingPatchPlanResult(
+        graphqlJsonPayloadValue(value, "vscodeWorkspaceCodingPatchPlan"), request));
   }
 
   workspacePatch(workspaceId: string, plan: ReviewedPatchPlan): Promise<WorkspacePatchAttempt> {
-    return this.request("POST", "/api/workspace/patch", {
+    return this.vscodeMutation("VscodeWorkspacePatchMutation", "vscodeWorkspacePatch", { value: {
       schemaVersion: WORKSPACE_PATCH_REQUEST_SCHEMA,
       workspaceId: requireNonEmpty(workspaceId, "workspace id"),
       plan,
       validationPolicyId: DEFAULT_PATCH_VALIDATION_POLICY_ID
-    }, value => {
-      const attempt = parseWorkspacePatchAttempt(value);
+    } }, value => {
+      const attempt = parseWorkspacePatchAttempt(graphqlJsonPayloadValue(value, "vscodeWorkspacePatch"));
       return "pendingApproval" in attempt ? attempt : verifyAppliedPatchMatchesPlan(attempt, plan);
     });
   }
 
   listCurriculum(): Promise<{ items: CurriculumItemView[] }> {
-    return this.request("GET", "/api/learning/curriculum", undefined, parseCurriculum);
+    return this.vscodeQuery("VscodeLearningCurriculumQuery", "vscodeLearningCurriculum", {}, parseCurriculum);
   }
 
   pursueCurriculum(planId: string): Promise<{ answer: string; held: HeldSourceView[] }> {
-    return this.request("POST", "/api/learning/pursue", { planId: requireNonEmpty(planId, "curriculum plan id") }, parsePursue);
+    return this.vscodeMutation("VscodeLearningPursueMutation", "vscodeLearningPursue",
+      { planId: requireNonEmpty(planId, "curriculum plan id") }, parsePursue);
   }
 
   listHeldSources(): Promise<{ held: HeldSourceView[] }> {
-    return this.request("GET", "/api/learning/held", undefined, parseLearningHeld);
+    return this.vscodeQuery("VscodeHeldSourcesQuery", "vscodeHeldSources", { first: 20 }, parseLearningHeld);
   }
 
   reviewHeldSource(id: string, decision: "promoted" | "rejected"): Promise<{ review: { id: string; decision: string; promotedEvidence: number } }> {
-    return this.request("POST", "/api/learning/review", { id: requireNonEmpty(id, "held source id"), decision }, parseLearningReview);
+    return this.vscodeMutation("VscodeReviewHeldSourceMutation", "vscodeReviewHeldSource",
+      { id: requireNonEmpty(id, "held source id"), decision }, parseLearningReview);
   }
 
   approveWorkspacePatch(planId: string): Promise<{ approved: { planId: string; capabilityId: string } }> {
-    return this.request("POST", "/api/session/approve", { planId: requireNonEmpty(planId, "approval plan id") }, parseSessionApproval);
+    return this.vscodeMutation("VscodeApprovePlanMutation", "vscodeApprovePlan",
+      { planId: requireNonEmpty(planId, "approval plan id") }, parseSessionApproval);
   }
 
   approveLearningConsent(planId: string): Promise<{ approved: { planId: string; capabilityId: "network.search" } }> {
-    return this.request("POST", "/api/session/approve", { planId: requireNonEmpty(planId, "consent plan id") }, parseSessionConsentApproval);
+    return this.vscodeMutation("VscodeApprovePlanMutation", "vscodeApprovePlan",
+      { planId: requireNonEmpty(planId, "consent plan id") }, parseSessionConsentApproval);
   }
 
   rejectLearningConsent(planId: string): Promise<{ rejected: { planId: string; capabilityId: "network.search" } }> {
-    return this.request("POST", "/api/session/reject", { planId: requireNonEmpty(planId, "consent plan id") }, parseSessionConsentRejection);
+    return this.vscodeMutation("VscodeRejectPlanMutation", "vscodeRejectPlan",
+      { planId: requireNonEmpty(planId, "consent plan id") }, parseSessionConsentRejection);
   }
 
-  /**
-   * Streams one conversational turn over NDJSON, reconnecting via the
-   * server-issued streamUrl if the connection drops mid-turn (same
-   * protocol the web workbench uses). Does not go through the injected
-   * HttpTransport: streaming needs a real fetch Response body, which
-   * HttpResponseLike deliberately doesn't expose.
-   */
+  /** Starts one durable local GraphQL operation and follows its SSE task updates. */
   async streamTurn(
     input: { text: string; sessionId: string; conversationId?: string },
     onFrame: (frame: TurnStreamFrame) => void,
     signal?: AbortSignal
   ): Promise<TurnAnswer> {
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      accept: "application/x-ndjson"
-    };
-    if (this.config.token) headers.Authorization = `Bearer ${this.config.token}`;
-    let response = await fetch(`${this.config.serverUrl}/api/turn?stream=1`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ text: input.text, sessionId: input.sessionId, conversationId: input.conversationId ?? input.sessionId }),
-      signal
-    });
-    let reconnectUrl = "";
+    const endpoint = `${this.config.serverUrl}/api/graphql`;
+    const correlationId = randomUUID();
+    let generation = "";
+    let operationId = "";
     let latestSequence = 0;
-    let result: TurnAnswer | undefined;
-    while (!result) {
-      if (!response.ok) throw new ScceHttpError(response.status, `SCCE turn stream failed (${response.status})`);
-      if (!response.body) throw new Error("SCCE turn stream response had no body");
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let pending = "";
-      let receivedBytes = 0;
-      let terminalFailure = false;
-      try {
-        for (;;) {
-          const next = await reader.read();
-          if (next.value) {
-            receivedBytes += next.value.byteLength;
-            if (receivedBytes > MAX_STREAM_BYTES) throw new Error("SCCE turn stream exceeded the extension size limit");
-          }
-          pending += decoder.decode(next.value ?? new Uint8Array(), { stream: !next.done });
-          const lines = pending.split("\n");
-          pending = lines.pop() ?? "";
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            const frame = parseTurnStreamFrame(line);
-            onFrame(frame);
-            if (frame.streamUrl) reconnectUrl = frame.streamUrl;
-            if (typeof frame.sequence === "number" && Number.isFinite(frame.sequence)) latestSequence = Math.max(latestSequence, frame.sequence);
-            if (frame.type === "result") result = frame.value as TurnAnswer;
-            if (frame.type === "error" || frame.type === "cancelled") {
-              terminalFailure = true;
-              throw turnStreamFailure(frame);
+    const byteBudget = { received: 0 };
+    try {
+      const runtime = await graphqlRequest<{ runtime: GraphqlRuntime }>(endpoint, this.config.token,
+        "VscodeRuntimeQuery", {}, undefined, signal);
+      if (runtime.data.runtime.protocolVersion !== LOCAL_GRAPHQL_PROTOCOL
+        || runtime.data.runtime.generation !== runtime.generation) {
+        throw new GraphqlProtocolError("SCCE runtime returned an inconsistent GraphQL generation");
+      }
+      generation = runtime.generation;
+
+      const reserveMutationId = `${correlationId}:reserve`;
+      const reserved = await graphqlRequest<{ reserveTurn: GraphqlTurnPayload }>(endpoint, this.config.token,
+        "VscodeReserveTurnMutation", { input: { clientMutationId: reserveMutationId } }, generation, signal);
+      operationId = mutationTask(reserved.data.reserveTurn, reserveMutationId, "reserveTurn").id;
+
+      const startMutationId = `${correlationId}:start`;
+      const started = await graphqlRequest<{ startTurn: GraphqlTurnPayload }>(endpoint, this.config.token,
+        "VscodeStartTurnMutation", { input: {
+          operationId,
+          text: input.text,
+          sessionId: input.sessionId,
+          conversationId: input.conversationId ?? input.sessionId,
+          clientMutationId: startMutationId
+        } }, generation, signal);
+      if (mutationTask(started.data.startTurn, startMutationId, "startTurn").id !== operationId) {
+        throw new GraphqlProtocolError("SCCE startTurn changed the reserved operation identifier");
+      }
+
+      let reconnects = 0;
+      for (;;) {
+        let response: Response;
+        try {
+          response = await fetch(endpoint, {
+            method: "POST",
+            headers: graphqlHeaders(this.config.token, "text/event-stream"),
+            body: JSON.stringify({
+              protocolVersion: LOCAL_GRAPHQL_PROTOCOL,
+              operationName: "VscodeTurnTaskSubscription",
+              variables: { id: operationId, afterSequence: latestSequence },
+              generation
+            }),
+            signal,
+            credentials: "omit",
+            redirect: "error"
+          });
+        } catch (error) {
+          if (signal?.aborted) throw abortError(error);
+          if (++reconnects > 8) throw error;
+          await delay(250, signal);
+          continue;
+        }
+        if (!response.ok || !response.headers.get("content-type")?.toLowerCase().startsWith("text/event-stream")) {
+          throw await graphqlResponseFailure(response);
+        }
+        let complete = false;
+        let sawUpdate = false;
+        try {
+          for await (const event of readGraphqlEvents(response, byteBudget)) {
+            if (event.event === "complete") {
+              complete = true;
+              break;
+            }
+            if (event.event !== "next") throw new GraphqlProtocolError("SCCE GraphQL subscription sent an unknown event");
+            const payload = decodeGraphqlEnvelope<{ turnTaskUpdated: GraphqlTurnTask }>(event.data, generation, response.status);
+            const task = payload.data.turnTaskUpdated;
+            if (!task || task.id !== operationId) throw new GraphqlProtocolError("SCCE GraphQL subscription changed task identity");
+            const frame = task.latestFrame;
+            if (!frame || frame.sequence <= latestSequence) continue;
+            sawUpdate = true;
+            latestSequence = frame.sequence;
+            const update = taskUpdateFrame(task, frame);
+            onFrame(update);
+            if (update.type === "result") return turnAnswer(task.result?.value);
+            if (update.type === "error" || update.type === "cancelled") throw turnStreamFailure(update);
+            if (task.status === "interrupted") {
+              throw new ScceHttpError(503, "SCCE turn execution was interrupted before producing a terminal result");
             }
           }
-          if (next.done) break;
+        } catch (error) {
+          if (signal?.aborted) throw abortError(error);
+          if (error instanceof GraphqlProtocolError || error instanceof ScceHttpError || error instanceof ScceWithheldTurnError) throw error;
+          if (++reconnects > 8) throw error;
+          await delay(250, signal);
+          continue;
         }
-        if (pending.trim()) {
-          const frame = parseTurnStreamFrame(pending);
-          onFrame(frame);
-          if (frame.streamUrl) reconnectUrl = frame.streamUrl;
-          if (frame.type === "result") result = frame.value as TurnAnswer;
-          if (frame.type === "error" || frame.type === "cancelled") {
-            terminalFailure = true;
-            throw turnStreamFailure(frame);
-          }
-        }
-      } catch (error) {
-        if (terminalFailure || !reconnectUrl) throw error;
+        if (complete) throw new GraphqlProtocolError("SCCE GraphQL subscription completed without a terminal task frame");
+        reconnects = sawUpdate ? 0 : reconnects + 1;
+        if (reconnects > 8) throw new Error("SCCE GraphQL subscription repeatedly disconnected before the turn completed");
+        await delay(250, signal);
       }
-      if (result) break;
-      if (!reconnectUrl) throw new Error("SCCE turn stream ended without a reconnectable task receipt");
-      await delay(500, signal);
-      response = await fetch(`${reconnectUrl}?after=${latestSequence}`, {
-        headers: { accept: "application/x-ndjson", ...(this.config.token ? { Authorization: `Bearer ${this.config.token}` } : {}) },
-        signal
-      });
+    } catch (error) {
+      if (signal?.aborted && operationId && generation) {
+        await cancelGraphqlTurn(endpoint, this.config.token, operationId, generation, `${correlationId}:cancel`);
+        throw abortError(error);
+      }
+      throw error;
     }
-    return result;
   }
 
   // Phase 6/8 surfaces: settings and local models through the server's shared schema.
   async getSettings(): Promise<SettingsView> {
-    return this.request("GET", "/api/settings", undefined, value => value as SettingsView);
+    return this.vscodeQuery("VscodeSettingsQuery", "vscodeSettings", {}, value => value as SettingsView);
   }
 
   async putSetting(key: string, value: string | boolean | number): Promise<{ key: string; value: unknown; restartRequired: boolean }> {
-    return this.request("POST", "/api/settings", { key, value: String(value) }, value => value as { key: string; value: unknown; restartRequired: boolean });
+    return this.vscodeMutation("VscodeUpdateSettingMutation", "vscodeUpdateSetting",
+      { key: requireNonEmpty(key, "setting key"), value }, result => result as { key: string; value: unknown; restartRequired: boolean });
   }
 
   async listModels(): Promise<ModelsView> {
-    return this.request("GET", "/api/models", undefined, value => value as ModelsView);
+    return this.vscodeQuery("VscodeModelsQuery", "vscodeModels", {}, value => value as ModelsView);
   }
 
   async downloadModel(modelId: string): Promise<unknown> {
-    return this.request("POST", "/api/models/download", { modelId, kind: "clip" }, identity);
+    return this.vscodeMutation("VscodeDownloadModelMutation", "vscodeDownloadModel",
+      { modelId: requireNonEmpty(modelId, "model id") }, identity);
   }
 
   async removeModel(modelId: string): Promise<{ removed: boolean }> {
-    return this.request("POST", "/api/models/remove", { modelId }, value => value as { removed: boolean });
+    return this.vscodeMutation("VscodeRemoveModelMutation", "vscodeRemoveModel",
+      { modelId: requireNonEmpty(modelId, "model id") }, value => value as { removed: boolean });
   }
 
   /** Edits through the workspace build gate and the selected server-owned policy. */
   async editCode(targetPath: string, request: string, attempts?: number, validationPolicyId?: string): Promise<CodeEditAttempt> {
-    return this.request("POST", "/api/workspace/code", { path: targetPath, request,
+    return this.vscodeMutation("VscodeEditCodeMutation", "vscodeEditCode", { path: targetPath, request,
       ...(attempts === undefined ? {} : { attempts }),
       ...(validationPolicyId === undefined ? {} : { validationPolicyId: requireNonEmpty(validationPolicyId, "validation policy id") })
-    }, parseCodeEditAttempt);
+    }, value => parseCodeEditAttempt(graphqlJsonPayloadValue(value, "vscodeEditCode")));
   }
 
   codeValidationPolicies() {
-    return this.request("GET", "/api/workspace/code/validation-policies", undefined, parseCodeValidationPolicies);
+    return this.vscodeQuery("VscodeCodeValidationPoliciesQuery", "vscodeCodeValidationPolicies", {}, parseCodeValidationPolicies);
   }
 
   approveCodeEdit(planId: string): Promise<{ approved: { planId: string; capabilityId: string } }> {
-    return this.request("POST", "/api/session/approve", { planId: requireNonEmpty(planId, "approval plan id") }, parseCodeEditApproval);
+    return this.vscodeMutation("VscodeApprovePlanMutation", "vscodeApprovePlan",
+      { planId: requireNonEmpty(planId, "approval plan id") }, parseCodeEditApproval);
   }
 
-  private async request<T>(method: "GET" | "POST", route: string, body: unknown, parse: (value: unknown) => T): Promise<T> {
+  private async vscodeQuery<T>(operationName: string, field: string, variables: Record<string, unknown>, parse: (value: unknown) => T): Promise<T> {
+    const data = await this.graphqlTransport<Record<string, unknown>>(operationName, variables, false);
+    if (!recordValue(data[field])) throw new GraphqlProtocolError(`SCCE ${field} returned an invalid typed query payload`);
+    return parse(data[field]);
+  }
+
+  private async vscodeMutation<T>(operationName: string, field: string, value: Record<string, unknown>, parse: (value: unknown) => T): Promise<T> {
+    if (!this.graphqlGeneration) await this.graphqlTransport("VscodeRuntimeQuery", {}, false);
+    const operationId = randomUUID();
+    const clientMutationId = randomUUID();
+    const data = await this.graphqlTransport<Record<string, unknown>>(operationName,
+      { input: { operationId, ...value, clientMutationId } }, true);
+    const payload = recordValue(data[field]);
+    if (!payload || payload.clientMutationId !== clientMutationId) throw new GraphqlProtocolError(`SCCE ${field} returned an invalid Relay mutation payload`);
+    const { clientMutationId: _clientMutationId, ...result } = payload;
+    return parse(result);
+  }
+
+  private async graphqlTransport<T>(operationName: string, variables: Record<string, unknown>, requireGeneration: boolean): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
-    const headers: Record<string, string> = { Accept: "application/json" };
-    if (body !== undefined) headers["Content-Type"] = "application/json";
-    if (this.config.token) headers.Authorization = `Bearer ${this.config.token}`;
+    const expectedGeneration = this.graphqlGeneration;
+    if (requireGeneration && !expectedGeneration) throw new GraphqlProtocolError("SCCE GraphQL mutation requires a runtime generation");
     try {
-      const response = await this.transport(`${this.config.serverUrl}${route}`, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
+      const response = await this.transport(`${this.config.serverUrl}/api/graphql`, {
+        method: "POST",
+        headers: graphqlHeaders(this.config.token, "application/graphql-response+json"),
+        body: JSON.stringify({ protocolVersion: LOCAL_GRAPHQL_PROTOCOL, operationName, variables,
+          ...(expectedGeneration ? { generation: expectedGeneration } : {}) }),
         signal: controller.signal
       });
       const declaredLength = Number(response.headers.get("content-length") ?? "0");
       if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) throw new Error("SCCE response exceeded the extension size limit");
       const text = await response.text();
       if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) throw new Error("SCCE response exceeded the extension size limit");
-      const payload = parseJson(text);
-      if (!response.ok) throw httpFailure(response.status, payload);
-      return parse(payload);
+      const envelope = decodeGraphqlEnvelope<T>(text, expectedGeneration, response.status);
+      this.graphqlGeneration = envelope.generation;
+      return envelope.data;
     } finally {
       clearTimeout(timer);
     }
@@ -463,40 +516,263 @@ function compareCanonical(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function parseJson(text: string): unknown {
-  try {
-    return text ? JSON.parse(text) : null;
-  } catch {
-    throw new Error("SCCE server returned invalid JSON");
-  }
-}
-
-function errorMessage(payload: unknown, status: number): string {
-  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-    const error = (payload as Record<string, unknown>).error;
-    if (typeof error === "string" && error.trim()) return `SCCE request failed (${status}): ${error.slice(0, 1000)}`;
-  }
-  return `SCCE request failed (${status})`;
-}
-
 function identity(value: unknown): unknown {
   return value;
 }
 
-export function parseTurnStreamFrame(line: string): TurnStreamFrame {
+function parseWorkspaceInitialize(value: unknown): WorkspaceStatusResponse["workspace"] {
+  const payload = recordValue(value);
+  if (!payload || !("workspace" in payload)) throw new GraphqlProtocolError("SCCE vscodeWorkspaceInitialize returned an invalid typed payload");
+  return parseWorkspaceStatus({ workspace: payload.workspace, sources: [] }).workspace;
+}
+
+function graphqlJsonPayloadValue(value: unknown, field: string): unknown {
+  const payload = recordValue(value);
+  if (!payload || !("value" in payload)) throw new GraphqlProtocolError(`SCCE ${field} returned an invalid JSON application payload`);
+  return payload.value;
+}
+
+interface GraphqlRuntime {
+  protocolVersion: string;
+  generation: string;
+  phase: string;
+  ready: boolean;
+}
+
+interface GraphqlTurnPayload {
+  clientMutationId?: string | null;
+  task?: GraphqlTurnTask | null;
+}
+
+interface GraphqlTurnTask {
+  id: string;
+  status: string;
+  latestSequence: number;
+  persistence: string;
+  latestFrame?: GraphqlTurnFrame | null;
+  result?: GraphqlTurnResult | null;
+}
+
+interface GraphqlTurnFrame {
+  sequence: number;
+  kind: string;
+  phase?: string | null;
+  answer?: string | null;
+  error?: string | null;
+  status?: number | null;
+  elapsedMs?: number | null;
+  value?: unknown;
+  detail?: unknown;
+  assistantForce?: string | null;
+}
+
+interface GraphqlTurnResult {
+  answer?: string | null;
+  error?: string | null;
+  httpStatus?: number | null;
+  value?: unknown;
+  detail?: unknown;
+}
+
+class GraphqlProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GraphqlProtocolError";
+  }
+}
+
+async function graphqlRequest<T>(
+  endpoint: string,
+  token: string | undefined,
+  operationName: string,
+  variables: Record<string, unknown>,
+  generation: string | undefined,
+  signal?: AbortSignal
+): Promise<{ data: T; generation: string }> {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: graphqlHeaders(token, "application/graphql-response+json"),
+    body: JSON.stringify({ protocolVersion: LOCAL_GRAPHQL_PROTOCOL, operationName, variables,
+      ...(generation === undefined ? {} : { generation }) }),
+    signal,
+    credentials: "omit",
+    redirect: "error"
+  });
+  const text = await boundedResponseText(response, MAX_RESPONSE_BYTES);
+  return decodeGraphqlEnvelope<T>(text, generation, response.status);
+}
+
+function graphqlHeaders(token: string | undefined, accept: string): Record<string, string> {
+  return { "content-type": "application/json", accept, ...(token ? { authorization: `Bearer ${token}` } : {}) };
+}
+
+function decodeGraphqlEnvelope<T>(text: string, expectedGeneration: string | undefined, httpStatus: number): { data: T; generation: string } {
   let parsed: unknown;
+  try { parsed = JSON.parse(text); }
+  catch { throw new GraphqlProtocolError("SCCE GraphQL endpoint returned invalid JSON"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new GraphqlProtocolError("SCCE GraphQL endpoint returned an invalid response envelope");
+  }
+  const envelope = parsed as Record<string, unknown>;
+  const extensions = recordValue(envelope.extensions);
+  const generation = extensions?.generation;
+  if (extensions?.protocolVersion !== LOCAL_GRAPHQL_PROTOCOL || typeof generation !== "string" || !generation
+    || (expectedGeneration !== undefined && generation !== expectedGeneration)) {
+    throw new GraphqlProtocolError("SCCE local runtime generation changed; reconnect before continuing");
+  }
+  if (Array.isArray(envelope.errors) && envelope.errors.length) throw graphqlExecutionFailure(envelope.errors[0], httpStatus);
+  if (!envelope.data || typeof envelope.data !== "object" || Array.isArray(envelope.data)) {
+    throw new GraphqlProtocolError("SCCE GraphQL response did not contain operation data");
+  }
+  return { data: envelope.data as T, generation };
+}
+
+function graphqlExecutionFailure(value: unknown, httpStatus: number): ScceHttpError {
+  const error = recordValue(value);
+  const extensions = recordValue(error?.extensions);
+  const code = typeof extensions?.code === "string" ? extensions.code : "GRAPHQL_ERROR";
+  const status = httpStatus >= 400 ? httpStatus : graphqlStatus(code);
+  const message = typeof error?.message === "string" && error.message.trim() ? error.message : "local operation failed";
+  const withheld = parseWithheldSurface(extensions?.detail);
+  if (withheld) return new ScceWithheldTurnError(status, message, withheld);
+  return new ScceHttpError(status, `SCCE GraphQL ${code}: ${message}`);
+}
+
+function graphqlStatus(code: string): number {
+  if (code === "BAD_INPUT" || code === "BAD_ENVELOPE" || code === "BAD_ID" || code === "INVALID_CURSOR") return 400;
+  if (code === "NOT_FOUND" || code === "UNKNOWN_OPERATION") return 404;
+  if (code === "CONFLICT" || code === "STALE_GENERATION") return 409;
+  if (code === "FORBIDDEN") return 403;
+  if (code === "UNPROCESSABLE") return 422;
+  if (code === "RESOURCE_LIMIT") return 429;
+  if (code === "PERSISTENCE_FAILED") return 503;
+  return 500;
+}
+
+function mutationTask(payload: GraphqlTurnPayload | null | undefined, clientMutationId: string, field: string): GraphqlTurnTask {
+  if (!payload || payload.clientMutationId !== clientMutationId || !payload.task || typeof payload.task.id !== "string" || !payload.task.id) {
+    throw new GraphqlProtocolError(`SCCE ${field} returned an invalid Relay mutation payload`);
+  }
+  return payload.task;
+}
+
+function taskUpdateFrame(task: GraphqlTurnTask, frame: GraphqlTurnFrame): TurnStreamFrame {
+  if (!Number.isSafeInteger(frame.sequence) || frame.sequence < 1
+    || !["accepted", "progress", "result", "error", "cancelled"].includes(frame.kind)) {
+    throw new GraphqlProtocolError("SCCE GraphQL subscription returned an invalid task frame");
+  }
+  const result = task.result;
+  const valueRecord = recordValue(result?.value);
+  return {
+    schema: "scce.graphql.turn_task_update.v1",
+    type: frame.kind as TurnStreamFrame["type"],
+    taskId: task.id,
+    sequence: frame.sequence,
+    ...(typeof frame.phase === "string" ? { phase: frame.phase } : {}),
+    ...(typeof frame.elapsedMs === "number" ? { elapsedMs: frame.elapsedMs } : {}),
+    ...(typeof (frame.status ?? result?.httpStatus) === "number" ? { status: (frame.status ?? result?.httpStatus) as number } : {}),
+    ...(typeof (frame.error ?? result?.error) === "string" ? { error: (frame.error ?? result?.error) as string } : {}),
+    ...((frame.detail ?? result?.detail ?? valueRecord?.detail) === undefined ? {} : { detail: frame.detail ?? result?.detail ?? valueRecord?.detail }),
+    ...((frame.kind === "result" ? result?.value : frame.value) === undefined ? {} : { value: frame.kind === "result" ? result?.value : frame.value }),
+    ...(typeof frame.answer === "string" ? { answer: frame.answer } : {}),
+    ...(typeof frame.assistantForce === "string" ? { assistantForce: frame.assistantForce } : {})
+  };
+}
+
+function turnAnswer(value: unknown): TurnAnswer {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new GraphqlProtocolError("SCCE terminal task result did not contain a TurnAnswer payload");
+  }
+  return value as TurnAnswer;
+}
+
+async function graphqlResponseFailure(response: Response): Promise<Error> {
+  let text: string;
+  try { text = await boundedResponseText(response, MAX_RESPONSE_BYTES); }
+  catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+  if (text) {
+    try { decodeGraphqlEnvelope(text, undefined, response.status); }
+    catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+  }
+  return new ScceHttpError(response.status, `SCCE GraphQL subscription failed (${response.status})`);
+}
+
+async function cancelGraphqlTurn(endpoint: string, token: string | undefined, operationId: string, generation: string, clientMutationId: string): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2_000);
   try {
-    parsed = JSON.parse(line);
-  } catch {
-    throw new Error("SCCE turn stream sent a non-JSON line");
+    const cancelled = await graphqlRequest<{ cancelTurn: GraphqlTurnPayload }>(endpoint, token,
+      "VscodeCancelTurnMutation", { input: { taskId: operationId, clientMutationId } }, generation, controller.signal);
+    mutationTask(cancelled.data.cancelTurn, clientMutationId, "cancelTurn");
+  } catch { /* The caller is already aborting; cancellation is best-effort across a dead local host. */ }
+  finally { clearTimeout(timer); }
+}
+
+async function boundedResponseText(response: Response, limit: number): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declaredLength) && declaredLength > limit) throw new GraphqlProtocolError("SCCE GraphQL response exceeded the extension size limit");
+  if (!response.body) throw new GraphqlProtocolError("SCCE GraphQL response had no body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let text = "";
+  let bytes = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) return text + decoder.decode();
+      bytes += next.value.byteLength;
+      if (bytes > limit) throw new GraphqlProtocolError("SCCE GraphQL response exceeded the extension size limit");
+      text += decoder.decode(next.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("SCCE turn stream frame was not an object");
-  const record = parsed as Record<string, unknown>;
-  const type = record.type;
-  if (type !== "accepted" && type !== "progress" && type !== "result" && type !== "error" && type !== "cancelled") {
-    throw new Error("SCCE turn stream frame had an unrecognized type");
+}
+
+async function* readGraphqlEvents(response: Response, budget: { received: number }): AsyncGenerator<{ event: string; data: string }> {
+  if (!response.body) throw new GraphqlProtocolError("SCCE GraphQL subscription had no body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const frame = new Uint8Array(1024 * 1024);
+  let length = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) {
+        if (length) throw new GraphqlProtocolError("SCCE GraphQL subscription ended with a truncated event");
+        return;
+      }
+      budget.received += next.value.byteLength;
+      if (budget.received > MAX_STREAM_BYTES) throw new GraphqlProtocolError("SCCE GraphQL subscription exceeded the extension size limit");
+      for (const byte of next.value) {
+        if (length === frame.length) throw new GraphqlProtocolError("SCCE GraphQL subscription event exceeded the extension size limit");
+        frame[length++] = byte;
+        if (length < 2 || byte !== 10 || frame[length - 2] !== 10) continue;
+        let record: string;
+        try { record = decoder.decode(frame.subarray(0, length - 2)); }
+        catch { throw new GraphqlProtocolError("SCCE GraphQL subscription sent invalid UTF-8"); }
+        length = 0;
+        const lines = record.split("\n");
+        const event = lines.find(line => line.startsWith("event: "))?.slice(7);
+        const data = lines.filter(line => line.startsWith("data: ")).map(line => line.slice(6)).join("\n");
+        if (!event || !data) throw new GraphqlProtocolError("SCCE GraphQL subscription sent an invalid SSE envelope");
+        yield { event, data };
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
-  return record as unknown as TurnStreamFrame;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function abortError(error: unknown): Error {
+  if (error instanceof Error && error.name === "AbortError") return error;
+  return new DOMException("aborted", "AbortError");
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {

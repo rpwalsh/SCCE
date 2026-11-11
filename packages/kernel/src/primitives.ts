@@ -1,9 +1,47 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { createHash, randomBytes } from "node:crypto";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { Clock, Hasher, JsonValue, SourceRedactionInterval } from "./types.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 import { createStringMemo } from "./pure-memo.js";
+
+interface NativeSha256Hash {
+  update(data: string | Uint8Array, inputEncoding?: "utf8"): NativeSha256Hash;
+  digest(encoding: "hex"): string;
+}
+
+interface NativeCryptoModule {
+  createHash(algorithm: "sha256"): NativeSha256Hash;
+}
+
+interface NodeBuiltinLoader {
+  getBuiltinModule?(specifier: string): unknown;
+}
+
+/**
+ * Keep the browser bundle free of a static `node:crypto` dependency while
+ * retaining Node's native streaming implementation on the ingestion hot path.
+ * Node is pinned by the workspace; browsers have no `process` global and use
+ * the byte-identical noble implementation below.
+ */
+function resolveNativeCrypto(): NativeCryptoModule | undefined {
+  const hostProcess = Reflect.get(globalThis, "process") as NodeBuiltinLoader | undefined;
+  const candidate = hostProcess?.getBuiltinModule?.("node:crypto") as Partial<NativeCryptoModule> | undefined;
+  return typeof candidate?.createHash === "function" ? candidate as NativeCryptoModule : undefined;
+}
+
+function cachedNativeCrypto(): NativeCryptoModule | undefined {
+  const state = cachedNativeCrypto as typeof cachedNativeCrypto & {
+    resolved?: boolean;
+    value?: NativeCryptoModule;
+  };
+  if (!state.resolved) {
+    state.value = resolveNativeCrypto();
+    state.resolved = true;
+  }
+  return state.value;
+}
 
 export function createCanonicalJson() {
   return { stringify: canonicalStringify };
@@ -43,14 +81,28 @@ export function toJsonValue(value: unknown): JsonValue {
 }
 
 export function createHasher(): Hasher {
-  return {
+  const nativeCrypto = cachedNativeCrypto();
+  if (nativeCrypto) return {
     digestHex(input) {
-      return createHash("sha256").update(typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input)).digest("hex");
+      const hash = nativeCrypto.createHash("sha256");
+      if (typeof input === "string") hash.update(input, "utf8");
+      else hash.update(input);
+      return hash.digest("hex");
     },
     digestChunks(chunks) {
-      const hash = createHash("sha256");
+      const hash = nativeCrypto.createHash("sha256");
       for (const chunk of chunks) hash.update(chunk);
       return hash.digest("hex");
+    }
+  };
+  return {
+    digestHex(input) {
+      return bytesToHex(sha256(typeof input === "string" ? utf8Bytes(input) : input));
+    },
+    digestChunks(chunks) {
+      const hash = sha256.create();
+      for (const chunk of chunks) hash.update(chunk);
+      return bytesToHex(hash.digest());
     }
   };
 }
@@ -283,7 +335,12 @@ export function stableVector(features: readonly string[], hasher: Hasher, dimens
 }
 
 export function randomHex(bytes: number): string {
-  return randomBytes(bytes).toString("hex");
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > 65_536) {
+    throw new Error("random byte count must be an integer between zero and 65536");
+  }
+  const output = new Uint8Array(bytes);
+  globalThis.crypto.getRandomValues(output);
+  return bytesToHex(output);
 }
 
 const SECRET_REDACTION_PATTERNS = [
@@ -335,17 +392,17 @@ export function redactSecretsWithMap(text: string): {
     const unchanged = text.slice(originalCursor, replacement.start);
     derivative += unchanged;
     derivativeCharOffset += codePointLength(unchanged);
-    derivativeByteOffset += Buffer.byteLength(unchanged, "utf8");
+    derivativeByteOffset += utf8ByteLength(unchanged);
     const derivativeCharStart = derivativeCharOffset;
     const derivativeByteStart = derivativeByteOffset;
     derivative += replacement.replacement;
     derivativeCharOffset += codePointLength(replacement.replacement);
-    derivativeByteOffset += Buffer.byteLength(replacement.replacement, "utf8");
+    derivativeByteOffset += utf8ByteLength(replacement.replacement);
     redactionMap.push({
       originalCharStart: codePointLength(text.slice(0, replacement.start)),
       originalCharEnd: codePointLength(text.slice(0, replacement.end)),
-      originalByteStart: Buffer.byteLength(text.slice(0, replacement.start), "utf8"),
-      originalByteEnd: Buffer.byteLength(text.slice(0, replacement.end), "utf8"),
+      originalByteStart: utf8ByteLength(text.slice(0, replacement.start)),
+      originalByteEnd: utf8ByteLength(text.slice(0, replacement.end)),
       derivativeCharStart,
       derivativeCharEnd: derivativeCharOffset,
       derivativeByteStart,
@@ -364,6 +421,14 @@ export function redactSecrets(text: string): string {
 
 function codePointLength(text: string): number {
   return [...text].length;
+}
+
+function utf8Bytes(text: string): Uint8Array {
+  return utf8ToBytes(text);
+}
+
+function utf8ByteLength(text: string): number {
+  return utf8Bytes(text).byteLength;
 }
 
 export function normalizeVector(values: number[], prior?: number): number[] {

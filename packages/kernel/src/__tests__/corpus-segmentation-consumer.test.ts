@@ -24,7 +24,8 @@ it("measures unseen raw source with corpus context and routes it without refitti
   expect(own).toHaveBeenCalledTimes(2);
   expect(result.segmentationPopulations.id).toBe(model.id);
   expect(result.boundaryStatistics.sourceDocumentIds).toEqual([document.id]);
-  expect(result.joinProgram.populationModelId).toBe(model.id);
+  expect(result.segmentationWitness.populationModelId).toBe(model.id);
+  expect(result.segmentationWitness.populations.flatMap(population => population.documents).map(row => row.documentId)).toEqual([document.id]);
   expect(result.symbolCount).toBeGreaterThan(0);
   expect(result.audit).toHaveProperty("corpusSegmentationSnapshotId", model.sourceInventory.id);
 });

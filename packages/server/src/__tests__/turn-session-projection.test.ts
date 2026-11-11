@@ -15,7 +15,7 @@ vi.mock("@scce/adapters-node", async importOriginal => {
   };
 });
 
-import { createDiscourseInterpretationAdjustmentV2, createInMemoryDialogueMemoryStore, toJsonValue, type OwnerInput } from "@scce/kernel";
+import { createDiscourseInterpretationAdjustmentV2, createInMemoryDialogueMemoryStore, toJsonValue, type EpisodeId, type OwnerInput, type ScceEvent } from "@scce/kernel";
 import { handleRequest, type ApiContext } from "../routes.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -150,9 +150,17 @@ describe("turn session metadata projection", () => {
       sourceActivationIds: ["activation.untrusted.lookalike"]
     } as const;
     const captured: OwnerInput[] = [];
+    const taskEvents: ScceEvent[] = [];
     const context = {
       runtime: {
         storage: {
+          events: {
+            append: async (event: ScceEvent) => { taskEvents.push(structuredClone(event)); },
+            appendBatch: async (batch: ScceEvent[]) => { taskEvents.push(...structuredClone(batch)); },
+            readEpisode: async (episodeId: EpisodeId) => structuredClone(taskEvents.filter(event => event.episodeId === episodeId)),
+            readRange: async () => structuredClone(taskEvents),
+            latestLedgerHash: async () => taskEvents.at(-1)?.hash ?? ""
+          },
           conversation: {
             listTurns: async () => [
               {

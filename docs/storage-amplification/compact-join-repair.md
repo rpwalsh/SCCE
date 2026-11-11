@@ -1,5 +1,12 @@
 # Compact JOIN repair
 
+> Archived measurement of the former independent language JOIN predictor. The
+> predictor, codec, durable storage and runtime consumers were deleted on
+> 10 November 2026. Full-DAG adjacency learning survives in
+> `source-segmentation-witness.ts`; language output is now realized by typed
+> construction algebra. Nothing in this document authorizes restoring a
+> compatibility runtime.
+
 Native Windows measurements on 9 November 2026 (10 November UTC) used the same complete source: 94,787 UTF-16 units and 95,088 UTF-8 bytes, compiled into seven source-window models covering 50 windows. At candidate revision `0a331b81768d99db4b3fa2d78c539977f28e0fab`, seven syntax-component rows occupy **3,563,520 allocated PostgreSQL bytes**, versus **24,018,944 bytes** for the corrected dense intermediate: 20,455,424 bytes, or **85.2%**, less. The [sanitized receipt](compact-join-repair.json) records source and native-module identities, measurements and qualifications.
 
 ## Correctness and representation
@@ -36,10 +43,12 @@ The old learner is a defect control, not a semantically equivalent baseline: it 
 
 ## Checks and reproduction
 
-Run the focused public regression entry points from the repository root:
+The original focused commands named files that were intentionally deleted with
+the retired architecture. Current qualification uses the segmentation-witness,
+fresh-source construction-composition and exact generative-derivation tests:
 
 ```sh
-pnpm exec vitest run packages/kernel/src/__tests__/join-program-full-dag.test.ts packages/kernel/src/__tests__/join-program-derived-provenance.test.ts packages/kernel/src/__tests__/segmentation-adjacency-factors.test.ts packages/kernel/src/__tests__/join-program-storage.test.ts packages/adapters-node/src/__tests__/durable-join-program-storage.test.ts
+pnpm exec vitest run packages/kernel/src/__tests__/source-segmentation-witness-real-source.test.ts packages/kernel/src/__tests__/fresh-source-construction-composition.test.ts packages/kernel/src/__tests__/generative-derivation-exact.test.ts packages/kernel/src/__tests__/generative-derivation-runtime.test.ts
 node tools/no-hidden-model-check.mjs
 ```
 

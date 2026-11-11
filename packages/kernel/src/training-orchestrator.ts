@@ -499,7 +499,7 @@ function jsonObject(value: JsonValue | undefined): Record<string, JsonValue> {
  * 92KB of input drove induce() to ~1.6GB of live intermediates by
  * mid-pipeline (~17,000x), because each stage -- lattices (built twice),
  * boundary feature context, per-document boundary statistics, calibration
- * split, estimator fit, segmentation populations, join-program mixture --
+ * split, estimator fit, and segmentation populations --
  * retains its own structures for the whole call. The budget below is set
  * from that measured ratio with headroom, not guessed.
  *

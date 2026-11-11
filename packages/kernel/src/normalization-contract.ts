@@ -2,8 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, createHasher } from "./primitives.js";
 import type { Hasher } from "./types.js";
-import commonCaseFolding from "@unicode/unicode-17.0.0/Case_Folding/C/code-points.js";
-import simpleCaseFolding from "@unicode/unicode-17.0.0/Case_Folding/S/code-points.js";
+import { commonCaseFolding, simpleCaseFolding } from "./unicode-simple-case-folding.js";
 
 export const NORMALIZATION_CONTRACT_SCHEMA = "scce.normalization_contract.v2" as const;
 export const CANONICAL_SEGMENTER_LOCALE = "und" as const;
@@ -65,9 +64,10 @@ const MINIMUM_ICU_MINOR = 2;
 
 export function assertRuntimeNormalizationBehavior(): void {
   if (runtimeValidated) return;
-  if (process.versions.unicode !== CONTRACT_FIELDS.runtimeUnicodeVersion) {
+  const versions = (globalThis as { process?: { versions?: { unicode?: string; icu?: string } } }).process?.versions;
+  if (versions && versions.unicode !== CONTRACT_FIELDS.runtimeUnicodeVersion) {
     throw new Error(
-      `runtime Unicode ${String(process.versions.unicode)} does not match ${CONTRACT_FIELDS.runtimeUnicodeVersion}`
+      `runtime Unicode ${String(versions.unicode)} does not match ${CONTRACT_FIELDS.runtimeUnicodeVersion}`
     );
   }
   // Exact ICU patch-string equality is not the meaningful invariant --
@@ -77,12 +77,12 @@ export function assertRuntimeNormalizationBehavior(): void {
   // maintenance release this contract was validated against"; the
   // normalization/grapheme replay checks below are what actually
   // verify behavioral conformance, not the version string itself.
-  const [icuMajorText, icuMinorText] = String(process.versions.icu ?? "").split(".");
+  const [icuMajorText, icuMinorText] = String(versions?.icu ?? "").split(".");
   const icuMajor = Number(icuMajorText);
   const icuMinor = Number(icuMinorText ?? "0");
-  if (!Number.isFinite(icuMajor) || !Number.isFinite(icuMinor) || icuMajor !== REQUIRED_ICU_MAJOR || icuMinor < MINIMUM_ICU_MINOR) {
+  if (versions && (!Number.isFinite(icuMajor) || !Number.isFinite(icuMinor) || icuMajor !== REQUIRED_ICU_MAJOR || icuMinor < MINIMUM_ICU_MINOR)) {
     throw new Error(
-      `runtime ICU ${String(process.versions.icu)} does not satisfy required ${REQUIRED_ICU_MAJOR}.${MINIMUM_ICU_MINOR}+`
+      `runtime ICU ${String(versions.icu)} does not satisfy required ${REQUIRED_ICU_MAJOR}.${MINIMUM_ICU_MINOR}+`
     );
   }
   const replay = normalizationReplayVector();

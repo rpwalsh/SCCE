@@ -5,7 +5,15 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   base: "./",
   plugins: [react({ babel: { plugins: ["relay"] } })],
-  server: { proxy: { "/api": "http://127.0.0.1:3873" } },
+  optimizeDeps: { exclude: ["@sqlite.org/sqlite-wasm"] },
+  worker: { format: "es" },
+  server: {
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp"
+    },
+    proxy: { "/api": "http://127.0.0.1:3873" }
+  },
   build: { target: "es2022", sourcemap: true, rollupOptions: { output: {
     onlyExplicitManualChunks: true,
     manualChunks(id) { if (/[/\\]react-dom(?:@|[/\\])/u.test(id)) return "react-dom"; }

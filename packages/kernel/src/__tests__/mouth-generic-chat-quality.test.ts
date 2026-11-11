@@ -274,9 +274,13 @@ describe("Mouth generic chat quality gate", () => {
     expect(outputContainsCannedBoilerplate(spoken.text)).toBe(false);
     expect(outputContainsForbiddenTerminology(spoken.text)).toBe(false);
     if (options.importedPriorIds) {
-      const trace = JSON.stringify(spoken.realizationTrace.brainInfluence);
-      expect(trace).toContain("unit:quality");
-      expect(trace).toContain("pattern:quality");
+      const influence = spoken.realizationTrace.brainInfluence as Record<string, unknown>;
+      expect(Number(influence.importedLanguagePriorCount)).toBeGreaterThan(0);
+      // These two priors are resident alternatives, not the owner of the
+      // selected source-bound construction. A use audit must not claim them
+      // merely because their memory rows were hydrated for the turn.
+      expect(JSON.stringify(influence)).not.toContain("unit:quality");
+      expect(JSON.stringify(influence)).not.toContain("pattern:quality");
     }
     if (options.caveat) expect(spoken.uncertainty.length).toBeGreaterThan(0);
     if (options.creative) expect(JSON.stringify(spoken.surfacePlan)).toContain(fixture.creativeArtifact.content);

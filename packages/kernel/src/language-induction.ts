@@ -34,10 +34,9 @@ import type { SegmentationPopulationInferenceModel } from "./segmentation-popula
 import type { VerifiedCorpusSegmentation } from "./corpus-segmentation-cursor.js";
 import { validateCorpusSegmentationForDocuments } from "./corpus-segmentation-input.js";
 import {
-  compileJoinProgram,
-  compileJoinProgramMixture,
-  type JoinProgramMixture
-} from "./join-program.js";
+  compileLanguageSegmentationWitness,
+  type LanguageSegmentationWitness
+} from "./source-segmentation-witness.js";
 import {
   compileRelationHypothesisModel,
   type RelationHypothesisModel
@@ -201,7 +200,7 @@ export interface InducedLanguageModel {
   boundaryEstimator: BoundaryEstimatorState;
   boundaryFeatureContext: CompiledBoundaryFeatureContext;
   segmentationPopulations: SegmentationPopulationModel | SegmentationPopulationInferenceModel;
-  joinProgram: JoinProgramMixture;
+  segmentationWitness: LanguageSegmentationWitness;
   relationHypothesisModel: RelationHypothesisModel;
   boundarySignals: BoundarySignal[];
   morphology: MorphologicalRule[];
@@ -340,24 +339,23 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         return [doc.id, selected.populationId];
       })) : new Map(localSegmentationPopulations!.assignments.map(assignment => [assignment.documentId, assignment.selectedPopulationId]));
       const defaultPopulationId = verified ? undefined : localSegmentationPopulations!.populations[0]!.id;
-      const joinProgram = compileJoinProgramMixture({
+      const segmentationWitness = compileLanguageSegmentationWitness({
         populationModelId: segmentationPopulations.id,
-        components: segmentationPopulations.populations.map(population => ({
+        populations: segmentationPopulations.populations.map(population => ({
           populationId: population.id,
-          weight: population.prior,
-          program: compileJoinProgram({
-            populationId: population.id,
-            documents: lattices
-              .filter(({ doc }) =>
-                (selectedPopulationByDocument.get(doc.id) ?? defaultPopulationId) === population.id)
-              .map(({ doc, lattice }) => ({
-                documentId: doc.id,
-                sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
-                text: doc.text,
-                lattice
-              })),
-            hasher
-          })
+          prior: population.prior,
+          documents: lattices
+            .filter(({ doc }) =>
+              (selectedPopulationByDocument.get(doc.id) ?? defaultPopulationId) === population.id)
+            .map(({ doc, lattice }) => ({
+              documentId: doc.id,
+              sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
+              ...(doc.sourceVersionId ? { sourceVersionId: String(doc.sourceVersionId) } : {}),
+              ...(doc.sourceWindow ? { sourceWindow: doc.sourceWindow } : {}),
+              text: doc.text,
+              evidenceIds: (doc.evidenceIds ?? []).map(String),
+              lattice
+            }))
         })),
         hasher
       });
@@ -391,14 +389,14 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         hasher, maxFrames: input.maxFrames ?? 2048 });
       const { semanticFrames, graphBoundConstructions } = replaySemanticInductionFactors({ factors: semanticInductionFactors, hasher });
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
-      const proseDiagnostics = proseDiagnostic(kn, symbolStrings, joinProgram);
+      const proseDiagnostics = proseDiagnostic(kn, symbolStrings);
       const id = `language_model_${hasher.digestHex(JSON.stringify({
         docs: documents.map(d => d.id),
         symbols: symbolStrings.length,
         order,
         boundaryEstimatorId: boundaryEstimator.id,
         segmentationPopulationModelId: segmentationPopulations.id,
-        joinProgramId: joinProgram.id,
+        segmentationWitnessId: segmentationWitness.id,
         relationHypothesisModelId: relationHypothesisModel.id
       })).slice(0, 32)}`;
       const result = {
@@ -413,7 +411,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         boundaryEstimator,
         boundaryFeatureContext,
         segmentationPopulations,
-        joinProgram,
+        segmentationWitness,
         relationHypothesisModel,
         boundarySignals,
         morphology,
@@ -440,8 +438,8 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           segmentationPopulationModelId: segmentationPopulations.id,
           segmentationPopulationCount: segmentationPopulations.populations.length,
           segmentationPopulationMdlGainNats: segmentationPopulations.selection.mdlGainNats,
-          joinProgramId: joinProgram.id,
-          joinProgramComponentIds: joinProgram.components.map(component => component.program.id),
+          segmentationWitnessId: segmentationWitness.id,
+          segmentationWitnessPopulationIds: segmentationWitness.populations.map(population => population.populationId),
           relationHypothesisModelId: relationHypothesisModel.id,
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText),
@@ -459,11 +457,9 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       model: KneserNeyModel;
       prompt: string;
       generationExtent?: number;
-      joinProgram?: JoinProgramMixture;
     }): JsonValue {
       return toJsonValue(continueBoundedProse(input.model, input.prompt, {
-        generationExtent: input.generationExtent ?? 64,
-        joinProgram: input.joinProgram
+        generationExtent: input.generationExtent ?? 64
       }));
     }
   };
@@ -1124,14 +1120,12 @@ function translationBasis(sourceSymbol: string, targetSymbol: string, frames: re
 
 function proseDiagnostic(
   model: KneserNeyModel,
-  symbols: readonly string[],
-  joinProgram: JoinProgramMixture
+  symbols: readonly string[]
 ): JsonValue {
   const sample = symbols.slice(0, Math.min(64, symbols.length)).join(" ");
   const continuation = continueBoundedProse(model, sample, {
     generationExtent: 32,
-    probabilityFloor: 1e-9,
-    joinProgram
+    probabilityFloor: 1e-9
   });
   const orderMass = new Map<number, number>();
   for (const key of Object.keys(model.counts)) {

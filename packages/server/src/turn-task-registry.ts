@@ -152,21 +152,23 @@ export class TurnTaskRegistry {
     const task = this.#tasks.get(taskId);
     if (!task) throw new Error(`unknown turn task ${taskId}`);
     if (terminal(task.status)) return task.frames.at(-1)!;
-    const next: TurnTaskFrame = {
+    const frameJsonText = JSON.stringify({
       schema: "scce.turn_task_frame.v1",
       taskId,
       sequence: task.frames.length + 1,
       observedAt: Date.now(),
       ...frame
-    };
+    } satisfies TurnTaskFrame);
+    // Snapshot the JSON contract synchronously so caller-owned nested values
+    // cannot change while this frame waits behind earlier ledger writes.
+    const next = JSON.parse(frameJsonText) as TurnTaskFrame;
     task.frames.push(next);
     task.updatedAt = next.observedAt;
     if (next.type === "result") task.status = "succeeded";
     else if (next.type === "error") task.status = "failed";
     else if (next.type === "cancelled") task.status = "cancelled";
     else if (task.status === "accepted" && next.type === "progress") task.status = "running";
-    for (const subscriber of task.subscribers) subscriber(next);
-    this.#persist(task, next);
+    this.#persist(task, next, frameJsonText);
     return next;
   }
 
@@ -223,12 +225,15 @@ export class TurnTaskRegistry {
     await this.#tasks.get(taskId)?.persistenceTail;
   }
 
-  #persist(task: LiveTurnTask, frame: TurnTaskFrame): void {
+  #persist(task: LiveTurnTask, frame: TurnTaskFrame, frameJsonText: string): void {
     task.persistenceTail = task.persistenceTail
       .then(async () => {
+        // A failed sequence fences every later frame. Committing a later
+        // sequence would create a ledger gap that neither replay nor a
+        // reconnecting subscriber could honestly interpret as durable.
+        if (task.persistenceFailed) return;
         // JSON text escapes NUL and lone surrogate code units before the
         // event canonicalizer/PostgreSQL JSONB boundary sees the payload.
-        const frameJsonText = JSON.stringify(frame);
         const event = this.#eventFactory.create({
           episodeId: task.episodeId,
           typeId: eventType(frame.type),
@@ -242,11 +247,20 @@ export class TurnTaskRegistry {
         await this.#storage.events.append(event);
         task.lastEvent = event;
         task.durableSequence = Math.max(task.durableSequence, frame.sequence);
+        // Publication follows the durable append. Subscriber failures cannot
+        // roll back a committed event or poison persistence for later frames.
+        for (const subscriber of [...task.subscribers]) {
+          try {
+            subscriber(frame);
+          } catch {
+            // A disconnected or faulty observer is isolated from the ledger.
+          }
+        }
       })
       .catch(() => {
         task.persistenceFailed = true;
-        // The live stream remains available and honestly reports pending
-        // persistence. Later events continue from the last durable parent.
+        // Pending frames remain inspectable as pending in the live registry,
+        // but neither this frame nor any later frame is published as durable.
       });
   }
 

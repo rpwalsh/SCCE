@@ -4,7 +4,7 @@ import { afterEach, expect, it } from "vitest";
 import { createHasher, requestSeedLanguagePattern, requestSeedSemanticFrame, type LanguagePatternRecord, type SemanticFrameRecord } from "@scce/kernel";
 import { normalizePriorKey } from "../../../kernel/src/kernel-answer-primitives.js";
 import { PostgresStorageAdapter } from "../postgres.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths } from "../durable-artifact-storage.js";
 
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });
@@ -106,7 +106,7 @@ it("budgets projected metadata rather than full physical pages or decoded-progra
       nullRoles: index ? [] : [{ graphBinding: { relationId: "opaque" } }] }], constructions: [{ body: "program".repeat(10000) }] }
   }));
   const stored = pages.map(row => ({ ...row, patternJson: { ...(row.patternJson as Record<string, unknown>),
-    _scceJoinProgramStorage: { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(row.patternJson) }
+    [DECODED_JSON_BYTE_LEDGER_KEY]: { schema: DECODED_JSON_BYTE_LEDGER_SCHEMA, ...decodedJsonByteLengths(row.patternJson) }
   } as LanguagePatternRecord["patternJson"] }));
   const { adapter, calls } = fixture(stored);
   const seed = await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", limit: 8, maxTotalJsonBytes: 2048 });
@@ -114,24 +114,24 @@ it("budgets projected metadata rather than full physical pages or decoded-progra
   expect(seed).toHaveLength(2);
   for (const row of seed) {
     expect(row.patternJson).not.toHaveProperty("bundle");
-    expect(row.patternJson).not.toHaveProperty("_scceJoinProgramStorage");
+    expect(row.patternJson).not.toHaveProperty(DECODED_JSON_BYTE_LEDGER_KEY);
   }
   const sql = calls.at(-1)!.sql;
   expect(sql).not.toContain("running_stored_bytes");
-  expect(sql).toContain("CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes");
+  expect(sql).toContain("CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_artifact_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes");
   expect(sql).toContain("ranked.category_rank <= CEIL(");
   expect(sql).toContain("PARTITION BY CASE");
   expect(sql).toContain("octet_length(eligible.pattern_json::text)");
   expect((await adapter.languageMemory.listLanguagePatterns({ limit: 8, maxTotalJsonBytes: 2048 }))).toEqual([pages[0]]);
   expect(calls.at(-1)!.sql).toContain("running_stored_bytes");
-  expect(calls.at(-1)!.sql).toContain("pattern.decoded_jsonb_bytes AS decoded_jsonb_bytes");
+  expect(calls.at(-1)!.sql).toContain("pattern.decoded_artifact_jsonb_bytes AS decoded_jsonb_bytes");
 });
 
 it("keeps source-conditioned requirements intact and projects only entity classes and syntax metadata", async () => {
   const rows = [pattern("request_requirement_pattern_control", { schema: "scce.request_requirement_pattern.v1", compilerFingerprint: "compiler.opaque",
     surface: "ψ", requirementCoefficients: { noveltyDemand: 2 }, selectedAuthority: "creative", requestUnitResponseCopy: [{ unit: "ψ", supportedPairs: 6, copiedPairs: 0 }],
     corpusAuthorityCounts: { creative: 6 }, unknownCompilerStatistic: { retained: true } }),
-  pattern("syntax", { schema: "scce.induced_language_model.syntax_memory.v1", templates: [{ shape: ["source"] }], joinProgram: { source: "program" }, counts: { source: 4 }, boundarySignals: [{ marker: "opaque" }] }),
+  pattern("syntax", { schema: "scce.induced_language_model.syntax_memory.v1", templates: [{ shape: ["source"] }], segmentationWitness: { source: "witness" }, counts: { source: 4 }, boundarySignals: [{ marker: "opaque" }] }),
   pattern("semantic", { schema: "scce.induced_language_model.semantic_memory.v1", profileId: "profile.owned", semanticFrames: [{ predicate: "opaque" }], relationHypothesisModel: { source: "huge" },
     graphBoundConstructions: [{ evidenceIds: ["evidence.owned"], predicate: "opaque", slots: [{ semanticRole: "entity", observedFillers: ["α"], lexicalClassId: "entity.class" }, { semanticRole: "quantity", observedFillers: ["9"], lexicalClassId: "quantity.class" }] }],
     lexicalClasses: [{ id: "entity.class", members: [{ symbol: "β", support: 10 }] }, { id: "quantity.class", members: [{ symbol: "9" }] }] })];
@@ -144,7 +144,7 @@ it("keeps source-conditioned requirements intact and projects only entity classe
   expect(sql).toContain("lexical.value->>'id' IN (SELECT id FROM seed_entity_classes)");
   expect(sql).toContain("'symbol',COALESCE(member.value->'symbol','null'::jsonb)");
   expect(sql).not.toContain("'relationHypothesisModel'");
-  expect(sql).not.toContain("'joinProgram'");
+  expect(sql).not.toContain("'segmentationWitness'");
   expect(await adapter.languageMemory.listLanguagePatterns({ limit: 8 })).toEqual(rows);
 });
 

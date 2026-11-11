@@ -193,10 +193,14 @@ References: [Rosette synthesis](https://docs.racket-lang.org/rosette-guide/ch_sy
   prior-times-document-likelihood posteriors for stored and unseen documents,
   source-family-disjoint fit/selection/guard/evaluation partitions, content-derived
   population identities, and per-child merge guards without language-specific routing.
-- `join-program.ts`: derivation- and task-population-conditioned opaque exact-source
-  join distributions; source-family-disjoint fit, threshold selection and final
-  evaluation; exact coordinate provenance; factored backoff; explicit unknown
-  population mass; and typed uncertainty outcomes with no global join or
+- `source-segmentation-witness.ts`: evidence-owned full-DAG segmentation and
+  adjacency witnesses. These preserve exact source ownership and every learned arc
+  energy; deterministic coordinate and surface-arc views are reconstructed rather
+  than duplicated in storage. No second text-fragment predictor is trained.
+- `generative-derivation-runtime.ts` and `source-owned-surface.ts`: typed recursive
+  construction selection and exact realization. Parent constructions own literal
+  spans and child placement; unresolved bindings remain typed uncertainty, with no
+  independent fragment join, global separator guess or
   silent-concatenation fallback.
 - `structured-semantic-candidate.ts`, `typed-ingest.ts`: four explicit semantic
   candidate channels, mandatory provenance decomposition, opaque induced relation
@@ -465,13 +469,17 @@ SCCE2 n-gram and compatible graph material stream within byte/count/heap budgets
 checkpoint, stop, resume, and lifecycle state. Representative large-corpus behavior,
 clean-machine reproduction, and production isolation remain deployment-specific work.
 
-## Realization (2026-09-05)
+## Realization (updated 2026-11-10)
 
-The mouth realizes answers from three native strategies — extractive splicing
-(`join-program.ts`), learned-construction instantiation (`language-construction.ts`,
-`reversible-construction.ts`, `paired-anti-unification.ts`) and bounded Kneser-Ney
-continuation (`kneser-ney.ts`) — all scored by `scoreSurfaceEnergy`
-(`walsh-surface-energy.ts`). There is no language model in any lane: the earlier local
+The mouth realizes answers through one proof-carrying construction path:
+source-owned exact spans, learned construction instantiation
+(`language-construction.ts`, `reversible-construction.ts`,
+`paired-anti-unification.ts`) and typed recursive composition
+(`generative-derivation-runtime.ts`). Parent constructions own their literal text and
+the exact slots occupied by children. Kneser-Ney statistics may rank licensed learned
+forms, but they do not concatenate independently generated fragments or provide a
+fallback realization path. `scoreSurfaceEnergy` (`walsh-surface-energy.ts`) evaluates
+the resulting candidate. There is no language model in any lane: the earlier local
 model server, remote API and constrained-decoding realizers were removed on 2026-09-05, and
 `tools/no-hidden-model-check.mjs` fails the build on any model endpoint or generation call.
 The only declared model runtime is the visual embedder for image evidence.

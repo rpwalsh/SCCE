@@ -12,21 +12,18 @@ interface RecordedRequest {
   init: RequestInit;
 }
 
-describe("ScceClient HTTP boundary", () => {
+describe("ScceClient registered GraphQL boundary", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
   it("uses the normalized loopback origin, bearer token, and fixed endpoint methods", async () => {
     const requests: RecordedRequest[] = [];
-    const transport: HttpTransport = async (input, init) => {
-      requests.push({ input, init });
-      if (input.endsWith("/api/ready")) {
-        return jsonResponse({ ok: true, postgres: { ok: true }, serverUrl: "http://127.0.0.1:3873", manifest: 11 });
-      }
-      if (input.endsWith("/api/workspace/init")) return jsonResponse({ initialized: true });
-      if (input.endsWith("/api/workspace/ingest")) {
-        return jsonResponse({
+    const transport = registeredTransport(request => {
+      if (request.operationName === "VscodeReadyQuery") return { ok: true, postgres: { ok: true }, serverUrl: "http://127.0.0.1:3873", manifest: 11 };
+      if (request.operationName === "VscodeWorkspaceInitializeMutation") return { workspace: { id: "workspace-1", rootPath: "C:\\My Repo", updatedAt: 10 } };
+      if (request.operationName === "VscodeWorkspaceIngestMutation") {
+        return {
           schema: "scce.workspace.ingest.v1",
           importBatchId: "batch-1",
           ingested: 1,
@@ -37,67 +34,59 @@ describe("ScceClient HTTP boundary", () => {
           unsupported: 0,
           workspace: {},
           project: {}
-        });
+        };
       }
-      if (input.endsWith("/api/workspace/ask")) {
-        return jsonResponse({
+      if (request.operationName === "VscodeWorkspaceAskMutation") {
+        return {
           schema: "scce.workspace.answer.v1",
           question: "Where is the proof?",
           answer: "In source span 1.",
           confidence: 0.8,
           sourceRefs: []
-        });
+        };
       }
-      if (input.includes("/api/project/summary?")) {
-        return jsonResponse({ schema: "scce.project.summary.v1", workspace: {}, summary: {} });
-      }
-      if (input.endsWith("/api/workspace/sources")) return jsonResponse({ workspace: { id: "workspace-1", rootPath: "C:\\My Repo", updatedAt: 10 }, sources: [] });
-      throw new Error(`unexpected request ${input}`);
-    };
+      if (request.operationName === "VscodeProjectSummaryQuery") return { schema: "scce.project.summary.v1", workspace: {}, summary: {} };
+      if (request.operationName === "VscodeWorkspaceStatusQuery") return { workspace: { id: "workspace-1", rootPath: "C:\\My Repo", updatedAt: 10 }, sources: [] };
+      throw new Error(`unexpected operation ${request.operationName}`);
+    }, requests);
     const client = new ScceClient(
       { serverUrl: " http://127.42.1.9:3873/ ", token: " local-secret ", timeoutMs: 10_000 },
       transport
     );
 
     await client.ready();
-    await client.workspaceInitialize(" C:\\My Repo ");
+    const initialized = await client.workspaceInitialize(" C:\\My Repo ");
     await client.workspaceIngest(" C:\\My Repo ");
     await client.workspaceAsk(" C:\\My Repo ", "  Where is the proof?  ");
     await client.projectSummary(" C:\\My Repo ");
     await client.workspaceStatus();
 
-    expect(requests.map(request => [request.init.method, request.input])).toEqual([
-      ["GET", "http://127.42.1.9:3873/api/ready"],
-      ["POST", "http://127.42.1.9:3873/api/workspace/init"],
-      ["POST", "http://127.42.1.9:3873/api/workspace/ingest"],
-      ["POST", "http://127.42.1.9:3873/api/workspace/ask"],
-      ["GET", "http://127.42.1.9:3873/api/project/summary?path=C%3A%5CMy%20Repo"],
-      ["GET", "http://127.42.1.9:3873/api/workspace/sources"]
+    expect(requests.map(request => [request.init.method, request.input])).toEqual(Array(6).fill(["POST", "http://127.42.1.9:3873/api/graphql"]));
+    expect(requests.map(request => requestEnvelope(request).operationName)).toEqual([
+      "VscodeReadyQuery", "VscodeWorkspaceInitializeMutation", "VscodeWorkspaceIngestMutation",
+      "VscodeWorkspaceAskMutation", "VscodeProjectSummaryQuery", "VscodeWorkspaceStatusQuery"
     ]);
     for (const request of requests) {
-      expect(request.init.headers).toMatchObject({ Accept: "application/json", Authorization: "Bearer local-secret" });
+      expect(request.init.headers).toMatchObject({ accept: "application/graphql-response+json", authorization: "Bearer local-secret", "content-type": "application/json" });
       expect(request.init.signal).toBeInstanceOf(AbortSignal);
     }
-    expect(requests[0]?.init.body).toBeUndefined();
-    expect(requests[0]?.init.headers).not.toHaveProperty("Content-Type");
-    expect(requests[1]?.init.headers).toMatchObject({ "Content-Type": "application/json" });
-    expect(requests[1]?.init.body).toBe(JSON.stringify({ path: "C:\\My Repo" }));
-    expect(requests[2]?.init.body).toBe(JSON.stringify({ path: "C:\\My Repo" }));
-    expect(requests[3]?.init.body).toBe(JSON.stringify({ path: "C:\\My Repo", question: "Where is the proof?" }));
-    expect(requests[4]?.init.body).toBeUndefined();
-    expect(requests[5]?.init.body).toBeUndefined();
+    expect(requestEnvelope(requests[1]!).variables).toMatchObject({ input: { path: "C:\\My Repo" } });
+    expect(requestEnvelope(requests[2]!).variables).toMatchObject({ input: { path: "C:\\My Repo" } });
+    expect(requestEnvelope(requests[3]!).variables).toMatchObject({ input: { path: "C:\\My Repo", question: "Where is the proof?" } });
+    expect(requestEnvelope(requests[4]!).variables).toEqual({ path: "C:\\My Repo" });
+    expect(initialized).toEqual({ id: "workspace-1", rootPath: "C:\\My Repo", updatedAt: 10 });
   });
 
   it("omits authorization when no token is configured", async () => {
     let observedHeaders: RequestInit["headers"];
-    const client = new ScceClient({ serverUrl: "http://localhost:3873", timeoutMs: 1_000 }, async (_input, init) => {
+    const client = new ScceClient({ serverUrl: "http://localhost:3873", timeoutMs: 1_000 }, registeredTransport((_request, init) => {
       observedHeaders = init.headers;
-      return jsonResponse({ workspace: { id: "workspace-1", rootPath: "C:\\repo", updatedAt: 10 }, sources: [] });
-    });
+      return { workspace: { id: "workspace-1", rootPath: "C:\\repo", updatedAt: 10 }, sources: [] };
+    }));
 
     await client.workspaceStatus();
 
-    expect(observedHeaders).toEqual({ Accept: "application/json" });
+    expect(observedHeaders).toEqual({ "content-type": "application/json", accept: "application/graphql-response+json" });
   });
 
   it("rejects empty workspace paths and questions before making a request", () => {
@@ -127,15 +116,14 @@ describe("ScceClient HTTP boundary", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
-  it("uses the fixed two-phase patch routes and sends no client root or command line", async () => {
+  it("uses registered two-phase patch mutations and sends no client root or command line", async () => {
     const requests: RecordedRequest[] = [];
     const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export {};\n"));
     let patchAttempts = 0;
-    const transport: HttpTransport = async (input, init) => {
-      requests.push({ input, init });
-      if (input.endsWith("/api/workspace/patch")) {
+    const transport = registeredTransport(request => {
+      if (request.operationName === "VscodeWorkspacePatchMutation") {
         patchAttempts += 1;
-        if (patchAttempts === 1) return jsonResponse({
+        if (patchAttempts === 1) return {
           ok: false,
           pendingApproval: {
             planId: "approval-1",
@@ -145,17 +133,17 @@ describe("ScceClient HTTP boundary", () => {
             createdAt: 1
           },
           session: {}
-        }, { status: 202 });
-        return jsonResponse({
+        };
+        return {
           schemaVersion: "scce.workspace-patch-response.v1",
           workspaceId: "workspace-1",
           validationPolicyId: "trusted-host-pnpm-validate.v1",
           receipt: fixtureReceipt(plan)
-        });
+        };
       }
-      if (input.endsWith("/api/session/approve")) return jsonResponse({ approved: { planId: "approval-1", capabilityId: "workspace.patch.apply" }, session: {} });
-      throw new Error(`unexpected request ${input}`);
-    };
+      if (request.operationName === "VscodeApprovePlanMutation") return { approved: { planId: "approval-1", capabilityId: "workspace.patch.apply" }, session: {} };
+      throw new Error(`unexpected operation ${request.operationName}`);
+    }, requests);
     const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
 
     const pending = await client.workspacePatch("workspace-1", plan);
@@ -164,56 +152,85 @@ describe("ScceClient HTTP boundary", () => {
     const applied = await client.workspacePatch("workspace-1", plan);
     expect("receipt" in applied && applied.receipt.planHash).toBe(plan.planHash);
 
-    const firstBody = JSON.parse(String(requests[0]?.init.body)) as Record<string, unknown>;
+    const firstBody = ((requestEnvelope(requests[1]!).variables.input as Record<string, unknown>).value) as Record<string, unknown>;
     expect(firstBody).toEqual({ schemaVersion: "scce.workspace-patch-request.v1", workspaceId: "workspace-1", plan, validationPolicyId: "trusted-host-pnpm-validate.v1" });
     expect(firstBody).not.toHaveProperty("workspaceRoot");
     expect(firstBody).not.toHaveProperty("executable");
-    expect(requests.map(request => request.input)).toEqual([
-      "http://127.0.0.1:3873/api/workspace/patch",
-      "http://127.0.0.1:3873/api/session/approve",
-      "http://127.0.0.1:3873/api/workspace/patch"
+    expect(requests.map(request => requestEnvelope(request).operationName)).toEqual([
+      "VscodeRuntimeQuery", "VscodeWorkspacePatchMutation", "VscodeApprovePlanMutation", "VscodeWorkspacePatchMutation"
     ]);
   });
 
   it("rejects internally valid patch receipts that are partial or do not match the reviewed operation", async () => {
     const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export {};\n"));
-    const response = (receipt: unknown) => jsonResponse({
+    const response = (receipt: unknown) => ({
       schemaVersion: "scce.workspace-patch-response.v1",
       workspaceId: "workspace-1",
       validationPolicyId: "trusted-host-pnpm-validate.v1",
       receipt
     });
 
-    await expect(clientWithResponse(response(fixtureReceipt(plan, { omitMutation: true }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/mutation count/u);
-    await expect(clientWithResponse(response(fixtureReceipt(plan, { mutationPath: "src/other.ts" }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/path does not match/u);
-    await expect(clientWithResponse(response(fixtureReceipt(plan, { omitValidation: true }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/missing.*validation receipt/u);
+    await expect(clientWithGraphqlValue(response(fixtureReceipt(plan, { omitMutation: true }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/mutation count/u);
+    await expect(clientWithGraphqlValue(response(fixtureReceipt(plan, { mutationPath: "src/other.ts" }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/path does not match/u);
+    await expect(clientWithGraphqlValue(response(fixtureReceipt(plan, { omitValidation: true }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/missing.*validation receipt/u);
   });
 
   it("approves and rejects network search consent through the session endpoints", async () => {
     const requests: RecordedRequest[] = [];
-    const transport: HttpTransport = async (input, init) => {
-      requests.push({ input, init });
-      if (input.endsWith("/api/session/approve")) return jsonResponse({ approved: { planId: "search-1", capabilityId: "network.search" }, session: {} });
-      if (input.endsWith("/api/session/reject")) return jsonResponse({ rejected: { planId: "search-1", capabilityId: "network.search" }, session: {} });
-      throw new Error(`unexpected request ${input}`);
-    };
+    const transport = registeredTransport(request => {
+      if (request.operationName === "VscodeApprovePlanMutation") return { approved: { planId: "search-1", capabilityId: "network.search" }, session: {} };
+      if (request.operationName === "VscodeRejectPlanMutation") return { rejected: { planId: "search-1", capabilityId: "network.search" }, session: {} };
+      throw new Error(`unexpected operation ${request.operationName}`);
+    }, requests);
     const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
     await client.approveLearningConsent("search-1");
     await client.rejectLearningConsent("search-1");
-    expect(requests.map(request => request.input)).toEqual([
-      "http://127.0.0.1:3873/api/session/approve",
-      "http://127.0.0.1:3873/api/session/reject"
+    expect(requests.map(request => requestEnvelope(request).operationName)).toEqual([
+      "VscodeRuntimeQuery", "VscodeApprovePlanMutation", "VscodeRejectPlanMutation"
     ]);
+  });
+
+  it("covers learning, settings, models, and validation policy surfaces with registered operations", async () => {
+    const requests: RecordedRequest[] = [];
+    const values: Record<string, unknown> = {
+      VscodeLearningCurriculumQuery: { items: [{ planId: "learn-1", query: "typed query", rationale: "gap" }] },
+      VscodeLearningPursueMutation: { answer: "learned", held: [] },
+      VscodeHeldSourcesQuery: { held: [] },
+      VscodeReviewHeldSourceMutation: { review: { id: "held-1", decision: "promoted", promotedEvidence: 2 } },
+      VscodeSettingsQuery: { configPath: "scce.config.json", fields: [] },
+      VscodeUpdateSettingMutation: { key: "runtime.mode", value: "local", restartRequired: true },
+      VscodeModelsQuery: { modelDir: "models", models: [], totalBytes: 0 },
+      VscodeDownloadModelMutation: { model: { id: "org/model" } },
+      VscodeRemoveModelMutation: { removed: true },
+      VscodeCodeValidationPoliciesQuery: { policies: [], provider: "trusted-host" }
+    };
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, registeredTransport(request => {
+      if (!(request.operationName in values)) throw new Error(`unexpected operation ${request.operationName}`);
+      return values[request.operationName];
+    }, requests));
+
+    expect((await client.listCurriculum()).items[0]?.planId).toBe("learn-1");
+    expect((await client.pursueCurriculum("learn-1")).answer).toBe("learned");
+    expect(await client.listHeldSources()).toEqual({ held: [] });
+    expect((await client.reviewHeldSource("held-1", "promoted")).review.promotedEvidence).toBe(2);
+    expect((await client.getSettings()).configPath).toBe("scce.config.json");
+    expect((await client.putSetting("runtime.mode", "local")).restartRequired).toBe(true);
+    expect((await client.listModels()).totalBytes).toBe(0);
+    await client.downloadModel("org/model");
+    expect(await client.removeModel("org/model")).toEqual({ removed: true });
+    expect((await client.codeValidationPolicies()).provider).toBe("trusted-host");
+
+    expect(requests.every(request => request.input.endsWith("/api/graphql"))).toBe(true);
+    expect(requests.map(request => requestEnvelope(request).operationName)).toEqual(Object.keys(values));
   });
 
   it("submits a bounded coding request and verifies the returned content-addressed plan trace", async () => {
     const requests: RecordedRequest[] = [];
     const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export const value = 2;\n"));
-    const transport: HttpTransport = async (input, init) => {
-      requests.push({ input, init });
-      const request = JSON.parse(String(init.body)) as Record<string, unknown>;
-      return jsonResponse(fixtureCodingGeneration(plan, request));
-    };
+    const transport = registeredTransport(request => {
+      const input = request.variables.input as Record<string, unknown>;
+      return fixtureCodingGeneration(plan, input.value as Record<string, unknown>);
+    }, requests);
     const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
 
     const result = await client.workspaceCodingPatchPlan({
@@ -230,10 +247,10 @@ describe("ScceClient HTTP boundary", () => {
     expect(result.plan.planHash).toBe(plan.planHash);
     expect(result.authorization).toEqual({ required: true, granted: false, capabilityId: "workspace.patch.apply" });
     expect(result.execution).toEqual({ state: "not_executed", receipt: null });
-    expect(requests.map(request => [request.init.method, request.input])).toEqual([
-      ["POST", "http://127.0.0.1:3873/api/workspace/patch/plan/request"]
+    expect(requests.map(request => requestEnvelope(request).operationName)).toEqual([
+      "VscodeRuntimeQuery", "VscodeWorkspaceCodingPatchPlanMutation"
     ]);
-    const body = JSON.parse(String(requests[0]?.init.body)) as Record<string, unknown>;
+    const body = (requestEnvelope(requests[1]!).variables.input as Record<string, unknown>).value as Record<string, unknown>;
     expect(body).toEqual({
       schemaVersion: "scce.workspace-coding-patch-plan-request.v1",
       workspaceId: "workspace-1",
@@ -256,13 +273,13 @@ describe("ScceClient HTTP boundary", () => {
 
   it("rejects a coding plan whose request trace does not match the submitted scope", async () => {
     const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export const value = 2;\n"));
-    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, async (_input, init) => {
-      const request = JSON.parse(String(init.body)) as Record<string, unknown>;
-      const generation = fixtureCodingGeneration(plan, request);
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, registeredTransport(request => {
+      const input = request.variables.input as Record<string, unknown>;
+      const generation = fixtureCodingGeneration(plan, input.value as Record<string, unknown>);
       const requestNode = generation.constraintGraph.nodes.find(node => node.kindId === "scce.task.request.v1")!;
       requestNode.metadata.requestedPaths = ["src/other.ts"];
-      return jsonResponse(generation);
-    });
+      return generation;
+    }));
 
     await expect(client.workspaceCodingPatchPlan({
       workspaceId: "workspace-1",
@@ -299,28 +316,28 @@ describe("ScceClient HTTP boundary", () => {
   it("rejects invalid JSON without invoking a protocol parser", async () => {
     const client = clientWithResponse(textResponse("not-json"));
 
-    await expect(client.workspaceStatus()).rejects.toThrow("SCCE server returned invalid JSON");
+    await expect(client.workspaceStatus()).rejects.toThrow("SCCE GraphQL endpoint returned invalid JSON");
   });
 
-  it("raises a typed HTTP error with a bounded server message", async () => {
-    const client = clientWithResponse(jsonResponse({ error: "permission denied" }, { ok: false, status: 403 }));
+  it("raises a typed HTTP error from a registered GraphQL error", async () => {
+    const client = clientWithResponse(graphqlErrorResponse("FORBIDDEN", "permission denied", 200));
 
     const rejection = client.workspaceStatus();
     await expect(rejection).rejects.toBeInstanceOf(ScceHttpError);
     await expect(rejection).rejects.toMatchObject({
       name: "ScceHttpError",
       status: 403,
-      message: "SCCE request failed (403): permission denied"
+      message: "SCCE GraphQL FORBIDDEN: permission denied"
     });
   });
 
-  it("uses a status-only HTTP error when the payload has no safe error string", async () => {
-    const client = clientWithResponse(jsonResponse({ error: { detail: "private" } }, { ok: false, status: 500 }));
+  it("maps an unclassified GraphQL failure to a typed server error", async () => {
+    const client = clientWithResponse(graphqlErrorResponse("INTERNAL_ERROR", "local operation failed", 200));
 
     await expect(client.workspaceStatus()).rejects.toMatchObject({
       name: "ScceHttpError",
       status: 500,
-      message: "SCCE request failed (500)"
+      message: "SCCE GraphQL INTERNAL_ERROR: local operation failed"
     });
   });
 
@@ -350,6 +367,78 @@ describe("ScceClient HTTP boundary", () => {
 
 function clientWithResponse(response: HttpResponseLike): ScceClient {
   return new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, async () => response);
+}
+
+function clientWithGraphqlValue(value: unknown): ScceClient {
+  return new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, registeredTransport(() => value));
+}
+
+interface GraphqlRequestEnvelope {
+  operationName: string;
+  variables: Record<string, unknown>;
+  generation?: string;
+}
+
+const GRAPHQL_FIELDS: Record<string, string> = {
+  VscodeReadyQuery: "vscodeReady",
+  VscodeWorkspaceInitializeMutation: "vscodeWorkspaceInitialize",
+  VscodeWorkspaceIngestMutation: "vscodeWorkspaceIngest",
+  VscodeWorkspaceAskMutation: "vscodeWorkspaceAsk",
+  VscodeProjectSummaryQuery: "vscodeProjectSummary",
+  VscodeWorkspaceStatusQuery: "vscodeWorkspaceStatus",
+  VscodeWorkspaceCodingPatchPlanMutation: "vscodeWorkspaceCodingPatchPlan",
+  VscodeWorkspacePatchMutation: "vscodeWorkspacePatch",
+  VscodeLearningCurriculumQuery: "vscodeLearningCurriculum",
+  VscodeLearningPursueMutation: "vscodeLearningPursue",
+  VscodeHeldSourcesQuery: "vscodeHeldSources",
+  VscodeReviewHeldSourceMutation: "vscodeReviewHeldSource",
+  VscodeApprovePlanMutation: "vscodeApprovePlan",
+  VscodeRejectPlanMutation: "vscodeRejectPlan",
+  VscodeSettingsQuery: "vscodeSettings",
+  VscodeUpdateSettingMutation: "vscodeUpdateSetting",
+  VscodeModelsQuery: "vscodeModels",
+  VscodeDownloadModelMutation: "vscodeDownloadModel",
+  VscodeRemoveModelMutation: "vscodeRemoveModel",
+  VscodeCodeValidationPoliciesQuery: "vscodeCodeValidationPolicies",
+  VscodeEditCodeMutation: "vscodeEditCode"
+};
+const JSON_MUTATIONS = new Set([
+  "VscodeWorkspaceCodingPatchPlanMutation", "VscodeWorkspacePatchMutation", "VscodeEditCodeMutation"
+]);
+
+function registeredTransport(
+  resolve: (request: GraphqlRequestEnvelope, init: RequestInit) => unknown | Promise<unknown>,
+  requests?: RecordedRequest[]
+): HttpTransport {
+  return async (url, init) => {
+    requests?.push({ input: url, init });
+    const request = JSON.parse(String(init.body)) as GraphqlRequestEnvelope;
+    if (request.operationName === "VscodeRuntimeQuery") return graphqlDataResponse({ runtime: {
+      protocolVersion: "scce.graphql.v1", generation: "host-generation", phase: "ready", ready: true
+    } });
+    const field = GRAPHQL_FIELDS[request.operationName];
+    if (!field) throw new Error(`unregistered test operation ${request.operationName}`);
+    const value = await resolve(request, init);
+    const input = request.variables.input as Record<string, unknown> | undefined;
+    return graphqlDataResponse({ [field]: request.operationName.endsWith("Mutation")
+      ? JSON_MUTATIONS.has(request.operationName)
+        ? { value, clientMutationId: input?.clientMutationId }
+        : { ...(value as Record<string, unknown>), clientMutationId: input?.clientMutationId }
+      : value });
+  };
+}
+
+function requestEnvelope(request: RecordedRequest): GraphqlRequestEnvelope {
+  return JSON.parse(String(request.init.body)) as GraphqlRequestEnvelope;
+}
+
+function graphqlDataResponse(data: Record<string, unknown>, status = 200): HttpResponseLike {
+  return jsonResponse({ data, extensions: { protocolVersion: "scce.graphql.v1", generation: "host-generation", requestId: "request-test" } }, { status });
+}
+
+function graphqlErrorResponse(code: string, message: string, status: number, detail?: unknown): HttpResponseLike {
+  return jsonResponse({ errors: [{ message, extensions: { code, ...(detail === undefined ? {} : { detail }) } }],
+    extensions: { protocolVersion: "scce.graphql.v1", generation: "host-generation", requestId: "request-test" } }, { ok: status >= 200 && status < 300, status });
 }
 
 function fixturePlan(path: string, content: string): unknown {

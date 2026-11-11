@@ -7,10 +7,13 @@ import {
   createClock,
   createLanguageInductionEngine,
   createLanguageMemoryRuntime,
+  hydrateLanguageSegmentationWitness,
   languageMemoryPatternsFromInducedLanguageModel,
-  toJsonValue,
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
-  type JsonValue,
+  LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA,
+  LANGUAGE_SEGMENTATION_WITNESS_REFERENCE_SCHEMA,
+  SOURCE_SEGMENTATION_WITNESS_SCHEMA,
+  validateSourceSegmentationWitness,
   type LanguageProfile
 } from "../index.js";
 
@@ -59,6 +62,62 @@ describe("induced language model memory projection", () => {
     expect(projection.patterns.every(pattern => pattern.profileId === profile.id)).toBe(true);
     expect(projection.patterns.some(pattern => pattern.patternKind === "syntax")).toBe(true);
     expect(projection.patterns.some(pattern => pattern.patternKind === "semantic_role")).toBe(true);
+    const syntaxJson = projection.patterns.find(pattern => pattern.patternKind === "syntax")!.patternJson as Record<string, unknown>;
+    const reference = syntaxJson.segmentationWitness as Record<string, unknown>;
+    expect(reference).toEqual({
+      schema: LANGUAGE_SEGMENTATION_WITNESS_REFERENCE_SCHEMA,
+      manifestPatternId: expect.any(String)
+    });
+    const manifest = projection.patterns.find(pattern => pattern.id === reference.manifestPatternId)!;
+    expect(manifest.patternJson).toMatchObject({
+      schema: LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA,
+      witnessSchema: model.segmentationWitness.schema
+    });
+    const sourceWitnessRows = projection.patterns.filter(pattern =>
+      (pattern.patternJson as { schema?: string }).schema === SOURCE_SEGMENTATION_WITNESS_SCHEMA);
+    expect(sourceWitnessRows).toHaveLength(model.segmentationWitness.populations.flatMap(population => population.documents).length);
+    for (const row of sourceWitnessRows) {
+      validateSourceSegmentationWitness(row.patternJson);
+      expect(row.patternJson).not.toHaveProperty("componentRecipe");
+      expect(row.patternJson).not.toHaveProperty("profileId");
+    }
+    expect(manifest.patternJson).not.toHaveProperty("componentRecipe");
+    expect(manifest.patternJson).not.toHaveProperty("profileId");
+    const cold = JSON.parse(JSON.stringify({ reference, manifest, sourceWitnessRows })) as {
+      reference: unknown;
+      manifest: typeof manifest;
+      sourceWitnessRows: typeof sourceWitnessRows;
+    };
+    const restored = hydrateLanguageSegmentationWitness({
+      reference: cold.reference,
+      manifest: cold.manifest,
+      sourceWitnesses: cold.sourceWitnessRows,
+      hasher
+    });
+    expect(restored).toEqual(model.segmentationWitness);
+    expect(() => hydrateLanguageSegmentationWitness({
+      reference: cold.reference,
+      manifest: cold.manifest,
+      sourceWitnesses: cold.sourceWitnessRows.slice(1),
+      hasher
+    })).toThrow("exactly match");
+    const changed = structuredClone(cold.sourceWitnessRows);
+    (changed[0]!.patternJson as { text: string }).text += " changed";
+    expect(() => hydrateLanguageSegmentationWitness({
+      reference: cold.reference,
+      manifest: cold.manifest,
+      sourceWitnesses: changed,
+      hasher
+    })).toThrow();
+    const movedManifest = { ...cold.manifest, profileId: "profile.tampered" };
+    expect(() => hydrateLanguageSegmentationWitness({
+      reference: cold.reference,
+      manifest: movedManifest,
+      sourceWitnesses: cold.sourceWitnessRows,
+      hasher
+    })).toThrow("archive identity changed");
+    expect(JSON.stringify(reference)).not.toContain(model.segmentationWitness.populations[0]!.documents[0]!.text);
+    expect(syntaxJson).not.toHaveProperty("joinProgram");
 
     const state = createLanguageMemoryRuntime({ hasher, idFactory }).hydrate({
       models: [],
@@ -67,10 +126,39 @@ describe("induced language model memory projection", () => {
       patterns: projection.patterns,
       semanticFrames: []
     });
-    expect(state.importedPatterns.length).toBe(projection.patterns.length);
+    expect(state.importedPatterns.length).toBe(projection.patterns.length - sourceWitnessRows.length - 1);
     expect(state.importedLanguagePriorCount).toBeGreaterThan(0);
-    expect(state.joinPrograms).toHaveLength(1);
-    expect(state.joinPrograms[0]?.id).toBe(model.joinProgram.id);
+    expect(state).not.toHaveProperty("joinPrograms");
+  });
+
+  it("publishes one archive owner and points every profile syntax row at that same manifest", () => {
+    const hasher = createHasher();
+    const clock = createClock({ fixedTime: 170_500 });
+    const idFactory = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "language-witness-multi-profile" });
+    const sourceVersionId = idFactory.sourceVersionId("alpha beta alpha beta");
+    const model = createLanguageInductionEngine({ hasher }).induce({
+      documents: [{ id: "doc.multi", sourceVersionId, text: "alpha beta alpha beta" }]
+    });
+    const common: Omit<LanguageProfile, "id"> = {
+      sourceVersionId,
+      scripts: [{ script: "script:Latn", mass: 1 }],
+      symbolShapes: [], charNgrams: [], direction: "ltr", entropy: 0.5, createdAt: 170_500
+    };
+    const projection = languageMemoryPatternsFromInducedLanguageModel({
+      model,
+      profiles: [{ ...common, id: "profile.z" }, { ...common, id: "profile.a" }],
+      idFactory,
+      updatedAt: 170_500
+    });
+    const syntaxRows = projection.patterns.filter(pattern => pattern.patternKind === "syntax");
+    expect(syntaxRows).toHaveLength(2);
+    const references = syntaxRows.map(row => (row.patternJson as Record<string, unknown>).segmentationWitness as { manifestPatternId: string });
+    expect(new Set(references.map(reference => reference.manifestPatternId)).size).toBe(1);
+    const manifestRows = projection.patterns.filter(row =>
+      (row.patternJson as { schema?: string }).schema === LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA);
+    expect(manifestRows).toHaveLength(1);
+    expect(manifestRows[0]!.profileId).toBe("profile.a");
+    expect(manifestRows[0]!.id).toBe(references[0]!.manifestPatternId);
   });
 
   it("does not project an induction model onto unrelated language profiles", () => {
@@ -103,7 +191,7 @@ describe("induced language model memory projection", () => {
     expect(projection.skippedReason).toBe("no_matching_profiles");
   });
 
-  it("keeps a rebuilt syntax projection and other source scopes while ignoring same-scope legacy versions", () => {
+  it("keeps rebuilt segmentation witnesses source-scoped and versioned without a JOIN compatibility field", () => {
     const hasher = createHasher();
     const idFactory = createIdFactory({ clock: createClock({ fixedTime: 172_000 }), hasher, deterministicReplay: true, namespace: "syntax-projection-revision" });
     const sourceVersionId = idFactory.sourceVersionId("rebuilt-source");
@@ -123,16 +211,21 @@ describe("induced language model memory projection", () => {
     const syntax = projection.patterns.find(pattern => pattern.patternKind === "syntax");
     expect(syntax).toBeDefined();
     const oldSameScopeModel = engine.induce({ documents: [{ id: "doc.old", sourceVersionId, text: "red green red green" }] });
-    const oldOtherScopeModel = engine.induce({ documents: [{ id: "doc.other", sourceVersionId: "source-version.other" as never, text: "one two one two" }] });
-    const syntaxJson = syntax!.patternJson as Record<string, JsonValue>;
-    const legacySameScope = { ...syntax!, id: "syntax.legacy.same-scope", patternJson: toJsonValue({ ...syntaxJson,
-      componentRecipe: "kernel.induced_language_memory_projection.v2", joinProgram: oldSameScopeModel.joinProgram }) };
-    const legacyOtherScope = { ...syntax!, id: "syntax.legacy.other-scope", patternJson: toJsonValue({ ...syntaxJson,
-      sourceVersionId: "source-version.other", componentRecipe: "kernel.induced_language_memory_projection.v2", joinProgram: oldOtherScopeModel.joinProgram }) };
-    const state = createLanguageMemoryRuntime({ hasher, idFactory }).hydrate({
-      models: [], observations: [], units: [], patterns: [...projection.patterns, legacySameScope, legacyOtherScope], semanticFrames: []
-    });
+    const otherSourceVersionId = "source-version.other" as never;
+    const oldOtherScopeModel = engine.induce({ documents: [{ id: "doc.other", sourceVersionId: otherSourceVersionId, text: "one two one two" }] });
+    const otherProfile: LanguageProfile = { ...profile, id: "profile.other", sourceVersionId: otherSourceVersionId };
+    const sameScopeProjection = languageMemoryPatternsFromInducedLanguageModel({ model: oldSameScopeModel, profiles: [profile], idFactory, updatedAt: 172_000 });
+    const otherScopeProjection = languageMemoryPatternsFromInducedLanguageModel({ model: oldOtherScopeModel, profiles: [otherProfile], idFactory, updatedAt: 172_000 });
+    const syntaxJson = syntax!.patternJson as Record<string, unknown>;
     expect(syntaxJson.componentRecipe).toBe(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
-    expect(state.joinPrograms.map(item => item.id).sort()).toEqual([model.joinProgram.id, oldOtherScopeModel.joinProgram.id].sort());
+    expect(syntaxJson).not.toHaveProperty("joinProgram");
+    const witnessId = (projected: typeof projection) => {
+      const json = projected.patterns.find(pattern => pattern.patternKind === "syntax")!.patternJson as Record<string, unknown>;
+      const manifestId = (json.segmentationWitness as { manifestPatternId: string }).manifestPatternId;
+      return (projected.patterns.find(pattern => pattern.id === manifestId)!.patternJson as { id: string }).id;
+    };
+    expect(witnessId(projection)).toBe(model.segmentationWitness.id);
+    const projectedWitnessIds = [projection, sameScopeProjection, otherScopeProjection].map(witnessId);
+    expect(new Set(projectedWitnessIds).size).toBe(3);
   });
 });

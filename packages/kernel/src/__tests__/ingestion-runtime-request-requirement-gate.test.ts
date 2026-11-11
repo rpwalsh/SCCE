@@ -32,25 +32,25 @@ const REQUEST_REQUIREMENT_CORPUS_TEXT = JSON.stringify({
 });
 
 describe("request-requirement corpus ingestion gate", () => {
-  it("publishes ingested constructions through the active projection before hydration and retires an empty replacement", async () => {
+  it("keeps single-source construction observations diagnostic instead of publishing them as active grammar", async () => {
     const text = ["cat chased mouse.", "dog chased mouse.", "cat chased ball.", "dog chased ball.",
       "cat chased mouse.", "dog chased ball.", "cat chased ball.", "dog chased mouse."].join(" ");
     const fixture = await ingestFixtureText({}, text);
     const schema = "scce.language_construction_pattern.v1";
     const stored = fixture.learnedPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === schema);
-    expect(stored.length).toBeGreaterThan(0);
+    expect(stored).toEqual([]);
     const active = await fixture.store.listLanguagePatterns({ patternSchemas: [schema] });
-    expect(active.map(row => row.id)).toEqual(stored.map(row => row.id));
+    expect(active).toEqual([]);
     const hydrated = hydrateLanguageConstructionPatterns({ patterns: active, evidence: fixture.evidence, hasher: fixture.hasher });
     expect(hydrated.rejected).toEqual([]);
-    expect(hydrated.constructions.length).toBeGreaterThan(0);
-    expect(hydrated.bundles.every(bundle => bundle.acquisitionStatus === "source_observed")).toBe(true);
+    expect(hydrated.constructions).toEqual([]);
+    expect(hydrated.bundles).toEqual([]);
     await fixture.ingest(text);
-    expect((await fixture.store.listLanguagePatterns({ patternSchemas: [schema] })).map(row => row.id)).toEqual(active.map(row => row.id));
+    expect(await fixture.store.listLanguagePatterns({ patternSchemas: [schema] })).toEqual([]);
     await fixture.ingest("A single observation.");
     expect(fixture.publications.at(-1)!.projection.patternIds).toEqual([]);
     expect(await fixture.store.listLanguagePatterns({ patternSchemas: [schema] })).toEqual([]);
-    expect(fixture.learnedPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === schema).map(row => row.id)).toEqual(stored.map(row => row.id));
+    expect(fixture.learnedPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === schema)).toEqual([]);
   });
   it("persists ordinary upload models and forms atomically without raw count duplicates", async () => {
     const text = "Zephyr valve pressure remains stable. Measurements follow the recorded calibration.";

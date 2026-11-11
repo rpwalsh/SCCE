@@ -128,7 +128,7 @@ import {
   translationTargetFromMetadata
 } from "./kernel-input-controls.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
-import { activeJoinProgram, cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, scopeLanguageMemoryStateToProfile } from "./language-memory-runtime.js";
+import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, scopeLanguageMemoryStateToProfile } from "./language-memory-runtime.js";
 import {
   selectLanguageProfileClusterForSourceVersions,
   languageHintFromProfile,
@@ -2463,7 +2463,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? [] : await sourceOwnedConstructionsForEvidence(admissibleEvidence);
       const acquiredRequestConstructionBundles = deps.evaluationCondition?.flags.disableLanguageMemory
         || !admissibleEvidence.some(span => span.status === "promoted") ? []
-        : await requestConstructionBundles(authorityLanguage.patterns, authorityLanguage.state.scope);
+        : await requestConstructionBundles(authorityLanguage.patterns.filter(pattern =>
+          !contextualQa?.patternIds.includes(pattern.id)), authorityLanguage.state.scope);
       const acquiredConversationalConstructionBundles = deps.evaluationCondition?.flags.disableLanguageMemory || requestAct.status !== "active"
         ? [] : await conversationalConstructionBundles(authorityLanguage.patterns, authorityLanguage.state.scope, requestAct.actId);
       const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
@@ -5201,8 +5202,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             if (semanticTarget.parts.length) {
               generativeDerivation = searchTargetConditionedDerivation({
                 target: semanticTarget,
-                algebra,
-                joinMixture: activeJoinProgram(surfaceLanguageMemory)
+                algebra
               });
               kernelTrace({
                 stage: "candidate.field.generate",

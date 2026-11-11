@@ -248,6 +248,11 @@ function report(): LanguageCorpusTrainingReport {
     languageProfiles: 1, evidence: 1, ngramObservations: 2, ngramModels: 1, languageUnits: 1, languagePatterns: 0,
     semanticFrames: 0, admission: { disposition: "unmeasured", reasons: [] }, alignmentPromotionObservations: [],
     alignmentCalibrationObservations: [], constructionCandidates: 0, languageConstructions: 0, graphSurfaceAlignments: 0,
+    constructionObservationReceipt: { schema: "scce.language_training.construction_observation_receipt.v1", compilerRecipe: "kernel.language_training_batch.v8",
+      profileId: "profile-one", sourceVersionId: "sv-one", sourceTextHash: "0".repeat(64), sourceEvidenceCount: 0, sourceEvidenceIds: [],
+      sourceEvidenceIdsTruncated: false, sourceEvidenceDigest: "1".repeat(64), qualificationEvidenceCount: 0,
+      qualificationEvidenceDigest: "2".repeat(64), candidateCount: 0, observationCount: 0,
+      observationDigestRecipe: "sha256.canonical_observation_digests.v1", observationDigest: "3".repeat(64), recomputationIdentity: "4".repeat(64) },
     rejectedLanguageConstructions: 0, eventId: "event-one", warnings: []
   };
 }

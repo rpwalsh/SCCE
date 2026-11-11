@@ -92,21 +92,35 @@ export async function measureIngestionStorage(options) {
       storage.languageMemory.replaceLanguagePatternProjection = async change => { change.patterns.forEach(row => expected.set(row.id, structuredClone(row))); return replace(change); };
     }
     async function verifyPatterns(view) {
-      const wanted = [...expected.values()].sort((a, b) => a.id.localeCompare(b.id)), actual = [], families = {};
+      const published = [...expected.values()].sort((a, b) => a.id.localeCompare(b.id));
+      // Canonical segmentation archives are exact-ID audit evidence. Production request hydration deliberately
+      // excludes them, so the seed oracle must verify their absence rather than demand their large bodies.
+      const wanted = view === 'request_seed'
+        ? published.filter(row => !kernel.isCanonicalSegmentationArchiveSchema(row.patternJson?.schema))
+        : published;
+      const excludedArchiveRows = published.length - wanted.length, actual = [], families = {};
       const key = row => JSON.stringify([row.patternKind, row.patternJson?.schema ?? null]);
+      const failure = (reason, familyKey, expectedRows, actualRows, extra = {}) => Object.assign(
+        Error(`Pattern verification failed: ${reason}`),
+        { verification: { reason, view: view ?? 'full', family: familyKey, expectedRows, actualRows, ...extra } }
+      );
       for (const familyKey of [...new Set(wanted.map(key))]) {
         const family = wanted.filter(row => key(row) === familyKey), kind = family[0].patternKind, schema = family[0].patternJson.schema;
         const found = []; for (let i = 0; i < family.length; i += 32) { const batch = family.slice(i, i + 32);
           const rows = await storage.languageMemory.listLanguagePatterns({ ...(view ? { view } : {}), patternKind: kind,
             ...(schema ? { patternSchemas: [schema] } : {}), patternIds: batch.map(row => row.id), limit: batch.length, maxTotalJsonBytes: 64 * 1024 * 1024, requireComplete: true });
-          if (rows.length !== batch.length) throw Error('Public readback returned an incomplete bounded page'); found.push(...rows); }
+          if (rows.length !== batch.length) throw failure('incomplete_page', familyKey, batch.length, rows.length);
+          found.push(...rows); }
         found.sort((a, b) => a.id.localeCompare(b.id)); actual.push(...found);
         const oracle = view ? family.map(kernel.requestSeedLanguagePattern) : family;
         families[familyKey] = { rows: found.length, expectedSha256: digest(oracle), actualSha256: digest(found) };
-        if (families[familyKey].expectedSha256 !== families[familyKey].actualSha256) throw Error('Exact public pattern readback mismatch');
+        if (families[familyKey].expectedSha256 !== families[familyKey].actualSha256) {
+          throw failure('digest_mismatch', familyKey, family.length, found.length, families[familyKey]);
+        }
       }
       actual.sort((a, b) => a.id.localeCompare(b.id));
-      return { passed: true, rows: actual.length, expectedSha256: digest(view ? wanted.map(kernel.requestSeedLanguagePattern) : wanted), actualSha256: digest(actual), families };
+      return { passed: true, rows: actual.length, excludedArchiveRows,
+        expectedSha256: digest(view ? wanted.map(kernel.requestSeedLanguagePattern) : wanted), actualSha256: digest(actual), families };
     }
     report.empty = await allocation(); report.status = 'measuring'; await save();
     for (const [index, file] of options.input.entries()) {
@@ -128,14 +142,19 @@ export async function measureIngestionStorage(options) {
       const bytes = Number(batch.sourceDenominator.unique_admitted_normalized_utf8_bytes); batch.growthBytes = batch.physical.allocatedBytes - report.empty.allocatedBytes;
       batch.growthToUniqueAdmittedSourceRatio = bytes ? batch.growthBytes / bytes : null;
       batch.allocatedToUniqueAdmittedSourceRatio = bytes ? batch.physical.allocatedBytes / bytes : null;
-      if (options.readback) { stage = 'public-full-readback'; batch.fullReadback = await verifyPatterns(); }
-      if (options['request-seed']) { stage = 'public-request-seed'; batch.requestSeed = await verifyPatterns('request_seed'); }
-      report.batches.push(batch); await save(); console.log(JSON.stringify({ batch: index, databaseName: report.databaseName, admittedUniqueBytes: bytes, growthBytes: batch.growthBytes, ratio: batch.growthToUniqueAdmittedSourceRatio }));
+      // The commit and physical allocation are already facts. Checkpoint them before optional readback so a
+      // verifier regression cannot erase the storage measurement from the preserved receipt.
+      report.batches.push(batch); await save();
+      if (options.readback) { stage = 'public-full-readback'; batch.fullReadback = await verifyPatterns(); await save(); }
+      if (options['request-seed']) { stage = 'public-request-seed'; batch.requestSeed = await verifyPatterns('request_seed'); await save(); }
+      console.log(JSON.stringify({ batch: index, databaseName: report.databaseName, admittedUniqueBytes: bytes, growthBytes: batch.growthBytes, ratio: batch.growthToUniqueAdmittedSourceRatio }));
     }
     report.status = 'complete'; report.qualification = 'Table totals include TOAST and indexes exactly once. Allocation includes live rows, page slack and any dead versions; growth subtracts the empty fresh schema. Each batch ratio uses unique content hashes with promoted evidence AND learned profiles, not acquired inputs or summed duplicate files. Prepare and commit are separate wall times, not isolated SQL or whole-corpus throughput.';
   } catch (error) {
     if (error.receipt) { report.creation = error.receipt; report.databaseName = error.receipt.databaseName; }
-    report.status = 'failed'; report.error = { stage, name: error.name, code: typeof error.code === 'string' ? error.code : null };
+    report.status = 'failed'; report.error = { stage, name: error?.name ?? typeof error,
+      code: typeof error?.code === 'string' ? error.code : null,
+      ...(error?.verification ? { verification: error.verification } : {}) };
     throw Object.assign(Error('Measurement failed; inspect the receipt and local build/database prerequisites'), { measurementReport: report });
   } finally { try { await storage?.close(); } finally { report.finishedAt = new Date().toISOString(); await save(); } }
   return { databaseName: report.databaseName, receipt: resolve(out, 'receipt.json'), complete: true };

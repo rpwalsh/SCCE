@@ -8,9 +8,9 @@ function construction(id: string, relationId: string, text: string, evidenceIds 
   const portId = `${id}.port`, slotId = `${id}.slot`;
   return {
     schema: REVERSIBLE_CONSTRUCTION_SCHEMA, id, seriesId: `${id}.series`, planId: `${id}.plan`, promotionModelId: `${id}.promotion`, profileId: "profile.exact",
-    graph: {hyperedgeIds: [`${id}.edge`], relationNodeIds: [`${id}.relation`], ports: [{id: portId, graphTargetId: `${id}.target`, kind: "participant", relationId, relationNodeId: `${id}.relation`, hyperedgeId: `${id}.edge`, ...(argument ? {roleId: argument.type} : {}), boundary: Boolean(argument), surfaceSlotIds: argument ? [slotId] : [], evidenceIds}], boundaryPortIds: argument ? [portId] : []},
+    graph: {hyperedgeIds: [`${id}.edge`], relationNodeIds: [`${id}.relation`], ports: [{id: portId, graphTargetId: `${id}.target`, kind: "relation", relationId, relationNodeId: `${id}.relation`, hyperedgeId: `${id}.edge`, ...(argument ? {roleId: argument.type} : {}), boundary: Boolean(argument), surfaceSlotIds: argument ? [slotId] : [], evidenceIds}], boundaryPortIds: argument ? [portId] : []},
     surface: {latticeId: `${id}.lattice`, sourceFamilyId: `${id}.family`, sourceVersionId: `${id}.version`, sourceUtf16Start: 0, sourceUtf16End: text.length, sourceSurface: text, slots: argument ? [{id: slotId, surfaceUnitId: `${id}.unit`, occurrenceId: `${id}.occurrence`, surfaceFormClassId: `${id}.form`, graphPortIds: [portId], relativeUtf16Start: argument.start, relativeUtf16End: argument.end, observedSurface: text.slice(argument.start, argument.end), evidence: []}] : [], boundarySlotIds: argument ? [slotId] : []},
-    discourseConditions: {status: "unconditioned", requiredStateIds: [], excludedStateIds: []}, populationPosterior: [], support: {inductionSourceFamilyIds: [`${id}.family`], independentHeldoutSourceFamilyIds: [], heldoutCoverage: 1, cycleRecall: 1, exactAnchorsPreserved: true, unsupportedAdditionCount: 0, transportMass: 1}, provenance: {supportId: `${id}.support`, targetIndexId: `${id}.targets`, evidenceAllocationId: `${id}.allocation`, evidenceIds}, calibration: {modelId: `${id}.calibration`, status: "insufficient-data", probability: null} as ReversibleConstruction["calibration"], creationSnapshot: {id: "snapshot.exact", createdAt: 1}, executableDirections: ["interpretation", "realization"], audit: {}
+    discourseConditions: {status: "unconditioned", requiredStateIds: [], excludedStateIds: []}, populationPosterior: [], support: {inductionSourceFamilyIds: [`${id}.family`], independentHeldoutSourceFamilyIds: [], heldoutCoverage: 1, cycleRecall: 1, exactAnchorsPreserved: true, unsupportedAdditionCount: 0, transportMass: 1}, provenance: {supportId: `${id}.support`, targetIndexId: `${id}.targets`, evidenceAllocationId: `${id}.allocation`, evidenceIds}, calibration: {modelId: `${id}.calibration`, status: "insufficient_data", probability: null}, creationSnapshot: {id: "snapshot.exact", createdAt: 1}, executableDirections: ["interpretation", "realization"], audit: {}
   };
 }
 const algebraFor = (...constructions: ReversibleConstruction[]) => buildConstructionAlgebra({constructions, maxRecursionDepth: 3});
@@ -34,6 +34,11 @@ describe("exact proof-carrying derivation realization", () => {
     if (result.status !== "resolved") throw new Error(result.status);
     expect(result.evidenceIds.sort()).toEqual(["evidence.leaf", "evidence.middle", "evidence.outer"]);
     expect(result.derivation.children[0]?.derivation.children[0]?.derivation.source).toMatchObject({sourceFamilyId: "leaf.family", sourceVersionId: "leaf.version"});
+    expect(result.outputMappings).toContainEqual(expect.objectContaining({
+      kind: "child", constructionId: selected.id, portId: "outer.port", outputUtf16Start: 3
+    }));
+    expect(result.outputMappings.filter(mapping => mapping.kind === "literal").map(mapping =>
+      result.text.slice(mapping.outputUtf16Start, mapping.outputUtf16End)).join("")).toBe(result.text);
   });
 
   it("does not invent delimiters between discontinuous spans", () => {
@@ -82,7 +87,7 @@ describe("exact proof-carrying derivation realization", () => {
   it("realizes the selected chart operator rather than the first operator for its coverage", () => {
     const weak = construction("weak", "relation.same", "FIRST WEAK OUTPUT", ["evidence.weak"]);
     const strong = construction("strong", "relation.same", "SELECTED STRONG OUTPUT", ["evidence.strong.1", "evidence.strong.2", "evidence.strong.3"]);
-    const target = {parts: [{id: "part.same", relationId: "relation.same", roles: [], evidenceIds: [...strong.provenance.evidenceIds]}], audit: {}};
+    const target = {parts: [{id: "part.same", relationId: "relation.same", roles: [], evidenceIds: [...weak.provenance.evidenceIds, ...strong.provenance.evidenceIds]}], audit: {}};
     const result = searchTargetConditionedDerivation({target, algebra: algebraFor(weak, strong)});
     expect(result.text).toBe(strong.surface.sourceSurface);
     expect(result.evidenceIds).toEqual(strong.provenance.evidenceIds);
@@ -107,6 +112,33 @@ describe("exact proof-carrying derivation realization", () => {
     expect(result.coveredPartIds).toEqual(["b"]);
     expect(result.text).toBe("SUPPORTED");
     expect(result.evidenceIds).toEqual(["evidence.supported"]);
+  });
+
+  it("never concatenates independently licensed target parts without one owning construction", () => {
+    const first = construction("first", "relation.first", "FIRST");
+    const second = construction("second", "relation.second", "SECOND");
+    const result = searchTargetConditionedDerivation({
+      target: {parts: [
+        {id: "part.first", relationId: "relation.first", roles: [], evidenceIds: ["evidence.first"]},
+        {id: "part.second", relationId: "relation.second", roles: [], evidenceIds: ["evidence.second"]}
+      ], audit: {}},
+      algebra: algebraFor(first, second)
+    });
+    expect([first.surface.sourceSurface, second.surface.sourceSurface]).toContain(result.text);
+    expect(result.text).not.toContain(`${first.surface.sourceSurface} ${second.surface.sourceSurface}`);
+    expect(result.text).not.toContain(`${second.surface.sourceSurface} ${first.surface.sourceSurface}`);
+    expect(result.coveredPartIds).toHaveLength(1);
+  });
+
+  it("requires target evidence to be owned by the selected construction", () => {
+    const constructionWithOtherEvidence = construction("other", "relation.same", "UNRELATED", ["evidence.other"]);
+    const result = searchTargetConditionedDerivation({
+      target: {parts: [{id: "part.same", relationId: "relation.same", roles: [], evidenceIds: ["evidence.target"]}], audit: {}},
+      algebra: algebraFor(constructionWithOtherEvidence)
+    });
+    expect(result.text).toBe("");
+    expect(result.evidenceIds).toEqual([]);
+    expect(result.realization).toMatchObject({status: "evidence-unavailable"});
   });
 
   it("carries selected nested child evidence through the existing diagnostic entry point", () => {

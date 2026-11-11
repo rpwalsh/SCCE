@@ -8,7 +8,6 @@ import { createLanguageAcquisitionEngine } from "../language.js";
 import { createEvidenceExtractor } from "../evidence.js";
 import { createHasher, createClock } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
-import { realizeLearnedSurface } from "../language-construction.js";
 import type { EvidenceSpan } from "../types.js";
 
 const hasher = createHasher();
@@ -34,8 +33,10 @@ describe("ordinary source grammar acquisition", () => {
     const text = "luma f9 q1. vela f9 q2. luma f9 q2. vela f9 q1.";
     const first = compile(text);
     const own = first.evidence[0]!;
-    const expected = first.trained.constructionPatterns.map(pattern => pattern.id).sort();
+    const expected = [...first.trained.sourceObservedConstructionPatternIds].sort();
     expect(expected.length).toBeGreaterThan(0);
+    expect(first.trained.constructionPatterns).toEqual([]);
+    expect(first.restarted.importedConstructionBundles).toEqual([]);
     const seen = new Set(expected);
     let qualified = false;
     for (const size of [2, 5, 10]) {
@@ -43,47 +44,44 @@ describe("ordinary source grammar acquisition", () => {
         id: ids.evidenceId({ sourceVersionId: ids.sourceVersionId(`prior.${index}`), byteStart: 0, byteEnd: own.byteEnd, spanHash: own.contentHash }),
         sourceId: ids.sourceId("fixture", `source://prior.${index}`), sourceVersionId: ids.sourceVersionId(`prior.${index}`) }));
       const next = compile(text, [own], [own, ...prior]);
-      expect(next.trained.constructionPatterns.map(pattern => pattern.id).sort()).toEqual(expected);
+      expect([...next.trained.constructionPatterns.map(pattern => pattern.id), ...next.trained.sourceObservedConstructionPatternIds].sort()).toEqual(expected);
       expect(next.restarted.importedConstructionBundles.every(bundle => bundle.sourceExamples.every(example => example.evidenceId === own.id))).toBe(true);
+      expect(next.restarted.importedConstructionBundles.every(bundle => bundle.qualificationStatus === "document_heldout_qualified")).toBe(true);
       qualified ||= next.restarted.importedConstructionBundles.some(bundle => bundle.qualificationStatus === "document_heldout_qualified");
       for (const pattern of next.trained.constructionPatterns) seen.add(pattern.id);
     }
     expect(qualified).toBe(true);
     expect(seen.size).toBe(expected.length);
   });
-  it("retains and rehydrates real single-document source forms without claiming document-heldout qualification", () => {
+  it("keeps real single-document source forms in diagnostics and a deterministic receipt without activating them", () => {
     const text = readFileSync(new URL("./fixtures/animalia-source.md", import.meta.url), "utf8");
     expect(Buffer.byteLength(text)).toBe(2357);
     const { trained, restarted, evidence } = compile(text);
     expect(evidence).toHaveLength(1);
     expect(trained.constructionCandidates).toBeGreaterThan(0);
-    expect(trained.constructionPatterns.length).toBeGreaterThan(0);
+    expect(trained.constructionPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === "scce.language_construction_pattern.v1")).toEqual([]);
+    expect(trained.sourceObservedConstructionPatternIds).toHaveLength(51);
+    expect(trained).not.toHaveProperty("sourceObservedConstructionPatterns");
     expect(trained.rejectedConstructionCandidates).toBe(0);
     expect(trained.constructionPromotion.promotedInducedConstructionSets).toBe(0);
-    expect(trained.constructionPromotion.sourceObservedInducedConstructionSets).toBe(trained.constructionPatterns.length);
+    expect(trained.constructionPromotion.sourceObservedInducedConstructionSets).toBeGreaterThanOrEqual(trained.sourceObservedConstructionPatternIds.length);
     expect(trained.constructionPromotion.rejections.every(row => row.reason === "no_heldout_evidence")).toBe(true);
     expect(restarted.rejectedConstructionPatterns).toEqual([]);
-    expect(restarted.importedConstructionBundles).toHaveLength(trained.constructionPatterns.length);
-    expect(restarted.importedConstructionBundles.every(bundle => bundle.acquisitionStatus === "source_observed")).toBe(true);
-    const realizations = restarted.importedConstructionBundles.flatMap(bundle => bundle.sourceExamples.map(example => {
-      expect([...text].slice(example.surfaceStartCodePoint, example.surfaceEndCodePoint).join("")).toBe(example.surface);
-      return realizeLearnedSurface({ hasher, constructions: bundle.constructions, formClasses: bundle.formClasses, plan: {
-        id: example.id, profileKey: bundle.targetProfileId,
-        roleSignature: [...new Set([...example.roles, ...example.nullRoles].map(role => role.roleId))],
-        slots: [
-          ...example.roles.map(role => ({ roleId: role.roleId, occurrenceId: role.occurrenceId, variants: [{ id: `${example.id}.${role.occurrenceId}`, profileKey: bundle.targetProfileId, surface: role.surface, evidenceIds: [example.evidenceId] }] })),
-          ...example.nullRoles.map(role => ({ roleId: role.roleId, occurrenceId: role.occurrenceId, realization: "null" as const, variants: [], evidenceIds: [example.evidenceId] }))
-        ]
-      } });
-    }));
-    expect(realizations.some(result => result.status === "realized")).toBe(true);
-    expect(realizations.filter(result => result.status === "realized").every(result => result.status === "realized" && result.realization.provenance.verification === "unverified")).toBe(true);
-    const missing = createLanguageMemoryRuntime({ hasher }).hydrate({ models: [], patterns: trained.constructionPatterns, constructionEvidence: [] });
-    expect(missing.importedConstructionBundles).toEqual([]);
-    const altered = structuredClone(trained.constructionPatterns);
-    const row = altered[0]!.patternJson as { bundle: { acquisitionStatus: string } };
-    row.bundle.acquisitionStatus = "document_heldout_qualified";
-    expect(createLanguageMemoryRuntime({ hasher }).hydrate({ models: [], patterns: [altered[0]!], constructionEvidence: evidence }).importedConstructionBundles).toEqual([]);
+    expect(restarted.importedConstructionBundles.filter(bundle => !bundle.creativeEvents?.length)).toEqual([]);
+    expect(trained.sourceObservedConstructionPatternIds.length
+      / Math.max(1, trained.constructionPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === "scce.language_construction_pattern.v1").length)).toBeGreaterThan(10);
+    expect(trained.patterns.some(pattern => trained.sourceObservedConstructionPatternIds.includes(pattern.id))).toBe(false);
+    expect(trained.constructionObservationReceipt).toMatchObject({
+      candidateCount: trained.sourceObservedConstructionPatternIds.length,
+      sourceEvidenceCount: 1,
+      sourceEvidenceIds: [String(evidence[0]!.id)],
+      sourceEvidenceIdsTruncated: false
+    });
+    expect(trained.constructionObservationReceipt.observationCount).toBeGreaterThanOrEqual(trained.constructionObservationReceipt.candidateCount);
+    expect(trained.constructionObservationReceipt.observationDigestRecipe).toBe("sha256.canonical_observation_digests.v1");
+    expect(trained.constructionObservationReceipt.observationDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(trained.constructionObservationReceipt.recomputationIdentity).toMatch(/^[a-f0-9]{64}$/u);
+    expect(compile(text).trained.constructionObservationReceipt).toEqual(trained.constructionObservationReceipt);
   });
 
   it("does not treat chunks or versions of a canonical document as heldout documents", () => {

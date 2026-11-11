@@ -155,7 +155,7 @@ describe("Postgres schema contract extraction", () => {
       expect(columns[name]).toEqual(expected);
       delete priorColumns[name];
     }
-    const headers = ["pattern_schema", "component_recipe", "source_compilation_id", "owned_source_version_id", "pattern_language", "has_source_compilation", "has_source_version", "decoded_jsonb_bytes"];
+    const headers = ["pattern_schema", "component_recipe", "source_compilation_id", "owned_source_version_id", "pattern_language", "has_source_compilation", "has_source_version", "decoded_artifact_jsonb_bytes"];
     expect(digest({ ...priorColumns, evidence_spans: columns.evidence_spans!.filter(column => column !== "text_sha256"),
       semantic_frames: columns.semantic_frames!.filter(column => column !== "normalized_surface_hash"),
       language_patterns: columns.language_patterns!.filter(column => !headers.includes(column)) })).toBe("6cb43753bb07de0a5bdb96e1b27459d8861bf292b5f9ba6f9b31b50770df0f22");

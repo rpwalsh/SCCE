@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { AsyncLocalStorage } from "node:async_hooks";
+import { createSerializedRequestContextPort, type RequestContextPort } from "./request-context-port.js";
 
 interface RequestLanguageFormContext {
   generation: number;
@@ -8,7 +8,20 @@ interface RequestLanguageFormContext {
 }
 
 let nextGeneration = 0;
-const contexts = new AsyncLocalStorage<RequestLanguageFormContext>();
+const contexts = await requestContextPort();
+
+async function requestContextPort(): Promise<RequestContextPort<RequestLanguageFormContext>> {
+  const nodeProcess = (globalThis as { process?: { versions?: { node?: string } } }).process;
+  if (nodeProcess?.versions?.node) {
+    // The specifier stays runtime-selected so browser bundlers do not pull a
+    // Node builtin into the portable graph. Node retains AsyncLocalStorage's
+    // exact overlapping-request semantics.
+    const specifier = "node:async_hooks";
+    const hooks = await import(/* @vite-ignore */ specifier) as typeof import("node:async_hooks");
+    return new hooks.AsyncLocalStorage<RequestLanguageFormContext>();
+  }
+  return createSerializedRequestContextPort<RequestLanguageFormContext>();
+}
 
 export function withRequestLanguageFormScope<T>(run: () => Promise<T>): Promise<T> {
   const context = { generation: allocateRequestLanguageFormGeneration(), snapshots: new Map<string, unknown>() };

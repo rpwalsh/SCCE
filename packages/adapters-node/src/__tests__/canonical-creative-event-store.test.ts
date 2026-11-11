@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { JOIN_PROGRAM_MIXTURE_SCHEMA, canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
+import { canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
   createUniversalCreativeEventConstructionCompiler, deriveUniversalCreativeEvent, hashEvent, hydrateLanguageConstructionPatterns,
   informationLabelAllowsRead, requestSeedLanguagePattern, type EvidenceSpan, type InformationLabel,
   type JsonValue, type LanguagePatternRecord, type ScceEvent } from "@scce/kernel";
@@ -11,7 +11,7 @@ import { canonicalCreativeEventSchemaStatements, createCanonicalCreativeEventCod
 import { CREATIVE_EVENT_NORMALIZATION_SCHEMA, CREATIVE_EVENT_NORMALIZATION_TABLES, CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA,
   creativeEventStorageJson, normalizeCreativeEventPage, reconstructCreativeEventPage,
   type CreativeEventDomainRecord, type CreativeEventOwner } from "../creative-event-normalization.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, durableJoinProgramJsonByteLengths } from "../durable-join-program-storage.js";
+import { DECODED_JSON_BYTE_LEDGER_KEY, decodedJsonByteLengths } from "../durable-artifact-storage.js";
 
 const hasher = createHasher(), label: InformationLabel = { tenantId: "tenant.owned", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" };
 const access = { tenantId: "tenant.owned", principalId: "principal.owned", compartments: [], maximumExportClass: "restricted" as const };
@@ -98,7 +98,7 @@ function fixture() {
     if (sql.startsWith("SELECT id, information_label")) return { rows: [] };
     if (!sql.includes("INSERT INTO") && sql.includes('"induced_language_models"')) return { rows: rows.models };
     if (sql.includes("pattern_headers AS MATERIALIZED")) return { rows: rows.patterns.map(row => {
-      if (!sql.includes("CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes")) return row;
+      if (!sql.includes("CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_artifact_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes")) return row;
       const pattern: LanguagePatternRecord = { id: String(row.id), profileId: String(row.profile_id), patternKind: "semantic_role", support: Number(row.support), entropy: Number(row.entropy),
         patternJson: row.pattern_json as JsonValue, evidenceIds: evidence.id ? [evidence.id] : [], updatedAt: 1 };
       return { ...row, pattern_json: requestSeedLanguagePattern(pattern).patternJson };
@@ -117,8 +117,7 @@ describe("canonical creative-event domain normalization", () => {
     const codec = createCanonicalCreativeEventCodec({ table: name => `"pure"."${name}"`,
       query: async () => { throw Error("unexpected SQL query"); }, transaction: async () => { throw Error("unexpected transaction"); },
       requireWritableInformationLabel: value => value ?? label, informationAccessPredicate: () => ({ sql: "TRUE", params: [] }) });
-    const original = { retained: { exact: "🧪é\u0000雪" }, joinProgram: { schema: JOIN_PROGRAM_MIXTURE_SCHEMA,
-      id: "join.empty", populationModelId: "population.empty", minimumConfidence: 0, components: [] } };
+    const original = { retained: { exact: "🧪é\u0000雪" }, unrelated: { schema: "fixture.non_join.v1" } };
     const encoded = await codec.encodeMany([{ value: original }]);
     expect(await codec.decodeMany(cold(encoded))).toEqual([original]);
     expect(await codec.encode({ retained: "pure" })).toEqual({ retained: "pure" });
@@ -135,12 +134,12 @@ describe("canonical creative-event domain normalization", () => {
     for (const row of rows.patterns) {
       const stored = object(row.pattern_json), original = patterns.find(pattern => pattern.id === row.id)!;
       expect(object(object(stored.bundle).events).schema).toBe(CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA);
-      expect(object(stored[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY])).toMatchObject(durableJoinProgramJsonByteLengths(original.patternJson));
+      expect(object(stored[DECODED_JSON_BYTE_LEDGER_KEY])).toMatchObject(decodedJsonByteLengths(original.patternJson));
       const { events: _events, ...headers } = object(stored.bundle), { events: _originalEvents, ...originalHeaders } = object(object(original.patternJson).bundle);
       expect(headers).toEqual(originalHeaders);
     }
     const restored = await adapter.languageMemory.listLanguagePatterns({ patternIds: patterns.map(pattern => pattern.id), limit: patterns.length,
-      maxTotalJsonBytes: patterns.reduce((sum, pattern) => sum + durableJoinProgramJsonByteLengths(pattern.patternJson).decodedJsonbBytes, 0), requireComplete: true });
+      maxTotalJsonBytes: patterns.reduce((sum, pattern) => sum + decodedJsonByteLengths(pattern.patternJson).decodedJsonbBytes, 0), requireComplete: true });
     expect(restored.map(pattern => digest(pattern.patternJson))).toEqual(patterns.map(pattern => digest(pattern.patternJson)));
     expect(hydrateLanguageConstructionPatterns({ patterns: restored, evidence: [evidence], hasher }))
       .toEqual(hydrateLanguageConstructionPatterns({ patterns, evidence: [evidence], hasher }));
@@ -154,21 +153,15 @@ describe("canonical creative-event domain normalization", () => {
     expect(calls.slice(beforeSeed).some(sql => sql.includes("SELECT profile.id AS profile_id"))).toBe(false);
   });
 
-  it("reuses the same canonical records in full induced models and immutable ledger payloads without changing replay hashes", async () => {
+  it("reuses the same canonical records in immutable ledger payloads without changing replay hashes", async () => {
     const { adapter, components, rows, state } = fixture();
-    const model = { id: "model.genuine.creative", corpusDocuments: 1, vocabularySize: 2, patterns: patterns.map(pattern => pattern.patternJson),
-      joinProgram: { schema: JOIN_PROGRAM_MIXTURE_SCHEMA, id: "mixture.empty", populationModelId: "population.empty", minimumConfidence: 0, components: [] } };
-    await adapter.inducedLanguageModels.putModel({ id: model.id, model: model as never, trainingPlanId: "plan.owned", createdAt: 1, informationLabel: label });
     const count = state.inserted;
-    expect(JSON.stringify(rows.models[0]!.model_json).includes(CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA)).toBe(true);
-    expect(JSON.stringify(rows.models[0]!.model_json).includes("scce.durable_join_program.storage.v1")).toBe(true);
-    expect((await adapter.inducedLanguageModels.readById(model.id))!.model).toEqual(model);
-    expect((await adapter.inducedLanguageModels.listRecent())[0]!.model).toEqual(model);
     const input = { id: "event.genuine.creative", episodeId: "episode.owned", typeId: "InducedLanguageModelPersisted", t: 1, parents: [],
       payload: { memoryProjection: { patterns } } } as unknown as Omit<ScceEvent, "hash">;
     const event = { ...input, hash: hashEvent(input, [], hasher) };
     await adapter.events.append(event);
-    expect(state.inserted).toBe(count);
+    expect(state.inserted).toBeGreaterThan(count);
+    const canonicalInsertions = state.inserted;
     expect(components.get("creative_event_occurrences")!.size).toBe(patterns.length);
     expect(JSON.stringify(rows.events[0]!.payload_json).includes(CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA)).toBe(true);
     const restored = (await adapter.events.readEpisode(event.episodeId))[0]!;
@@ -177,7 +170,7 @@ describe("canonical creative-event domain normalization", () => {
     expect((await adapter.events.readRange({ episodeId: event.episodeId }))[0]).toEqual(event);
     await adapter.events.append(event);
     expect(rows.events).toHaveLength(1);
-    expect(state.inserted).toBe(count);
+    expect(state.inserted).toBe(canonicalInsertions);
   });
 
   it("rejects changed canonical owners, inaccessible labels, missing components and understated decoded budgets", async () => {
@@ -187,7 +180,7 @@ describe("canonical creative-event domain normalization", () => {
       (f: ReturnType<typeof fixture>) => { f.state.source = { ...owner, sourceContentHash: "changed.raw.source.hash" }; },
       (f: ReturnType<typeof fixture>) => { f.state.sourceLabel = { ...label, tenantId: "tenant.foreign", exportClass: "restricted", principals: ["foreign"] }; },
       (f: ReturnType<typeof fixture>) => { f.lexicalPages.clear(); },
-      (f: ReturnType<typeof fixture>) => { object(object(f.rows.patterns[0]!.pattern_json)[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]).decodedJsonBytes = 1; }
+      (f: ReturnType<typeof fixture>) => { object(object(f.rows.patterns[0]!.pattern_json)[DECODED_JSON_BYTE_LEDGER_KEY]).decodedJsonBytes = 1; }
     ]) {
       const f = fixture(); await f.adapter.languageMemory.putLanguagePattern(patterns[0]!); mutate(f);
       let rejected: unknown;

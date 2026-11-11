@@ -13,7 +13,7 @@ import { createIdFactory } from "../ids.js";
 import { createLanguageAcquisitionEngine } from "../language.js";
 import { createEvidenceExtractor } from "../evidence.js";
 import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
-import { JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, joinProgramMixtureFromStorage } from "../join-program-storage.js";
+import { LANGUAGE_SEGMENTATION_WITNESS_SCHEMA, validateLanguageSegmentationWitness } from "../source-segmentation-witness.js";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
@@ -64,15 +64,15 @@ describe("complete bounded source induction", () => {
     expect(products.coverage.windows.some(window => window.startUtf16 > 16_000)).toBe(true);
     expect(products.fullModel).toBeUndefined();
     expect(products.models.every(model => !("kneserNey" in model) && !("ngrams" in model))).toBe(true);
-    expect(products.models.every(model => model.joinProgram.schema === JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA)).toBe(true);
-    const restoredJoinProgram = joinProgramMixtureFromStorage(products.models[0]!.joinProgram);
-    expect(restoredJoinProgram?.components[0]?.program.conditionedIndex).toBeDefined();
-    const storedJoinProgramBytes = products.models.reduce((total, model) => total + Buffer.byteLength(JSON.stringify(model.joinProgram)), 0);
-    const expandedJoinProgramBytes = products.models.reduce((total, model) => total + Buffer.byteLength(JSON.stringify(joinProgramMixtureFromStorage(model.joinProgram))), 0);
-    expect(storedJoinProgramBytes).toBeLessThan(expandedJoinProgramBytes);
-    if (process.env.SCCE_JOIN_PROGRAM_STORAGE_REPORT === "1") {
-      console.log(JSON.stringify({ fixtureBytes: Buffer.byteLength(text), windows: products.models.length, storedJoinProgramBytes, expandedJoinProgramBytes }));
-    }
+    expect(products.models.every(model => model.segmentationWitness.schema === LANGUAGE_SEGMENTATION_WITNESS_SCHEMA)).toBe(true);
+    for (const model of products.models) validateLanguageSegmentationWitness(model.segmentationWitness);
+    const witnessedDocuments = products.models.flatMap(model => model.segmentationWitness.populations.flatMap(population => population.documents));
+    const witnessedById = new Map(witnessedDocuments.map(document => [document.documentId, document]));
+    expect(products.coverage.windows.map(window => witnessedById.get(window.documentId)!.text).join("")).toBe(text);
+    expect(witnessedDocuments.every(document => document.fullDag.factors.arcs.length > 0
+      && document.lattice.segmentationForest.retainedPathCount > 0
+      && document.lattice.segmentationForest.boundaryMarginalCount === document.fullDag.factors.nodeCount)).toBe(true);
+    expect(witnessedDocuments.every(document => document.sourceUtf16End - document.sourceUtf16Start === document.text.length)).toBe(true);
     expect(products.models.some(model => model.semanticFrames.some(frame => frame.examples.some(example => example.includes("gloves"))))).toBe(true);
     const firstFrame = products.models.flatMap(model => model.semanticFrames)[0]!;
     expect(() => { firstFrame.predicate = "forged"; }).toThrow();

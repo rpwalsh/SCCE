@@ -4,7 +4,7 @@ import { constructionSourceExampleStorageJson, createHasher, replaySemanticInduc
   type SemanticInductionProjection } from "@scce/kernel";
 
 export const SEMANTIC_PROJECTION_STORAGE_KEY = "_scceSemanticProjectionStorage";
-export const SEMANTIC_PROJECTION_STORAGE_SCHEMA = "scce.semantic_projection.storage.v1";
+export const SEMANTIC_PROJECTION_STORAGE_SCHEMA = "scce.semantic_projection.storage.v2";
 const TAPE_STORAGE_SCHEMA = "scce.semantic_projection.json.v1";
 const fields = ["semanticFrames", "graphBoundConstructions", "lexicalClasses", "relationHypothesisModel"] as const;
 const exact = constructionSourceExampleStorageJson;
@@ -27,6 +27,23 @@ export function semanticEntityQueryProjection(graphs: unknown): unknown[] {
   });
 }
 
+/** The request seed reads only class identity and observed member symbols. */
+export function semanticLexicalClassQueryProjection(classes: unknown): unknown[] {
+  if (!Array.isArray(classes)) return fail();
+  return classes.map(raw => {
+    const row = record(raw);
+    if (!row || typeof row.id !== "string" || !Array.isArray(row.members)) return fail();
+    return {
+      id: row.id,
+      members: row.members.map(rawMember => {
+        const member = record(rawMember);
+        if (!member || typeof member.symbol !== "string") return fail();
+        return { symbol: member.symbol };
+      })
+    };
+  });
+}
+
 /** Replace the quadratic derived caches with their ordered sufficient facts. */
 export function encodeSemanticProjection(value: Record<string, unknown>): Record<string, unknown> {
   if (!Object.hasOwn(value, "semanticInductionProjection")) return value;
@@ -35,12 +52,14 @@ export function encodeSemanticProjection(value: Record<string, unknown>): Record
   if (!projection || projection.schema !== "scce.semantic_induction_projection.v1") return fail();
   const material = selected(value);
   if (projection.expectedDerivedDigest !== createHasher().digestHex(exact(material))) return fail();
-  const { semanticFrames: _frames, relationHypothesisModel: _relations, graphBoundConstructions: graphs, ...root } = value;
+  const { semanticFrames: _frames, relationHypothesisModel: _relations, graphBoundConstructions: graphs,
+    lexicalClasses: classes, ...root } = value;
   const text = JSON.stringify(projection);
   // The tape is opaque to SQL. A JSON string preserves NUL and lone UTF-16
   // units through JSONB without changing the learned source or its checksum.
   return { ...root, semanticInductionProjection: { schema: TAPE_STORAGE_SCHEMA, text, digest: createHasher().digestHex(text) },
     graphBoundConstructions: semanticEntityQueryProjection(graphs),
+    lexicalClasses: semanticLexicalClassQueryProjection(classes),
     [SEMANTIC_PROJECTION_STORAGE_KEY]: { schema: SEMANTIC_PROJECTION_STORAGE_SCHEMA } };
 }
 
@@ -58,7 +77,7 @@ export function decodeSemanticProjection(value: Record<string, unknown>): Record
   try { projection = JSON.parse(tape.text) as SemanticInductionProjection; } catch { return fail(); }
   const restored = replaySemanticInductionProjection({ projection, hasher: createHasher() });
   if (exact(value.graphBoundConstructions) !== exact(semanticEntityQueryProjection(restored.graphBoundConstructions))
-    || exact(value.lexicalClasses) !== exact(restored.lexicalClasses)) return fail();
+    || exact(value.lexicalClasses) !== exact(semanticLexicalClassQueryProjection(restored.lexicalClasses))) return fail();
   const { [SEMANTIC_PROJECTION_STORAGE_KEY]: _marker, ...root } = value;
   return { ...root, ...restored, semanticInductionProjection: projection };
 }

@@ -151,7 +151,7 @@ describe("recursive generative derivation (ceiling break)", () => {
     const composite = algebra.composed[0]!;
     const realized = realizeDerivation({ constructionId: composite.id, algebra });
 
-    expect(realized).toBe("the tower fell the scientist discovered the flaw aside");
+    expect(realized).toMatchObject({ status: "resolved", text: "the tower fellthe scientist discovered the flaw aside" });
   });
 
   it("refuses to compose a type that no construction produces", () => {
@@ -176,13 +176,14 @@ describe("recursive generative derivation (ceiling break)", () => {
 
     // The composite realization substitutes the child's surface into the
     // parent's open slot -- a homomorphism, not a lookup.
-    expect(realized).toBe("because the scientist discovered the flaw the tower fell");
+    expect(realized).toMatchObject({ status: "resolved", text: "because the scientist discovered the flaw the tower fell" });
+    if (realized.status !== "resolved") throw new Error(realized.status);
 
     // And that exact surface is in neither learned construction.
-    expect(causeConstruction.surface.sourceSurface).not.toContain(realized);
-    expect(discoverConstruction.surface.sourceSurface).not.toContain(realized);
-    expect(realized).not.toBe(causeConstruction.surface.sourceSurface);
-    expect(realized).not.toBe(discoverConstruction.surface.sourceSurface);
+    expect(causeConstruction.surface.sourceSurface).not.toContain(realized.text);
+    expect(discoverConstruction.surface.sourceSurface).not.toContain(realized.text);
+    expect(realized.text).not.toBe(causeConstruction.surface.sourceSurface);
+    expect(realized.text).not.toBe(discoverConstruction.surface.sourceSurface);
   });
 
   it("searches the packed derivation forest and returns a licensed best derivation", () => {
@@ -241,7 +242,7 @@ describe("recursive generative derivation (ceiling break)", () => {
     expect(eligible.some(operator => operator.resultType === "relation.event")).toBe(false);
   });
 
-  it("target-conditioned search covers the requested parts and realizes through the join program", () => {
+  it("target-conditioned search covers requested parts through one licensed construction derivation", () => {
     const algebra = buildConstructionAlgebra({
       constructions: [causeConstruction, discoverConstruction],
       maxRecursionDepth: 2
@@ -257,7 +258,7 @@ describe("recursive generative derivation (ceiling break)", () => {
     // It expressed the requested structure, not merely something cheap.
     expect(result.coveredPartIds.length).toBeGreaterThan(0);
     expect(result.text.length).toBeGreaterThan(0);
-    expect(JSON.stringify(result.audit)).toContain("join-program");
+    expect(JSON.stringify(result.audit)).toContain("proof-carrying-construction");
   });
 
   it("enumerates every type-compatible composition rather than the first one found", () => {

@@ -107,6 +107,7 @@ import {
 } from "./optional-null-realization.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { canonicalStringify, createClock, toJsonValue } from "./primitives.js";
+import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
 import { sourceInductionBatches } from "./source-window-induction.js";
 import { inductionCharBudget } from "./training-orchestrator.js";
@@ -235,6 +236,43 @@ export interface LanguageTrainingConstructionPromotionReport {
   }>;
 }
 
+export const LANGUAGE_TRAINING_CONSTRUCTION_OBSERVATION_RECEIPT_SCHEMA =
+  "scce.language_training.construction_observation_receipt.v1" as const;
+export const LANGUAGE_TRAINING_CONSTRUCTION_OBSERVATION_DIGEST_RECIPE =
+  "sha256.canonical_observation_digests.v1" as const;
+export const LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_EXEMPLAR_LIMIT = 4;
+export const GRAPH_SURFACE_ALIGNMENT_OBSERVATION_RECEIPT_SCHEMA =
+  "scce.graph_surface_alignment.observation_receipt.v2" as const;
+export const CONSTRUCTION_PROMOTION_OBSERVATION_RECEIPT_SCHEMA =
+  "scce.language_training.construction_promotion_receipt.v2" as const;
+export const LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_DIGEST_RECIPE =
+  "sha256.canonical_row_digests.v1" as const;
+
+/**
+ * Bounded proof that source-owned construction hypotheses were observed.
+ * The raw source and evidence remain the durable recomputation authority;
+ * this receipt retains counts and canonical digests, never the hypothesis
+ * bodies that are deliberately excluded from the active projection.
+ */
+export interface LanguageTrainingConstructionObservationReceipt {
+  schema: typeof LANGUAGE_TRAINING_CONSTRUCTION_OBSERVATION_RECEIPT_SCHEMA;
+  compilerRecipe: typeof LANGUAGE_TRAINING_BATCH_RECIPE_ID;
+  profileId: string;
+  sourceVersionId: string;
+  sourceTextHash: string;
+  sourceEvidenceCount: number;
+  sourceEvidenceIds: string[];
+  sourceEvidenceIdsTruncated: boolean;
+  sourceEvidenceDigest: string;
+  qualificationEvidenceCount: number;
+  qualificationEvidenceDigest: string;
+  candidateCount: number;
+  observationCount: number;
+  observationDigestRecipe: typeof LANGUAGE_TRAINING_CONSTRUCTION_OBSERVATION_DIGEST_RECIPE;
+  observationDigest: string;
+  recomputationIdentity: string;
+}
+
 export interface CompiledLanguageTrainingBatch {
   preparedInduction?: PreparedConstructionInduction;
   observations: NgramObservation[];
@@ -242,11 +280,14 @@ export interface CompiledLanguageTrainingBatch {
   units: LanguageUnitRecord[];
   patterns: LanguagePatternRecord[];
   semanticFrames: SemanticFrameRecord[];
+  /** Content-addressed diagnostics only; rejected pattern bodies are released after compilation. */
+  sourceObservedConstructionPatternIds: string[];
+  constructionObservationReceipt: LanguageTrainingConstructionObservationReceipt;
   constructionPatterns: LanguagePatternRecord[];
   reversibleConstructionPatterns: LanguagePatternRecord[];
   pairedAntiUnifiedConstructionPatterns: LanguagePatternRecord[];
   optionalNullRealizationPatterns: LanguagePatternRecord[];
-  graphSurfaceAlignmentSummaries: JsonValue[];
+  graphSurfaceAlignmentCount: number;
   sparseAlignmentCandidateSupports: SparseAlignmentCandidateSupport[];
   sparseAlignmentCandidateSummaries: JsonValue[];
   alignmentCommunityRoutings: AlignmentCommunityRouting[];
@@ -588,6 +629,8 @@ export function compileLanguageTrainingBatch(input: {
       audit: support.audit
     }));
   const constructionPatterns: LanguagePatternRecord[] = [];
+  const sourceObservedConstructionPatternIds: string[] = [];
+  const sourceObservedConstructionSets: SourceBoundLanguageConstructionTrainingSet[] = [];
   const warnings: string[] = [];
   const promotion = evaluateConstructionPromotion({
     evidence: ownedConstructionEvidence,
@@ -621,17 +664,33 @@ export function compileLanguageTrainingBatch(input: {
   for (const compiled of compiledSets) {
     const set = sets[compiledIndex++]!;
     if (compiled.status === "compiled") {
-      if (!suppliedBindingIds.has(set.bindingId)) compiled.pattern.patternJson = {
-        ...jsonObject(compiled.pattern.patternJson), constructionQualification: promotion.promotedInducedBindingIds.has(set.bindingId) ? "document_heldout_qualified" : "unqualified"
+      const supplied = suppliedBindingIds.has(set.bindingId);
+      const qualified = promotion.promotedInducedBindingIds.has(set.bindingId);
+      // Only a published pattern needs the qualification field. An
+      // unqualified source observation contributes its fixed-width identity
+      // and receipt, then its compiled body is released immediately.
+      if (!supplied && qualified) compiled.pattern.patternJson = {
+        ...jsonObject(compiled.pattern.patternJson), constructionQualification: "document_heldout_qualified"
       };
-      constructionPatterns.push(compiled.pattern);
-      if (compiled.bundle.acquisitionStatus === "source_observed" && !promotion.promotedInducedBindingIds.has(set.bindingId)) promotion.report.sourceObservedInducedConstructionSets++;
+      if (supplied || qualified) constructionPatterns.push(compiled.pattern);
+      else {
+        sourceObservedConstructionPatternIds.push(compiled.pattern.id);
+        sourceObservedConstructionSets.push(set);
+        if (compiled.bundle.acquisitionStatus === "source_observed") promotion.report.sourceObservedInducedConstructionSets++;
+      }
     } else {
       failedConstructions++;
       if (!suppliedBindingIds.has(set.bindingId)) promotion.report.failedInducedConstructionSets++;
       warnings.push(...compiled.issues.map(issue => issue.code));
     }
   }
+  const constructionObservationReceipt = compileConstructionObservationReceipt({
+    batch,
+    sourceObservedSets: sourceObservedConstructionSets,
+    sourceEvidence: batch.evidence,
+    qualificationEvidence: ownedConstructionEvidence,
+    hasher: input.hasher
+  });
 
   const creativeEventCompiler = induceNaturalLanguage ? input.creativeEventCompiler ?? createUniversalCreativeEventConstructionCompiler() : undefined;
   const creativeEventCompilation = creativeEventCompiler?.compile({ profileId: batch.profile.id, evidence: batch.evidence,
@@ -697,19 +756,27 @@ export function compileLanguageTrainingBatch(input: {
       artifacts: { units, patterns, semanticFrames }, hasher: input.hasher }) : undefined;
   const models = stamped?.models ?? rawModels;
   if (stamped) { units = stamped.units; patterns = stamped.patterns; semanticFrames = stamped.semanticFrames; }
+  const graphSurfaceAlignmentSummaries = sets
+    .map(set => set.alignmentSummary)
+    .filter((summary): summary is JsonValue => summary !== undefined);
+  const eventDiagnostics = compileLanguageTrainingEventDiagnostics({
+    graphSurfaceAlignments: graphSurfaceAlignmentSummaries,
+    constructionPromotion: promotion.report,
+    hasher: input.hasher
+  });
   const patternsById = new Map<string, LanguagePatternRecord>();
   for (const pattern of patterns) if (!patternsById.has(pattern.id)) patternsById.set(pattern.id, pattern);
   return {
     ...(inducedLanguageProducts ? { preparedInduction } : {}),
     observations: uniqueRecords(memories.flatMap(memory => memory.observations)),
     models, units, patterns, semanticFrames,
+    sourceObservedConstructionPatternIds,
+    constructionObservationReceipt,
     constructionPatterns: constructionPatterns.map(record => patternsById.get(record.id) ?? record),
     reversibleConstructionPatterns,
     pairedAntiUnifiedConstructionPatterns,
     optionalNullRealizationPatterns,
-    graphSurfaceAlignmentSummaries: sets
-      .map(set => set.alignmentSummary)
-      .filter((summary): summary is JsonValue => summary !== undefined),
+    graphSurfaceAlignmentCount: graphSurfaceAlignmentSummaries.length,
     sparseAlignmentCandidateSupports,
     sparseAlignmentCandidateSummaries,
     alignmentCommunityRoutings,
@@ -759,10 +826,9 @@ export function compileLanguageTrainingBatch(input: {
       memory: memories.map(memory => jsonObject(memory.audit)),
       suppliedConstructionSets: batch.constructionSets?.length ?? 0,
       inducedConstructionSets: inducedSets.length,
-      constructionPromotion: promotion.report as unknown as JsonValue,
-      graphSurfaceAlignment: sets
-        .map(set => set.alignmentSummary)
-        .filter(summary => summary !== undefined) as JsonValue[],
+      constructionPromotion: eventDiagnostics.constructionPromotion,
+      constructionObservationReceipt: constructionObservationReceipt as unknown as JsonValue,
+      graphSurfaceAlignment: eventDiagnostics.graphSurfaceAlignment,
       sparseTypedIncidenceAlignment: {
         targetIndexId: sparseAlignment?.targetIndex.id ?? null,
         incidenceGraphId: sparseAlignment?.incidenceGraph.id ?? null,
@@ -870,6 +936,7 @@ export function compileLanguageTrainingBatch(input: {
           alternativeTransportEvidenceAllocations.length
       },
       compiledConstructions: constructionPatterns.length,
+      unpublishedSourceObservedConstructions: sourceObservedConstructionPatternIds.length,
       sourceUtteranceConstructions: { candidates: sourceUtteranceCandidates, compiled: compiledSourceUtterances,
         rejected: sourceUtteranceCandidates - compiledSourceUtterances },
       compiledReversibleConstructions: reversibleConstructionPatterns.length,
@@ -991,7 +1058,16 @@ function uniqueConstructionSets(
 
 function uniquePatterns(patterns: readonly LanguagePatternRecord[]): LanguagePatternRecord[] {
   const byId = new Map<string, LanguagePatternRecord>();
-  for (const pattern of patterns) if (!byId.has(pattern.id)) byId.set(pattern.id, pattern);
+  for (const pattern of patterns) {
+    const existing = byId.get(pattern.id);
+    if (!existing) {
+      byId.set(pattern.id, pattern);
+      continue;
+    }
+    if (canonicalStringify(existing) !== canonicalStringify(pattern)) {
+      throw new Error(`language pattern id ${pattern.id} has conflicting canonical bodies`);
+    }
+  }
   return [...byId.values()];
 }
 
@@ -999,6 +1075,139 @@ function uniqueRecords<T extends { id: string }>(records: readonly T[]): T[] {
   const byId = new Map<string, T>();
   for (const record of records) if (!byId.has(record.id)) byId.set(record.id, record);
   return [...byId.values()];
+}
+
+const CONSTRUCTION_OBSERVATION_RECEIPT_EVIDENCE_LIMIT = 64;
+
+function compileLanguageTrainingEventDiagnostics(input: {
+  graphSurfaceAlignments: readonly JsonValue[];
+  constructionPromotion: LanguageTrainingConstructionPromotionReport;
+  hasher: Hasher;
+}): { graphSurfaceAlignment: JsonValue; constructionPromotion: JsonValue } {
+  const ordered = <T>(rows: readonly T[]) => rows.map((row, ordinal) => ({
+    row,
+    ordinal,
+    digest: canonicalDigestHex(row, input.hasher)
+  })).sort((left, right) => left.digest.localeCompare(right.digest) || left.ordinal - right.ordinal);
+  const graph = ordered(input.graphSurfaceAlignments);
+  const heldOutCoverage = ordered(input.constructionPromotion.heldOutCoverage);
+  const rejections = ordered(input.constructionPromotion.rejections);
+  return {
+    graphSurfaceAlignment: toJsonValue({
+      schema: GRAPH_SURFACE_ALIGNMENT_OBSERVATION_RECEIPT_SCHEMA,
+      digestRecipe: LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_DIGEST_RECIPE,
+      count: graph.length,
+      digest: canonicalDigestHex(graph.map(row => row.digest), input.hasher),
+      exemplarLimit: LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_EXEMPLAR_LIMIT,
+      exemplars: graph.slice(0, LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_EXEMPLAR_LIMIT).map(row => row.row),
+      exemplarsTruncated: graph.length > LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_EXEMPLAR_LIMIT
+    }),
+    constructionPromotion: toJsonValue({
+      schema: CONSTRUCTION_PROMOTION_OBSERVATION_RECEIPT_SCHEMA,
+      sourceSchema: input.constructionPromotion.schema,
+      digestRecipe: "sha256.canonical_json_stream.v1",
+      digest: canonicalDigestHex(input.constructionPromotion, input.hasher),
+      counts: {
+        trainEvidence: input.constructionPromotion.trainEvidence,
+        heldOutEvidence: input.constructionPromotion.heldOutEvidence,
+        suppliedConstructionSets: input.constructionPromotion.suppliedConstructionSets,
+        inducedConstructionSets: input.constructionPromotion.inducedConstructionSets,
+        promotedSuppliedConstructionSets: input.constructionPromotion.promotedSuppliedConstructionSets,
+        promotedInducedConstructionSets: input.constructionPromotion.promotedInducedConstructionSets,
+        rejectedInducedConstructionSets: input.constructionPromotion.rejectedInducedConstructionSets,
+        sourceObservedInducedConstructionSets: input.constructionPromotion.sourceObservedInducedConstructionSets,
+        failedInducedConstructionSets: input.constructionPromotion.failedInducedConstructionSets,
+        trainDocuments: input.constructionPromotion.trainDocumentIds.length,
+        heldOutDocuments: input.constructionPromotion.heldOutDocumentIds.length,
+        heldOutCoverage: heldOutCoverage.length,
+        rejections: rejections.length
+      },
+      thresholds: input.constructionPromotion.thresholds,
+      qualificationSamplePresent: input.constructionPromotion.qualificationSample !== undefined,
+      exemplarLimit: LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_EXEMPLAR_LIMIT,
+      exemplars: {
+        heldOutCoverage: heldOutCoverage.slice(0, LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_EXEMPLAR_LIMIT).map(row => row.row),
+        rejections: rejections.slice(0, LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_EXEMPLAR_LIMIT).map(row => row.row)
+      },
+      exemplarsTruncated: {
+        heldOutCoverage: heldOutCoverage.length > LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_EXEMPLAR_LIMIT,
+        rejections: rejections.length > LANGUAGE_TRAINING_EVENT_DIAGNOSTIC_EXEMPLAR_LIMIT
+      }
+    })
+  };
+}
+
+function compileConstructionObservationReceipt(input: {
+  batch: LanguageTrainingBatch;
+  sourceObservedSets: readonly SourceBoundLanguageConstructionTrainingSet[];
+  sourceEvidence: readonly EvidenceSpan[];
+  qualificationEvidence: readonly EvidenceSpan[];
+  hasher: Hasher;
+}): LanguageTrainingConstructionObservationReceipt {
+  const digest = (value: unknown) => canonicalDigestHex(value, input.hasher);
+  const evidenceMaterial = (rows: readonly EvidenceSpan[]) => rows.map(span => ({
+    id: String(span.id),
+    sourceId: String(span.sourceId),
+    sourceVersionId: String(span.sourceVersionId),
+    contentHash: String(span.contentHash),
+    charStart: span.charStart,
+    charEnd: span.charEnd,
+    textHash: input.hasher.digestHex(span.text)
+  })).sort((left, right) => left.id.localeCompare(right.id));
+  // Hash one observation at a time and retain only its fixed-width identity.
+  // The previous implementation cloned and sorted the entire candidate graph,
+  // then allocated one canonical JSON string for it; a normal transcript could
+  // therefore hold several complete construction representations at once.
+  const observationMaterial = input.sourceObservedSets.map(set => ({
+    bindingId: set.bindingId,
+    observationDigests: set.observations.map(observation => digest(observation)).sort()
+  })).sort((left, right) => left.bindingId.localeCompare(right.bindingId));
+  const sourceEvidence = evidenceMaterial(input.sourceEvidence);
+  const qualificationEvidence = evidenceMaterial(input.qualificationEvidence);
+  const observationEvidenceIdSet = new Set<string>();
+  for (const set of input.sourceObservedSets) {
+    for (const observation of set.observations) observationEvidenceIdSet.add(String(observation.evidenceId));
+  }
+  const observationEvidenceIds = [...observationEvidenceIdSet].sort();
+  const sourceTextHash = input.hasher.digestHex(input.batch.text);
+  const sourceEvidenceDigest = digest(sourceEvidence);
+  const qualificationEvidenceDigest = digest(qualificationEvidence);
+  const observationDigest = digest(observationMaterial);
+  const recomputationMaterial = {
+    compilerRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
+    profileId: String(input.batch.profile.id),
+    sourceVersionId: String(input.batch.sourceVersionId),
+    sourceTextHash,
+    sourceEvidenceDigest,
+    qualificationEvidenceDigest,
+    constructionContextDigest: digest((input.batch.constructionContextDocuments ?? []).map(document => ({
+      id: document.id,
+      sourceVersionId: document.sourceVersionId ?? null,
+      textHash: input.hasher.digestHex(document.text)
+    })).sort((left, right) => left.id.localeCompare(right.id))),
+    segmentationIdentityDigest: digest(input.batch.segmentationIdentity ?? null),
+    suppliedConstructionDigest: digest(input.batch.constructionSets ?? []),
+    observationDigestRecipe: LANGUAGE_TRAINING_CONSTRUCTION_OBSERVATION_DIGEST_RECIPE,
+    observationDigest
+  };
+  return {
+    schema: LANGUAGE_TRAINING_CONSTRUCTION_OBSERVATION_RECEIPT_SCHEMA,
+    compilerRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
+    profileId: String(input.batch.profile.id),
+    sourceVersionId: String(input.batch.sourceVersionId),
+    sourceTextHash,
+    sourceEvidenceCount: observationEvidenceIds.length,
+    sourceEvidenceIds: observationEvidenceIds.slice(0, CONSTRUCTION_OBSERVATION_RECEIPT_EVIDENCE_LIMIT),
+    sourceEvidenceIdsTruncated: observationEvidenceIds.length > CONSTRUCTION_OBSERVATION_RECEIPT_EVIDENCE_LIMIT,
+    sourceEvidenceDigest,
+    qualificationEvidenceCount: qualificationEvidence.length,
+    qualificationEvidenceDigest,
+    candidateCount: input.sourceObservedSets.length,
+    observationCount: input.sourceObservedSets.reduce((total, set) => total + set.observations.length, 0),
+    observationDigestRecipe: LANGUAGE_TRAINING_CONSTRUCTION_OBSERVATION_DIGEST_RECIPE,
+    observationDigest,
+    recomputationIdentity: digest(recomputationMaterial)
+  };
 }
 
 function evaluateConstructionPromotion(input: {

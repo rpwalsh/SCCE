@@ -45,7 +45,8 @@ export function estimateKneserNeyGenerationCostMs(_extent: number): number {
  * `buildSurfaceLattice` (`surface-lattice.ts`). Measured directly against
  * real Wikipedia corpus text from 2,000 to 103,000 characters, after the
  * quadratic-cost fixes to `surface-lattice.ts`/`segmentation-forest.ts`/
- * `join-program.ts` landed: 245ms, 407ms, 737ms, 1228ms, 2376ms, 4369ms at
+ * Historical full-vocabulary generation measured 245ms, 407ms, 737ms,
+ * 1228ms, 2376ms, and 4369ms at
  * 2K/8K/16K/32K/64K/103K characters respectively -- linear at roughly
  * 42ms per 1,000 characters of document text.
  */

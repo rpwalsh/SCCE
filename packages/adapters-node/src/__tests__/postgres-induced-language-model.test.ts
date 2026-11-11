@@ -1,16 +1,33 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import { JOIN_PROGRAM_MIXTURE_SCHEMA, type InducedLanguageModel, type InducedLanguageModelRecord } from "@scce/kernel";
+import {
+  LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA,
+  LANGUAGE_SEGMENTATION_WITNESS_REFERENCE_SCHEMA,
+  canonicalStringify,
+  compileLanguageSegmentationWitness,
+  createHasher,
+  type InducedLanguageModel,
+  type InducedLanguageModelRecord,
+  type LanguagePatternRecord,
+  type LanguageSegmentationWitnessReference
+} from "@scce/kernel";
 import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
+const hasher = createHasher();
+const profileId = "profile.fixture";
 
 afterEach(async () => {
   await Promise.all(adapters.splice(0).map(adapter => adapter.close()));
 });
 
 function fakeModel(id: string): InducedLanguageModel {
+  const segmentationWitness = compileLanguageSegmentationWitness({
+    populationModelId: "segmentation_population.fixture",
+    populations: [],
+    hasher
+  });
   return {
     id,
     corpusDocuments: 3,
@@ -94,13 +111,7 @@ function fakeModel(id: string): InducedLanguageModel {
       collapseGuard: [],
       audit: {}
     },
-    joinProgram: {
-      schema: JOIN_PROGRAM_MIXTURE_SCHEMA,
-      id: "join_program_mixture.fixture",
-      populationModelId: "segmentation_population.fixture",
-      minimumConfidence: 0.67,
-      components: []
-    },
+    segmentationWitness,
     relationHypothesisModel: {
       schema: "scce.relation_hypothesis_model.v1",
       id: "relation_hypothesis_model.fixture",
@@ -122,13 +133,43 @@ function fakeModel(id: string): InducedLanguageModel {
   };
 }
 
+function referenceFor(model: InducedLanguageModel): LanguageSegmentationWitnessReference {
+  return {
+    schema: LANGUAGE_SEGMENTATION_WITNESS_REFERENCE_SCHEMA,
+    manifestPatternId: `segmentation_archive.${hasher.digestHex(canonicalStringify([model.segmentationWitness.id, profileId]))}`
+  };
+}
+
+function manifestFor(model: InducedLanguageModel): LanguagePatternRecord {
+  const reference = referenceFor(model);
+  return {
+    id: reference.manifestPatternId,
+    profileId,
+    patternKind: "segmentation",
+    support: 1,
+    entropy: 0,
+    evidenceIds: [],
+    updatedAt: 1,
+    patternJson: {
+      schema: LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA,
+      id: model.segmentationWitness.id,
+      witnessSchema: model.segmentationWitness.schema,
+      populationModelId: model.segmentationWitness.populationModelId,
+      populations: [],
+      audit: model.segmentationWitness.audit
+    }
+  };
+}
+
 function record(patch: Partial<InducedLanguageModelRecord> = {}): InducedLanguageModelRecord {
+  const model = patch.model ?? fakeModel("model.fixture");
   return {
     id: "model.fixture",
-    model: fakeModel("model.fixture"),
+    model,
     trainingPlanId: "training_plan.fixture",
     createdAt: 1_000,
     informationLabel: { tenantId: "t", principals: ["principal.fixture"], compartments: [], exportClass: "internal", mergePolicy: "isolated" },
+    segmentationWitnessReference: referenceFor(model),
     ...patch
   };
 }
@@ -137,6 +178,13 @@ function fixture(rows: Array<Record<string, unknown>>) {
   const adapter = createPostgresStorageAdapter({ url: "postgres://fixture:fixture@127.0.0.1/fixture", schema: "fixture" });
   adapters.push(adapter);
   adapter.transaction = async operation => operation();
+  Object.assign(adapter.languageMemory, {
+    listLanguagePatterns: async (query: { patternIds?: readonly string[] } = {}) => {
+      const ids = new Set(query.patternIds ?? []);
+      const manifests = [manifestFor(fakeModel("model.fixture"))];
+      return manifests.filter(pattern => ids.has(pattern.id));
+    }
+  });
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
     calls.push({ sql, params });
@@ -173,14 +221,44 @@ describe("Postgres induced language model store", () => {
   });
 
   it("putModel then readById round-trips the full model, not just a summary", async () => {
-    const { adapter } = fixture([]);
+    const rows: Array<Record<string, unknown>> = [];
+    const { adapter } = fixture(rows);
     const input = record();
     await adapter.inducedLanguageModels.putModel(input);
+
+    const stored = rows[0]!.model_json as Record<string, unknown>;
+    expect(stored.segmentationWitness).toEqual(input.segmentationWitnessReference);
+    expect(stored.segmentationWitness).not.toHaveProperty("populations");
+    expect(stored.relationHypothesisModel).toEqual(input.model.relationHypothesisModel);
 
     const readBack = await adapter.inducedLanguageModels.readById(input.id);
     expect(readBack).toBeDefined();
     expect(readBack!.model).toEqual(input.model);
     expect(readBack!.trainingPlanId).toBe(input.trainingPlanId);
+  });
+
+  it("rejects a full witness when its canonical archive reference is absent", async () => {
+    const rows: Array<Record<string, unknown>> = [];
+    const { adapter } = fixture(rows);
+    const input = record();
+    delete input.segmentationWitnessReference;
+    await expect(adapter.inducedLanguageModels.putModel(input)).rejects.toThrow("canonical archive reference");
+    expect(rows).toEqual([]);
+  });
+
+  it("rejects legacy cold rows with an embedded or missing segmentation witness", async () => {
+    const input = record();
+    const { segmentationWitness: _removedWitness, ...missingWitness } = input.model;
+    for (const modelJson of [input.model, missingWitness]) {
+      const { adapter } = fixture([{
+        id: input.id,
+        training_plan_id: input.trainingPlanId,
+        model_json: modelJson,
+        information_label: input.informationLabel,
+        created_at: new Date(input.createdAt)
+      }]);
+      await expect(adapter.inducedLanguageModels.readById(input.id)).rejects.toThrow(/embedded induced language segmentation witnesses are retired|missing its canonical segmentation witness reference/u);
+    }
   });
 
   it("listRecent returns models newest first, bounded by limit", async () => {

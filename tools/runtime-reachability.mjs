@@ -15,6 +15,25 @@ const walk = dir => { for (const e of fs.readdirSync(dir, { withFileTypes: true 
 walk(`${repo}/packages`);
 const src = files.filter(f => !/__tests__|\.test\.|\/test\//.test(f));
 const text = new Map(src.map(f => [f, fs.readFileSync(f, "utf8")]));
+// The former language JOIN predictor is a retired architecture, not an allowed
+// compatibility surface. Keep this check beside the real-entry reachability
+// walk so a future import, writer, or fallback cannot silently re-enter a
+// production build while tests continue to exercise only construction algebra.
+const RETIRED_LANGUAGE_JOIN_PATTERNS = [
+  /join-program/u,
+  /\bJoinProgram\b/u,
+  /\bjoinPrograms?\b/u,
+  /\brenderJoinedSurface\b/u,
+  /\bJOIN_PROGRAM\b/u,
+  /\bimportedJoin\w*\b/u
+];
+const retiredLanguageJoinReferences = src.flatMap(file => {
+  const body = text.get(file);
+  return RETIRED_LANGUAGE_JOIN_PATTERNS.some(pattern => pattern.test(body))
+    ? [path.relative(repo, file).replace(/\\/g, "/")]
+    : [];
+});
+console.log("retired language JOIN production references", retiredLanguageJoinReferences.length);
 const word = name => new RegExp("\\b" + name.replace(/\$/g, "\\$") + "\\b");
 const isBarrel = f => /\/src\/index\.ts$/.test(f);
 
@@ -201,10 +220,18 @@ fs.writeFileSync(`${repo}/docs/RUNTIME_REACHABILITY.json`, JSON.stringify({
   implementedButUncalled: unwiredSet.length,
   ofWhichCoveredByTestsOnly: testOnly,
   ofWhichNoCallerAnywhere: noCallerAnywhere,
-  ofWhichDeliberatelyUnwired: deliberate
+  ofWhichDeliberatelyUnwired: deliberate,
+  retiredLanguageJoinProductionReferences: retiredLanguageJoinReferences.length
+ },
+ retiredLanguageJoinSubsystem: {
+  status: retiredLanguageJoinReferences.length ? "reachable" : "absent",
+  forbiddenReferences: retiredLanguageJoinReferences
  },
  orphans
 }, null, 1));
 const by = new Map();
 for (const o of orphans) if (!/^[A-Z][A-Z0-9_]+$/.test(o.name) && !/scce2|\/v2-/i.test(o.file)) by.set(o.file, [...(by.get(o.file) ?? []), o.name]);
 for (const [f, n] of [...by].sort((a, b) => b[1].length - a[1].length).slice(0, 200)) console.log(String(n.length).padStart(2), f.replace("packages/", "").replace("/src/", "/"), "::", n.join(", "));
+if (retiredLanguageJoinReferences.length) {
+  throw new Error(`retired language JOIN subsystem is reachable from production source: ${retiredLanguageJoinReferences.join(", ")}`);
+}

@@ -1,5 +1,5 @@
 /**
- * @generated SignedSource<<8e655cdb84c0c4676faaf2d100598990>>
+ * @generated SignedSource<<832d59d2dcaf7930331aaac0a4bd20f3>>
  * @lightSyntaxTransform
  */
 
@@ -48,38 +48,52 @@ v3 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "phase",
+  "name": "status",
   "storageKey": null
 },
 v4 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "kind",
+  "name": "phase",
   "storageKey": null
 },
 v5 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "answer",
+  "name": "kind",
   "storageKey": null
 },
 v6 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "error",
+  "name": "answer",
   "storageKey": null
 },
 v7 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
+  "name": "error",
+  "storageKey": null
+},
+v8 = {
+  "alias": null,
+  "args": null,
+  "kind": "ScalarField",
   "name": "sequence",
   "storageKey": null
 },
-v8 = [
+v9 = {
+  "alias": null,
+  "args": null,
+  "kind": "ScalarField",
+  "name": "detail",
+  "storageKey": null
+},
+v10 = [
   {
     "kind": "Literal",
     "name": "first",
@@ -128,13 +142,7 @@ return {
         "plural": false,
         "selections": [
           (v2/*:: as any*/),
-          {
-            "alias": null,
-            "args": null,
-            "kind": "ScalarField",
-            "name": "status",
-            "storageKey": null
-          },
+          (v3/*:: as any*/),
           {
             "alias": null,
             "args": null,
@@ -158,11 +166,20 @@ return {
             "plural": false,
             "selections": [
               (v2/*:: as any*/),
-              (v3/*:: as any*/),
               (v4/*:: as any*/),
               (v5/*:: as any*/),
               (v6/*:: as any*/),
-              (v7/*:: as any*/)
+              (v7/*:: as any*/),
+              (v8/*:: as any*/),
+              (v3/*:: as any*/),
+              (v9/*:: as any*/),
+              {
+                "alias": null,
+                "args": null,
+                "kind": "ScalarField",
+                "name": "assistantForce",
+                "storageKey": null
+              }
             ],
             "storageKey": null
           },
@@ -175,8 +192,8 @@ return {
             "plural": false,
             "selections": [
               (v2/*:: as any*/),
-              (v5/*:: as any*/),
               (v6/*:: as any*/),
+              (v7/*:: as any*/),
               {
                 "alias": null,
                 "args": null,
@@ -190,13 +207,79 @@ return {
                 "kind": "ScalarField",
                 "name": "episodeId",
                 "storageKey": null
+              },
+              {
+                "alias": null,
+                "args": null,
+                "kind": "ScalarField",
+                "name": "value",
+                "storageKey": null
+              },
+              (v9/*:: as any*/),
+              {
+                "alias": null,
+                "args": null,
+                "kind": "ScalarField",
+                "name": "entailment",
+                "storageKey": null
+              },
+              {
+                "alias": null,
+                "args": null,
+                "concreteType": "TurnGuardFlags",
+                "kind": "LinkedField",
+                "name": "guardFlags",
+                "plural": false,
+                "selections": [
+                  {
+                    "alias": null,
+                    "args": null,
+                    "kind": "ScalarField",
+                    "name": "sourceBacked",
+                    "storageKey": null
+                  }
+                ],
+                "storageKey": null
+              },
+              {
+                "alias": null,
+                "args": null,
+                "concreteType": "TurnAnswerEvidence",
+                "kind": "LinkedField",
+                "name": "evidence",
+                "plural": true,
+                "selections": [
+                  (v2/*:: as any*/),
+                  {
+                    "alias": null,
+                    "args": null,
+                    "kind": "ScalarField",
+                    "name": "sourceId",
+                    "storageKey": null
+                  },
+                  {
+                    "alias": null,
+                    "args": null,
+                    "kind": "ScalarField",
+                    "name": "textPreview",
+                    "storageKey": null
+                  },
+                  {
+                    "alias": null,
+                    "args": null,
+                    "kind": "ScalarField",
+                    "name": "provenance",
+                    "storageKey": null
+                  }
+                ],
+                "storageKey": null
               }
             ],
             "storageKey": null
           },
           {
             "alias": null,
-            "args": (v8/*:: as any*/),
+            "args": (v10/*:: as any*/),
             "concreteType": "TurnFrameConnection",
             "kind": "LinkedField",
             "name": "frames",
@@ -219,9 +302,9 @@ return {
                     "plural": false,
                     "selections": [
                       (v2/*:: as any*/),
-                      (v7/*:: as any*/),
+                      (v8/*:: as any*/),
+                      (v5/*:: as any*/),
                       (v4/*:: as any*/),
-                      (v3/*:: as any*/),
                       {
                         "alias": null,
                         "args": null,
@@ -272,7 +355,7 @@ return {
           },
           {
             "alias": null,
-            "args": (v8/*:: as any*/),
+            "args": (v10/*:: as any*/),
             "filters": null,
             "handle": "connection",
             "key": "WorkbenchTask_frames",
@@ -285,12 +368,12 @@ return {
     ]
   },
   "params": {
-    "cacheID": "8191a5ffc4500280a376225436f6a523",
+    "cacheID": "90d78d793a43ce7e7005208172f9e20a",
     "id": null,
     "metadata": {},
     "name": "WorkbenchTaskQuery",
     "operationKind": "query",
-    "text": "query WorkbenchTaskQuery(\n  $id: ID!\n) {\n  turnTask(id: $id) {\n    ...WorkbenchTask_task\n    id\n  }\n}\n\nfragment WorkbenchTask_task on TurnTask {\n  id\n  status\n  latestSequence\n  persistence\n  latestFrame {\n    id\n    phase\n    kind\n    answer\n    error\n    sequence\n  }\n  result {\n    id\n    answer\n    error\n    httpStatus\n    episodeId\n  }\n  frames(first: 20) {\n    edges {\n      node {\n        id\n        sequence\n        kind\n        phase\n        __typename\n      }\n      cursor\n    }\n    pageInfo {\n      endCursor\n      hasNextPage\n    }\n  }\n}\n"
+    "text": "query WorkbenchTaskQuery(\n  $id: ID!\n) {\n  turnTask(id: $id) {\n    ...WorkbenchTask_task\n    id\n  }\n}\n\nfragment WorkbenchTask_task on TurnTask {\n  id\n  status\n  latestSequence\n  persistence\n  latestFrame {\n    id\n    phase\n    kind\n    answer\n    error\n    sequence\n    status\n    detail\n    assistantForce\n  }\n  result {\n    id\n    answer\n    error\n    httpStatus\n    episodeId\n    value\n    detail\n    entailment\n    guardFlags {\n      sourceBacked\n    }\n    evidence {\n      id\n      sourceId\n      textPreview\n      provenance\n    }\n  }\n  frames(first: 20) {\n    edges {\n      node {\n        id\n        sequence\n        kind\n        phase\n        __typename\n      }\n      cursor\n    }\n    pageInfo {\n      endCursor\n      hasNextPage\n    }\n  }\n}\n"
   }
 };
 })();

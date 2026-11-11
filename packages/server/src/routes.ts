@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import http from "node:http";
-import {encodeProgramArtifactWire} from "@scce/kernel";
+import { encodeProgramArtifactWire, SourceLearningApplication as SharedSourceLearningApplication } from "@scce/kernel";
 import {pendingProgramValidationApproval} from "./program-validation-approval.js";
 import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -17,16 +17,18 @@ import {
   learningConsentInput, persistCreativeContinuationOffer, creativeContinuationDecisionFromJson, creativeContinuationDecisionFromObservation, persistCreativeContinuationPreference, CREATIVE_CONTINUATION_OFFER_CALIBRATION_ID,
   listHeldSources,
   reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, measureRequestCorpusSubject, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createCorrectionObservation, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, withheldSurfaceForTurn, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
-import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
+import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 import { compactIngestResult, compactWorkspaceIngestResult } from "./ingestion-response.js";
 import { programResponseReadiness, unsupportedProgramResponseReadiness } from "./program-response-readiness.js";
-import { TurnApplication } from "./turn-application.js";
+import { ApplicationError, TurnApplication } from "./turn-application.js";
 import { createLocalGraphqlHandler, type LocalGraphqlHandler, type OperationDocuments } from "./graphql-transport.js";
+import type { VscodeApplication } from "./graphql-schema.js";
 import { readWorkbenchAsset } from "./workbench-assets.js";
+import { SourceApplication } from "./source-application.js";
 
 export interface ApiContext {
   /** Path of scce.config.json; settings routes write back through the shared schema. */
@@ -233,6 +235,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (!isLoopbackAddress(req.socket.localAddress)) throw new HttpError(403, "Pages connector requires a loopback SCCE server");
     }
     assertAuthorizedRequest(req, url, context);
+    if (req.method === "GET" && url.pathname === "/") {
+      res.writeHead(307, { location: "/workbench/", "cache-control": "no-store", "x-request-id": requestId });
+      res.end();
+      return;
+    }
     if (url.pathname === "/api/graphql") {
       if (!isLoopbackAddress(url.hostname.replace(/^\[|\]$/gu, "")) && !bearerAuthorized(req, context.config)) throw new HttpError(403, "GraphQL host must be loopback or authenticated");
       if (req.method !== "POST") throw new HttpError(405, "GraphQL uses POST");
@@ -309,6 +316,8 @@ function localGraphqlHandler(context: ApiContext): Promise<LocalGraphqlHandler> 
         }
       });
       return createLocalGraphqlHandler({ scope, generation: randomUUID(), turns,
+        sources: new SourceApplication(context.runtime.storage, createNativeSourceLearningApplication(context)),
+        vscode: createVscodeApplication(context),
         storage: context.runtime.storage, async readiness() {
           const warmup = context.startupReadiness.snapshot();
           if (!warmupSatisfied(warmup)) return { phase: warmup.phase, ok: false };
@@ -320,6 +329,276 @@ function localGraphqlHandler(context: ApiContext): Promise<LocalGraphqlHandler> 
     void handler.catch(() => { localGraphqlHandlers.delete(key); });
   }
   return handler;
+}
+
+/** Native adapter for the shared command; cognition remains in canonical kernel ingestion. */
+function createNativeSourceLearningApplication(context: ApiContext): SharedSourceLearningApplication {
+  return new SharedSourceLearningApplication({
+    async learnSource(command) {
+      const result = await context.runtime.kernel.ingest({
+        uri: command.canonicalUri,
+        namespace: command.namespace,
+        content: command.sourceBytes,
+        mediaType: command.mediaType,
+        sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
+        sourceTrust: {
+          identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 0.5, freshness: 1,
+          independenceGroup: `owner:${command.namespace}`, accessScope: "owner_private", licenseStatus: "owner_authorized"
+        },
+        metadata: toJsonValue({
+          ...(command.title ? { title: command.title } : {}),
+          ...(command.observedAt === undefined ? {} : { transportObservedAt: command.observedAt }),
+          ingestionLane: "local_graphql_source_learning"
+        })
+      });
+      const evidenceId = result.promotedEvidenceIds?.[0];
+      if (!evidenceId) throw new ApplicationError("UNAVAILABLE", "canonical ingestion produced no promoted evidence");
+      const span = (await context.runtime.storage.evidence.getEvidenceBatch([evidenceId]))
+        .find(candidate => String(candidate.id) === String(evidenceId));
+      if (!span) throw new ApplicationError("UNAVAILABLE", "canonical ingestion evidence could not be restored");
+      const source = await context.runtime.storage.evidence.sourceVersionById?.(span.sourceVersionId);
+      if (!source) throw new ApplicationError("UNAVAILABLE", "canonical ingestion source version could not be restored");
+      const learned = result.events.find(event => event.typeId === "LanguagePatternLearned"
+        && isRecord(event.payload) && typeof event.payload.profileId === "string");
+      const languageProfileId = learned && isRecord(learned.payload) && typeof learned.payload.profileId === "string"
+        ? learned.payload.profileId : undefined;
+      if (!languageProfileId) throw new ApplicationError("UNAVAILABLE", "canonical ingestion produced no language profile");
+      return { source, evidenceId: String(evidenceId), languageProfileId };
+    }
+  });
+}
+
+/** Application boundary shared by registered GraphQL operations; it never receives an HTTP request or route. */
+function createVscodeApplication(context: ApiContext): VscodeApplication {
+  const executions = new Map<string, { name: string; digest: string; result: Promise<unknown> }>();
+  const command = <T>(name: string, operationId: string, input: Record<string, unknown>, execute: () => Promise<T>): Promise<T> => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(operationId)) {
+      throw new HttpError(400, "operationId must be a UUIDv4 generated once for this command");
+    }
+    const digest = createHash("sha256").update(JSON.stringify([name, input])).digest("hex");
+    const prior = executions.get(operationId);
+    if (prior) {
+      if (prior.name !== name || prior.digest !== digest) throw new HttpError(409, "operationId is already bound to another command");
+      return prior.result as Promise<T>;
+    }
+    if (executions.size >= 1024) throw new HttpError(429, "local command idempotency registry is full; restart the local host before issuing more commands");
+    invalidateHydratedRuntimeReadiness(context);
+    const result = execute();
+    executions.set(operationId, { name, digest, result });
+    return result;
+  };
+  return {
+    ready: () => queryVscodeReady(context),
+    projectSummary: path => queryVscodeProjectSummary(context, path),
+    workspaceStatus: () => queryVscodeWorkspaceStatus(context),
+    learningCurriculum: () => queryVscodeLearningCurriculum(context),
+    heldSources: first => queryVscodeHeldSources(context, first),
+    settings: () => queryVscodeSettings(context),
+    models: () => queryVscodeModels(context),
+    codeValidationPolicies: () => queryVscodeCodeValidationPolicies(context),
+    workspaceInitialize: (operationId, path) => command("vscodeWorkspaceInitialize", operationId, { path }, () => executeVscodeWorkspaceInitialize(context, path)),
+    workspaceIngest: (operationId, path) => command("vscodeWorkspaceIngest", operationId, { path }, () => executeVscodeWorkspaceIngest(context, path)),
+    workspaceAsk: (operationId, path, question) => command("vscodeWorkspaceAsk", operationId, { path, question }, () => executeVscodeWorkspaceAsk(context, path, question)),
+    workspaceCodingPatchPlan: (operationId, value) => command("vscodeWorkspaceCodingPatchPlan", operationId, { value }, () => executeVscodeWorkspaceCodingPatchPlan(context, value)),
+    workspacePatch: (operationId, value) => command("vscodeWorkspacePatch", operationId, { value }, () => executeVscodeWorkspacePatch(context, value)),
+    learningPursue: (operationId, planId) => command("vscodeLearningPursue", operationId, { planId }, () => executeVscodeLearningPursue(context, planId)),
+    reviewHeldSource: (operationId, id, decision) => command("vscodeReviewHeldSource", operationId, { id, decision }, () => executeVscodeReviewHeldSource(context, id, decision)),
+    approvePlan: (operationId, planId) => command("vscodeApprovePlan", operationId, { planId }, () => executeVscodeApprovePlan(context, planId)),
+    rejectPlan: (operationId, planId) => command("vscodeRejectPlan", operationId, { planId }, () => executeVscodeRejectPlan(context, planId)),
+    updateSetting: (operationId, key, value) => command("vscodeUpdateSetting", operationId, { key, value }, () => executeVscodeUpdateSetting(context, key, value)),
+    downloadModel: (operationId, modelId) => command("vscodeDownloadModel", operationId, { modelId }, () => executeVscodeDownloadModel(context, modelId)),
+    removeModel: (operationId, modelId) => command("vscodeRemoveModel", operationId, { modelId }, () => executeVscodeRemoveModel(context, modelId)),
+    editCode: (operationId, input) => command("vscodeEditCode", operationId, input, () => executeVscodeCodeEdit(context, input))
+  };
+}
+
+async function queryVscodeReady(context: ApiContext) {
+  const warmup = context.startupReadiness.snapshot();
+  if (!warmupSatisfied(warmup)) {
+    invalidateHydratedRuntimeReadiness(context);
+    return { ok: false, warmup, postgres: undefined, exactCounts: false, serverUrl: context.config.server.url, manifest: ROUTES.length };
+  }
+  const postgres = await loadPostgresStatus(context.runtime, { detail: "readiness" });
+  const exactCounts = hasExactPostgresCounts(postgres);
+  const ok = healthOk(postgres) && hasRequestedPostgresDetail(postgres, { detail: "readiness" }) && rememberHydratedRuntimeMarker(context, postgres);
+  if (!ok) invalidateHydratedRuntimeReadiness(context);
+  return { ok, warmup, postgres, exactCounts, serverUrl: context.config.server.url, manifest: ROUTES.length };
+}
+
+async function queryVscodeProjectSummary(context: ApiContext, requestedPath: string) {
+  const project = await createWorkspaceRuntime(context).project(boundedString(requestedPath, "path", 4096), {});
+  return { schema: "scce.project.summary.v1", workspace: project.workspace, summary: project.summary };
+}
+
+async function queryVscodeWorkspaceStatus(context: ApiContext) {
+  const workspace = await context.runtime.storage.workspace.latestWorkspace();
+  return workspace ? { workspace, sources: await context.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: 10_000 }) }
+    : { workspace: null, sources: [] };
+}
+
+async function queryVscodeLearningCurriculum(context: ApiContext) {
+  const items = context.runtime.approvals.snapshot().pending.slice(0, 100)
+    .map(record => curriculumItemFromPlan({ id: record.planId as never, capabilityId: record.capabilityId, input: record.input })).filter(Boolean);
+  return { schema: "scce.learning.curriculum.v1", items };
+}
+
+async function queryVscodeHeldSources(context: ApiContext, requestedFirst: number) {
+  const first = boundedNumber(Number(requestedFirst ?? 20), "first", 1, 100);
+  return { schema: "scce.learning.held.v1", held: await listHeldSources(context.runtime.storage, first) };
+}
+
+async function queryVscodeSettings(context: ApiContext) {
+  const configPath = path.resolve(context.configPath ?? "scce.config.json");
+  const raw = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+  return { schema: "scce.settings.view.v1", configPath, fields: settingsView(raw) };
+}
+
+async function queryVscodeModels(context: ApiContext) {
+  const modelDir = modelDirectoryForConfig(context.config);
+  const models = await listLocalModels(modelDir);
+  const active = [context.config.ingestion?.visual?.embeddings?.modelId].filter(Boolean);
+  return { schema: "scce.models.list.v1", modelDir,
+    models: models.slice(0, 100).map(model => ({ ...model, active: active.includes(model.id), size: formatBytes(model.bytes) })),
+    totalBytes: models.reduce((sum, model) => sum + model.bytes, 0) };
+}
+
+function queryVscodeCodeValidationPolicies(context: ApiContext) {
+  const policies = (context.config.runtime.patchValidation?.policies ?? []).slice(0, 100).map(configured => {
+    const policy = resolveWorkspacePatchValidationPolicy(context, configured.id);
+    return { id: policy.id, checks: [...new Set(policy.commands.flatMap(command => command.checkIds ?? []))] };
+  });
+  return Promise.resolve({ policies, provider: context.config.runtime.patchValidation?.provider ?? "trusted-host" });
+}
+
+async function executeVscodeWorkspaceInitialize(context: ApiContext, requestedPath: string) {
+  return createWorkspaceRuntime(context).init(boundedString(requestedPath, "path", 4096), {});
+}
+
+async function executeVscodeWorkspaceIngest(context: ApiContext, requestedPath: string) {
+  return compactWorkspaceIngestResult(await createWorkspaceRuntime(context).ingest(boundedString(requestedPath, "path", 4096), {}));
+}
+
+async function executeVscodeWorkspaceAsk(context: ApiContext, requestedPath: string, requestedQuestion: string) {
+  return createWorkspaceRuntime(context).answer(
+    boundedString(requestedQuestion, "question", 20_000),
+    boundedString(requestedPath, "path", 4096),
+    {}
+  );
+}
+
+async function executeVscodeWorkspaceCodingPatchPlan(context: ApiContext, value: unknown) {
+  const request = parseWorkspaceCodingPatchPlanRequest(value, { resolveValidationPolicy: id => resolveWorkspacePatchValidationPolicy(context, id) });
+  return planWorkspaceCodingPatchApiRequest(context, request);
+}
+
+async function executeVscodeLearningPursue(context: ApiContext, requestedPlanId: string) {
+  const planId = boundedString(requestedPlanId, "planId", 256);
+  const record = context.runtime.approvals.snapshot().pending.find(item => item.planId === planId);
+  const item = record ? curriculumItemFromPlan({ id: record.planId as never, capabilityId: record.capabilityId, input: record.input }) : undefined;
+  if (!item) throw new HttpError(404, "no pending curriculum item with that planId");
+  context.runtime.approvals.approve(planId);
+  const consent = context.runtime.approvals.requestApproval({ capabilityId: "network.search", input: learningConsentInput(item.query, createHasher()), reason: "owner-consent-required" });
+  context.runtime.approvals.approve(consent.planId);
+  const result = await context.runtime.kernel.turn({ text: item.query, metadata: { conversationId: `curriculum:${planId}`, sessionId: `curriculum:${planId}` } });
+  return { schema: "scce.learning.pursue.v1", item, answer: result.answer, runtimeMotion: result.runtimeMotion ?? null,
+    held: await listHeldSources(context.runtime.storage, 20) };
+}
+
+async function executeVscodeReviewHeldSource(context: ApiContext, requestedId: string, decision: "promoted" | "rejected") {
+  const id = boundedString(requestedId, "id", 256);
+  try {
+    const review = await reviewHeldSource(context.runtime.storage, { id, decision, reviewer: "owner" }, context.runtime.kernel);
+    return { schema: "scce.learning.review.v1", review };
+  } catch (error) {
+    throw new HttpError(/not found/u.test(String(error)) ? 404 : 409, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function executeVscodeApprovePlan(context: ApiContext, requestedPlanId: string) {
+  const decision = context.runtime.approvals.approve(boundedString(requestedPlanId, "planId", 256));
+  return { approved: decision, session: context.runtime.approvals.snapshot() };
+}
+
+async function executeVscodeRejectPlan(context: ApiContext, requestedPlanId: string) {
+  const decision = context.runtime.approvals.reject(boundedString(requestedPlanId, "planId", 256));
+  return { rejected: decision, session: context.runtime.approvals.snapshot() };
+}
+
+async function executeVscodeUpdateSetting(context: ApiContext, requestedKey: string, requestedValue: unknown) {
+  const configPath = path.resolve(context.configPath ?? "scce.config.json");
+  const raw = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+  const key = boundedString(requestedKey, "key", 256);
+  const value = applySetting(raw, key, requestedValue === undefined || requestedValue === null ? "" : String(requestedValue));
+  await writeFile(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+  return { schema: "scce.settings.update.v1", key, value, configPath, restartRequired: true };
+}
+
+async function executeVscodeDownloadModel(context: ApiContext, requestedModelId: string) {
+  const modelId = boundedString(requestedModelId, "modelId", 256);
+  if (!isModelId(modelId)) throw new HttpError(400, "modelId must be org/name");
+  const record = await downloadModel({ modelDir: modelDirectoryForConfig(context.config), modelId, kind: "clip" });
+  const active = context.config.ingestion?.visual?.embeddings?.modelId === record.id;
+  return { schema: "scce.models.download.v1", model: { ...record, active, size: formatBytes(record.bytes) } };
+}
+
+async function executeVscodeRemoveModel(context: ApiContext, requestedModelId: string) {
+  const modelId = boundedString(requestedModelId, "modelId", 256);
+  if (!isModelId(modelId)) throw new HttpError(400, "modelId must be org/name");
+  return { schema: "scce.models.remove.v1", modelId, removed: await removeLocalModel(modelDirectoryForConfig(context.config), modelId) };
+}
+
+async function executeVscodeWorkspacePatch(context: ApiContext, value: unknown): Promise<unknown> {
+  if (context.config.policy.allowMutation !== true) throw new HttpError(403, "workspace patch application is disabled by config.policy.allowMutation");
+  const request = parseWorkspacePatchRequest(value);
+  const workspace = await context.runtime.storage.workspace.latestWorkspace();
+  if (!workspace) throw new HttpError(409, "workspace patch requires an initialized workspace");
+  if (workspace.id !== request.workspaceId) throw new HttpError(409, "workspaceId does not identify the latest initialized workspace");
+  const policy = resolveWorkspacePatchValidationPolicy(context, request.validationPolicyId);
+  const provider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
+  const approvalInput = { workspaceId: request.workspaceId, planHash: request.plan.planHash,
+    validationPolicyId: request.validationPolicyId, validationBinding: workspacePatchValidationApprovalBinding(policy, provider) };
+  if (!approved(context, "workspace.patch.apply", approvalInput)) {
+    const pending = context.runtime.approvals.requestApproval({ capabilityId: "workspace.patch.apply", input: toJsonValue(approvalInput), reason: "operator-approval-required" });
+    return { ok: false, pendingApproval: pending, session: context.runtime.approvals.snapshot() };
+  }
+  return executeWorkspacePatchApiRequest({ request, workspace, allowedRoots: context.config.runtime.allowedRoots, policy, provider,
+    executive: context.runtime.executive, ownerId: context.config.security?.informationAccess?.principalId, events: context.runtime.storage.events });
+}
+
+async function executeVscodeCodeEdit(context: ApiContext, value: Record<string, unknown>): Promise<unknown> {
+  if (context.config.policy.allowMutation !== true) throw new HttpError(403, "code editing is disabled by config.policy.allowMutation");
+  const body = exactRecordWithOptional(value, "workspace code request", ["path", "request"], ["attempts", "validationPolicyId"]);
+  const targetPath = typeof body.path === "string" ? body.path.trim() : "";
+  const request = typeof body.request === "string" ? body.request.trim() : "";
+  if (!targetPath || !request) throw new HttpError(400, "workspace code requires path and request");
+  const validationPolicyId = body.validationPolicyId === undefined ? undefined : boundedString(body.validationPolicyId, "validationPolicyId", 128);
+  const validationPolicy = validationPolicyId ? resolveWorkspacePatchValidationPolicy(context, validationPolicyId) : undefined;
+  const validationProvider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
+  const approvalInput = { path: targetPath, request, ...(validationPolicy ? { validationPolicyId,
+    validationBinding: workspacePatchValidationApprovalBinding(validationPolicy, validationProvider) } : {}) };
+  if (!approved(context, "workspace.code", approvalInput)) {
+    const pending = context.runtime.approvals.requestApproval({ capabilityId: "workspace.code", input: toJsonValue(approvalInput), reason: "operator-approval-required" });
+    return { ok: false, pendingApproval: pending, session: context.runtime.approvals.snapshot() };
+  }
+  const attempts = Number.isFinite(Number(body.attempts)) ? Math.max(1, Math.min(5, Number(body.attempts))) : 3;
+  const codePorts = createWorkspaceCodeMouthPorts({ workspaceRoot: context.config.runtime.workspaceRoot, targetPath,
+    learnedProposer: createLearnedCodeProposer({ storage: context.runtime.storage, workspaceRoot: context.config.runtime.workspaceRoot }),
+    ...(validationPolicy ? { projectValidation: { policy: validationPolicy, provider: validationProvider } } : {}) });
+  const codeResult = await runCodeMouth({ request, targetPath, maxAttempts: attempts, ports: codePorts });
+  if (codeResult.outcome === "resolved") {
+    const clock = createClock(), hasher = createHasher(), idFactory = createIdFactory({ clock, hasher });
+    const events = createEventFactory({ idFactory, clock, hasher });
+    await context.runtime.storage.events.append(events.create({ episodeId: idFactory.episodeId(), typeId: "CodePatchApplied", payload: {
+      schema: "scce.code_patch_applied.v1", path: targetPath, request, attempts: codeResult.attempts, provedBy: codeResult.reason,
+      verification: toJsonValue(codeResult.verification), corpusAvailability: toJsonValue(codePorts.corpusAvailability() ?? null),
+      ...(codeResult.proposalAudits ? { proposalAudits: toJsonValue(codeResult.proposalAudits) } : {}),
+      ...(codePorts.projectVerification() ? { projectVerification: toJsonValue(codePorts.projectVerification()) } : {}),
+      operations: codeResult.appliedOperations.map(operation => ({ kind: operation.kind, path: operation.path, reason: operation.reason })),
+      remainingDiagnostics: codeResult.finalDiagnostics.length
+    } })).catch(() => undefined);
+  }
+  return { ...codeResult, corpusAvailability: codePorts.corpusAvailability() ?? null,
+    ...(codePorts.projectVerification() ? { projectVerification: codePorts.projectVerification() } : {}) };
 }
 
 function assertAuthorizedRequest(req: http.IncomingMessage, url: URL, context: ApiContext): void {
@@ -436,9 +715,6 @@ async function dispatch(
   requestTiming: RequestTiming,
   preloadedBody?: unknown
 ): Promise<{ status: number; body: string; contentType: string }> {
-  if (req.method === "GET" && url.pathname === "/") {
-    return html(renderWorkbench(context.config.server.url, { benchmarkSuiteId: FRONTIER_BROAD_CAPABILITY_SUITE_ID }));
-  }
   if (req.method === "GET" && url.pathname === WORKBENCH_MODEL_ROUTE) return await workbenchModelModule();
   if (req.method === "GET" && url.pathname === "/health") {
     const status = { verify: await context.runtime.storage.verify() };

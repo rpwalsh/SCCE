@@ -102,12 +102,12 @@ describe("exact pattern reads scale with their actual requested owners", () => {
     expect(final.sql).not.toContain("ranked.category_rank <= CEIL");
   });
 
-  it("retains every model chunk and requested owner before eligibility even when the output limit is one", async () => {
+  it("rejects an incomplete exact-ID result while retaining every requested owner for eligibility proof", async () => {
     const requested = Array.from({ length: 7 }, (_, index) => sourceOwner(`owner.${index}`, `source.${index}`, 2));
     for (const entry of requested.slice(0, -1)) for (const row of entry.headers) row.compilation_receipt = {};
     const f = fixture([...requested, sourceOwner("unrelated", "outside")]);
     const result = await f.adapter.languageMemory.listLanguagePatterns({ patternIds: requested.map(entry => entry.pattern.id), limit: 1 });
-    expect(result.map(row => row.id)).toEqual([requested.at(-1)!.pattern.id]);
+    expect(result).toEqual([]);
     expect(f.modelHeaderReads.sort()).toEqual(requested.flatMap(entry => entry.headers.map(row => row.id)).sort());
     expect(f.calls.find(call => call.sql.includes("AS model_metadata"))!.sql).not.toContain("LIMIT");
   });

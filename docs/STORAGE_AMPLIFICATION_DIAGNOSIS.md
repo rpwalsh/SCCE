@@ -1,5 +1,10 @@
 # SCCE storage amplification diagnosis
 
+> Historical measurement note. The language JOIN subsystem measured below was
+> retired on 10 November 2026. Its compiler, storage codec and runtime consumers
+> no longer exist. The byte figures remain useful evidence of the former writer's
+> amplification; they are not current architecture or migration guidance.
+
 Measured 2026-11-09. Diagnosis and proposed repair; no production migration applied.
 
 SCCE has no external users yet. Older development encodings impose no permanent compatibility requirement. The target is one canonical representation and read/write path. Rebuild development data from pinned inputs after verifying decoded information and answer equivalence; temporary comparison readers are verification tools.
@@ -87,10 +92,15 @@ The available `graph_nodes` relation allocates 38,223,872 bytes, including 14,33
 
 ## Current code already handles some earlier problems
 
-Do not reintroduce or reimplement existing fixes:
+Do not reintroduce the retired subsystem or its codecs:
 
-- `packages/kernel/src/join-program-storage.ts` already packs JOIN structures into `scce.join_program_mixture.storage.v2`.
-- `packages/kernel/src/language-induction-memory.ts` uses that packing, and the durable adapter handles raw mixtures on persistence. An earlier dry run on this checkpoint found no remaining raw mixtures needing that migration. The syntax payload measured above is already packed.
+- The former `join-program-storage.ts` and durable adapter are deleted. Full-DAG
+  segmentation, factor-unit identities and adjacency observations now persist as
+  evidence-owned segmentation witnesses; realization uses typed construction
+  algebra.
+- Historical packed-mixture measurements below describe the removed format only.
+  They must not justify a compatibility reader, fallback writer or parallel
+  realization path.
 - Ordinary source-example construction records already have a compact storage representation.
 - Current request writers avoid the legacy repeated source lists.
 - Graph upserts already guard against unchanged writes, and shared observation-store nodes already avoid accumulating every evidence ID.
@@ -100,7 +110,7 @@ The proposed repair uses ordinary PostgreSQL normalization and references. It do
 ## Proposed repair
 
 1. **Measure the exact Windows cohort.** Run the accompanying read-only audit there. Rebuild the identical 29-article input in an isolated fresh schema and record source digests, consumed text bytes, baseline relation sizes, and per-batch growth. Compare marginal learned storage against the actual consumed text, keeping acquired-but-unlearned sources and unrelated fixtures out of the denominator. Separate live values, heap/TOAST allocation and indexes before attributing the full ratio.
-2. **Normalize the largest active structures.** Store reusable event templates, lexical forms and occurrence witnesses once; keep occurrence IDs, coordinates and bindings in compact records. For semantic and syntax records, first measure exact repeated substructures across windows and projections, then store proven shared immutable structures once. Readers reconstruct the existing logical records. Keep the current JOIN packing until a measured replacement beats it without changing decoded data.
+2. **Normalize the largest active structures.** Store reusable event templates, lexical forms and occurrence witnesses once; keep occurrence IDs, coordinates and bindings in compact records. For semantic and syntax records, first measure exact repeated substructures across windows and projections, then store proven shared immutable structures once. Readers reconstruct the existing logical records. Unqualified single-source construction hypotheses stay outside active language memory; raw source/evidence plus a bounded deterministic receipt own recomputation.
 3. **Hoist shared compilation metadata.** Use one immutable metadata record keyed by the existing source-compilation identity. Keep record-specific fields local. References must include the necessary source, compiler and information-label scope; do not accidentally merge different access scopes. Existing filters that match fields inside `pattern_json` need equivalent indexed joins or retained query fields before any writer changes.
 4. **Normalize graph projections where equality is proved.** Reference canonical observations, roles and constraints instead of persisting independent rich copies. Preserve logical node/edge identities, evidence links, features, confidence and information labels. Retain query-critical indexes; use measured plans before changing them.
 5. **Migrate legacy records separately.** Preserve or normalize the old request witnesses with exact reconstruction. Do not simply delete them because the new writer no longer emits them. Immutable event histories remain append-only.
@@ -173,6 +183,14 @@ The [native comparison](storage-amplification/windows-r004-metadata-normalizatio
 
 The paired fixture saves **222,232,576 B (48.9%)**. Existing JOIN and creative-event packing remain identical in both alternatives. This is a storage-format comparison, not a measurement of ingestion throughput or a claim that the whole R004 database shrank: unrelated graph and consolidation data were not imported, and no production migration or compaction ran. The corrected product build starts in a fresh physical database from pinned raw inputs.
 
-## Compact JOIN follow-up
+## Historical compact JOIN follow-up
 
-The [compact JOIN repair receipt](storage-amplification/compact-join-repair.md) measures one complete source and its seven syntax-component rows. Corrected local adjacency learning is retained while dense exact/class tables and eager derived coordinate proofs are removed from the canonical writer. The native temporary-table comparison uses 3,563,520 allocated bytes versus 24,018,944 for the corrected dense intermediate, with all fixture writes rolled back. This is a syntax-cohort measurement; it does not establish a whole-brain reduction or capability result.
+The [archived compact JOIN repair receipt](storage-amplification/compact-join-repair.md) measures one complete source and its seven former syntax-component rows. Its local-adjacency result survives in the segmentation witness; the independent predictor and its storage do not. The native temporary-table comparison used 3,563,520 allocated bytes versus 24,018,944 for the corrected dense intermediate, with all fixture writes rolled back. This is historical syntax-cohort evidence, not a current storage format, whole-brain reduction or capability result.
+
+## Current sufficient-state ingestion result
+
+The current producer was remeasured on the identical four complete Dolly transcripts at the local 7 GiB heap setting. The fresh database admitted 369,050 unique learned UTF-8 bytes and grew by 29,319,168 bytes, or **79.4450x**. Full public records and request-seed projections passed canonical comparison; exact-ID segmentation archives were deliberately absent from the request seed. The identical historical build grew by 44,138,496 bytes (119.6003x), so the current physical reduction is 14,819,328 bytes (33.57%). The 10x goal remains unmet.
+
+The old denormalized construction-row and segmentation-array producers are gone. The remaining dominant relation is `language_patterns` at 16,793,600 allocated bytes. Its 193 source witnesses retain every exact full-DAG arc energy and account for 10,121,834 stored JSONB datum bytes. Distinct per-window semantic, syntax and morphology memories account for 4,032,662 more; a uniqueness audit found that collapsing those windows would discard learned evidence. The qualified receipt and table/family audit are under `.scce/verification/native-dolly41-44-final-7g-20261110/`; see [the measurement procedure and comparison](storage-amplification/native-ingestion-measurement.md).
+
+Those witnesses contain 670,779 arcs and 464,079 distinct learned energies. The exact compact DAG bytes alone are 6,321,329 bytes (17.13x the source denominator). Therefore the current 10x goal cannot be reached by moving the same graph into `BYTEA`, deleting audit metadata, or applying another outer compression layer; it requires a smaller exact factorization of the learned energy graph with cold-replay parity.

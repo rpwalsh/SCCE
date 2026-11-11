@@ -7,7 +7,7 @@ import { requiredHydrationColumns, schemaStatements } from "../postgres-schema.j
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });
 const columns = ["pattern_schema", "component_recipe", "source_compilation_id", "owned_source_version_id", "pattern_language",
-  "has_source_compilation", "has_source_version", "decoded_jsonb_bytes"];
+  "has_source_compilation", "has_source_version", "decoded_artifact_jsonb_bytes"];
 
 it("materializes small selection headers at writes while retaining the canonical program body", () => {
   const ddl = schemaStatements("fixture").find(sql => sql.startsWith("ALTER TABLE fixture.language_patterns") && sql.includes("pattern_schema"));
@@ -19,7 +19,7 @@ it("materializes small selection headers at writes while retaining the canonical
   expect(ddl?.match(/GENERATED ALWAYS AS/gu)).toHaveLength(columns.length);
   expect(ddl).toContain("pattern_json ? 'sourceCompilationId'");
   expect(ddl).toContain("pattern_json ? 'sourceVersionId'");
-  expect(ddl).toContain("jsonb_typeof(pattern_json#>'{_scceJoinProgramStorage,decodedJsonbBytes}')='number'");
+  expect(ddl).toContain("jsonb_typeof(pattern_json#>'{_scceDecodedJsonByteLedger,decodedJsonbBytes}')='number'");
   expect(ddl).not.toMatch(/DROP|TRUNCATE|DELETE/u);
 });
 
@@ -35,8 +35,8 @@ it.each([undefined, "request_seed" as const])("selects %s candidates without exp
   const header = sql.slice(sql.indexOf("pattern_headers AS MATERIALIZED"), sql.indexOf("candidate_pool AS MATERIALIZED"));
   expect(header).not.toContain("jsonb_to_record");
   expect(header.replace("pg_column_size(pattern.pattern_json)", "stored_size")).not.toContain("pattern.pattern_json");
-  for (const column of columns.filter(column => column !== "decoded_jsonb_bytes")) expect(header).toContain(`pattern.${column}`);
-  expect(header).toContain(view ? "CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes" : "pattern.decoded_jsonb_bytes AS decoded_jsonb_bytes");
+  for (const column of columns.filter(column => column !== "decoded_artifact_jsonb_bytes")) expect(header).toContain(`pattern.${column}`);
+  expect(header).toContain(view ? "CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_artifact_jsonb_bytes ELSE NULL::numeric END AS decoded_jsonb_bytes" : "pattern.decoded_artifact_jsonb_bytes AS decoded_jsonb_bytes");
   expect(header).toContain("pattern.profile_id=ANY(");
   expect(sql).toContain("current_compilation");
   expect(sql).toContain("ranked.category_rank <= CEIL(");

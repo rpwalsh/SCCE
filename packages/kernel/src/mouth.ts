@@ -125,7 +125,7 @@ import {
   type SurfaceTransformationBaseline
 } from "./walsh-surface-energy.js";
 import {
-  activeJoinProgram,
+  languageMemorySourceSurfaces,
   languageGenerationSurfaceAdequate,
   languageGenerationSurfaceFluent,
   languageGenerationSentenceEndingsAdequate,
@@ -210,13 +210,10 @@ import {
 } from "./language-construction-memory.js";
 import { learnedScriptIdForCharacter, rankLanguageProfilesForSurface } from "./language.js";
 import {
-  renderJoinedSurface,
-  renderJoinedSurfaceAlternatives,
-  type JoinedSurface,
-  type JoinEvidenceCoordinate,
-  type JoinProgramMixture,
-  type JoinRenderContext
-} from "./join-program.js";
+  realizeSourceOwnedSurface,
+  type SourceOwnedSurface,
+  type SourceOwnedSurfaceRealization
+} from "./source-owned-surface.js";
 import { realizeReversibleConstruction } from "./reversible-construction.js";
 import {  } from "./semantic-round-trip.js";
 import { dominantScriptId, joinLexicalSurfaces } from "./unicode-segmentation-v2.js";
@@ -802,6 +799,14 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         : structuralCreativeFailClosed || preserveEvidenceBackedKernelCandidate
           ? []
           : generatedCandidatesFromFrames(plan, discoursePlan, input, options.languageMemory, priorPieces, generationWorkBudget, constructionHasher);
+      const learnedPriorCandidates = learnedPriorSurfaceCandidates(input, discoursePlan, priorPieces);
+      // If frame realization reproduces an admitted imported surface exactly,
+      // keep the candidate that names that surface's owner.  Treating the same
+      // bytes as a generic rhetorical product loses the only provenance that
+      // distinguishes observed language from independently generated prose.
+      const generatedCandidatesWithOwnedDuplicatesRemoved = generatedCandidates.filter(candidate =>
+        !learnedPriorCandidates.some(prior =>
+          normalizeEvidenceSentence(prior.text) === normalizeEvidenceSentence(candidate.text)));
       markMouthPhase("candidate_setup");
       const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, plan, discoursePlan, options.languageMemory, constructionHasher);
       // An echo of the request is never an answer. For a creative turn
@@ -824,7 +829,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       if(input.verifiedComputation) traceEvent((globalThis as {__sccTrace?:Parameters<typeof traceEvent>[0]}).__sccTrace,{stage:"mouth.computation.candidate",label:"mouth.speak",counts:{present:computedCandidate?1:0},support:{certificateValid:sourceComputationResultVerified(input.verifiedComputation,input.requestText??"",constructionHasher)}});
       const rawCandidatePool = computedCandidate ? [computedCandidate] : structuralCreativeCandidate ? [structuralCreativeCandidate] : structuralCreativeFailClosed ? [] : [
         ...(directCreativeCandidate ? [directCreativeCandidate] : []),
-        ...learnedPriorSurfaceCandidates(input, discoursePlan, priorPieces),
+        ...learnedPriorCandidates,
         ...(learnedCodeCandidate ? [learnedCodeCandidate] : []),
         ...(kernelSelectedCandidate ? [kernelSelectedCandidate] : []),
         ...(governedActionPreview ? [governedActionPreview] : []),
@@ -839,7 +844,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           : []),
         ...(learnedConstructionCandidate ? [learnedConstructionCandidate] : []),
         ...(constructAnchored ? [constructAnchored] : []),
-        ...generatedCandidates.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
+        ...generatedCandidatesWithOwnedDuplicatesRemoved.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
       ];
       const rawCandidates = rawCandidatePool.filter(candidate => {
@@ -1136,7 +1141,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const finalPreservation = finalText === preservationText ? preservationChecked : repairedPreservation;
       const caveatCheckedText = protectedSelectedSurface
         ? finalText
-        : ensureRuntimeCaveats(finalText, plan, activeJoinProgram(input.languageMemory));
+        : ensureRuntimeCaveats(finalText, plan, mouthSourceSurfaces(input));
       const artifactCleanedText = protectedSelectedSurface ? caveatCheckedText : stripInternalSurfaceArtifacts(tidySurface(caveatCheckedText));
       const repairedFinalSurfaceText = protectedSelectedSurface
         ? artifactCleanedText
@@ -2194,7 +2199,11 @@ function surfacePoints(input: SpeakInput, evidenceById: Map<string, EvidenceSpan
       });
     }
   }
-  if (input.construct.program) {
+  // A ProgramGraph attached to an invention is the invention's artifact and
+  // validation context, not a second answer proposition.  Promoting its file
+  // manifest to a required instruction frame lets an old artifact summary
+  // displace the typed proposal that the creative construct actually owns.
+  if (input.construct.program && !invention) {
     const programSurface = programSurfaceSummary(input.construct.program);
     out.push({
       id: `surface:${hashText(`program:${input.construct.program.id}`).slice(0, 16)}`,
@@ -3189,7 +3198,7 @@ function learnedConstructionAuthoredSurface(realization: LearnedRealization, con
     }
     claimText = claimText.slice(0, part.outputStart) + surface + claimText.slice(part.outputEnd);
   }
-  const withCaveats = ensureRuntimeCaveats(claimText, plan, activeJoinProgram(input.languageMemory));
+  const withCaveats = ensureRuntimeCaveats(claimText, plan, mouthSourceSurfaces(input));
   return { claimText, text: withCaveats === tidySurface(claimText) ? claimText : withCaveats, formLiterals };
 }
 
@@ -3684,7 +3693,7 @@ function generatedCandidatesFromFrames(
   const preflightTemporalCounterexample = preflightSemanticState
     ? semanticTemporalCounterexampleSurface(
       preflightSemanticState.selectedFacts.length ? preflightSemanticState.selectedFacts : preflightSemanticState.activatedNeighborhood,
-      activeJoinProgram(input.languageMemory)
+      mouthSourceSurfaces(input)
     )
     : undefined;
   if (preflightTemporalCounterexample) {
@@ -3765,7 +3774,7 @@ function generatedCandidatesFromFrames(
     const generatedText = isImportSummary && unit.role === "caveat"
       ? importSummaryCaveatSurface(frames, generation.text)
       : isImportSummary
-        ? preserveImportSummaryCoverage(generation.text, unitPlan, unit.role, activeJoinProgram(input.languageMemory))
+        ? preserveImportSummaryCoverage(generation.text, unitPlan, unit.role, mouthSourceSurfaces(input))
         : generation.text;
     if (!admissibleLearnedSurface(generatedText, generation) && !partiallyCoveringLearnedSurface(generatedText, generation)) continue;
     const preservation = semanticPreservation({ text: generatedText, plan: unitPlan, entailment: input.entailment });
@@ -3802,7 +3811,7 @@ function generatedCandidatesFromFrames(
   ]);
   const generatedIds = uniqueStrings(spokenSentences.flatMap(sentence => sentence.importedPriorIds));
   const pieceIds = uniqueStrings([...generatedIds, ...priorPieces.filter(piece => assembledText.includes(piece.text)).map(piece => piece.id)]);
-  const aggregateGeneration = aggregateLanguageGeneration(spokenSentences);
+  const aggregateGeneration = aggregateLanguageGeneration(spokenSentences, assembledText);
   return uniqueSurfaceCandidates([
     {
     id: "candidate:generated:0",
@@ -3888,24 +3897,34 @@ function semanticDirectEvidenceCandidate(
   let resolved: typeof selected = [];
   for (const attempt of [selected]) {
     const attemptSurfaces = attempt.map(row => row.surface);
+    const licensedEvidenceIds = new Set(uniqueStrings(attempt.flatMap(row => row.evidenceIds)));
     const observedSourceSpan = exactObservedSourceSpan(
       input.evidence,
-      uniqueStrings(attempt.flatMap(row => row.evidenceIds)),
+      [...licensedEvidenceIds],
       attemptSurfaces
     );
-    const joined = renderJoinedCandidateAlternatives({
+    const joined = renderOwnedCandidateAlternatives({
       derivations: [attemptSurfaces],
-      joinProgram: activeJoinProgram(input.languageMemory),
-      contexts: observedSourceSpan ? [{ observedSourceSpan }] : undefined
+      surfaceSources: [
+        ...mouthSourceSurfaces(input).filter(source => (
+          (source.evidenceIds?.length ?? 0) > 0
+          && source.evidenceIds!.every(id => licensedEvidenceIds.has(String(id)))
+        )),
+        ...(observedSourceSpan ? [observedSourceSpan] : [])
+      ]
     });
-    const attemptText = admissibleJoinedCandidateText(joined);
-    const surfaceAdmissible = Boolean(attemptText) && admissibleMouthSurface(attemptText);
+    const attemptText = admissibleOwnedCandidateText(joined);
+    const ownerEvidenceLicensed = attemptSurfaces.length <= 1 || Boolean(
+      joined.owner?.evidenceIds.length
+      && joined.owner.evidenceIds.every(id => licensedEvidenceIds.has(String(id)))
+    );
+    const surfaceAdmissible = ownerEvidenceLicensed && Boolean(attemptText) && admissibleMouthSurface(attemptText);
     const surfaceComplete = Boolean(attemptText) && structurallyCompleteSurface(attemptText);
     const argumentsPreserved = Boolean(attemptText) && factArgumentsIntactInSurface(attemptText, attempt.map(row => row.fact));
     traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
       stage: "mouth.source_content.realization", label: "mouth.speak",
       counts: { facts: attempt.length, chars: attemptText.length },
-      support: { joinStatus: joined.status, surfaceAdmissible, surfaceComplete, argumentsPreserved }
+      support: { realizationStatus: joined.status, ownerEvidenceLicensed, surfaceAdmissible, surfaceComplete, argumentsPreserved }
     });
     // Claim authority and surface quality are separate judgments (the
     // architecture's own doctrine). The CLAIMS here are already licensed:
@@ -3954,7 +3973,7 @@ function exactObservedSourceSpan(
   evidence: readonly EvidenceSpan[],
   admittedEvidenceIds: readonly string[],
   requiredSurfaces: readonly string[]
-): { text: string; evidenceIds: string[]; coordinates: JoinEvidenceCoordinate } | undefined {
+): SourceOwnedSurface & { evidenceIds: string[] } | undefined {
   const admitted = new Set(admittedEvidenceIds);
   const row = evidence
     .filter(span => admitted.has(String(span.id)) && span.status === "promoted")
@@ -3967,18 +3986,11 @@ function exactObservedSourceSpan(
       || String(left.span.id).localeCompare(String(right.span.id)))[0];
   if (!row) return undefined;
   return {
+    id: String(row.span.id),
+    lane: "evidence_span",
     text: row.text,
     evidenceIds: [String(row.span.id)],
-    coordinates: {
-      evidenceId: String(row.span.id),
-      sourceVersionId: String(row.span.sourceVersionId),
-      documentId: String(row.span.chunkId),
-      byteStart: row.span.byteStart,
-      byteEnd: row.span.byteEnd,
-      utf16Start: row.span.charStart,
-      utf16End: row.span.charEnd,
-      exactSurfaceHash: hash32(row.text).toString(16)
-    }
+    sourceVersionId: String(row.span.sourceVersionId)
   };
 }
 
@@ -4706,7 +4718,7 @@ function directCreativeSectionCandidate(
 function creativeArtifactCandidate(input: SpeakInput, discoursePlan: DiscoursePlan): SurfaceCandidate | undefined {
   const artifactSurfaces = uniqueStrings(creativeArtifactSurfaceRows(input).map(row => row.surface).filter(Boolean));
   if (!artifactSurfaces.length) return undefined;
-  const text = joinSurfaceSentences(artifactSurfaces, activeJoinProgram(input.languageMemory));
+  const text = ownedSentenceSurface(artifactSurfaces, mouthSourceSurfaces(input));
   if (!admissibleMouthSurface(text)) return undefined;
   return {
     id: "candidate:generated:creative:artifact",
@@ -4737,7 +4749,7 @@ function licensedCreativeArtifactBinding(
   if (candidate.style !== "surface.path.generated.creative.artifact" || candidate.claimBasis !== "invented") return undefined;
   const rows = creativeArtifactSurfaceRows(input).filter(row => Boolean(row.surface));
   if (!rows.length) return undefined;
-  const expectedSurface = joinSurfaceSentences(uniqueStrings(rows.map(row => row.surface)), activeJoinProgram(input.languageMemory));
+  const expectedSurface = ownedSentenceSurface(uniqueStrings(rows.map(row => row.surface)), mouthSourceSurfaces(input));
   if (!expectedSurface || candidate.text !== expectedSurface) return undefined;
   const artifacts = rows.map(({ artifact }) => {
     const artifactId = String(artifact.artifactId);
@@ -4792,7 +4804,7 @@ function creativeAnchoredAssembly(
     text: anchoredTextForFrames(
       unit,
       frames[index] ? [frames[index]!] : [],
-      activeJoinProgram(languageMemory)
+      languageMemorySourceSurfaces(languageMemory)
     )
   }));
   return assembleAnchoredSurfaces({ discoursePlan: variantPlan, surfaces, languageMemory });
@@ -5338,16 +5350,24 @@ function observedTerminalBoundary(texts: readonly string[]): string {
 
 function semanticTemporalCounterexampleSurface(
   facts: readonly SemanticAnswerFact[],
-  joinProgram?: JoinProgramMixture
+  surfaceSources?: readonly SourceOwnedSurface[]
 ): string | undefined {
   const rejection = facts.find(fact => fact.relationId === LOCAL_ANSWER_RELATION_IDS.polarityReject);
   const support = facts.find(fact => fact.relationId === LOCAL_ANSWER_RELATION_IDS.temporalCounterexample);
   if (!rejection || !support) return undefined;
-  const supportSurface = temporalSupportSurface(support, joinProgram);
+  const supportSurface = temporalSupportSurface(support, surfaceSources);
   return supportSurface || undefined;
 }
 
-function temporalSupportSurface(fact: SemanticAnswerFact, joinProgram?: JoinProgramMixture): string {
+function temporalSupportSurface(fact: SemanticAnswerFact, surfaceSources?: readonly SourceOwnedSurface[]): string {
+  const factEvidenceIds = new Set((fact.evidenceIds ?? []).map(String));
+  const exactSourceSurface = (surfaceSources ?? [])
+    .filter(source => (
+      source.evidenceIds?.some(id => factEvidenceIds.has(String(id)))
+      && (source.text === fact.object || source.text.includes(fact.object))
+    ))
+    .sort((left, right) => left.text.length - right.text.length || left.id.localeCompare(right.id))[0]?.text
+    ?? fact.object;
   const marker = stripOuterSurfaceBoundary(normalizeEvidenceSentence(fact.predicate));
   const withoutListMarkup = normalizeEvidenceSentence(fact.object)
     .split(/\r?\n/u)
@@ -5357,25 +5377,14 @@ function temporalSupportSurface(fact: SemanticAnswerFact, joinProgram?: JoinProg
   const cleaned = collapseRepeatedSentenceSegments(withoutListMarkup);
   if (!cleaned) return "";
   const sentences = splitSurfaceSentences(cleaned).map(tidySurface).filter(Boolean);
-  if (!marker || sentences.length < 2) return cleaned;
+  if (!marker || sentences.length < 2) return exactSourceSurface;
   const markerIndex = sentences.findIndex(sentence => containsSurface(sentence, marker));
-  if (markerIndex <= 0) return cleaned;
-  // joinSurfaceSentences needs a real joinProgram to bridge >=2 sentence
-  // units -- without one, renderJoinedSurface has no mixture to select a
-  // join from and returns status "unresolved" (empty text) for any
-  // multi-unit derivation, which silently discarded this whole reordered
-  // counterexample surface (verified: this exact call, unpatched, returns
-  // "" whenever reordering is needed, which cascades into the preflight
-  // temporal-counterexample check failing and a raw ungenerated fragment
-  // winning the candidate selection instead).
+  if (markerIndex <= 0) return exactSourceSurface;
   const reorderedSentences = [sentences[markerIndex]!, ...sentences.filter((_, index) => index !== markerIndex)];
-  const reordered = joinSurfaceSentences(reorderedSentences, joinProgram);
-  // Each entry in reorderedSentences already carries its own terminal
-  // sentence punctuation (they came from splitSurfaceSentences), so a plain
-  // space join preserves correct boundaries without needing the learned
-  // join-program mixture -- only the *choice* of reordering is meaningful
-  // here, not the connective text between two already-complete sentences.
-  return reordered || tidySurface(reorderedSentences.join(" "));
+  const reordered = ownedSentenceSurface(reorderedSentences, surfaceSources);
+  // Reordering is a new multi-unit derivation. If no single learned/source
+  // surface owns it, preserve the original source-owned fact surface.
+  return reordered || exactSourceSurface;
 }
 
 interface LearnedNegativeBridge {
@@ -5394,7 +5403,7 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
   if (!rejection || !support) return undefined;
   const subject = normalizeEvidenceSentence(rejection.subject || state.selectedSubject);
   const predicate = stripOuterSurfaceBoundary(normalizeEvidenceSentence(rejection.object || rejection.predicate));
-  const supportSurface = temporalSupportSurface(support, activeJoinProgram(input.languageMemory));
+  const supportSurface = temporalSupportSurface(support, mouthSourceSurfaces(input));
   if (!subject || !predicate || !supportSurface) return undefined;
   const bridge = learnedNegativeBridge({
     requestText: input.entailment.claim.text,
@@ -5409,7 +5418,7 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
   ]);
   const supportClaim = { ...sourceClaimForRealizedFact(support, supportSurface, evidenceIds, [],
     toJsonValue({ source: "temporal_counterexample", selectedFactKey: semanticFactKey(support) })), basis: "temporal_inference" as const };
-  if (!bridge) {
+  const sourceOnlyCandidate = (): SurfaceCandidate | undefined => {
     if (!admissibleMouthSurface(supportSurface) || questionEchoHits(supportSurface, mouthEchoQuestionText(input)).length) return undefined;
     sourceContentPlans.set(input, [supportClaim]);
     return {
@@ -5424,37 +5433,25 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
       discoursePlan,
       boundaryDecisions: []
     };
-  }
+  };
+  if (!bridge) return sourceOnlyCandidate();
   const conclusionTokens = [subject, bridge.requestHead, bridge.bridge, predicate].filter(Boolean);
-  const conclusionJoin = renderJoinedCandidateAlternatives({
+  const conclusionRealization = renderOwnedCandidateAlternatives({
     derivations: [
       conclusionTokens,
       [subject, bridge.bridge, predicate].filter(Boolean)
     ],
-    joinProgram: activeJoinProgram(input.languageMemory)
+    surfaceSources: mouthSourceSurfaces(input)
   });
-  // The learned join-program mixture is trained on prose-sentence boundaries
-  // and may have no data at all for a freshly-assembled word sequence (e.g. a
-  // fixture/early-corpus profile with semantic frames but no ingested join
-  // patterns yet) -- renderJoinedCandidateAlternatives then returns
-  // "unresolved" (empty text) even though every token is already known-good.
-  // Falling back to a plain space join between word tokens mirrors the
-  // existing word-list-assembly convention used throughout this file (see
-  // e.g. conversationContextSurface/preferredMultiWordSurface's
-  // `selected.join(" ")`) -- it inserts only a script-neutral separator, not
-  // invented vocabulary, so it doesn't reintroduce a hardcoded-English path.
-  // The terminal-boundary character is taken from text SCCE already observed
-  // (the support evidence) rather than assumed to be "." -- scripts that
-  // close sentences differently (e.g. 。) stay correct without a
-  // hardcoded Latin default.
-  const observedBoundary = observedTerminalBoundary([supportSurface, predicate]);
-  const conclusion = admissibleJoinedCandidateText(conclusionJoin)
-    || ensureSurfaceSentence(joinWordTokens(conclusionTokens), observedBoundary);
-  if (!conclusion || containsInternalSurfaceArtifact(conclusion) || conclusion.includes("¬")) return undefined;
-  const text = joinSurfaceSentences(
+  // This is a new multi-unit derivation. Without one construction/source
+  // owner it stays unresolved; no universal separator is permitted.
+  const conclusion = admissibleOwnedCandidateText(conclusionRealization);
+  if (!conclusion) return sourceOnlyCandidate();
+  if (containsInternalSurfaceArtifact(conclusion) || conclusion.includes("¬")) return undefined;
+  const text = ownedSentenceSurface(
     [conclusion, supportSurface],
-    activeJoinProgram(input.languageMemory)
-  ) || ensureSurfaceSentence([conclusion, supportSurface].join(" "));
+    mouthSourceSurfaces(input)
+  );
   if (!admissibleMouthSurface(text) || questionEchoHits(text, mouthEchoQuestionText(input)).length) return undefined;
   const conclusionClaim = { ...sourceClaimForRealizedFact(rejection, conclusion, evidenceIds, bridge.priorIds,
     toJsonValue({ source: "temporal_counterexample", selectedFactKey: semanticFactKey(rejection) })), basis: "temporal_inference" as const };
@@ -5718,7 +5715,7 @@ function preserveImportSummaryCoverage(
   text: string,
   plan: SurfacePlan,
   role: DiscourseUnitRole,
-  joinProgram?: JoinProgramMixture
+  surfaceSources?: readonly SourceOwnedSurface[]
 ): string {
   if (role !== "answer") return text;
   const summary = plan.orderedPoints.find(point => point.force === "underdetermined" && point.role === "answer")?.proposition ?? plan.orderedPoints[0]?.proposition ?? "";
@@ -5737,7 +5734,7 @@ function preserveImportSummaryCoverage(
     summary,
     "sentence",
     sentenceBoundaryForInput(plan),
-    joinProgram
+    surfaceSources
   );
 }
 
@@ -5849,9 +5846,9 @@ function constructAnchoredCandidate(plan: SurfacePlan, discoursePlan: DiscourseP
       .filter(row => row.text && requestPathAnchors.some(anchor => containsSurface(row.text, anchor)) && admissibleMouthSurface(row.text))
       .sort((left, right) => right.fit - left.fit || right.span.alpha - left.span.alpha || String(left.span.id).localeCompare(String(right.span.id)))[0]
     : undefined;
-  const pointText = joinSurfaceSentences(
+  const pointText = ownedSentenceSurface(
     uniqueStrings(points.map(point => tidySurface(point.proposition))).slice(0, 6),
-    activeJoinProgram(input.languageMemory)
+    mouthSourceSurfaces(input)
   );
   const text = sourceRow ? preserveSurfaceExtent(sourceRow.text, input.maxLength ?? 1200) : pointText;
   if (!admissibleMouthSurface(text)) return undefined;
@@ -6008,7 +6005,7 @@ function isWorkspaceKernelSpeakInput(input: SpeakInput): boolean {
 function anchoredTextForFrames(
   unit: DiscourseUnit,
   frames: readonly RealizationFrame[],
-  joinProgram?: JoinProgramMixture
+  surfaceSources?: readonly SourceOwnedSurface[]
 ): string {
   const atoms = frames.flatMap(frame => frame.propositionAtoms);
   const proofBoundarySurface = frames.some(frame => frame.force === "underdetermined" || frame.force === "contradicted");
@@ -6027,9 +6024,9 @@ function anchoredTextForFrames(
     .filter(term => !containsSurface(text, term))
     .slice(0, 8);
   if (requiredTerms.length && text.length <= 420) {
-    const extended = renderJoinedCandidateAlternatives({
+    const extended = renderOwnedCandidateAlternatives({
       derivations: [[text, ...requiredTerms]],
-      joinProgram
+      surfaceSources
     });
     if (extended.status !== "unresolved") {
       text = normalizeEvidenceSentence(extended.text);
@@ -6060,12 +6057,12 @@ function assembleAnchoredSurfaces(input: { discoursePlan: DiscoursePlan; surface
       languageMemory: input.languageMemory,
       boundaryProfile: input.discoursePlan.boundaryProfile
     });
-    const joined = joinDiscourseUnitBoundary(
+    const joined = realizeDiscourseUnitBoundary(
       text,
       right.surface.text,
       decision.kind,
       decision.text,
-      activeJoinProgram(input.languageMemory),
+      languageMemorySourceSurfaces(input.languageMemory),
       {
         constructionId: input.discoursePlan.id,
         discourseStateId: `${left.unit.role}\u001f${right.unit.role}`,
@@ -6134,19 +6131,18 @@ function generationImportedPriorIds(generation: LanguageGenerationResult): strin
     ...generation.importedPhrasePatternIdsUsed,
     ...generation.importedObservationIdsUsed,
     ...generation.importedSemanticFrameIdsUsed,
-    ...generation.importedNgramModelIdsUsed,
-    ...(generation.importedJoinProgramIdsUsed ?? [])
+    ...generation.importedNgramModelIdsUsed
   ]);
 }
 
-function aggregateLanguageGeneration(sentences: readonly SentenceCandidate[]): LanguageGenerationResult | undefined {
+function aggregateLanguageGeneration(sentences: readonly SentenceCandidate[], text: string): LanguageGenerationResult | undefined {
   const first = sentences[0]?.generation;
   if (!first) return undefined;
   const generations = sentences.map(sentence => sentence.generation);
   const audits = generations.map(generation => jsonRecord(generation.audit));
   return {
     ...first,
-    text: tidySurface(sentences.map(sentence => sentence.text).join(" ")),
+    text,
     symbols: generations.flatMap(generation => generation.symbols),
     phrasesUsed: uniqueStrings(generations.flatMap(generation => generation.phrasesUsed)),
     importedNgramModelIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedNgramModelIdsUsed)),
@@ -6154,8 +6150,6 @@ function aggregateLanguageGeneration(sentences: readonly SentenceCandidate[]): L
     importedLanguageUnitIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedLanguageUnitIdsUsed)),
     importedPhrasePatternIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedPhrasePatternIdsUsed)),
     importedSemanticFrameIdsUsed: uniqueStrings(generations.flatMap(generation => generation.importedSemanticFrameIdsUsed)),
-    importedJoinProgramIdsUsed: uniqueStrings(generations.flatMap(generation =>
-      generation.importedJoinProgramIdsUsed ?? [])),
     orderUsage: generations.flatMap(generation => generation.orderUsage),
     averageInformation: mean(generations.map(generation => generation.averageInformation)),
     confidence: mean(generations.map(generation => generation.confidence)),
@@ -6248,12 +6242,12 @@ function assembleDiscourseSentences(input: { discoursePlan: DiscoursePlan; sente
       languageMemory: input.languageMemory,
       boundaryProfile: input.discoursePlan.boundaryProfile
     });
-    const joined = joinDiscourseUnitBoundary(
+    const joined = realizeDiscourseUnitBoundary(
       text,
       right.sentence.text,
       decision.kind,
       decision.text,
-      activeJoinProgram(input.languageMemory),
+      languageMemorySourceSurfaces(input.languageMemory),
       {
         constructionId: input.discoursePlan.id,
         discourseStateId: `${left.unit.role}\u001f${right.unit.role}`,
@@ -6387,61 +6381,53 @@ function renderDiscourseUnitBoundary(
   right: string,
   kind: DiscourseBoundaryKind,
   boundary: string,
-  joinProgram?: JoinProgramMixture
+  surfaceSources?: readonly SourceOwnedSurface[]
 ): string {
-  return admissibleJoinedCandidateText(joinDiscourseUnitBoundary(
+  return admissibleOwnedCandidateText(realizeDiscourseUnitBoundary(
     left,
     right,
     kind,
     boundary,
-    joinProgram
+    surfaceSources
   ));
 }
 
-function joinDiscourseUnitBoundary(
+function realizeDiscourseUnitBoundary(
   left: string,
   right: string,
   kind: DiscourseBoundaryKind,
   boundary: string,
-  joinProgram?: JoinProgramMixture,
-  boundaryContext?: Pick<
-    NonNullable<JoinRenderContext["boundaries"]>[number],
-    "constructionId" | "discourseStateId" | "derivationShapeId"
-  >
-): JoinedSurface {
-  const cleanLeft = tidySurface(left);
-  const cleanRight = tidySurface(right);
-  if (!cleanLeft) {
+  surfaceSources?: readonly SourceOwnedSurface[],
+  _boundaryContext?: {
+    constructionId?: string;
+    discourseStateId?: string;
+    derivationShapeId?: string;
+  }
+): SourceOwnedSurfaceRealization {
+  if (!tidySurface(left)) {
     return {
-      text: cleanRight,
+      text: right,
       trace: [],
       unresolvedBoundaries: 0,
       status: "resolved"
     };
   }
-  if (!cleanRight) {
+  if (!tidySurface(right)) {
     return {
-      text: cleanLeft,
+      text: left,
       trace: [],
       unresolvedBoundaries: 0,
       status: "resolved"
     };
   }
-  const cleanBoundary = tidySurface(boundary);
-  const units = kind === "sentence" && hasTerminalBoundary(cleanLeft)
-    ? [cleanLeft, cleanRight]
-    : cleanBoundary
-      ? [cleanLeft, cleanBoundary, cleanRight]
-      : [cleanLeft, cleanRight];
-  return renderJoinedCandidateAlternatives({
+  const units = kind === "sentence" && hasTerminalBoundary(left)
+    ? [left, right]
+    : tidySurface(boundary)
+      ? [left, boundary, right]
+      : [left, right];
+  return renderOwnedCandidateAlternatives({
     derivations: [units],
-    joinProgram,
-    contexts: [{
-      boundaries: units.slice(0, -1).map(() => ({
-        boundaryProbability: 0.5,
-        ...boundaryContext
-      }))
-    }]
+    surfaceSources
   });
 }
 
@@ -8622,7 +8608,7 @@ function repairSurfaceReadability(input: { text: string; plan: SurfacePlan; disc
 function ensureRuntimeCaveats(
   text: string,
   plan: SurfacePlan,
-  joinProgram?: JoinProgramMixture
+  surfaceSources?: readonly SourceOwnedSurface[]
 ): string {
   const clean = tidySurface(text);
   if (!clean) return clean;
@@ -8637,7 +8623,7 @@ function ensureRuntimeCaveats(
     .filter(Boolean))
     .filter(reason => !containsSurface(clean, reason));
   if (!caveats.length) return clean;
-  const extended = joinSurfaceSentences([clean, ...caveats], joinProgram);
+  const extended = ownedSentenceSurface([clean, ...caveats], surfaceSources);
   return extended || clean;
 }
 
@@ -8875,31 +8861,41 @@ function displaySupportFocus(value: string): string {
     .join(" ");
 }
 
-function joinSurfaceSentences(
+function mouthSourceSurfaces(input: SpeakInput): SourceOwnedSurface[] {
+  const learned = languageMemorySourceSurfaces(input.languageMemory);
+  const evidence = input.evidence
+    .filter(span => span.status === "promoted")
+    .map(span => ({
+      id: String(span.id),
+      lane: "evidence_span" as const,
+      text: span.text || span.textPreview,
+      evidenceIds: [String(span.id)],
+      sourceVersionId: String(span.sourceVersionId)
+    }))
+    .filter(source => source.text.length > 0);
+  return [...learned, ...evidence];
+}
+
+function ownedSentenceSurface(
   values: readonly string[],
-  joinProgram?: JoinProgramMixture
+  surfaceSources?: readonly SourceOwnedSurface[]
 ): string {
-  const units = values.map(value => ensureSurfaceSentence(value)).filter(Boolean);
-  return admissibleJoinedCandidateText(renderJoinedCandidateAlternatives({
+  const units = values.filter(value => value.length > 0);
+  return admissibleOwnedCandidateText(renderOwnedCandidateAlternatives({
     derivations: [units],
-    joinProgram
+    surfaceSources
   }));
 }
 
-function renderJoinedCandidateAlternatives(input: {
+function renderOwnedCandidateAlternatives(input: {
   derivations: readonly (readonly string[])[];
-  joinProgram?: JoinProgramMixture;
-  contexts?: readonly JoinRenderContext[];
-}): JoinedSurface {
-  return renderJoinedSurfaceAlternatives({
-    derivations: input.derivations,
-    mixture: input.joinProgram,
-    contexts: input.contexts
-  });
+  surfaceSources?: readonly SourceOwnedSurface[];
+}): SourceOwnedSurfaceRealization {
+  return realizeSourceOwnedSurface(input);
 }
 
-function admissibleJoinedCandidateText(joined: JoinedSurface): string {
-  return joined.status === "unresolved" ? "" : joined.text;
+function admissibleOwnedCandidateText(realization: SourceOwnedSurfaceRealization): string {
+  return realization.status === "unresolved" ? "" : realization.text;
 }
 
 function ensureSurfaceSentence(value: string, boundary?: string): string {

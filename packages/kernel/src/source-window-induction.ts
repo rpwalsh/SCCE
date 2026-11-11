@@ -1,10 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createLanguageInductionEngine, type LanguageInductionDocument, type InducedLanguageModel } from "./language-induction.js";
-import type { InducedLanguageMemoryModel } from "./language-induction-memory.js";
+import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, type InducedLanguageMemoryModel } from "./language-induction-memory.js";
 import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { canonicalStringify } from "./primitives.js";
-import { joinProgramMixtureStorageForm } from "./join-program-storage.js";
 import { inductionCharBudget, inductionDocumentCharCap } from "./training-orchestrator.js";
 import { surfaceSentenceRanges } from "./surface-linguistics.js";
 import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
@@ -118,11 +117,19 @@ export function sourceInductionBatchJobDigest(job: Omit<SourceInductionBatchJob,
   return hasher.digestHex(canonicalStringify({ job, streamingDigest: canonicalDigestHex(job, hasher) }));
 }
 
+function sourceInductionBatchKey(sourceDigest: string, corpusBinding: string | undefined, hasher: Hasher): string {
+  return hasher.digestHex(canonicalStringify([
+    sourceDigest,
+    INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+    corpusBinding ?? null
+  ]));
+}
+
 function compactSourceInductionModel(model: InducedLanguageModel): InducedLanguageMemoryModel {
-    const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
+    const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, segmentationWitness,
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds, semanticInductionFactors } = model;
     return freezeProducts({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
-      joinProgram: joinProgramMixtureStorageForm(joinProgram, { immutable: true }),
+      segmentationWitness,
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds,
       ...(semanticInductionFactors ? { semanticInductionFactors } : {}) });
 }
@@ -134,7 +141,10 @@ export function prepareSourceInductionBatch(input: { batch: SourceInductionBatch
   if (!batch.documents.some(document => document.text.trim())) throw new Error("source induction batch contains no language material");
   const sourceDigest = sourceInductionInputDigest(batch.documents, hasher), windowsDigest = hasher.digestHex(canonicalStringify(batch.windows));
   const corpusBinding = verified ? validateCorpusSegmentationForDocuments(batch.documents.filter(document => document.text.trim()), verified, hasher).inputDigest : undefined;
-  const batchKey = corpusBinding ? hasher.digestHex(canonicalStringify([sourceDigest, corpusBinding])) : sourceDigest;
+  // Product schema participates in the cache identity even though it does not
+  // change the source-window ownership receipt. This prevents a pre-v4 compact
+  // model carrying the retired boundary predictor from satisfying the new witness job.
+  const batchKey = sourceInductionBatchKey(sourceDigest, corpusBinding, hasher);
   return Object.freeze({ batchKey, ...(corpusBinding ? { corpusBinding } : {}), induce(retainFullModel = true): SourceInductionBatchProduct {
     if (sourceInductionInputDigest(batch.documents, hasher) !== sourceDigest || hasher.digestHex(canonicalStringify(batch.windows)) !== windowsDigest
       || verified && corpusSegmentationInputDigest(batch.documents.filter(document => document.text.trim()), verified, hasher) !== corpusBinding)
@@ -222,11 +232,12 @@ export async function compileSourceInductionWindowsAsync(input: SourceInductionC
     try {
       signal?.throwIfAborted();
       const sourceKey = sourceInductionInputDigest(batch.documents, input.hasher);
+      const localBatchKey = sourceInductionBatchKey(sourceKey, undefined, input.hasher);
       if (!input.corpusLoader) {
-        const cached = input.modelCache?.get(sourceKey);
-        if (cached) return { ok: true, identity: { batchKey: sourceKey }, product: { compact: cached } };
-        const pending = input.modelCache ? inFlight.get(sourceKey) : undefined;
-        if (pending) return { ok: true, identity: { batchKey: sourceKey }, product: await pending };
+        const cached = input.modelCache?.get(localBatchKey);
+        if (cached) return { ok: true, identity: { batchKey: localBatchKey }, product: { compact: cached } };
+        const pending = input.modelCache ? inFlight.get(localBatchKey) : undefined;
+        if (pending) return { ok: true, identity: { batchKey: localBatchKey }, product: await pending };
       }
       const body = { ordinal: index, batch, retainFullModel: index === 0, ...(identity ? { corpusIdentity: identity } : {}),
         batchBudgetUtf16: inductionCharBudget(), windowCapUtf16: inductionDocumentCharCap() };
@@ -246,7 +257,7 @@ export async function compileSourceInductionWindowsAsync(input: SourceInductionC
       } else if (session.preparations.length) throw new Error("source induction worker requested an undeclared corpus context");
       const prepared = await session.verify(verified);
       const corpusBinding = verified ? corpusSegmentationInputDigest(documents, verified, input.hasher) : undefined;
-      const expectedKey = corpusBinding ? input.hasher.digestHex(canonicalStringify([sourceKey, corpusBinding])) : sourceKey;
+      const expectedKey = sourceInductionBatchKey(sourceKey, corpusBinding, input.hasher);
       if (prepared.batchKey !== expectedKey || prepared.corpusBinding !== corpusBinding) throw new Error("source induction worker batch identity changed");
       const cached = input.modelCache?.get(prepared.batchKey);
       if (cached) return { ok: true, identity: prepared, product: { compact: cached } };

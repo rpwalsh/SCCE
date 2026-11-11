@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
 import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, SOURCE_COMPUTATION_CONSTRUCTION_RECIPE } from "@scce/kernel";
-import { createHasher, stampSourceLanguageCompilation, validateSourceLanguageCompilationHeader, INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID, POSTGRES_REQUIRED_TABLES, type JsonValue, type SourceVersionId } from "@scce/kernel";
+import { createHasher, stampSourceLanguageCompilation, validateSourceLanguageCompilationHeader, INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID, SOURCE_SEGMENTATION_WITNESS_SCHEMA, POSTGRES_REQUIRED_TABLES, type JsonValue, type SourceVersionId } from "@scce/kernel";
 import { canonicalDigestHex } from "../../../kernel/src/canonical-json-digest.js";
 import { LANGUAGE_TRAINING_BATCH_RECIPE_ID } from "../../../kernel/src/language-training-recipe.js";
 import { sourceLanguageTrainingStreamId } from "../../../kernel/src/source-language-training-identity.js";
@@ -167,7 +167,7 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls.at(-1)!.sql).toContain("'sourceConstructionCandidate'");
     expect(calls.at(-1)!.sql).toContain("jsonb_typeof(seed_role.value->'graphBinding')='object'");
     expect(calls.at(-1)!.sql).toContain("CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1'");
-    expect(calls.at(-1)!.sql).toContain("THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END");
+    expect(calls.at(-1)!.sql).toContain("THEN pattern.decoded_artifact_jsonb_bytes ELSE NULL::numeric END");
     expect(calls.at(-1)!.sql).not.toContain("ELSE pattern.pattern_json END AS pattern_json");
     expect(calls.at(-1)!.sql).not.toContain("running_stored_bytes");
     expect(calls.at(-1)!.sql).toContain("jsonb_build_object('templates','[]'::jsonb)");
@@ -175,7 +175,7 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls.at(-1)!.sql).toContain("pattern.pattern_schema,pattern.id) IN (");
     expect(calls.at(-1)!.params).toContainEqual(["profile.owned"]);
     await adapter.languageMemory.listLanguagePatterns({ profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
-    expect(calls.at(-1)!.sql).not.toContain("pattern.pattern_json - 'joinProgram'");
+    expect(calls.at(-1)!.sql).not.toContain("pattern.pattern_json - ");
   });
 
   it("reads exact mixed-kind prerequisites without dropping required pages to category quotas", async () => {
@@ -189,10 +189,91 @@ describe("Postgres language-memory ownership queries", () => {
     expect(call.sql).not.toContain("SUM(candidate.stored_bytes) OVER (PARTITION BY");
     expect(call.sql).not.toContain("SUM(octet_length(eligible.pattern_json::text)) OVER (PARTITION BY");
     expect(call.sql).toContain("running_json_bytes <=");
+    expect(call.sql).not.toContain("OR ranked.category_relevance_rank = 1");
+    expect(call.sql).not.toContain("OR sized.category_relevance_rank = 1");
     expect(call.sql).toContain("current_compilation");
     expect(call.sql).toContain("pattern.information_label");
     expect(call.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id,projection_recipe FROM active_projection_ids_0");
     expect(call.sql).not.toContain("WHERE (pattern.component_recipe=");
+  });
+
+  it("keeps archival segmentation witnesses out of searches and request seeds but admits a 64MiB exact audit read", async () => {
+    const { adapter, calls } = fixture();
+    const archiveGate = `(pattern.pattern_schema IS DISTINCT FROM '${SOURCE_SEGMENTATION_WITNESS_SCHEMA}' AND pattern.pattern_schema IS DISTINCT FROM '${LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA}')`;
+
+    await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", limit: 8 });
+    expect(calls.at(-1)!.sql).toContain(archiveGate);
+
+    await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", patternIds: ["segmentation.source.owned"], limit: 1 });
+    expect(calls.at(-1)!.sql).toContain(archiveGate);
+
+    await adapter.languageMemory.listLanguagePatterns({ patternIds: ["segmentation.source.owned", "segmentation.manifest.owned"],
+      limit: 2, maxTotalJsonBytes: 64 * 1024 * 1024, requireComplete: true });
+    const exact = calls.at(-1)!;
+    expect(exact.sql).not.toContain(archiveGate);
+    expect(exact.sql).toContain("pattern.id=ANY($1::text[])");
+    expect(exact.params[0]).toEqual(["segmentation.source.owned", "segmentation.manifest.owned"]);
+    expect(exact.params).toContain(64 * 1024 * 1024);
+    expect(exact.sql).not.toContain("OR ranked.category_relevance_rank = 1");
+    expect(exact.sql).not.toContain("OR sized.category_relevance_rank = 1");
+  });
+
+  it("keeps schema-less active language rows readable while applying null-safe archive and retired-syntax gates", async () => {
+    const { adapter, calls } = fixture();
+    const informationLabel = { tenantId: "tenant.fixture", principals: [], compartments: [], exportClass: "public", mergePolicy: "isolated" };
+    const rows = ["cadence", "morphology", "segmentation", "semantic_role", "syntax"].map((pattern_kind, index) => ({
+      id: `language.active.schema-less.${pattern_kind}`,
+      profile_id: "profile.schema-less",
+      pattern_kind,
+      support: String(5 - index),
+      entropy: "0",
+      pattern_json: { learned: true, patternKind: pattern_kind },
+      evidence_ids: [],
+      updated_at: new Date(index + 1),
+      information_label: informationLabel
+    }));
+    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+      calls.push({ sql, params });
+      return (sql.includes("candidate_pool AS MATERIALIZED") ? rows : []) as T[];
+    };
+
+    const result = await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.schema-less", limit: rows.length });
+    expect(result.map(row => row.id)).toEqual(rows.map(row => row.id));
+    const sql = calls.at(-1)!.sql;
+    expect(sql).toContain(`pattern.pattern_schema IS DISTINCT FROM '${SOURCE_SEGMENTATION_WITNESS_SCHEMA}'`);
+    expect(sql).toContain(`pattern.pattern_schema IS DISTINCT FROM '${LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA}'`);
+    expect(sql).toContain("pattern.pattern_schema IS NULL");
+    expect(sql).not.toContain("pattern.pattern_schema NOT IN");
+  });
+
+  it("returns archival exact-ID rows only after proving every requested ID survived ownership and bounds", async () => {
+    const { adapter, calls } = fixture();
+    const informationLabel = { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" };
+    const rows = [SOURCE_SEGMENTATION_WITNESS_SCHEMA, LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA].map((schema, index) => ({
+      id: `segmentation.archive.${index}`,
+      profile_id: "profile.owned",
+      pattern_kind: "semantic_role",
+      support: "1",
+      entropy: "0",
+      pattern_json: { schema, id: `segmentation.archive.${index}`, compact: true },
+      evidence_ids: [],
+      updated_at: new Date(1),
+      information_label: informationLabel
+    }));
+    let complete = false;
+    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+      calls.push({ sql, params });
+      if (sql.startsWith("SELECT DISTINCT pattern.profile_id,pattern.source_system")) {
+        return [{ profile_id: "profile.owned", source_system: "fixture" }] as T[];
+      }
+      if (sql.includes("candidate_pool AS MATERIALIZED")) return (complete ? rows : rows.slice(0, 1)) as T[];
+      return [];
+    };
+    const query = { patternIds: rows.map(row => row.id), limit: rows.length,
+      maxTotalJsonBytes: 64 * 1024 * 1024, requireComplete: true };
+    expect(await adapter.languageMemory.listLanguagePatterns(query)).toEqual([]);
+    complete = true;
+    expect((await adapter.languageMemory.listLanguagePatterns(query)).map(row => row.id)).toEqual(rows.map(row => row.id));
   });
   it("reads exact accessible projection receipts and validates their owned compilation inventory including empty results", async () => {
     const { adapter, calls } = fixture();
@@ -361,7 +442,7 @@ describe("Postgres language-memory ownership queries", () => {
     expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(10);
     for (const [offset, schema] of [
       "scce.induced_language_model.morphology_memory.v1",
-      "scce.induced_language_model.syntax_memory.v1",
+      INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
       "scce.induced_language_model.semantic_memory.v1",
       "scce.induced_language_model.translation_seed_memory.v1"
     ].entries()) {
@@ -391,19 +472,19 @@ describe("Postgres language-memory ownership queries", () => {
     expect(sql.indexOf("pattern.id) IN (")).toBeLessThan(sql.indexOf("running_json_bytes"));
   });
 
-  it("supersedes legacy induced syntax rows only for a rebuilt source scope before row and byte limits", async () => {
+  it("makes retired full-witness syntax generations inert without a no-current-row fallback", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", maxTotalJsonBytes: 64_000_000, limit: 2048 });
     const call = calls.at(-1)!;
-    const activeSyntaxFilter = call.sql.indexOf("active_syntax.owned_source_version_id=pattern.owned_source_version_id");
-    expect(activeSyntaxFilter).toBeGreaterThanOrEqual(0);
-    expect(activeSyntaxFilter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
-    expect(activeSyntaxFilter).toBeLessThan(call.sql.indexOf("candidates AS MATERIALIZED"));
-    expect(activeSyntaxFilter).toBeLessThan(call.sql.lastIndexOf("LIMIT"));
-    expect(call.sql).toContain("active_syntax.profile_id=pattern.profile_id");
-    expect(call.sql).toContain("active_syntax.source_system=pattern.source_system");
-    expect(call.sql).toContain("active_syntax.component_recipe=");
-    expect(call.sql).toContain("active_syntax.information_label->>'tenantId'");
+    const syntaxGate = call.sql.indexOf("pattern.pattern_schema IS NULL");
+    expect(syntaxGate).toBeGreaterThanOrEqual(0);
+    expect(syntaxGate).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
+    expect(syntaxGate).toBeLessThan(call.sql.indexOf("candidates AS MATERIALIZED"));
+    expect(syntaxGate).toBeLessThan(call.sql.lastIndexOf("LIMIT"));
+    expect(call.sql).not.toContain("active_syntax");
+    expect(call.sql).toContain("OR NOT starts_with(pattern.pattern_schema,'scce.induced_language_model.syntax_memory.')");
+    expect(call.sql).toContain("OR (pattern.pattern_schema=$");
+    expect(call.sql).toContain("AND pattern.component_recipe=$");
     expect(call.params).toContain(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA);
     expect(call.params).toContain(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
   });

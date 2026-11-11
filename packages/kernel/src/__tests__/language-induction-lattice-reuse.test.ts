@@ -4,8 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import { createLanguageInductionEngine } from "../language-induction.js";
 import { canonicalStringify, createHasher } from "../primitives.js";
 import { createSegmentationAdjacencyQuery } from "../segmentation-adjacency-factors.js";
-import { joinProgramChoices } from "../join-program.js";
 import { replaySemanticInductionFactors } from "../semantic-induction-factors.js";
+import {
+  sourceSegmentationArcObservation,
+  sourceSegmentationSurfaceBearingArcIndices
+} from "../source-segmentation-witness.js";
 import * as surfaceLattice from "../surface-lattice.js";
 
 describe("induction bootstrap lexical reuse", () => {
@@ -29,8 +32,8 @@ describe("induction bootstrap lexical reuse", () => {
   });
   it("preserves the complete learned artifact and deterministic replay while building each lattice only once", () => {
     const documents = [
-      { id: "fixture.alpha", text: "the cat sat. the dog sat. the cat ran. the dog ran. the cat sat. the dog ran." },
-      { id: "fixture.beta", text: "a fox slept. a wolf slept. a fox walked. a wolf walked. a fox slept. a wolf walked." }
+      { id: "fixture.alpha", evidenceIds: ["evidence.alpha" as never], text: "the cat sat. the dog sat. the cat ran. the dog ran. the cat sat. the dog ran." },
+      { id: "fixture.beta", evidenceIds: ["evidence.beta" as never], text: "a fox slept. a wolf slept. a fox walked. a wolf walked. a fox slept. a wolf walked." }
     ];
     const hasher = createHasher();
     const build = vi.spyOn(surfaceLattice, "buildSurfaceLattice");
@@ -38,36 +41,34 @@ describe("induction bootstrap lexical reuse", () => {
       const engine = createLanguageInductionEngine({ hasher });
       const first = engine.induce({ documents });
       expect(build).toHaveBeenCalledTimes(documents.length);
-      const { id: _modelId, joinProgram: _joinProgram, semanticInductionFactors: sufficientFacts, audit: fullAudit, ...nonJoin } = first;
-      const { joinProgramId: _joinId, joinProgramComponentIds: _componentIds, ...audit } = fullAudit as Record<string, unknown>;
-      // All non-JOIN fields match the complete pre-repair artifact at 5bd251b1.
-      expect(hasher.digestHex(canonicalStringify({ ...nonJoin, audit }))).toBe("ffe1198e627f5885f730a958c4beba285d7b4a34b11e5c0e0e876cb212174a01");
+      const { id: _modelId, segmentationWitness: _segmentationWitness, semanticInductionFactors: sufficientFacts, audit: fullAudit, ...nonSegmentation } = first;
+      const { segmentationWitnessId: _witnessId, segmentationWitnessPopulationIds: _populationIds, ...audit } = fullAudit as Record<string, unknown>;
+      // Independently learned fields stay pinned while the source witness representation evolves.
+      expect(hasher.digestHex(canonicalStringify({ ...nonSegmentation, audit }))).toBe("85fedc2dc7a91a97c43cbd85c13e83cdd14a5a4f4a335e7704a16f1b75f08fe5");
       expect(sufficientFacts).toBeDefined();
       const semanticReplay = replaySemanticInductionFactors({ factors: sufficientFacts, hasher });
       expect(semanticReplay.semanticFrames).toEqual(first.semanticFrames);
       expect(semanticReplay.graphBoundConstructions).toEqual(first.graphBoundConstructions);
       expect(semanticReplay.relationHypothesisModel).toEqual(first.relationHypothesisModel);
-      for (const { program } of first.joinProgram.components) {
-        expect(program.exactIndex).toEqual({}); expect(program.classIndex).toEqual({});
-        const factors = program.localFactors!;
-        expect(factors.documents.map(document => document.documentId).sort()).toEqual(documents.map(document => document.id).sort());
-        let fullLocalMass = 0;
-        for (const document of factors.documents) {
-          expect(document.contexts.every(context => context.length === 1)).toBe(true);
-          expect(Object.keys(document.graph).sort()).toEqual(["arcs", "nodeCount", "schema"]);
-          const bearing = new Set(document.units.flatMap((unit, index) => unit ? [index] : []));
-          for (const pair of createSegmentationAdjacencyQuery(document.graph, bearing).pairs()) fullLocalMass += pair.posterior;
+      const witnessedDocuments = first.segmentationWitness.populations.flatMap(population => population.documents);
+      expect(witnessedDocuments.map(document => document.documentId).sort()).toEqual(documents.map(document => document.id).sort());
+      let fullAdjacencyMass = 0;
+      const retainedPosteriorMass = witnessedDocuments.reduce((sum, document) =>
+        sum + document.lattice.segmentationForest.retainedPosteriorMass, 0);
+      for (const document of witnessedDocuments) {
+        expect(Object.keys(document.fullDag.factors).sort()).toEqual(["arcs", "nodeCount", "schema"]);
+        expect(document.lattice.segmentationForest.retainedPathCount).toBeGreaterThan(0);
+        expect(document.lattice.segmentationForest.retainedPathDigest).toMatch(/^[a-f0-9]{64}$/u);
+        const bearing = new Set(sourceSegmentationSurfaceBearingArcIndices(document));
+        for (const pair of createSegmentationAdjacencyQuery(document.fullDag.factors, bearing).pairs()) {
+          fullAdjacencyMass += pair.posterior;
+          const left = sourceSegmentationArcObservation(document, pair.leftArcIndex);
+          const right = sourceSegmentationArcObservation(document, pair.rightArcIndex);
+          expect(document.text.slice(left.utf16End, right.utf16Start)).toBe(documents.find(row => row.id === document.documentId)!.text.slice(left.utf16End, right.utf16Start));
+          expect([...new Set([...left.evidenceIds, ...right.evidenceIds])].length).toBeGreaterThan(0);
         }
-        expect(program.observations).toBeCloseTo(fullLocalMass, 10);
-        expect(program.conditionedIndex).toEqual({}); expect(program.structuralIndex).toEqual({});
-        const retainedPaths = program.globalFactors!.documents.flatMap(document => document.paths);
-        expect(program.observations).toBeGreaterThan(retainedPaths.reduce((sum, [posterior]) => sum + posterior, 0));
-        expect(retainedPaths.some(([posterior]) => posterior > 0 && posterior < 1)).toBe(true);
-        const queried = joinProgramChoices(program, "exact", JSON.stringify(["the", "cat"]));
-        expect(queried.length).toBeGreaterThan(0);
-        expect(queried.every(choice => choice.count > 0)).toBe(true);
-        expect(program.exactIndex).toEqual({});
       }
+      expect(fullAdjacencyMass).toBeGreaterThan(retainedPosteriorMass);
       const replay = engine.induce({ documents });
       expect(replay).toEqual(first);
       expect(build).toHaveBeenCalledTimes(2 * documents.length);

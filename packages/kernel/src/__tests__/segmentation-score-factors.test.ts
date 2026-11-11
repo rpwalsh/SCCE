@@ -1,13 +1,13 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { createClock, createHasher, toJsonValue } from "../primitives.js";
+import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import { buildSurfaceLattice } from "../surface-lattice.js";
 import { buildSegmentationForest, exportSegmentationAdjacencyFactors, type SegmentationForestUnit } from "../segmentation-forest.js";
 import { createSegmentationAdjacencyQuery } from "../segmentation-adjacency-factors.js";
 import { replaySegmentationScoreFactors, segmentationScoreFactorsCanonicalSafe, validateSegmentationScoreFactors, type SegmentationScoreFactors } from "../segmentation-score-factors.js";
-import { compileJoinProgram, isJoinProgramLocalFactors } from "../join-program.js";
+import { compileLanguageSegmentationWitness, isLanguageSegmentationWitness } from "../source-segmentation-witness.js";
 import { constructionSourceExampleStorageJson as exactJson } from "../construction-source-example-storage.js";
 import type { BoundaryEstimatorModel } from "../boundary-estimator.js";
 import { createLanguageInductionEngine } from "../language-induction.js";
@@ -47,19 +47,20 @@ describe("frozen segmentation score factors", () => {
     expect([...createSegmentationAdjacencyQuery(graph, bearing).pairs()]).toEqual([...createSegmentationAdjacencyQuery(measured.factors, bearing).pairs()]);
   });
 
-  it("defaults to no capture and preserves complete JOIN and model identities when redundant metadata is enabled", () => {
+  it("defaults to no capture and preserves segmentation witness identity when redundant scorer metadata is enabled", () => {
     const plain = lattice(false), captured = lattice(true);
     expect(exportSegmentationAdjacencyFactors(plain.segmentationForest)).not.toHaveProperty("scoreRecipe");
-    const compile = (value: typeof plain) => compileJoinProgram({ populationId: "population.fixture", hasher,
-      documents: [{ documentId: value.documentId, sourceFamilyId: "source.family", text: "🧪e\u0301 f9 東京。\n甲 f9 🦉乙。\u0000 Ω 19.", lattice: value }] });
+    const compile = (value: typeof plain) => compileLanguageSegmentationWitness({ populationModelId: "population-model.fixture", hasher,
+      populations: [{ populationId: "population.fixture", prior: 1,
+        documents: [{ documentId: value.documentId, sourceFamilyId: "source.family", text: "🧪e\u0301 f9 東京。\n甲 f9 🦉乙。\u0000 Ω 19.", lattice: value }] }] });
     const first = compile(plain), second = compile(captured);
     expect(second.id).toBe(first.id);
-    const clean = structuredClone(second);
-    for (const document of clean.localFactors!.documents) delete document.scoreRecipe;
-    expect(clean).toEqual(first);
-    const { id: _id, audit: _audit, ...canonical } = clean;
-    expect(second.id).toBe(`join_program.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`);
-    expect(isJoinProgramLocalFactors(second.localFactors)).toBe(true);
+    expect(second).toEqual(first);
+    for (const population of second.populations) for (const document of population.documents) {
+      expect(document.fullDag).not.toHaveProperty("scoreRecipe");
+    }
+    expect(second.id).toMatch(/^language_segmentation_witness\.[a-f0-9]{40}$/u);
+    expect(isLanguageSegmentationWitness(second)).toBe(true);
   });
 
   it("publishes only normalization-stable metadata through direct corpus memory without changing model or graph identities", () => {
@@ -71,28 +72,17 @@ describe("frozen segmentation score factors", () => {
       const plain = engine.induce({ documents });
       const captured = engine.induce({ documents, captureScoreFactors: true });
       expect(captured.id).toBe(plain.id);
-      expect(captured.joinProgram.id).toBe(plain.joinProgram.id);
+      expect(captured.segmentationWitness.id).toBe(plain.segmentationWitness.id);
       const profile: LanguageProfile = { id: "profile.direct", sourceVersionId, scripts: [], symbolShapes: [], charNgrams: [], direction: "ltr", entropy: 0, createdAt: 172_000 };
       const project = (model: typeof plain) => languageMemoryPatternsFromInducedLanguageModel({ model, profiles: [profile], idFactory, updatedAt: 172_000 });
       const baseline = project(plain), published = project(captured);
-      expect(published.patterns.map(pattern => pattern.id)).toEqual(baseline.patterns.map(pattern => pattern.id));
-      const clean = structuredClone(captured.joinProgram);
-      let recipes = 0;
-      for (const component of clean.components) for (const document of component.program.localFactors!.documents) {
-        const original = plain.joinProgram.components.find(value => value.program.id === component.program.id)!.program.localFactors!.documents.find(value => value.documentId === document.documentId)!;
-        expect(document.graph).toEqual(original.graph);
-        if (document.scoreRecipe) { recipes++; expect(segmentationScoreFactorsCanonicalSafe(document.scoreRecipe)).toBe(true); }
-        delete document.scoreRecipe;
+      expect(published.patterns).toEqual(baseline.patterns);
+      for (const population of captured.segmentationWitness.populations) for (const document of population.documents) {
+        const original = plain.segmentationWitness.populations.flatMap(value => value.documents).find(value => value.documentId === document.documentId)!;
+        expect(document.fullDag.factors).toEqual(original.fullDag.factors);
+        expect(document.fullDag).not.toHaveProperty("scoreRecipe");
       }
-      expect(clean).toEqual(plain.joinProgram);
-      if (text.includes("\u0000")) expect(recipes).toBe(0); else expect(recipes).toBeGreaterThan(0);
-      const visit = (value: unknown): void => {
-        if (!value || typeof value !== "object") return;
-        const row = value as Record<string, unknown>;
-        if (row.scoreRecipe) { expect(row.scoreRecipe).toEqual(toJsonValue(row.scoreRecipe)); validateSegmentationScoreFactors(row.scoreRecipe, row.graph as Parameters<typeof validateSegmentationScoreFactors>[1], hasher); }
-        for (const child of Object.values(row)) visit(child);
-      };
-      visit(cold(published.patterns));
+      expect(JSON.stringify(published.patterns)).not.toContain("scoreRecipe");
     }
     const measured = exportSegmentationAdjacencyFactors(lattice(true).segmentationForest);
     expect(measured.scoreRecipe).toBeDefined();

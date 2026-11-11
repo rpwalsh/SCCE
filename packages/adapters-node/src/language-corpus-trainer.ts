@@ -50,6 +50,8 @@ import {
   sourceLanguageInductionDocuments,
   sourceLanguageTrainingStreamId,
   stampSourceLanguageCompilation,
+  LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA,
+  SOURCE_SEGMENTATION_WITNESS_SCHEMA,
   prepareLanguageTrainingSegmentation,
   observePreparedLanguageTrainingSegmentation,
   attachSourceDerivedLanguageAliases,
@@ -75,6 +77,7 @@ import {
   type GraphSnapshot,
   type JsonValue,
   type LanguagePatternRecord,
+  type LanguageTrainingConstructionObservationReceipt,
   type LanguageProfile,
   type SourceReferenceBindingDeclaration,
   type LanguageInductionDocument,
@@ -251,6 +254,7 @@ export interface LanguageCorpusTrainingReport {
   sourceCodeFunctionPatterns?: number;
   graphSnapshotDigest?: string;
   constructionAcquisition?: { sourceObserved: number; documentHeldOutQualified: number; rejectedQualification: number };
+  constructionObservationReceipt: LanguageTrainingConstructionObservationReceipt;
   graphSurfaceAlignments: number;
   rejectedLanguageConstructions: number;
   eventId: string;
@@ -294,7 +298,7 @@ interface PreparedLanguageCorpusPayload {
   constructionPoolProfiles: LanguageProfile[];
   constructionPoolDigest?: string;
   compilation: Required<Pick<LanguageCorpusTrainingReport, "alignmentPromotionObservations" | "alignmentCalibrationObservations"
-    | "constructionCandidates" | "constructionAcquisition" | "graphSurfaceAlignments" | "rejectedLanguageConstructions">>;
+    | "constructionCandidates" | "constructionAcquisition" | "constructionObservationReceipt" | "graphSurfaceAlignments" | "rejectedLanguageConstructions">>;
   observations: NgramObservation[];
   models: NgramModelRecord[];
   units: LanguageUnitRecord[];
@@ -318,7 +322,6 @@ const CORPUS_CHECKPOINT_SCHEMA = "scce.corpusTrainingCheckpoint.v1";
 export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v4" as const;
 export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v6" as const;
 const LANGUAGE_CORPUS_SOURCE_EVIDENCE_RECIPE_ID = "scce.language_corpus_source_evidence.v1" as const;
-
 export function languageCorpusTrainingRecipeId(sourceSystem: string): string {
   return canonicalCorpusSourceSystemId(sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode
     ? LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID : LANGUAGE_CORPUS_TRAINING_RECIPE_ID;
@@ -1219,10 +1222,9 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       constructionCandidates: compiledBatch.constructionCandidates,
       languageConstructions: compiledConstructionPatterns.length,
       sourceCodeFunctionPatterns: patterns.filter(pattern => pattern.patternKind === "source_code_function").length,
-      // The audit already carries every summary under graphSurfaceAlignment; this key was a second full copy (49% of the event).
-      graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries.length,
+      // The bounded audit receipt above owns the digest and exemplars; this is the directly queryable total.
+      graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentCount,
       rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates,
-      constructionPromotion: compiledBatch.constructionPromotion as unknown as JsonValue,
       constructionPool: {
         sourceSystem,
         rootUri: input.corpusCheckpoint?.rootUri ?? null,
@@ -1283,7 +1285,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
         documentHeldOutQualified: compiledBatch.constructionPromotion.promotedInducedConstructionSets,
         rejectedQualification: compiledBatch.constructionPromotion.rejectedInducedConstructionSets
       },
-      graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries.length,
+      constructionObservationReceipt: compiledBatch.constructionObservationReceipt,
+      graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentCount,
       rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates
     },
     observations,
@@ -1469,6 +1472,7 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     sourceCodeFunctionPatterns: prepared.patterns.filter(pattern => pattern.patternKind === "source_code_function").length,
     graphSnapshotDigest: prepared.graphSnapshotDigest,
     constructionAcquisition: { ...prepared.compilation.constructionAcquisition },
+    constructionObservationReceipt: structuredClone(prepared.compilation.constructionObservationReceipt),
     graphSurfaceAlignments: prepared.compilation.graphSurfaceAlignments,
     rejectedLanguageConstructions: prepared.compilation.rejectedLanguageConstructions,
     eventId: String(prepared.learned.id),
@@ -1583,6 +1587,8 @@ function stampUnit(unit: LanguageUnitRecord, sourceSystem: string, sourceSystemI
 
 /** The provenance every persisted pattern carries, which is also what the role-scoped hydration query matches on. */
 export function stampPattern(pattern: LanguagePatternRecord, sourceSystem: string, sourceSystemId: string, metadata: JsonValue): LanguagePatternRecord {
+  const schema = jsonRecord(pattern.patternJson).schema;
+  if (schema === SOURCE_SEGMENTATION_WITNESS_SCHEMA || schema === LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA) return pattern;
   return { ...pattern, patternJson: toJsonValue({ ...jsonRecord(pattern.patternJson), ...jsonRecord(metadata), sourceSystem, sourceSystemId, forceClass: "learned_language_prior" }) };
 }
 

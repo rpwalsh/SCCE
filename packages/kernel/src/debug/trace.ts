@@ -2,6 +2,11 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { mkdirSync, existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  installTraceEventSink,
+  type PortableTraceEvent,
+  type PortableTraceHandle
+} from "./trace-event.js";
 
 type TraceEvent = {
   traceId?: string;
@@ -18,10 +23,7 @@ type TraceEvent = {
   line?: number;
 };
 
-type TraceHandle = {
-  traceId: string;
-  file: string;
-};
+type TraceHandle = PortableTraceHandle;
 
 // Not a module-level handle; callers must store their own TraceHandle from createTrace.
 
@@ -60,10 +62,16 @@ export function createTrace(label?: string): TraceHandle | undefined {
   return { traceId, file };
 }
 
-export function traceEvent(trace: TraceHandle | undefined, event: Omit<TraceEvent, 'traceId' | 'time'>): void {
+function appendTraceEvent(trace: TraceHandle | undefined, event: Omit<TraceEvent, 'traceId' | 'time'>): void {
   if (!trace) return;
   const full: TraceEvent = { traceId: trace.traceId, time: new Date().toISOString(), ...event };
   try { appendFileSync(trace.file, JSON.stringify(redact(full)) + '\n', 'utf8'); } catch {}
+}
+
+installTraceEventSink((trace, event) => appendTraceEvent(trace, event));
+
+export function traceEvent(trace: TraceHandle | undefined, event: PortableTraceEvent): void {
+  appendTraceEvent(trace, event);
 }
 
 export function traceSpan<T>(

@@ -10,7 +10,7 @@ import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js
 import { createCanonicalCreativeEventCodec, type CreativeEventStorageHost } from "./canonical-creative-event-store.js";
 import { createConstructionSourceDecisionStore } from "./construction-source-decision-store.js";
 import { createSourceArtifactMetadataCodec } from "./source-artifact-metadata.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA } from "./durable-join-program-storage.js";
+import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA } from "./decoded-json-byte-ledger.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "./dialogue-conversational-checkpoint.js";
 import { pooledProfileOwnershipSql, profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
 import {
@@ -46,6 +46,12 @@ import {
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
   INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS,
   INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
+  LANGUAGE_SEGMENTATION_WITNESS_SCHEMA,
+  LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA,
+  SOURCE_SEGMENTATION_WITNESS_SCHEMA,
+  hydrateLanguageSegmentationWitness,
+  isLanguageSegmentationWitness,
+  isLanguageSegmentationWitnessReference,
   CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
   CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
   REQUEST_SEED_PATTERN_JSON_FIELDS,
@@ -141,6 +147,7 @@ import {
   type InducedLanguageModel,
   type InducedLanguageModelRecord,
   type InducedLanguageModelStore,
+  type LanguageSegmentationWitnessReference,
   type SegmentationPopulationModel,
   type SegmentationPopulationModelRecord,
   type SegmentationPopulationModelStore,
@@ -213,6 +220,12 @@ export {
   schemaStatements,
   isDuplicateExtensionError
 } from "./postgres-schema.js";
+
+const ARCHIVAL_LANGUAGE_PATTERN_SCHEMAS = Object.freeze([
+  SOURCE_SEGMENTATION_WITNESS_SCHEMA,
+  LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA
+]);
+const INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA_PREFIX = "scce.induced_language_model.syntax_memory.";
 
 
 export interface PostgresStorageOptions {
@@ -925,8 +938,8 @@ function sourceArtifactMetadataCodec(storage: PostgresStorageAdapter) {
 }
 
 function sourceArtifactJsonBytesSql(expression: string): string {
-  const ledger = `${expression}->'${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}'`;
-  return `CASE WHEN ${ledger}->>'schema'='${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA}'
+  const ledger = `${expression}->'${DECODED_JSON_BYTE_LEDGER_KEY}'`;
+  return `CASE WHEN ${ledger}->>'schema'='${DECODED_JSON_BYTE_LEDGER_SCHEMA}'
     AND jsonb_typeof(${ledger}->'decodedJsonbBytes')='number'
     THEN (${ledger}->>'decodedJsonbBytes')::numeric ELSE octet_length(${expression}::text) END`;
 }
@@ -3048,7 +3061,7 @@ function createSegmentationAggregateStore(storage: PostgresStorageAdapter): Segm
 interface InducedLanguageModelRow {
   id: string;
   training_plan_id: string;
-  model_json: InducedLanguageModel;
+  model_json: JsonValue;
   information_label: JsonValue;
   created_at: Date;
 }
@@ -3056,11 +3069,113 @@ interface InducedLanguageModelRow {
 function rowToInducedLanguageModelRecord(row: InducedLanguageModelRow): InducedLanguageModelRecord {
   return {
     id: row.id,
-    model: row.model_json,
+    model: row.model_json as unknown as InducedLanguageModel,
     trainingPlanId: row.training_plan_id,
     createdAt: row.created_at.getTime(),
     informationLabel: normalizeInformationLabel(row.information_label as never)
   };
+}
+
+function inducedModelObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+async function inducedLanguageWitnessManifest(
+  storage: PostgresStorageAdapter,
+  reference: LanguageSegmentationWitnessReference
+): Promise<LanguagePatternRecord> {
+  const rows = await storage.languageMemory.listLanguagePatterns({
+    patternIds: [reference.manifestPatternId],
+    limit: 1
+  });
+  if (rows.length !== 1) throw new Error("induced language model segmentation witness manifest is unavailable");
+  return rows[0]!;
+}
+
+function inducedLanguageManifestSourcePatternIds(manifest: LanguagePatternRecord): string[] {
+  const body = inducedModelObject(manifest.patternJson);
+  const populations = Array.isArray(body.populations) ? body.populations : [];
+  return populations.flatMap(population => {
+    const sources = inducedModelObject(population).sourceWitnesses;
+    return Array.isArray(sources) ? sources.flatMap(source => {
+      const patternId = inducedModelObject(source).patternId;
+      return typeof patternId === "string" && patternId ? [patternId] : [];
+    }) : [];
+  });
+}
+
+function validateInducedLanguageWitnessManifestIdentity(
+  reference: LanguageSegmentationWitnessReference,
+  manifest: LanguagePatternRecord,
+  expectedWitnessId?: string
+): string {
+  const body = inducedModelObject(manifest.patternJson);
+  const witnessId = body.id;
+  if (body.schema !== LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA
+    || body.witnessSchema !== LANGUAGE_SEGMENTATION_WITNESS_SCHEMA
+    || typeof witnessId !== "string" || !witnessId
+    || (expectedWitnessId !== undefined && witnessId !== expectedWitnessId)) {
+    throw new Error("induced language model segmentation witness differs from its canonical manifest");
+  }
+  const expectedPatternId = `segmentation_archive.${createHasher().digestHex(canonicalStringify([witnessId, manifest.profileId]))}`;
+  if (manifest.id !== reference.manifestPatternId || manifest.id !== expectedPatternId) {
+    throw new Error("induced language model segmentation witness manifest identity changed");
+  }
+  return witnessId;
+}
+
+async function hydrateInducedLanguageModel(
+  storage: PostgresStorageAdapter,
+  stored: JsonValue
+): Promise<InducedLanguageModel> {
+  const model = inducedModelObject(stored);
+  const value = model.segmentationWitness;
+  if (value === undefined) {
+    throw new Error("induced language model is missing its canonical segmentation witness reference");
+  }
+  if (inducedModelObject(value).schema === LANGUAGE_SEGMENTATION_WITNESS_SCHEMA) {
+    throw new Error("embedded induced language segmentation witnesses are retired; reproject the model through canonical witness archives");
+  }
+  if (!isLanguageSegmentationWitnessReference(value)) {
+    throw new Error("induced language model has an invalid segmentation witness reference");
+  }
+  const manifest = await inducedLanguageWitnessManifest(storage, value);
+  const sourcePatternIds = inducedLanguageManifestSourcePatternIds(manifest);
+  const sourceWitnesses = sourcePatternIds.length
+    ? await storage.languageMemory.listLanguagePatterns({ patternIds: sourcePatternIds, limit: sourcePatternIds.length })
+    : [];
+  const segmentationWitness = hydrateLanguageSegmentationWitness({
+    reference: value,
+    manifest,
+    sourceWitnesses
+  });
+  return { ...model, segmentationWitness } as unknown as InducedLanguageModel;
+}
+
+async function inducedLanguageModelForStorage(
+  storage: PostgresStorageAdapter,
+  record: InducedLanguageModelRecord
+): Promise<JsonValue> {
+  const model = inducedModelObject(record.model);
+  const witness = model.segmentationWitness;
+  if (witness === undefined) {
+    throw new Error("induced language model is missing its canonical segmentation witness");
+  }
+  if (!isLanguageSegmentationWitness(witness)) {
+    if (isLanguageSegmentationWitnessReference(witness)) {
+      const manifest = await inducedLanguageWitnessManifest(storage, witness);
+      validateInducedLanguageWitnessManifestIdentity(witness, manifest);
+      return record.model as unknown as JsonValue;
+    }
+    throw new Error("induced language model has an invalid segmentation witness");
+  }
+  const reference = record.segmentationWitnessReference;
+  if (!reference || !isLanguageSegmentationWitnessReference(reference)) {
+    throw new Error("full induced language segmentation witnesses require a canonical archive reference");
+  }
+  const manifest = await inducedLanguageWitnessManifest(storage, reference);
+  validateInducedLanguageWitnessManifestIdentity(reference, manifest, witness.id);
+  return toJsonValue({ ...model, segmentationWitness: reference });
 }
 
 /** Durable full induction-model persistence (Part B step 3). */
@@ -3068,7 +3183,8 @@ function createInducedLanguageModelStore(storage: PostgresStorageAdapter): Induc
   return {
     async putModel(record) {
       await storage.transaction(async () => {
-      const model = await canonicalCreativeCodec(storage).encode(record.model, record.informationLabel);
+      const checkpoint = await inducedLanguageModelForStorage(storage, record);
+      const model = await canonicalCreativeCodec(storage).encode(checkpoint, record.informationLabel);
       await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("induced_language_models")}(id,training_plan_id,model_json,corpus_documents,vocabulary_size,information_label,created_at)
          VALUES($1,$2,$3::jsonb,$4,$5,$6::jsonb,TO_TIMESTAMP($7/1000.0))
@@ -3091,8 +3207,9 @@ function createInducedLanguageModelStore(storage: PostgresStorageAdapter): Induc
         [id]
       );
       if (!rows[0]) return undefined;
-      const [model] = await canonicalCreativeCodec(storage).decodeMany([rows[0].model_json]);
-      return rowToInducedLanguageModelRecord({ ...rows[0], model_json: model as InducedLanguageModel });
+      const [stored] = await canonicalCreativeCodec(storage).decodeMany([rows[0].model_json]);
+      const model = await hydrateInducedLanguageModel(storage, stored as JsonValue);
+      return rowToInducedLanguageModelRecord({ ...rows[0], model_json: model as unknown as JsonValue });
     },
     async listRecent(query = {}) {
       const limit = Math.max(1, Math.min(200, query.limit ?? 20));
@@ -3100,8 +3217,9 @@ function createInducedLanguageModelStore(storage: PostgresStorageAdapter): Induc
         `SELECT * FROM ${storage.table("induced_language_models")} ORDER BY created_at DESC LIMIT $1`,
         [limit]
       );
-      const models = await canonicalCreativeCodec(storage).decodeMany(rows.map(row => row.model_json));
-      return rows.map((row, index) => rowToInducedLanguageModelRecord({ ...row, model_json: models[index] as InducedLanguageModel }));
+      const stored = await canonicalCreativeCodec(storage).decodeMany(rows.map(row => row.model_json));
+      const models = await Promise.all(stored.map(model => hydrateInducedLanguageModel(storage, model as JsonValue)));
+      return rows.map((row, index) => rowToInducedLanguageModelRecord({ ...row, model_json: models[index] as unknown as JsonValue }));
     }
   };
 }
@@ -4788,6 +4906,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     async listLanguagePatterns(query = {}) {
       if (query.requireComplete && (!Number.isSafeInteger(query.limit) || query.limit! <= 0
         || !Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) throw new Error("complete pattern reads require positive finite row and decoded byte bounds");
+      const requestedPatternIds = query.patternIds ? [...new Set(query.patternIds)] : undefined;
       const params: unknown[] = [];
       const projectionSets: string[] = [];
       const projectionScope: string[] = [];
@@ -4815,8 +4934,16 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       if (query.patternIds) {
         if (!query.patternIds.length) return [];
-        params.push([...new Set(query.patternIds)]);
+        params.push(requestedPatternIds!);
         scopeWhere.push(`pattern.id=ANY($${params.length}::text[])`);
+      }
+      // Segmentation witnesses are durable audit evidence, not generative/search memory. They are visible only
+      // through an ordinary exact-ID audit read; request-seed projection must never hydrate their large bodies.
+      if (!requestedPatternIds || query.view === "request_seed") {
+        // IS DISTINCT FROM is intentional: historical active language patterns predate the generated schema
+        // header and therefore carry NULL. SQL NOT IN would turn that legitimate row into UNKNOWN and drop it.
+        scopeWhere.push(`(${ARCHIVAL_LANGUAGE_PATTERN_SCHEMAS
+          .map(schema => `pattern.pattern_schema IS DISTINCT FROM '${schema}'`).join(" AND ")})`);
       }
       if (query.profileIds) {
         if (!query.profileIds.length) return [];
@@ -4872,25 +4999,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             AND (NOT (pattern.has_source_version) OR current_compilation."sourceVersionId"=pattern.owned_source_version_id)
         ))`);
       }
-      if (!query.patternSchemas || query.patternSchemas.includes(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA)) {
-        const inducedSyntaxSchemaParam = params.length + 1;
-        params.push(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA);
-        const inducedSyntaxRecipeParam = params.length + 1;
-        params.push(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
-        const activeSyntaxAccess = storage.informationAccessPredicate("active_syntax", params.length + 1);
-        params.push(...activeSyntaxAccess.params);
-        where.push(`(pattern.pattern_schema IS DISTINCT FROM $${inducedSyntaxSchemaParam}
-          OR pattern.component_recipe=$${inducedSyntaxRecipeParam}
-          OR NOT EXISTS (
-            SELECT 1 FROM ${storage.table("language_patterns")} active_syntax
-            WHERE active_syntax.profile_id=pattern.profile_id
-              AND active_syntax.source_system=pattern.source_system
-              AND active_syntax.owned_source_version_id=pattern.owned_source_version_id
-              AND active_syntax.pattern_schema=$${inducedSyntaxSchemaParam}
-              AND active_syntax.component_recipe=$${inducedSyntaxRecipeParam}
-              AND ${activeSyntaxAccess.sql}
-          ))`);
-      }
+      const inducedSyntaxSchemaParam = params.length + 1;
+      params.push(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA);
+      const inducedSyntaxRecipeParam = params.length + 1;
+      params.push(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
+      // Retired syntax generations carried the full segmentation witness. They are inert even when no current
+      // row exists; only the compact current schema+recipe may proceed to the active-projection ownership gate.
+      where.push(`(pattern.pattern_schema IS NULL
+        OR NOT starts_with(pattern.pattern_schema,'${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA_PREFIX}')
+        OR (pattern.pattern_schema=$${inducedSyntaxSchemaParam} AND pattern.component_recipe=$${inducedSyntaxRecipeParam}))`);
       for (const [patternSchema, componentRecipe] of [
         [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID],
         [SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID],
@@ -5045,7 +5162,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ELSE 'other'
       END`;
       const narrow = "decoded_jsonb_bytes,id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label,pattern_schema,pattern_language,source_system";
-      const decodedJsonbBytes = query.view === "request_seed" ? "CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_jsonb_bytes ELSE NULL::numeric END" : "pattern.decoded_jsonb_bytes";
+      const decodedJsonbBytes = query.view === "request_seed" ? "CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_artifact_jsonb_bytes ELSE NULL::numeric END" : "pattern.decoded_artifact_jsonb_bytes";
       // Exact prerequisites share one budget; category quotas apply only to searches.
       const partition = (alias: string) => query.patternIds ? "" : `PARTITION BY ${category(alias)} `;
       const byteAllowance = query.patternIds ? `$${params.length}` : `CEIL($${params.length}::numeric / category_counts.n)`;
@@ -5057,7 +5174,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                ROW_NUMBER() OVER (${partition("candidate")}ORDER BY ${order("candidate")}) AS category_relevance_rank
              FROM candidates candidate
            ) sized CROSS JOIN category_counts
-           WHERE sized.running_stored_bytes <= ${byteAllowance} OR sized.category_relevance_rank = 1`
+           WHERE sized.running_stored_bytes <= ${byteAllowance}${requestedPatternIds ? "" : " OR sized.category_relevance_rank = 1"}`
         : `SELECT ${narrow} FROM candidates`;
       const finalSelect = byteBudget
         ? `SELECT ranked.id,ranked.profile_id,ranked.pattern_kind,ranked.support,ranked.entropy,ranked.pattern_json,ranked.evidence_ids,ranked.updated_at,ranked.information_label
@@ -5067,7 +5184,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                ROW_NUMBER() OVER (${partition("eligible")}ORDER BY ${order("eligible")}) AS category_relevance_rank
              FROM eligible_patterns eligible
            ) ranked CROSS JOIN category_counts
-           WHERE ranked.running_json_bytes <= ${byteAllowance} OR ranked.category_relevance_rank = 1
+           WHERE ranked.running_json_bytes <= ${byteAllowance}${requestedPatternIds ? "" : " OR ranked.category_relevance_rank = 1"}
            ORDER BY ${order("ranked")} LIMIT $${limitParam}`
         : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
       const resultSelect = query.requireComplete
@@ -5176,6 +5293,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
          ${resultSelect}`,
         params
       );
+      if (requestedPatternIds) {
+        const returnedPatternIds = new Set(rows.map(row => row.id));
+        if (rows.length !== requestedPatternIds.length || requestedPatternIds.some(id => !returnedPatternIds.has(id))) return [];
+      }
       const patterns = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.pattern_json, profileId: row.profile_id, informationLabel: row.information_label })));
       const indices = patterns.flatMap((value, index) => isSourceCompilationMetadataHolder(value) ? [] : [index]);
       const decoded = await canonicalCreativeCodec(storage).decodeMany(indices.map(index => patterns[index]));

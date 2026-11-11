@@ -11,7 +11,11 @@ import {
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation
 } from "./language-training-batch.js";
-import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
+import {
+  languageMemoryPatternsFromInducedLanguageModel,
+  validateLanguageSegmentationWitnessReference,
+  type LanguageSegmentationWitnessReference
+} from "./language-induction-memory.js";
 import { SEGMENTATION_POPULATION_SCHEMA } from "./segmentation-population.js";
 import { CORPUS_ROLE_IDS, canonicalCorpusSourceSystemId, corpusSourceAlias, corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
 import {
@@ -339,7 +343,7 @@ export function createTrainingRuntime(options: {
       units += memory.units.length;
       patterns += memory.patterns.length;
       semanticFrames += memory.semanticFrames.length;
-      graphSurfaceAlignments += memory.graphSurfaceAlignmentSummaries.length;
+      graphSurfaceAlignments += memory.graphSurfaceAlignmentCount;
       sparseAlignmentCandidateSupports += memory.sparseAlignmentCandidateSupports.length;
       sparseAlignmentCandidates += memory.sparseAlignmentCandidateSupports.reduce(
         (sum, support) => sum + support.candidates.length,
@@ -491,13 +495,6 @@ export function createTrainingRuntime(options: {
       const reusedCanonicalCompilation = Number(languageAudit.sourceGroupsTotal) > 0
         && languageAudit.reusedSourceGroups === languageAudit.sourceGroupsTotal;
       if (inducedLanguageModel && !reusedCanonicalCompilation && deps.storage.inducedLanguageModels && deps.sourceInformationLabel) {
-        await deps.storage.inducedLanguageModels.putModel({
-          id: inducedLanguageModel.id,
-          model: inducedLanguageModel,
-          trainingPlanId: mvpTrainPlan.id,
-          createdAt: clock.now(),
-          informationLabel: deps.sourceInformationLabel
-        });
         const projection = languageMemoryPatternsFromInducedLanguageModel({
           model: inducedLanguageModel,
           profiles,
@@ -509,6 +506,24 @@ export function createTrainingRuntime(options: {
         for (const pattern of projection.patterns) {
           await deps.storage.languageMemory.putLanguagePattern(pattern);
         }
+        const segmentationReferences = projection.patterns.flatMap(pattern => {
+          const candidate = jsonRecord(pattern.patternJson).segmentationWitness;
+          if (candidate === undefined) return [];
+          validateLanguageSegmentationWitnessReference(candidate);
+          return [candidate];
+        });
+        const manifestPatternIds = new Set(segmentationReferences.map(reference => reference.manifestPatternId));
+        if (!segmentationReferences.length || manifestPatternIds.size !== 1) {
+          throw new Error("induced language model projection has no unique segmentation witness manifest");
+        }
+        await deps.storage.inducedLanguageModels.putModel({
+          id: inducedLanguageModel.id,
+          model: inducedLanguageModel,
+          trainingPlanId: mvpTrainPlan.id,
+          createdAt: clock.now(),
+          informationLabel: deps.sourceInformationLabel,
+          segmentationWitnessReference: segmentationReferences[0] as LanguageSegmentationWitnessReference
+        });
         if (deps.storage.segmentationPopulations && inducedLanguageModel.segmentationPopulations.schema === SEGMENTATION_POPULATION_SCHEMA) {
           const projectedProfileIds = new Set(projection.profileIds);
           await deps.storage.segmentationPopulations.putModel({

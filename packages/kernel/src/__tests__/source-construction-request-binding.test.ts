@@ -456,8 +456,18 @@ describe("acquired typed request construction transfer", () => {
       fact("ada-london", "ada", "london"), fact("ada-paris", "ada", "paris"), fact("eve-london", "eve", "london"),
       fact("eve-paris", "eve", "paris"), fact("ada-request", "ada"), fact("eve-request", "eve")
     ] };
+    const independentConstructionEvidence = Array.from({ length: 12 }, (_, index) => {
+      const sourceVersionId = ids.sourceVersionId(`null-role-heldout.${index}`);
+      return {
+        ...evidence,
+        id: ids.evidenceId({ sourceVersionId, byteStart: evidence.byteStart, byteEnd: evidence.byteEnd, spanHash: evidence.contentHash }),
+        sourceId: ids.sourceId("fixture", `fixture://null-role-heldout.${index}`),
+        sourceVersionId
+      };
+    });
     const trained = compileLanguageTrainingBatch({ hasher, runtime: createLanguageMemoryRuntime({ hasher, idFactory: ids }), batch: {
-      streamId: "fixture://null-role-transfer", profile, sourceVersionId: evidence.sourceVersionId, text, evidence: [evidence], graphSnapshot: graph, createdAt: 140_000
+      streamId: "fixture://null-role-transfer", profile, sourceVersionId: evidence.sourceVersionId, text, evidence: [evidence],
+      constructionEvidence: [evidence, ...independentConstructionEvidence], graphSnapshot: graph, createdAt: 140_000
     } });
     const restarted = createLanguageMemoryRuntime({ hasher, idFactory: ids }).hydrate({ models: [], patterns: trained.patterns, constructionEvidence: [evidence] });
     expect(restarted.rejectedConstructionPatterns).toEqual([]);

@@ -1,0 +1,159 @@
+query VscodeRuntimeQuery {
+  runtime {
+    protocolVersion
+    generation
+    phase
+    ready
+  }
+}
+
+mutation VscodeReserveTurnMutation($input: ReserveTurnInput!) {
+  reserveTurn(input: $input) {
+    clientMutationId
+    task {
+      id
+      status
+      latestSequence
+      persistence
+    }
+  }
+}
+
+mutation VscodeStartTurnMutation($input: StartTurnInput!) {
+  startTurn(input: $input) {
+    clientMutationId
+    task {
+      id
+      status
+      latestSequence
+      persistence
+    }
+  }
+}
+
+mutation VscodeCancelTurnMutation($input: CancelTurnInput!) {
+  cancelTurn(input: $input) {
+    clientMutationId
+    task {
+      id
+      status
+      latestSequence
+      persistence
+    }
+  }
+}
+
+subscription VscodeTurnTaskSubscription($id: ID!, $afterSequence: Int!) {
+  turnTaskUpdated(id: $id, afterSequence: $afterSequence) {
+    id
+    status
+    latestSequence
+    persistence
+    latestFrame {
+      id
+      sequence
+      kind
+      phase
+      answer
+      error
+      observedAt
+      status
+      elapsedMs
+      value
+      detail
+      assistantForce
+    }
+    result {
+      id
+      answer
+      error
+      httpStatus
+      episodeId
+      value
+      detail
+      dialogue {
+        conversationId
+        turnId
+      }
+      entailment
+      proofCarryingAnswer
+      events {
+        typeId
+        id
+      }
+      evidence {
+        id
+        sourceId
+        textPreview
+        provenance
+      }
+      guardFlags {
+        sourceBacked
+      }
+      index
+    }
+  }
+}
+
+query VscodeReadyQuery { vscodeReady { ok postgres serverUrl manifest exactCounts warmup } }
+query VscodeProjectSummaryQuery($path: String!) { vscodeProjectSummary(path: $path) { schema workspace summary } }
+query VscodeWorkspaceStatusQuery {
+  vscodeWorkspaceStatus { workspace { id rootPath updatedAt } sources { path } }
+}
+query VscodeLearningCurriculumQuery {
+  vscodeLearningCurriculum { schema items { planId query rationale } }
+}
+query VscodeHeldSourcesQuery($first: Int!) {
+  vscodeHeldSources(first: $first) { schema held { id uri title preview evidenceCount } }
+}
+query VscodeSettingsQuery {
+  vscodeSettings { schema configPath fields { key label kind choices value } }
+}
+query VscodeModelsQuery {
+  vscodeModels { schema modelDir models { id path bytes files active size } totalBytes }
+}
+query VscodeCodeValidationPoliciesQuery {
+  vscodeCodeValidationPolicies { policies { id checks } provider }
+}
+
+mutation VscodeWorkspaceInitializeMutation($input: VscodePathCommandInput!) {
+  vscodeWorkspaceInitialize(input: $input) { workspace { id rootPath updatedAt } clientMutationId }
+}
+mutation VscodeWorkspaceIngestMutation($input: VscodePathCommandInput!) {
+  vscodeWorkspaceIngest(input: $input) {
+    schema importBatchId ingested unchanged changed missing failed unsupported workspace project clientMutationId
+  }
+}
+mutation VscodeWorkspaceAskMutation($input: VscodeAskCommandInput!) {
+  vscodeWorkspaceAsk(input: $input) { schema question answer confidence sourceRefs clientMutationId }
+}
+mutation VscodeWorkspaceCodingPatchPlanMutation($input: VscodeJsonCommandInput!) {
+  vscodeWorkspaceCodingPatchPlan(input: $input) { value clientMutationId }
+}
+mutation VscodeWorkspacePatchMutation($input: VscodeJsonCommandInput!) {
+  vscodeWorkspacePatch(input: $input) { value clientMutationId }
+}
+mutation VscodeLearningPursueMutation($input: VscodePlanCommandInput!) {
+  vscodeLearningPursue(input: $input) { schema answer held { id uri title preview evidenceCount } clientMutationId }
+}
+mutation VscodeReviewHeldSourceMutation($input: VscodeReviewCommandInput!) {
+  vscodeReviewHeldSource(input: $input) { schema review { id decision promotedEvidence } clientMutationId }
+}
+mutation VscodeApprovePlanMutation($input: VscodePlanCommandInput!) {
+  vscodeApprovePlan(input: $input) { approved { planId capabilityId } session clientMutationId }
+}
+mutation VscodeRejectPlanMutation($input: VscodePlanCommandInput!) {
+  vscodeRejectPlan(input: $input) { rejected { planId capabilityId } session clientMutationId }
+}
+mutation VscodeUpdateSettingMutation($input: VscodeSettingCommandInput!) {
+  vscodeUpdateSetting(input: $input) { schema key value configPath restartRequired clientMutationId }
+}
+mutation VscodeDownloadModelMutation($input: VscodeModelCommandInput!) {
+  vscodeDownloadModel(input: $input) { schema model { id path bytes files active size } clientMutationId }
+}
+mutation VscodeRemoveModelMutation($input: VscodeModelCommandInput!) {
+  vscodeRemoveModel(input: $input) { schema modelId removed clientMutationId }
+}
+mutation VscodeEditCodeMutation($input: VscodeCodeCommandInput!) {
+  vscodeEditCode(input: $input) { value clientMutationId }
+}

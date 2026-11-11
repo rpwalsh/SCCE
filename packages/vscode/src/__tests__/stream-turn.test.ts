@@ -1,20 +1,38 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ScceClient, parseTurnStreamFrame, type TurnStreamFrame } from "../client.js";
+import { ScceClient } from "../client.js";
 
-describe("ScceClient.streamTurn", () => {
+const GENERATION = "host-generation";
+const TASK_ID = "registered-local-task-id";
+
+describe("ScceClient.streamTurn GraphQL task transport", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
-  it("streams progress frames and resolves with the result frame's value", async () => {
-    const lines: TurnStreamFrame[] = [
-      { schema: "scce.turn_stream.v1", type: "accepted", taskId: "task-1", sequence: 1, streamUrl: "http://127.0.0.1:3873/api/turn/task/task-1/stream" },
-      { schema: "scce.turn_stream.v1", type: "progress", taskId: "task-1", phase: "runtime.working", sequence: 2 },
-      { schema: "scce.turn_stream.v1", type: "result", taskId: "task-1", sequence: 3, value: { answer: "Ada Lovelace was a mathematician." } }
-    ];
-    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => streamingResponse(lines));
+  it("reserves and starts once, streams typed SSE updates, and preserves the complete TurnAnswer", async () => {
+    const answerValue = {
+      answer: "Ada Lovelace was a mathematician.",
+      dialogue: { conversationId: "session-1", turnId: "turn-1" },
+      evidence: [{ id: "evidence-1", sourceId: "source-1", textPreview: "Ada wrote notes.", provenance: { byteStart: 4 } }],
+      guardFlags: { sourceBacked: true },
+      proofCarryingAnswer: { proofId: "proof-1" },
+      index: { selectedEvidenceIds: ["evidence-1"] }
+    };
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      if (request.operationName === "VscodeRuntimeQuery") return runtimeResponse();
+      if (request.operationName === "VscodeReserveTurnMutation") return mutationResponse("reserveTurn", request, "accepted", 1);
+      if (request.operationName === "VscodeStartTurnMutation") return mutationResponse("startTurn", request, "running", 2);
+      if (request.operationName === "VscodeTurnTaskSubscription") return subscriptionResponse([
+        taskUpdate(1, "accepted"),
+        taskUpdate(2, "progress", { phase: "runtime.working" }),
+        taskUpdate(3, "result", { result: { value: answerValue, answer: answerValue.answer, httpStatus: 200 } })
+      ], true);
+      throw new Error(`unexpected operation ${request.operationName}`);
+    });
     vi.stubGlobal("fetch", fetchMock);
     const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
     const phases: string[] = [];
@@ -24,86 +42,142 @@ describe("ScceClient.streamTurn", () => {
       frame => { if (frame.type === "progress") phases.push(frame.phase ?? ""); }
     );
 
-    expect(answer).toEqual({ answer: "Ada Lovelace was a mathematician." });
+    expect(answer).toEqual(answerValue);
     expect(phases).toEqual(["runtime.working"]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const call = fetchMock.mock.calls[0];
-    if (!call) throw new Error("fetch was not called");
-    const [url, init] = call;
-    expect(url).toBe("http://127.0.0.1:3873/api/turn?stream=1");
-    expect(init).toMatchObject({ method: "POST", headers: { accept: "application/x-ndjson", "content-type": "application/json" } });
-    expect(JSON.parse(String(init?.body))).toEqual({ text: "Who was Ada Lovelace?", sessionId: "session-1", conversationId: "session-1" });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls.every(call => String(call[0]) === "http://127.0.0.1:3873/api/graphql")).toBe(true);
+    const requests = fetchMock.mock.calls.map(call => requestBody(call[1]));
+    expect(requests.map(request => request.operationName)).toEqual([
+      "VscodeRuntimeQuery", "VscodeReserveTurnMutation", "VscodeStartTurnMutation", "VscodeTurnTaskSubscription"
+    ]);
+    expect(requests[2]?.variables).toMatchObject({ input: {
+      operationId: TASK_ID,
+      text: "Who was Ada Lovelace?",
+      sessionId: "session-1",
+      conversationId: "session-1"
+    } });
+    expect(requests[3]?.variables).toEqual({ id: TASK_ID, afterSequence: 0 });
+    expect(fetchMock.mock.calls[3]?.[1]?.headers).toMatchObject({ accept: "text/event-stream", "content-type": "application/json" });
   });
 
-  it("reconnects to the server-issued streamUrl when the first connection ends without a terminal frame", async () => {
-    const first: TurnStreamFrame[] = [
-      { schema: "scce.turn_stream.v1", type: "accepted", taskId: "task-2", sequence: 1, streamUrl: "http://127.0.0.1:3873/api/turn/task/task-2/stream" },
-      { schema: "scce.turn_stream.v1", type: "progress", taskId: "task-2", phase: "runtime.graph_slice", sequence: 2 }
-    ];
-    const second: TurnStreamFrame[] = [
-      { schema: "scce.turn_stream.v1", type: "result", taskId: "task-2", sequence: 3, value: { answer: "Reconnected answer." } }
-    ];
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(streamingResponse(first))
-      .mockResolvedValueOnce(streamingResponse(second));
+  it("reconnects the same registered subscription after the last observed sequence without reserving or starting again", async () => {
+    let subscriptions = 0;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      if (request.operationName === "VscodeRuntimeQuery") return runtimeResponse();
+      if (request.operationName === "VscodeReserveTurnMutation") return mutationResponse("reserveTurn", request, "accepted", 1);
+      if (request.operationName === "VscodeStartTurnMutation") return mutationResponse("startTurn", request, "running", 2);
+      if (request.operationName === "VscodeTurnTaskSubscription") {
+        subscriptions++;
+        return subscriptions === 1
+          ? subscriptionResponse([taskUpdate(2, "progress", { phase: "runtime.graph_slice" })], false)
+          : subscriptionResponse([taskUpdate(3, "result", { result: { value: { answer: "Reconnected answer." }, httpStatus: 200 } })], true);
+      }
+      throw new Error(`unexpected operation ${request.operationName}`);
+    });
     vi.stubGlobal("fetch", fetchMock);
     vi.useFakeTimers();
     const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
 
     const pending = client.streamTurn({ text: "hello", sessionId: "session-2" }, () => {});
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(300);
     const answer = await pending;
 
     expect(answer).toEqual({ answer: "Reconnected answer." });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("http://127.0.0.1:3873/api/turn/task/task-2/stream?after=2");
-    vi.useRealTimers();
+    const requests = fetchMock.mock.calls.map(call => requestBody(call[1]));
+    expect(requests.filter(request => request.operationName === "VscodeReserveTurnMutation")).toHaveLength(1);
+    expect(requests.filter(request => request.operationName === "VscodeStartTurnMutation")).toHaveLength(1);
+    expect(requests.filter(request => request.operationName === "VscodeTurnTaskSubscription").map(request => request.variables))
+      .toEqual([{ id: TASK_ID, afterSequence: 0 }, { id: TASK_ID, afterSequence: 2 }]);
   });
 
-  it("rejects when the server emits an error frame", async () => {
-    const lines: TurnStreamFrame[] = [
-      { schema: "scce.turn_stream.v1", type: "error", taskId: "task-3", sequence: 1, error: "runtime failure: no candidate selected" }
-    ];
-    vi.stubGlobal("fetch", vi.fn(async () => streamingResponse(lines)));
+  it("rejects when the GraphQL task emits an error frame", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      if (request.operationName === "VscodeRuntimeQuery") return runtimeResponse();
+      if (request.operationName === "VscodeReserveTurnMutation") return mutationResponse("reserveTurn", request, "accepted", 1);
+      if (request.operationName === "VscodeStartTurnMutation") return mutationResponse("startTurn", request, "running", 2);
+      return subscriptionResponse([taskUpdate(3, "error", { result: { error: "runtime failure: no candidate selected", httpStatus: 500 } })], true);
+    });
+    vi.stubGlobal("fetch", fetchMock);
     const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
 
     await expect(client.streamTurn({ text: "hello", sessionId: "session-3" }, () => {}))
       .rejects.toThrow("runtime failure: no candidate selected");
   });
 
-  it("propagates abort signal cancellation instead of retrying", async () => {
+  it("turns an explicit AbortSignal into one registered cancellation for the reserved task", async () => {
     const controller = new AbortController();
-    const fetchMock = vi.fn(async () => {
-      controller.abort();
-      const error = new Error("aborted");
-      error.name = "AbortError";
-      throw error;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      if (request.operationName === "VscodeRuntimeQuery") return runtimeResponse();
+      if (request.operationName === "VscodeReserveTurnMutation") return mutationResponse("reserveTurn", request, "accepted", 1);
+      if (request.operationName === "VscodeStartTurnMutation") return mutationResponse("startTurn", request, "running", 2);
+      if (request.operationName === "VscodeCancelTurnMutation") return mutationResponse("cancelTurn", request, "cancelled", 3);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
     });
     vi.stubGlobal("fetch", fetchMock);
     const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 5_000 });
 
-    await expect(client.streamTurn({ text: "hello", sessionId: "session-4" }, () => {}, controller.signal))
-      .rejects.toMatchObject({ name: "AbortError" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const pending = client.streamTurn({ text: "hello", sessionId: "session-4" }, () => {}, controller.signal);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+
+    const requests = fetchMock.mock.calls.map(call => requestBody(call[1]));
+    expect(requests.filter(request => request.operationName === "VscodeCancelTurnMutation")).toHaveLength(1);
+    expect(requests.at(-1)?.variables).toMatchObject({ input: { taskId: TASK_ID } });
   });
 });
 
-describe("parseTurnStreamFrame", () => {
-  it("parses a well-formed NDJSON line", () => {
-    const frame = parseTurnStreamFrame(JSON.stringify({ schema: "scce.turn_stream.v1", type: "progress", phase: "runtime.working" }));
-    expect(frame).toMatchObject({ type: "progress", phase: "runtime.working" });
-  });
+interface RequestEnvelope {
+  operationName: string;
+  generation?: string;
+  variables: Record<string, unknown>;
+}
 
-  it("rejects a non-JSON line", () => {
-    expect(() => parseTurnStreamFrame("not json")).toThrow("non-JSON");
-  });
+function requestBody(init?: RequestInit): RequestEnvelope {
+  return JSON.parse(String(init?.body)) as RequestEnvelope;
+}
 
-  it("rejects a frame with an unrecognized type", () => {
-    expect(() => parseTurnStreamFrame(JSON.stringify({ type: "mystery" }))).toThrow("unrecognized type");
-  });
-});
+function runtimeResponse(): Response {
+  return graphqlResponse({ runtime: { protocolVersion: "scce.graphql.v1", generation: GENERATION, phase: "ready", ready: true } });
+}
 
-function streamingResponse(frames: readonly TurnStreamFrame[]): Response {
-  const body = frames.map(frame => `${JSON.stringify(frame)}\n`).join("");
-  return new Response(body, { status: 200, headers: { "content-type": "application/x-ndjson" } });
+function mutationResponse(field: "reserveTurn" | "startTurn" | "cancelTurn", request: RequestEnvelope, status: string, latestSequence: number): Response {
+  const input = request.variables.input as Record<string, unknown>;
+  return graphqlResponse({ [field]: {
+    clientMutationId: input.clientMutationId,
+    task: { id: TASK_ID, status, latestSequence, persistence: "durable" }
+  } });
+}
+
+function taskUpdate(sequence: number, kind: "accepted" | "progress" | "result" | "error" | "cancelled", extra: {
+  phase?: string;
+  result?: Record<string, unknown>;
+} = {}): Record<string, unknown> {
+  return { turnTaskUpdated: {
+    id: TASK_ID,
+    status: kind === "result" ? "succeeded" : kind === "error" ? "failed" : kind === "cancelled" ? "cancelled" : kind === "progress" ? "running" : "accepted",
+    latestSequence: sequence,
+    persistence: "durable",
+    latestFrame: { id: `frame-${sequence}`, sequence, kind, phase: extra.phase ?? null, answer: null, error: null, observedAt: sequence,
+      status: null, elapsedMs: null, value: null, detail: null, assistantForce: null },
+    result: extra.result ?? null
+  } };
+}
+
+function graphqlResponse(data: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({ data, extensions: {
+    protocolVersion: "scce.graphql.v1", generation: GENERATION, requestId: "request-test"
+  } }), { status: 200, headers: { "content-type": "application/graphql-response+json" } });
+}
+
+function subscriptionResponse(updates: readonly Record<string, unknown>[], complete: boolean): Response {
+  const body = updates.map(data => `event: next\ndata: ${JSON.stringify({ data, extensions: {
+    protocolVersion: "scce.graphql.v1", generation: GENERATION, requestId: "request-test"
+  } })}\n\n`).join("") + (complete ? "event: complete\ndata: {}\n\n" : "");
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream; charset=utf-8" } });
 }

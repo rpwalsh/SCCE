@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalDigestHex, canonicalStringify, createHasher, normalizeInformationLabel, REQUEST_SEED_PATTERN_JSON_FIELDS, REQUEST_SEED_FRAME_JSON_FIELDS, toJsonValue, validateSourceLanguageCompilationHeader, type SourceId, type SourceVersionId, type ContentHash, type InformationLabel } from "@scce/kernel";
 import { profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
-import { DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, durableJoinProgramJsonByteLengths } from "./durable-join-program-storage.js";
+import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths } from "./durable-artifact-storage.js";
 import type { CreativeEventStorageHost } from "./canonical-creative-event-store.js";
 
 export const SOURCE_ARTIFACT_METADATA_KEY = "_scceSourceArtifactMetadata";
@@ -15,7 +15,7 @@ const fail = (): never => { throw new Error("canonical source artifact metadata 
 // Keep SQL roots inline; share proven semantic provenance scalars only.
 const SCALAR_PROVENANCE_FIELDS = new Set(["sourceUri", "sourceHash", "sourceSystemId", "title", "authorship", "corpusRole", "forceClass", "provenanceClass", "transcriptSchema", "annotatedTurns"]);
 const SCALAR_PROVENANCE_SCHEMAS = new Set(["scce.language_construction_pattern.v1", "scce.induced_language_model.semantic_memory.v1"]);
-const QUERY_ROOTS = new Set<string>([...REQUEST_SEED_PATTERN_JSON_FIELDS, ...REQUEST_SEED_FRAME_JSON_FIELDS, "graphBoundConstructions", "lexicalClasses", "sourceCompilation", "compilation", "inheritedMetadata", "bundle", "joinProgram", "profileBinding", "sourceDependencies", "requestDependencies", "trainingWitnesses", "pooledSourceBinding", "requirementCoefficients", "model", "identity", "sourceAdmission", "sourceMetadataBinding", "transcriptArchive"]);
+const QUERY_ROOTS = new Set<string>([...REQUEST_SEED_PATTERN_JSON_FIELDS, ...REQUEST_SEED_FRAME_JSON_FIELDS, "graphBoundConstructions", "lexicalClasses", "sourceCompilation", "compilation", "inheritedMetadata", "bundle", "segmentationWitness", "profileBinding", "sourceDependencies", "requestDependencies", "trainingWitnesses", "pooledSourceBinding", "requirementCoefficients", "model", "identity", "sourceAdmission", "sourceMetadataBinding", "transcriptArchive"]);
 interface Input { artifactFamily?: "language_pattern"; value: unknown; logicalValue?: unknown; profileId?: string; sourceVersionId?: string; informationLabel?: InformationLabel }
 interface Holder { id: string; profile_id: string; pattern_json: Record<string, unknown>; information_label: InformationLabel }
 interface ValidatedHolder { metadata: Record<string, unknown>; digest: string; compilationId: string; profileId: string; sourceVersionId: unknown; label: string }
@@ -99,22 +99,22 @@ export function createSourceArtifactMetadataCodec(host: Omit<CreativeEventStorag
         const id = compilationId(root); if (!id) return input.value;
         const shared = validate(input, owners.get(`source.language.compilation.${id}`), id, validated); if (!shared) return input.value;
         const scalarProvenance = input.artifactFamily === "language_pattern" && typeof root.schema === "string" && SCALAR_PROVENANCE_SCHEMAS.has(root.schema);
-        const keys = Object.keys(shared.metadata).filter(key => !QUERY_ROOTS.has(key) && key !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY && key !== SOURCE_ARTIFACT_METADATA_KEY
+        const keys = Object.keys(shared.metadata).filter(key => !QUERY_ROOTS.has(key) && key !== DECODED_JSON_BYTE_LEDGER_KEY && key !== SOURCE_ARTIFACT_METADATA_KEY
           && root[key] !== undefined && same(root[key], shared.metadata[key])
           && (root[key] !== null && typeof root[key] === "object"
             ? !Array.isArray(root[key]) || (root[key] as unknown[]).some(value => value !== null && typeof value === "object")
             : scalarProvenance && SCALAR_PROVENANCE_FIELDS.has(key)));
         if (!keys.length) return input.value;
-        const existingLedger = record(root[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]);
-        if (Object.hasOwn(root, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) {
-          if (input.logicalValue === undefined || Object.hasOwn(record(input.logicalValue) ?? {}, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY)) return fail();
-          const sizes = durableJoinProgramJsonByteLengths(input.logicalValue);
-          if (existingLedger?.schema !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA || existingLedger.decodedJsonBytes !== sizes.decodedJsonBytes
+        const existingLedger = record(root[DECODED_JSON_BYTE_LEDGER_KEY]);
+        if (Object.hasOwn(root, DECODED_JSON_BYTE_LEDGER_KEY)) {
+          if (input.logicalValue === undefined || Object.hasOwn(record(input.logicalValue) ?? {}, DECODED_JSON_BYTE_LEDGER_KEY)) return fail();
+          const sizes = decodedJsonByteLengths(input.logicalValue);
+          if (existingLedger?.schema !== DECODED_JSON_BYTE_LEDGER_SCHEMA || existingLedger.decodedJsonBytes !== sizes.decodedJsonBytes
             || existingLedger.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail();
         }
         const next = { ...root }; for (const key of keys) delete next[key];
-        const introducedLedger = root[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] === undefined;
-        if (introducedLedger) next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] = { schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(root) };
+        const introducedLedger = root[DECODED_JSON_BYTE_LEDGER_KEY] === undefined;
+        if (introducedLedger) next[DECODED_JSON_BYTE_LEDGER_KEY] = { schema: DECODED_JSON_BYTE_LEDGER_SCHEMA, ...decodedJsonByteLengths(root) };
         // The compilation identity already binds its metadata digest. Store only
         // selected field positions; repeating that identity, digest and key names
         // on every observation costs more than the factored occurrence itself.
@@ -146,15 +146,15 @@ export function createSourceArtifactMetadataCodec(host: Omit<CreativeEventStorag
           keys = raw.fieldIndexes.map(position => dictionary[position]);
         }
         if (!Array.isArray(keys) || !keys.length || keys.some(key => typeof key !== "string" || QUERY_ROOTS.has(key)
-          || key === SOURCE_ARTIFACT_METADATA_KEY || key === DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY) || new Set(keys).size !== keys.length) return fail();
+          || key === SOURCE_ARTIFACT_METADATA_KEY || key === DECODED_JSON_BYTE_LEDGER_KEY) || new Set(keys).size !== keys.length) return fail();
         const ref: Reference = { keys: keys as string[], introducedLedger: raw.introducedLedger, recordDigest: raw.recordDigest };
         const next = { ...root }; delete next[SOURCE_ARTIFACT_METADATA_KEY];
         for (const key of ref.keys) { if (!Object.hasOwn(shared.metadata, key) || Object.hasOwn(root, key)) return fail();
           Object.defineProperty(next, key, { value: structuredClone(shared.metadata[key]), enumerable: true, writable: true, configurable: true }); }
         if (ref.introducedLedger) {
-          const ledger = record(next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]); delete next[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY];
-          const sizes = durableJoinProgramJsonByteLengths(next);
-          if (ledger?.schema !== DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA || ledger.decodedJsonBytes !== sizes.decodedJsonBytes || ledger.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail();
+          const ledger = record(next[DECODED_JSON_BYTE_LEDGER_KEY]); delete next[DECODED_JSON_BYTE_LEDGER_KEY];
+          const sizes = decodedJsonByteLengths(next);
+          if (ledger?.schema !== DECODED_JSON_BYTE_LEDGER_SCHEMA || ledger.decodedJsonBytes !== sizes.decodedJsonBytes || ledger.decodedJsonbBytes !== sizes.decodedJsonbBytes) return fail();
         }
         if (canonicalDigestHex(next, hasher) !== ref.recordDigest) return fail();
         return next;

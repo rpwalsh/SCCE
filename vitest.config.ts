@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
-const testHeapMb = Number(process.env.SCCE_TEST_HEAP_MB ?? 8192);
+const testHeapMb = Number(process.env.SCCE_TEST_HEAP_MB ?? 7168);
 if (!Number.isSafeInteger(testHeapMb) || testHeapMb <= 0) throw new Error("SCCE_TEST_HEAP_MB must be a positive integer");
 
 export default defineConfig({
@@ -27,8 +27,8 @@ export default defineConfig({
         // real heavy computation -- e.g. genuine TypeScript compiler
         // Program/LanguageService construction -- not a slow cross-file
         // leak). Shards run strictly sequentially (one forked process
-        // alive at a time, never concurrent) on a 16GB machine, so there
-        // is real headroom to raise this further.
+        // alive at a time, never concurrent). The local-machine contract is
+        // 7 GiB; SCCE_TEST_HEAP_MB remains an explicit operator override.
         execArgv: [`--max-old-space-size=${testHeapMb}`]
       }
     }

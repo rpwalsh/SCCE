@@ -86,7 +86,7 @@ export async function verifySourceArtifactMetadata(options) {
   const { createPostgresStorageAdapter } = await import('../packages/adapters-node/dist/postgres.js');
   const { createSourceArtifactMetadataCodec } = await import('../packages/adapters-node/dist/source-artifact-metadata.js');
   const { profileSourceOwnershipSql } = await import('../packages/adapters-node/dist/pooled-profile-ownership.js');
-  const { durableJoinProgramJsonByteLengths } = await import('../packages/adapters-node/dist/durable-join-program-storage.js');
+  const { decodedJsonByteLengths } = await import('../packages/adapters-node/dist/decoded-json-byte-ledger.js');
   const { canonicalStringify, createHasher, normalizeInformationLabel, publishCompiledLanguagePatterns, LANGUAGE_CONSTRUCTION_PUBLICATION,
     CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
     stampSourceLanguageCompilation, POSTGRES_REQUIRED_TABLES } = await import('../packages/kernel/dist/index.js');
@@ -117,7 +117,7 @@ export async function verifySourceArtifactMetadata(options) {
     return query;
   };
   const compare = (a, b) => compareSourceArtifactStreams(artifactRowsFromPages(rows(sorted(a))), artifactRowsFromPages(rows(sorted(b))),
-    { canonicalStringify, jsonByteLengths: durableJoinProgramJsonByteLengths });
+    { canonicalStringify, jsonByteLengths: decodedJsonByteLengths });
   try {
     assert.equal((await source.verify()).ok, true); assert.equal((await fixture.verify()).ok, true);
     initial = await snapshot();
@@ -162,7 +162,7 @@ export async function verifySourceArtifactMetadata(options) {
           assert.deepEqual(page.map(row => row.id).sort(), [...ids].sort(), 'Pattern source read exceeded its explicit byte window or admission scope'); servablePatterns.push(...page);
         }
         const internal = async storage => readInternalSourceCompilationPatterns(storage, profile.id, { profileSourceOwnershipSql, normalizeInformationLabel,
-          decodeMany: inputs => createSourceArtifactMetadataCodec(storage).decodeMany(inputs), jsonByteLengths: durableJoinProgramJsonByteLengths });
+          decodeMany: inputs => createSourceArtifactMetadataCodec(storage).decodeMany(inputs), jsonByteLengths: decodedJsonByteLengths });
         const internalPatterns = await internal(source), patterns = [...servablePatterns, ...internalPatterns];
         const physicalPatternIds = (await source.query(`SELECT id FROM ${source.table('language_patterns')} WHERE profile_id=$1 ORDER BY id COLLATE "C"`, [profile.id])).map(row => row.id);
         assert.deepEqual(patterns.map(row => row.id).sort(), physicalPatternIds.sort(), 'Servable and owner-checked internal reads must preserve every physical pattern');
@@ -263,8 +263,8 @@ export async function verifySourceArtifactMetadata(options) {
     report.currentStage = 'decoded-byte-budgets';
     const reader = await cold(), full = await readUnit(reader), tiny = await reader.languageMemory.listLanguageUnits({ profileIds: [negative.profileId], limit: 4096, maxTotalJsonBytes: 1 });
     check('unit-budget-preserves-only-existing-first-oversized-exception', () => { assert.ok(full.length > 1); assert.equal(tiny.length, 1); assert.deepEqual(tiny[0], full[0]); });
-    const firstCost = durableJoinProgramJsonByteLengths(full[0].metadata).decodedJsonbBytes + Buffer.byteLength(full[0].text);
-    const secondCost = durableJoinProgramJsonByteLengths(full[1].metadata).decodedJsonbBytes + Buffer.byteLength(full[1].text);
+    const firstCost = decodedJsonByteLengths(full[0].metadata).decodedJsonbBytes + Buffer.byteLength(full[0].text);
+    const secondCost = decodedJsonByteLengths(full[1].metadata).decodedJsonbBytes + Buffer.byteLength(full[1].text);
     const bounded = await reader.languageMemory.listLanguageUnits({ profileIds: [negative.profileId], limit: 4096, maxTotalJsonBytes: firstCost + secondCost - 1 });
     check('unit-prefix-budget-charges-full-restored-metadata', () => { assert.equal(bounded.length, 1); assert.deepEqual(bounded[0], full[0]); });
     const body = await reader.languageMemory.listLanguagePatterns({ patternIds: [negative.pattern.id], profileIds: [negative.profileId], limit: 1, maxTotalJsonBytes: 1, requireComplete: true });

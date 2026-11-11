@@ -10,6 +10,9 @@
     "dev": "vite --host 127.0.0.1"
   },
   "dependencies": {
+    "@scce/kernel": "workspace:*",
+    "@sqlite.org/sqlite-wasm": "3.54.1-build1",
+    "graphql": "16.15.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-relay": "21.0.1",

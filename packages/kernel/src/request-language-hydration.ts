@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { isLanguageConstructionPattern, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "./language-construction-memory.js";
 import { REQUEST_REQUIREMENT_PATTERN_SCHEMA } from "./request-requirement-learning.js";
+import { INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA } from "./language-induction-memory.js";
 import type { LanguagePatternRecord, SemanticFrameRecord } from "./storage.js";
 import type { JsonValue } from "./types.js";
 
@@ -87,7 +88,7 @@ export function requestSeedLanguagePattern(pattern: LanguagePatternRecord): Lang
     if (conversationalBindingId) projected.conversationalBindingId = conversationalBindingId;
     projected.requestConstructionCandidate = requestConstructionCandidate(pattern);
     projected.sourceConstructionCandidate = sourceConstructionCandidate(pattern);
-  } else if (row.schema === "scce.induced_language_model.syntax_memory.v1") {
+  } else if (row.schema === INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA) {
     // Empty templates retain the existing typed shape without a generative payload.
     projected.templates = [];
   } else if (row.schema === "scce.induced_language_model.semantic_memory.v1") {

@@ -1,5 +1,5 @@
 /**
- * @generated SignedSource<<150245ccab1d36fbd878de64dc7b61cc>>
+ * @generated SignedSource<<c3ee70cfbbcc22f50486c8a2348f165a>>
  * @lightSyntaxTransform
  */
 
@@ -67,38 +67,52 @@ v4 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "phase",
+  "name": "status",
   "storageKey": null
 },
 v5 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "kind",
+  "name": "phase",
   "storageKey": null
 },
 v6 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "answer",
+  "name": "kind",
   "storageKey": null
 },
 v7 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
-  "name": "error",
+  "name": "answer",
   "storageKey": null
 },
 v8 = {
   "alias": null,
   "args": null,
   "kind": "ScalarField",
+  "name": "error",
+  "storageKey": null
+},
+v9 = {
+  "alias": null,
+  "args": null,
+  "kind": "ScalarField",
   "name": "sequence",
   "storageKey": null
 },
-v9 = [
+v10 = {
+  "alias": null,
+  "args": null,
+  "kind": "ScalarField",
+  "name": "detail",
+  "storageKey": null
+},
+v11 = [
   {
     "kind": "Variable",
     "name": "after",
@@ -167,13 +181,7 @@ return {
           {
             "kind": "InlineFragment",
             "selections": [
-              {
-                "alias": null,
-                "args": null,
-                "kind": "ScalarField",
-                "name": "status",
-                "storageKey": null
-              },
+              (v4/*:: as any*/),
               {
                 "alias": null,
                 "args": null,
@@ -197,11 +205,20 @@ return {
                 "plural": false,
                 "selections": [
                   (v3/*:: as any*/),
-                  (v4/*:: as any*/),
                   (v5/*:: as any*/),
                   (v6/*:: as any*/),
                   (v7/*:: as any*/),
-                  (v8/*:: as any*/)
+                  (v8/*:: as any*/),
+                  (v9/*:: as any*/),
+                  (v4/*:: as any*/),
+                  (v10/*:: as any*/),
+                  {
+                    "alias": null,
+                    "args": null,
+                    "kind": "ScalarField",
+                    "name": "assistantForce",
+                    "storageKey": null
+                  }
                 ],
                 "storageKey": null
               },
@@ -214,8 +231,8 @@ return {
                 "plural": false,
                 "selections": [
                   (v3/*:: as any*/),
-                  (v6/*:: as any*/),
                   (v7/*:: as any*/),
+                  (v8/*:: as any*/),
                   {
                     "alias": null,
                     "args": null,
@@ -229,13 +246,79 @@ return {
                     "kind": "ScalarField",
                     "name": "episodeId",
                     "storageKey": null
+                  },
+                  {
+                    "alias": null,
+                    "args": null,
+                    "kind": "ScalarField",
+                    "name": "value",
+                    "storageKey": null
+                  },
+                  (v10/*:: as any*/),
+                  {
+                    "alias": null,
+                    "args": null,
+                    "kind": "ScalarField",
+                    "name": "entailment",
+                    "storageKey": null
+                  },
+                  {
+                    "alias": null,
+                    "args": null,
+                    "concreteType": "TurnGuardFlags",
+                    "kind": "LinkedField",
+                    "name": "guardFlags",
+                    "plural": false,
+                    "selections": [
+                      {
+                        "alias": null,
+                        "args": null,
+                        "kind": "ScalarField",
+                        "name": "sourceBacked",
+                        "storageKey": null
+                      }
+                    ],
+                    "storageKey": null
+                  },
+                  {
+                    "alias": null,
+                    "args": null,
+                    "concreteType": "TurnAnswerEvidence",
+                    "kind": "LinkedField",
+                    "name": "evidence",
+                    "plural": true,
+                    "selections": [
+                      (v3/*:: as any*/),
+                      {
+                        "alias": null,
+                        "args": null,
+                        "kind": "ScalarField",
+                        "name": "sourceId",
+                        "storageKey": null
+                      },
+                      {
+                        "alias": null,
+                        "args": null,
+                        "kind": "ScalarField",
+                        "name": "textPreview",
+                        "storageKey": null
+                      },
+                      {
+                        "alias": null,
+                        "args": null,
+                        "kind": "ScalarField",
+                        "name": "provenance",
+                        "storageKey": null
+                      }
+                    ],
+                    "storageKey": null
                   }
                 ],
                 "storageKey": null
               },
               {
                 "alias": null,
-                "args": (v9/*:: as any*/),
+                "args": (v11/*:: as any*/),
                 "concreteType": "TurnFrameConnection",
                 "kind": "LinkedField",
                 "name": "frames",
@@ -258,9 +341,9 @@ return {
                         "plural": false,
                         "selections": [
                           (v3/*:: as any*/),
-                          (v8/*:: as any*/),
+                          (v9/*:: as any*/),
+                          (v6/*:: as any*/),
                           (v5/*:: as any*/),
-                          (v4/*:: as any*/),
                           (v2/*:: as any*/)
                         ],
                         "storageKey": null
@@ -305,7 +388,7 @@ return {
               },
               {
                 "alias": null,
-                "args": (v9/*:: as any*/),
+                "args": (v11/*:: as any*/),
                 "filters": null,
                 "handle": "connection",
                 "key": "WorkbenchTask_frames",
@@ -322,16 +405,16 @@ return {
     ]
   },
   "params": {
-    "cacheID": "20d2cc24cdd12139dacdf0570b1a4dcd",
+    "cacheID": "4a66f22b03cb9d634bda68bc23c80507",
     "id": null,
     "metadata": {},
     "name": "WorkbenchTaskPaginationQuery",
     "operationKind": "query",
-    "text": "query WorkbenchTaskPaginationQuery(\n  $count: Int = 20\n  $cursor: String\n  $id: ID!\n) {\n  node(id: $id) {\n    __typename\n    ...WorkbenchTask_task_1G22uz\n    id\n  }\n}\n\nfragment WorkbenchTask_task_1G22uz on TurnTask {\n  id\n  status\n  latestSequence\n  persistence\n  latestFrame {\n    id\n    phase\n    kind\n    answer\n    error\n    sequence\n  }\n  result {\n    id\n    answer\n    error\n    httpStatus\n    episodeId\n  }\n  frames(first: $count, after: $cursor) {\n    edges {\n      node {\n        id\n        sequence\n        kind\n        phase\n        __typename\n      }\n      cursor\n    }\n    pageInfo {\n      endCursor\n      hasNextPage\n    }\n  }\n}\n"
+    "text": "query WorkbenchTaskPaginationQuery(\n  $count: Int = 20\n  $cursor: String\n  $id: ID!\n) {\n  node(id: $id) {\n    __typename\n    ...WorkbenchTask_task_1G22uz\n    id\n  }\n}\n\nfragment WorkbenchTask_task_1G22uz on TurnTask {\n  id\n  status\n  latestSequence\n  persistence\n  latestFrame {\n    id\n    phase\n    kind\n    answer\n    error\n    sequence\n    status\n    detail\n    assistantForce\n  }\n  result {\n    id\n    answer\n    error\n    httpStatus\n    episodeId\n    value\n    detail\n    entailment\n    guardFlags {\n      sourceBacked\n    }\n    evidence {\n      id\n      sourceId\n      textPreview\n      provenance\n    }\n  }\n  frames(first: $count, after: $cursor) {\n    edges {\n      node {\n        id\n        sequence\n        kind\n        phase\n        __typename\n      }\n      cursor\n    }\n    pageInfo {\n      endCursor\n      hasNextPage\n    }\n  }\n}\n"
   }
 };
 })();
 
-(node as any).hash = "21bf990af383759d9e9e1ea9c3701906";
+(node as any).hash = "1f9c63d4f0f1a862ee54209d37381521";
 
 export default node;
