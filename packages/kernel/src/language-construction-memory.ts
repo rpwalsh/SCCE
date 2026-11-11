@@ -10,8 +10,10 @@ import {
 } from "./language-construction.js";
 import { canonicalStringify, toJsonValue } from "./primitives.js";
 import { decodeConstructionSourceExamples, encodeConstructionSourceExamples } from "./construction-source-example-storage.js";
-import { type GraphBoundConstruction } from "./language-induction.js";
+import { type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
 import { preparedLanguageInductionProducts, type PreparedConstructionInduction } from "./graph-surface-alignment.js";
+import type { SourceOwnedTextProjection } from "./pooled-language-profile-binding.js";
+import type { SourceInductionWindow } from "./source-window-induction.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import type { ContextualQaSupervision } from "./source-owned-contextual-qa.js";
@@ -270,6 +272,8 @@ export interface CreativeEventConstructionCompilerInput {
   updatedAt: number;
   maxEvents?: number;
   preparedInduction?: PreparedConstructionInduction;
+  inductionDocuments?: readonly LanguageInductionDocument[];
+  textProjection?: SourceOwnedTextProjection;
 }
 
 /**
@@ -468,20 +472,22 @@ function compileUniversalCreativeEventPatterns(input: CreativeEventConstructionC
   if (!nonempty(input.profileId) || !Number.isFinite(input.updatedAt)) {
     return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.input);
   }
+  const inductionDocuments = input.inductionDocuments ?? input.evidence.filter(span => span.status === "promoted").map(span => ({
+    id: String(span.id), text: span.text, evidenceIds: [span.id], sourceVersionId: span.sourceVersionId
+  }));
+  const inductionTextByEvidence = new Map(inductionDocuments.map(document => [document.id, document.text]));
   const promotedEvidence = input.evidence
     .filter(span => span.status === "promoted")
+    .map(span => ({ ...span, text: inductionTextByEvidence.get(String(span.id)) ?? span.text }))
     .sort((left, right) => left.charStart - right.charStart || compareText(String(left.id), String(right.id)));
   if (!promotedEvidence.length) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.evidence);
 
   // Reuse the same bounded source-window products that feed graph and language acquisition.
   const products = preparedLanguageInductionProducts({ hasher: input.hasher, prepared: input.preparedInduction,
-    documents: (input.preparedInduction ? input.evidence.filter(span => span.status === "promoted") : promotedEvidence).map(span => ({
-      id: String(span.id),
-      text: span.text,
-      evidenceIds: [span.id],
-      sourceVersionId: span.sourceVersionId
-    }))
+    documents: inductionDocuments
   });
+  const ownershipWindows = creativeOwnershipWindows(products.coverage.windows, input.evidence, input.textProjection, input.hasher);
+  if (!ownershipWindows) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.ownership);
   const constructions = products.models.flatMap(model => model.graphBoundConstructions);
   if (!constructions.length) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
   const constructionsByPredicate = new Map<string, GraphBoundConstruction[]>();
@@ -494,7 +500,7 @@ function compileUniversalCreativeEventPatterns(input: CreativeEventConstructionC
   const maxEvents = Math.max(1, Math.min(2048, Math.floor(input.maxEvents ?? 768)));
   if (completeSource && maxEvents < 4) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.input);
   const events: DurableCreativeEventConstruction[] = [];
-  const windowsByEvidence = new Map(promotedEvidence.map(evidence => [String(evidence.id), products.coverage.windows
+  const windowsByEvidence = new Map(promotedEvidence.map(evidence => [String(evidence.id), ownershipWindows
     .filter(window => window.ownerDocumentId === String(evidence.id)).sort((left, right) => left.startUtf16 - right.startUtf16)]));
   const eventWindowIds = new Map<string, string>();
   // Real cross-sentence recurrence requirement: a single degenerate
@@ -536,6 +542,10 @@ function compileUniversalCreativeEventPatterns(input: CreativeEventConstructionC
           hasher: input.hasher
         });
         if (compiled) {
+          const sourceSentenceStart = evidence.charStart + compiled.argumentFrame.sourceSentenceStartCodePoint;
+          const sourceSentenceEnd = evidence.charStart + compiled.argumentFrame.sourceSentenceEndCodePoint;
+          if (input.textProjection?.ranges.some(range => String(range.sourceVersionId) === String(evidence.sourceVersionId)
+            && range.startCodePoint < sourceSentenceEnd && range.endCodePoint > sourceSentenceStart)) continue;
           events.push(compiled);
           if (windows[windowIndex]) eventWindowIds.set(compiled.id, windows[windowIndex]!.documentId);
           eventSentenceKeys.push(`${evidence.id}#${sentenceOrdinal}`);
@@ -559,19 +569,56 @@ function compileUniversalCreativeEventPatterns(input: CreativeEventConstructionC
     const pageEvents = orderedEvents.slice(index * pageSize, (index + 1) * pageSize);
     const windowIds = new Set(pageEvents.map(event => eventWindowIds.get(event.id)));
     return creativeEventPattern(input, pageEvents, { recipe: UNIVERSAL_CREATIVE_EVENT_COVERAGE_RECIPE_ID, compilationId, index, pageCount,
-      maxEvents, qualification: "source_observed", windows: products.coverage.windows.filter(window => windowIds.has(window.documentId)) });
+      maxEvents, qualification: "source_observed", windows: ownershipWindows.filter(window => windowIds.has(window.documentId)) });
   });
   const compiled = pages.filter((page): page is Extract<LanguageConstructionPatternCompilation, { status: "compiled" }> => page.status === "compiled");
   if (compiled.length !== pageCount) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
   const counts = new Map<string, number>();
   for (const id of eventWindowIds.values()) counts.set(id, (counts.get(id) ?? 0) + 1);
   const coverage = toJsonValue({ schema: "scce.creative_event_source_coverage.v1", recipe: UNIVERSAL_CREATIVE_EVENT_COVERAGE_RECIPE_ID,
-    compilationId, sourceInduction: products.coverage, complete: true, observedEvents: orderedEvents.length,
-    windows: products.coverage.windows.map(window => ({ ...window, observedEvents: counts.get(window.documentId) ?? 0 })),
+    compilationId, sourceInduction: { ...products.coverage, windows: ownershipWindows,
+      ...(input.textProjection ? { projectionTransformId: input.textProjection.transformId } : {}) },
+    complete: true, observedEvents: orderedEvents.length,
+    windows: ownershipWindows.map(window => ({ ...window, observedEvents: counts.get(window.documentId) ?? 0 })),
     pages: compiled.map((page, index) => ({ index, id: page.pattern.id, observedEvents: page.bundle.creativeEvents?.length ?? 0 })) });
   const receipt: LanguagePatternRecord = { id: `creative.source.coverage.${compilationId}`, profileId: input.profileId, patternKind: "source_compilation",
     support: 0, entropy: 0, patternJson: coverage, evidenceIds: promotedEvidence.map(span => span.id), updatedAt: input.updatedAt };
   return { ...compiled[0]!, patterns: [...compiled.map(page => page.pattern), receipt], bundles: compiled.map(page => page.bundle), coverage };
+}
+
+type CreativeOwnershipWindow = SourceInductionWindow & {
+  inductionContentDigest?: string;
+  projectionTransformId?: string;
+};
+
+/**
+ * Creative induction may operate on a length-preserving prose projection, but cold hydration owns the canonical
+ * evidence. Keep both facts explicit: `contentDigest` always authenticates the canonical evidence window, while
+ * `inductionContentDigest` binds the projected surface whenever the two differ.
+ */
+function creativeOwnershipWindows(
+  windows: readonly SourceInductionWindow[],
+  evidence: readonly EvidenceSpan[],
+  projection: SourceOwnedTextProjection | undefined,
+  hasher: Hasher
+): CreativeOwnershipWindow[] | undefined {
+  const evidenceById = new Map(evidence.map(span => [String(span.id), span]));
+  const owned: CreativeOwnershipWindow[] = [];
+  for (const window of windows) {
+    const parent = evidenceById.get(window.ownerDocumentId);
+    if (!parent || parent.status !== "promoted" || String(parent.sourceVersionId) !== window.sourceVersionId
+      || !Number.isSafeInteger(window.startUtf16) || !Number.isSafeInteger(window.endUtf16)
+      || window.startUtf16 < 0 || window.endUtf16 <= window.startUtf16 || window.endUtf16 > parent.text.length) return undefined;
+    const canonicalDigest = hasher.digestHex(parent.text.slice(window.startUtf16, window.endUtf16));
+    if (canonicalDigest === window.contentDigest) {
+      owned.push({ ...window });
+      continue;
+    }
+    if (!projection?.transformId.trim()) return undefined;
+    owned.push({ ...window, contentDigest: canonicalDigest, inductionContentDigest: window.contentDigest,
+      projectionTransformId: projection.transformId });
+  }
+  return owned;
 }
 
 function creativeEventPattern(input: CreativeEventConstructionCompilerInput, orderedEvents: DurableCreativeEventConstruction[], sourcePage?: Record<string, unknown>): LanguageConstructionPatternCompilation {

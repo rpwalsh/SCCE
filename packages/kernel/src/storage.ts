@@ -120,6 +120,8 @@ export interface NgramModelRecord {
 }
 
 export interface NgramModelQuery {
+  /** Selects the hard-bounded model admission contract used by prediction/scoring hydration. */
+  view?: "prediction_scoring";
   streamId?: string;
   languageHint?: string;
   /** Stable id cursor for bounded corpus scans; switches ordering to id ascending. */
@@ -146,6 +148,9 @@ export interface LanguageUnitRecord {
   metadata: JsonValue;
   informationLabel?: InformationLabel;
 }
+
+/** Named, bounded language-memory projections. Absence means the complete consumer-facing row. */
+export type LanguageMemoryReadView = "request_seed" | "prediction_scoring";
 
 export interface UnitSourceMetadataPage {
   units: LanguageUnitRecord[];
@@ -642,6 +647,44 @@ export interface EventLedger {
   latestLedgerHash(): Promise<string>;
 }
 
+export type GraphEvidenceOwnerKind = "node" | "edge" | "hyperedge";
+
+export interface GraphEvidenceAssociation {
+  associationOrder: string;
+  ownerKind: GraphEvidenceOwnerKind;
+  ownerId: string;
+  evidenceId: EvidenceId;
+  sourceVersionId: SourceVersionId;
+  /** Source-independence family from the authoritative source trust vector. */
+  sourceFamily: string;
+}
+
+export interface GraphEvidenceAssociationCoverage {
+  schema: "scce.graph_evidence_association_coverage.v1";
+  scope: "authorized_owner" | "authorized_evidence" | "authorized_membership";
+  completeness: "complete" | "partial";
+  returnedCount: number;
+  /** Stable exclusive key for the next bounded page. */
+  continuation?: string;
+}
+
+export interface GraphEvidenceAssociationPage {
+  schema: "scce.graph_evidence_association_page.v1";
+  associations: GraphEvidenceAssociation[];
+  coverage: GraphEvidenceAssociationCoverage;
+  decodedBytes: number;
+}
+
+export interface GraphEvidenceAssociationMembership {
+  schema: "scce.graph_evidence_association_membership.v1";
+  ownerKind: GraphEvidenceOwnerKind;
+  ownerId: string;
+  evidenceId: EvidenceId;
+  present: boolean;
+  /** A direct lookup is complete within the caller's authorized scope; it is never inferred from a partial page. */
+  coverage: GraphEvidenceAssociationCoverage;
+}
+
 export interface GraphStore {
   upsertNode(node: GraphNode): Promise<void>;
   upsertNodes?(nodes: readonly GraphNode[]): Promise<void>;
@@ -656,6 +699,28 @@ export interface GraphStore {
    * neighbourhood, which is not a training population.
    */
   listEdgePage?(query: { limit: number; offset?: number }): Promise<readonly GraphEdge[]>;
+  /** Complete/scoped evidence enumeration for one owner without materializing an unbounded parent array. */
+  listEvidenceForOwner?(query: {
+    ownerKind: GraphEvidenceOwnerKind;
+    ownerId: string;
+    /** Decimal BIGINT cursor from the last returned first-seen association. */
+    afterAssociationOrder?: string;
+    limit: number;
+    maxDecodedBytes: number;
+  }): Promise<GraphEvidenceAssociationPage>;
+  /** Reverse evidence lookup, served by the evidence-first association index. */
+  listOwnersForEvidence?(query: {
+    ownerKind: GraphEvidenceOwnerKind;
+    evidenceId: EvidenceId;
+    afterOwnerId?: string;
+    limit: number;
+    maxDecodedBytes: number;
+  }): Promise<GraphEvidenceAssociationPage>;
+  getEvidenceAssociationMembership?(query: {
+    ownerKind: GraphEvidenceOwnerKind;
+    ownerId: string;
+    evidenceId: EvidenceId;
+  }): Promise<GraphEvidenceAssociationMembership>;
   getTemporalSlice(query: TemporalGraphQuery): Promise<TemporalGraph>;
   materializeAlphaGraph(query: GraphSliceQuery): Promise<AlphaTrace>;
 }
@@ -977,12 +1042,12 @@ export interface LanguageMemoryStore {
   /** Complete continuation statistics of accessible models belonging to one learned language identity. */
   continuationPopulation?(query: { languageId: string }): Promise<LanguageContinuationPopulation | undefined>;
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
-  listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
+  listLanguageUnits(query?: { view?: Extract<LanguageMemoryReadView, "prediction_scoring">; profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
   /** Maintenance only: locked keyset prefix, decoded full-row byte bound, and explicit oversized-row progress. */
   listUnitSourceMetadataPage?(query: { afterId?: string; limit: number; maxTotalJsonBytes: number }): Promise<UnitSourceMetadataPage>;
-  /** Request-seed views retain interpretation fields and omit generative syntax join programs. */
-  listLanguagePatterns(query?: { view?: "request_seed"; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; limit?: number; maxTotalJsonBytes?: number; requireComplete?: boolean }): Promise<LanguagePatternRecord[]>;
-  listSemanticFrames(query?: { view?: "request_seed"; profileIds?: readonly string[]; sourceSystem?: string; surface?: string; requestSurface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
+  /** Operation views retain only their named consumer fields; construction and creative bodies remain deferred. */
+  listLanguagePatterns(query?: { view?: LanguageMemoryReadView; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; limit?: number; maxTotalJsonBytes?: number; requireComplete?: boolean }): Promise<LanguagePatternRecord[]>;
+  listSemanticFrames(query?: { view?: LanguageMemoryReadView; profileIds?: readonly string[]; sourceSystem?: string; surface?: string; requestSurface?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }
 
@@ -1382,7 +1447,7 @@ export interface KernelRuntimePorts {
 }
 
 // Includes bounded lexical pages and source-owned construction decision pages.
-export const POSTGRES_SCHEMA_VERSION = 35;
+export const POSTGRES_SCHEMA_VERSION = 36;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -1396,6 +1461,7 @@ export const POSTGRES_REQUIRED_TABLES = [
   "graph_nodes",
   "graph_edges",
   "graph_hyperedges",
+  "graph_evidence_associations",
   "quarantine_sources",
   "relation_observations",
   "semantic_proofs",

@@ -15,17 +15,20 @@ import type {
   NgramObservation,
   SemanticFrameRecord
 } from "./storage.js";
-import { learnedScriptIdForCharacter } from "./language.js";
 import { compactKneserNeyForProfile, persistedKneserNey, trainKneserNey } from "./kneser-ney.js";
-import { clamp01, entropy, featureSet, stableVector, symbolizeData, toJsonValue } from "./primitives.js";
-import { buildNgramSurfaceProjection } from "./surface-lattice.js";
-import { CORPUS_ROLE_IDS, corpusSourceAlias, corpusRoleIdForSourceSystem } from "./corpus-registry.js";
-import { codeSurfaceTokens } from "./code-surface.js";
+import { clamp01, entropy, symbolizeData, toJsonValue } from "./primitives.js";
+import { corpusRoleIdForSourceSystem } from "./corpus-registry.js";
 import { canonicalNgramModelId } from "./source-language-training-identity.js";
 import {
   bindNgramModelTrainingReplay,
   captureKneserNeyTrainingReplay
 } from "./kneser-ney-training-replay.js";
+import {
+  deriveSourceLanguageArtifacts,
+  normalizeSourceLanguageArtifactCompilerOptions,
+  type SourceLanguageArtifactDerivationMeasurement,
+  type SourceLanguageArtifactDerivationReceipt
+} from "./source-language-artifact-derivation.js";
 
 export interface NgramMemoryCompilation {
   observations: NgramObservation[];
@@ -33,6 +36,10 @@ export interface NgramMemoryCompilation {
   units: LanguageUnitRecord[];
   patterns: LanguagePatternRecord[];
   semanticFrames: SemanticFrameRecord[];
+  sourceArtifactDerivation: {
+    receipt: SourceLanguageArtifactDerivationReceipt;
+    measurement: SourceLanguageArtifactDerivationMeasurement;
+  };
   audit: JsonValue;
 }
 
@@ -54,31 +61,26 @@ export interface NgramMemoryInput {
 export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hasher: Hasher }) {
   return {
     compile(input: NgramMemoryInput): NgramMemoryCompilation {
-      const sourceSystem = input.sourceSystem ? corpusSourceAlias(input.sourceSystem) : undefined;
-      const maxOrder = Math.max(1, Math.min(6, input.maxOrder ?? 6));
-      const maxCounters = Math.max(32, input.maxCountersPerOrder ?? 50000);
-      const formalCode = Boolean(sourceSystem && corpusRoleIdForSourceSystem(sourceSystem) === CORPUS_ROLE_IDS.softwareSymbolic);
-      const lattice = formalCode ? undefined : buildNgramSurfaceProjection({
-        documentId: input.streamId,
-        text: input.text,
+      const compilerOptions = normalizeSourceLanguageArtifactCompilerOptions(input);
+      const derivedArtifacts = deriveSourceLanguageArtifacts({
+        streamId: input.streamId,
+        sourceSystem: input.sourceSystem,
+        profile: input.profile,
         sourceVersionId: input.sourceVersionId,
-        evidenceIds: input.evidence.map(span => span.id),
+        text: input.text,
+        evidence: input.evidence,
+        createdAt: input.createdAt,
+        compilerOptions,
+        idFactory: options.idFactory,
         hasher: options.hasher
       });
-      const canonicalSymbols = lattice?.canonicalSurfaces ?? [];
-      // A grapheme-dominated canonical path over whitespace-spaced text means
-      // segmentation never resolved words; the spaced symbols are the
-      // structural truth. A char-level KN model trained here poisons every
-      // downstream generation call with letter soup (verified live).
-      const spacedSymbols = formalCode ? [] : symbolizeData(input.text);
-      const symbols = formalCode ? codeSurfaceTokens(input.text) : sequenceSpeaksInWords(canonicalSymbols) || !sequenceSpeaksInWords(spacedSymbols)
-        ? canonicalSymbols
-        : spacedSymbols;
-      const graphemes = lattice?.graphemes ?? [];
+      const { sourceSystem, formalCode, symbols, graphemes } = derivedArtifacts.projection;
+      const maxOrder = compilerOptions.maxOrder;
+      const maxCounters = compilerOptions.maxCountersPerOrder;
       const languageHint = primaryLanguageHint(input.profile);
       const evidenceIds = input.evidence.map(span => span.id);
       const alpha = input.evidence.length ? input.evidence.reduce((sum, span) => sum + span.alpha, 0) / input.evidence.length : 0.35;
-      const counters = input.retainObservations === false ? [] : Array.from({ length: maxOrder }, (_, i) => new SpaceSavingCounter<string>(maxCounters, i + 1));
+      const counters = compilerOptions.retainObservations ? Array.from({ length: maxOrder }, (_, i) => new SpaceSavingCounter<string>(maxCounters, i + 1)) : [];
       for (let i = 0; counters.length && i < symbols.length; i++) {
         for (let order = 1; order <= maxOrder; order++) {
           if (i + 1 < order) continue;
@@ -109,7 +111,7 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
           } satisfies NgramObservation;
         });
       });
-      const vocabularyLimit = input.vocabularyLimit ?? 24000;
+      const vocabularyLimit = compilerOptions.vocabularyLimit;
       const kneserNeyModels = [trainKneserNey(symbols, { order: maxOrder, discount: 0.75, vocabularyLimit })];
       const models = kneserNeyModels.map(model => {
         const record = {
@@ -136,33 +138,29 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
         }));
         return record;
       });
-      const units = formalCode ? [] : compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: sourceSystem, symbols, graphemes, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
+      const units = derivedArtifacts.units;
       const patterns = formalCode ? [] : compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: sourceSystem, text: input.text, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory, hasher: options.hasher });
-      const semanticFrames = formalCode || input.retainSemanticFrames === false ? [] : input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(
-        span,
-        index,
-        input.profile.id,
-        options.idFactory,
-        options.hasher,
-        input.createdAt,
-        sourceSystem
-      ));
+      const semanticFrames = derivedArtifacts.semanticFrames;
       return {
         observations,
         models,
         units,
         patterns,
         semanticFrames,
+        sourceArtifactDerivation: {
+          receipt: derivedArtifacts.receipt,
+          measurement: derivedArtifacts.measurement
+        },
         audit: toJsonValue({
           streamId: input.streamId,
           sourceVersionId: input.sourceVersionId,
           sourceSystem: sourceSystem ?? null,
           languageHint,
-          surfaceLatticeId: lattice?.latticeId ?? null,
+          surfaceLatticeId: derivedArtifacts.projection.surfaceLatticeId ?? null,
           corpusRole: sourceSystem ? corpusRoleIdForSourceSystem(sourceSystem) : null,
-          surfaceLatticeSchema: lattice?.latticeSchema ?? null,
-          sourceTextHash: lattice?.textHash ?? options.hasher.digestHex(input.text),
-          trainingOptions: { maxOrder, maxCountersPerOrder: maxCounters, vocabularyLimit: input.vocabularyLimit ?? 24000 },
+          surfaceLatticeSchema: derivedArtifacts.projection.surfaceLatticeSchema ?? null,
+          sourceTextHash: derivedArtifacts.projection.sourceTextHash,
+          trainingOptions: { maxOrder, maxCountersPerOrder: maxCounters, vocabularyLimit },
           symbolCount: symbols.length,
           graphemeCount: graphemes.length,
           orders: counters.map(counter => ({ order: counter.order, retained: counter.size, total: counter.total })),
@@ -175,55 +173,6 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
         })
       };
     }
-  };
-}
-
-function compileLanguageUnits(input: {
-  profile: LanguageProfile;
-  sourceVersionId: SourceVersionId;
-  sourceSystem?: string;
-  symbols: string[];
-  graphemes: string[];
-  evidenceIds: EvidenceSpan["id"][];
-  alpha: number;
-  idFactory: IdFactory;
-  hasher: Hasher;
-}): LanguageUnitRecord[] {
-  const symbolCounts = count(input.symbols);
-  const symbolUnits = [...symbolCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 96).map(([text, c]) => {
-    const features = featureSet(text, 64);
-    return unit(input, "symbol", text, features, clamp01(input.alpha * Math.log2(c + 1) / 8));
-  });
-  const graphemeCounts = count(input.graphemes);
-  const graphemeUnits = [...graphemeCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 32).map(([text, c]) => {
-    const features = [`grapheme:${text}`, `shape:${shapeOf(text)}`];
-    return unit(input, "grapheme", text, features, clamp01(input.alpha * Math.log2(c + 1) / 8));
-  });
-  const phraseUnits = phraseCandidates(input.symbols).slice(0, 48).map(phrase => unit(input, "phrase", phrase.text, featureSet(phrase.text, 96), clamp01(input.alpha * phrase.score)));
-  const syntaxUnits = syntaxSignatures(input.symbols).slice(0, 24).map(signature => unit(input, "syntax_pattern", signature.text, [`syntax:${signature.text}`], clamp01(input.alpha * signature.score)));
-  return [...symbolUnits, ...graphemeUnits, ...phraseUnits, ...syntaxUnits];
-}
-
-function unit(input: {
-  profile: LanguageProfile;
-  sourceVersionId: SourceVersionId;
-  sourceSystem?: string;
-  evidenceIds: EvidenceSpan["id"][];
-  idFactory: IdFactory;
-  hasher: Hasher;
-}, unitKind: LanguageUnitRecord["unitKind"], text: string, features: string[], alpha: number): LanguageUnitRecord {
-  return {
-    id: input.idFactory.semanticId("language_unit", { profileId: input.profile.id, unitKind, text }),
-    profileId: input.profile.id,
-    sourceVersionId: input.sourceVersionId,
-    script: scriptHint(text),
-    unitKind,
-    text,
-    features,
-    competenceVector: stableVector(features, input.hasher, 16),
-    alpha,
-    evidenceIds: input.evidenceIds.slice(0, 24),
-    metadata: toJsonValue({ profileEntropy: input.profile.entropy, ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), shape: shapeOf(text) })
   };
 }
 
@@ -319,32 +268,6 @@ function narrativeSurfacePattern(text: string, sourceSystem: string | undefined,
     support: clamp01((paragraphs.length + sentences.length + anchors.length) / 160),
     entropy: entropy([...count(paragraphShapes).values(), ...count(anchors).values(), ...count(sentenceOpenings).values()]),
     payload
-  };
-}
-
-function semanticFrameForSpan(span: EvidenceSpan, index: number, profileId: string, idFactory: IdFactory, hasher: Hasher, createdAt: number, sourceSystem?: string): SemanticFrameRecord {
-  const symbols = surfaceSymbols(span.text, `semantic_frame.${String(span.id)}`, hasher).slice(0, 256);
-  const features = featureSet(span.text, 256);
-  const roles = syntaxSignatures(symbols).slice(0, 16);
-  const frameJson = toJsonValue({
-    sourceVersionId: span.sourceVersionId,
-    profileId,
-    ...(sourceSystem ? { sourceSystem } : {}),
-    evidenceId: span.id,
-    index,
-    textHash: hasher.digestHex(span.text),
-    preview: span.textPreview,
-    symbolCount: symbols.length,
-    featureSample: features.slice(0, 64),
-    roleSignature: roles
-  });
-  return {
-    id: idFactory.semanticId("semantic_frame", { profileId, evidenceId: span.id, hash: hasher.digestHex(span.text) }),
-    frameJson,
-    embedding: stableVector(features, hasher, 64),
-    evidenceIds: [span.id],
-    alpha: span.alpha,
-    createdAt
   };
 }
 
@@ -564,32 +487,9 @@ class SpaceSavingCounter<T> {
   }
 }
 
-/** True when a sampled majority of symbols carry more than one code point. */
-function sequenceSpeaksInWords(symbols: readonly string[]): boolean {
-  const sample = symbols.slice(0, 2048).filter(symbol => symbol.trim());
-  if (!sample.length) return false;
-  const multiPoint = sample.filter(symbol => [...symbol].length > 1).length;
-  return multiPoint / sample.length >= 0.5;
-}
-
 function primaryLanguageHint(profile: LanguageProfile): string {
   const script = profile.scripts.slice().sort((a, b) => b.mass - a.mass)[0]?.script ?? "unknown";
   return `script:${script};direction:${profile.direction}`;
-}
-
-function phraseCandidates(symbols: readonly string[]): Array<{ text: string; score: number }> {
-  const grams = new Map<string, number>();
-  for (let n = 2; n <= 6; n++) {
-    for (let i = 0; i <= symbols.length - n; i++) {
-      const gram = symbols.slice(i, i + n).join(" ");
-      grams.set(gram, (grams.get(gram) ?? 0) + 1);
-    }
-  }
-  const total = Math.max(1, symbols.length);
-  return [...grams.entries()]
-    .filter(([, count]) => count > 1)
-    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
-    .map(([text, count]) => ({ text, score: clamp01(Math.log2(count + 1) / Math.log2(total + 1)) }));
 }
 
 function syntaxSignatures(symbols: readonly string[]): Array<{ text: string; score: number }> {
@@ -619,26 +519,4 @@ function topEntries(map: Map<string, number>, limit: number): Array<[string, num
 
 function shapeOf(text: string): string {
   return [...text].map(char => /\p{Letter}/u.test(char) ? "L" : /\p{Number}/u.test(char) ? "N" : /\p{Punctuation}/u.test(char) ? "P" : /\p{Symbol}/u.test(char) ? "S" : "O").join("");
-}
-
-function scriptHint(text: string): string {
-  const chars = [...text].filter(char => !/\s/u.test(char));
-  const counts = new Map<string, number>();
-  for (const char of chars) {
-    const script = learnedScriptIdForCharacter(char);
-    counts.set(script, (counts.get(script) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .sort((left, right) => right[1] - left[1] || compareCodePoint(left[0], right[0]))[0]?.[0] ?? "script:Zxxx";
-}
-
-function compareCodePoint(left: string, right: string): number {
-  const a = [...left];
-  const b = [...right];
-  for (let index = 0; index < Math.min(a.length, b.length); index++) {
-    const x = a[index]!.codePointAt(0)!;
-    const y = b[index]!.codePointAt(0)!;
-    if (x !== y) return x < y ? -1 : 1;
-  }
-  return a.length - b.length;
 }

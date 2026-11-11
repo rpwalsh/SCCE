@@ -77,6 +77,29 @@ describe("source admission", () => {
     expect(decision.activeInfluence).toEqual({ graph: false, language: true });
   });
 
+  it.each(["restricted", "unknown", ""])(
+    "treats %j license metadata as informational rather than an ingestion gate",
+    licenseStatus => {
+      const source = sourceVersion("training", `corpus://license/${licenseStatus || "missing"}`, 0.9);
+      source.sourceTrust = { ...source.sourceTrust, licenseStatus };
+      const evidence = [span(source, "configured corpus language observation", 0.72)];
+      const decision = createSourceAdmissionController().decide({
+        source,
+        evidence,
+        context: {
+          sourceClass: "trusted_corpus",
+          intendedUse: "language_only",
+          promotionAuthority: "training"
+        },
+        metadata: { diagnostics: { charLength: 1200, parserCount: 2 } }
+      });
+
+      expect(decision.disposition).toBe("promote");
+      expect(decision.trustChecks).not.toHaveProperty("licenseStatus");
+      expect(decision.activeInfluence).toEqual({ graph: false, language: true });
+    }
+  );
+
   it("gates factual authority as its own dimension instead of averaging trust", () => {
     const source = sourceVersion("runtime-acquisition", "https://example.test/unverified", 0.95);
     source.sourceTrust = { ...source.sourceTrust, authority: 0.2 };

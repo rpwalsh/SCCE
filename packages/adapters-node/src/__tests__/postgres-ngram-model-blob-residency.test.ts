@@ -113,4 +113,13 @@ describe("n-gram model blob residency", () => {
     const tiny = await adapter.languageMemory.listNgramModels({ sourceSystem: "wikipedia", limit: 12, maxTotalJsonBytes: 10 });
     expect(tiny.map(record => record.id)).toEqual(["model.a"]);
   });
+
+  it("does not expand an oversized first model for the hard-bounded prediction/scoring view", async () => {
+    const { adapter, blobIds } = fixture(rows());
+    const tiny = await adapter.languageMemory.listNgramModels({ view: "prediction_scoring", sourceSystem: "wikipedia", limit: 12, maxTotalJsonBytes: 10 });
+    expect(tiny).toEqual([]);
+    expect(blobIds).toEqual([]);
+    await expect(adapter.languageMemory.listNgramModels({ view: "prediction_scoring", limit: 12 }))
+      .rejects.toThrow("positive finite decoded byte bound");
+  });
 });

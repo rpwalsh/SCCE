@@ -71,6 +71,7 @@ import {
   type PreparedConstructionInduction,
   type PooledLanguageProfileBinding,
   type SourceLanguageFamilyRange,
+  type SourceOwnedTextProjection,
   type CreativeEventConstructionCompiler,
   type EvidenceSpan,
   type IdFactory,
@@ -143,6 +144,9 @@ export interface LanguageCorpusTrainingInput {
   /** Character ranges of the concatenated text and the source family each belongs to. */
   sourceFamilyRanges?: readonly SourceLanguageFamilyRange[];
   preparedInduction?: PreparedConstructionInduction;
+  /** Source-owned role projection used by construction/creative induction instead of scaffolding-bearing spans. */
+  inductionDocuments?: readonly LanguageInductionDocument[];
+  textProjection?: SourceOwnedTextProjection;
   profileBinding?: PooledLanguageProfileBinding;
   /** Alignment evidence carried from earlier batches: a construction is promoted on what the corpus shows, not one document. */
   alignmentPromotionObservations?: readonly AlignmentPromotionObservation[];
@@ -535,6 +539,8 @@ function preparationInputSnapshot(input: LanguageCorpusTrainingInput): LanguageC
     acquisitionProvenance: clone(input.acquisitionProvenance),
     languageAliases: clone(input.languageAliases),
     constructionSets: clone(input.constructionSets),
+    inductionDocuments: clone(input.inductionDocuments),
+    textProjection: clone(input.textProjection),
     graphSnapshotSourceVersionIds: clone(input.graphSnapshotSourceVersionIds),
     graphSnapshotAdditions: clone(input.graphSnapshotAdditions),
     sourceFamilyRanges: clone(input.sourceFamilyRanges),
@@ -1063,14 +1069,15 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   // constructions and the mouth had no learned sentence shapes to speak with. The snapshot is this batch's own
   // evidence, read back from the graph the same evidence was projected into.
   const trainTrace = ingestStageTracer();
-  const inductionDocuments = sourceLanguageInductionDocuments(evidence);
+  const inductionDocuments = input.inductionDocuments ?? sourceLanguageInductionDocuments(evidence);
   const naturalInduction = !input.languageOnly && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic;
   const constructionPool = input.languageOnly || !needsConstructionContext(input)
     ? { evidence: [] as EvidenceSpan[], documents: [] as LanguageInductionDocument[], profiles: [] as LanguageProfile[], languageCompatibility: [] }
     : await durableConstructionPoolEvidence({ input, evidence, sourceSystem, informationLabel, profile });
   const constructionPoolEvidence = constructionPool.evidence;
   const segmentationLoader = await languageTrainingSegmentationLoader(input.storage, trainingSegmentationDeclaration(input), input.preparedCorpusSegmentation!);
-  const inductionInput = { evidence, constructionEvidence: [...evidence, ...constructionPoolEvidence], constructionContextDocuments: constructionPool.documents,
+  const inductionInput = { evidence, constructionEvidence: [...evidence, ...constructionPoolEvidence], inductionDocuments,
+    textProjection: input.textProjection, constructionContextDocuments: constructionPool.documents,
     hasher, prepared: input.preparedInduction };
   let preparedInduction: PreparedConstructionInduction | undefined;
   let sourceInductionExecution: SourceInductionExecutionReceipt | undefined;
@@ -1125,6 +1132,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
         sourceReferenceBindings: jsonRecord(jsonRecord(input.corpusMetadata).sourceMetadata).sourceReferenceBindings as unknown as SourceReferenceBindingDeclaration
       } : {}),
       ...(preparedInduction ? { preparedInduction } : {}),
+      ...(input.inductionDocuments ? { inductionDocuments: input.inductionDocuments } : {}),
+      ...(input.textProjection ? { textProjection: input.textProjection } : {}),
       segmentationIdentity: toJsonValue(input.preparedCorpusSegmentation!.identity),
       ...(input.profileBinding ? { profileBinding: input.profileBinding } : {}),
       ...(constructionPoolEvidence.length ? { constructionEvidence: [...evidence, ...constructionPoolEvidence] } : {}),

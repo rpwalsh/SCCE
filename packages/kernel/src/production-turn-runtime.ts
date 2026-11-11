@@ -12,11 +12,11 @@ import {
   createAnswerRevisionCoordinator
 } from "./answer-revision.js";
 import { assistantForceClass, assistantForceDecision, unresolvedObligationCount } from "./assistant-force.js";
-import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
+import { assistantForceProposalFromCandidateClaimBasis, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
-import { createCandidateEngine, type CandidateField, type CandidateSurface } from "./candidate.js";
+import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
 import { requestValueBindingConstructFact } from "./source-bound-semantic-fact.js";
-import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, resolveRequestValueBinding, semanticAnswerConstructFacts, type SemanticAnswerConstructFact, type SemanticRealizationContract } from "./semantic-answer-construct.js";
+import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, resolveRequestValueBinding, semanticAnswerConstructFacts } from "./semantic-answer-construct.js";
 import { sourceConstructionRequestValueResolver } from "./source-construction-request-binding.js";
 import { learnedEntitySurfacesFromLanguageMemory, namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
@@ -57,15 +57,9 @@ import {
 } from "./request-communicative-act.js";
 import { dialogueInterpretationAdjustmentsForConversation, styleProfileFromTargetProfilePatterns } from "./dialogue-learning.js";
 import {
-  createDiscourseTurnObservationV2,
   createDiscoursePlanningHandoffV2,
   resolveDiscourseStateV2,
-  discourseObjectStateFromMetadata,
-  interpretationAdjustmentSelectionForTypedCandidateV2,
-  isDiscourseInterpretationAdjustmentV2,
-  type DiscourseInterpretationAdjustmentV2,
-  type DiscoursePreselectionCandidateV2,
-  type DiscourseTurnObservationV2
+  discourseObjectStateFromMetadata
 } from "./discourse-state.js";
 import { createDialogueCognitiveMemoryV2, isDialogueCognitiveStateV2, preferDialogueCognitiveStateV2 } from "./dialogue-cognitive-memory.js";
 import { createConversationPlanMemory } from "./conversation-plan-memory.js";
@@ -140,9 +134,6 @@ import { createLearningLoop } from "./learning-loop.js";
 import {
   arithmeticAnswerForText,
   assistantForceFromLocalEvidenceAudit,
-  attachLocalEvidenceAnswerConstruct,
-  attachSourceBoundAnswerConstruct,
-  createArithmeticEntailment,
   evidenceBatchFromSlice,
   bindSelectedEvidenceToEntailment,
   evidenceForRequest,
@@ -173,7 +164,6 @@ import {
   surfaceCarriesInternalFeatureKeys,
   withSurfaceContract,
   selectedConversationPlanForOutput,
-  type MouthSemanticInput,
   type SpeakInput,
   type SpokenOutput
 } from "./mouth.js";
@@ -206,8 +196,7 @@ import { completeTaskDecompositionNode, schedulableSubtasks, type TaskDecomposit
 import { solveTaskSchedule } from "./task-schedule-solver.js";
 import { nodeCanExecute, replan } from "./task-replanning.js";
 import { CODE_CONSTRAINT } from "./code-learning.js";
-import { exactComputationForText, verifyExactResultMatchesClaim } from "./exact-computation.js";
-import { invariantScore } from "./scoring/score-trace.js";
+import { exactComputationForText } from "./exact-computation.js";
 import { syncUserModelStoreForTurn, userModelStoreProvenanceSummary, userModelStoreToJson } from "./user-model-turn-request.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
@@ -227,13 +216,11 @@ import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { admissionTierDiagnostics, answerCoversRequest, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestUnitSharesStem, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
-import { isStructuralResidueSurface } from "./structural-residue.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
 import {programValidationApprovalInput} from "./program-validation-approval.js";
 import {readWorkspaceOwnedProgramContracts} from "./workspace-code-contracts.js";
 import { codeIntentFromDocumentation, sourceOwnedProgramBehaviorFromDocumentation, projectSourceOwnedProgramBehavior } from "./code-intent.js";
-import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { runGraphRefinement } from "./graph-refinement.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
@@ -250,12 +237,9 @@ import { createRuntimeGraphRetrieval, isControlCorpusSpan } from "./runtime-grap
 import { isCodeEvidenceSpan, retrievalBinding, retrievalBindingSupports } from "./retrieval-binding.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
-import type { ConversationTurnSurface } from "./language-construction.js";
 import type { RuntimeReplanMotion } from "./runtime-motion.js";
 import {
   RUNTIME_TERMINAL_INVENTION_POLICY_ID,
-  attachRuntimeDiagnosticConstruct,
-  attachRuntimeMotionConstruct,
   explicitRuntimeDiagnosticRequest,
   fastRuntimeBudgetRequested,
   metadataWithRuntimeReplanMotion,
@@ -345,7 +329,6 @@ import type {
   ConstructGraph,
   EpisodeId,
   EvidenceSpan,
-  GraphSlice,
   GraphSnapshot,
   SourceVersionId,
   JsonValue,
@@ -356,6 +339,43 @@ import type {
 } from "./types.js";
 import { createCapabilityExecutorRegistry, dispatchCapabilityTask } from "./capability-dispatcher.js";
 import { createBuildTestCapabilityExecutor } from "./build-test-capability.js";
+import { assembleTurnConstruct } from "./turn-construct-assembly.js";
+import { runExactComputationTurn } from "./turn-exact-computation.js";
+import {
+  applyDialogueInterpretationAdjustmentsV2,
+  conversationTurnSurfacesFromMetadata,
+  dialogueInterpretationAdjustmentsFromMetadata,
+  preferredDialogueEvidenceForAdjustments,
+  preselectionReferentProofEvidenceIdsV2,
+  typedDialoguePreselectionV2,
+  typedDialogueTurnContextV2
+} from "./turn-dialogue-preselection.js";
+import {
+  learnedSurfaceRealizesNothing,
+  sourceIndependentDialogueRequirements,
+  typedSemanticInputForMouth
+} from "./turn-realization-contract.js";
+
+export {
+  applyDialogueInterpretationAdjustmentsV2,
+  conversationTurnSurfacesFromMetadata,
+  dialogueInterpretationAdjustmentsFromMetadata,
+  preselectionReferentProofEvidenceIdsV2,
+  typedDialoguePreselectionV2,
+  typedDialogueTurnContextV2
+} from "./turn-dialogue-preselection.js";
+export {
+  learnedSurfaceConsultsSourceBound,
+  learnedSurfaceRealizesNothing,
+  learnedSurfaceTruncatesSourceBound,
+  reasonedRealizationPreservesContract,
+  recitedEvidenceAdmissibility,
+  sourceIndependentDialogueRequirements,
+  sourceIndependentDialogueSurfaceAcceptable,
+  surfaceRequestAdequacy,
+  typedSemanticInputForMouth,
+  type LearnedSurfaceRecoveryInput
+} from "./turn-realization-contract.js";
 
 export interface ProductionTurnRuntimeState {
   lastEpisodeId?: EpisodeId;
@@ -1599,118 +1619,54 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // real, exact rational rendering throughout -- so no precision is
       // lost in what the user is ever shown, even for a value this float
       // conversion itself could not represent exactly.
-      const exactComputation = sourceComputation?.evaluation ?? formalExactComputation;
-      // The exact result and the text SCCE is about to speak must be the same number: a formatter that drifts from
-      // the computed quantity turns an exact answer into a claim nothing checked.
-      const exactComputationVerified = exactComputation
-        ? verifyExactResultMatchesClaim(exactComputation.result, exactComputation.resultText)
-        : undefined;
-      if (exactComputation && exactComputationVerified && !exactComputationVerified.matches) {
-        failures.push(`exact computation answer does not match its own quantity: expected ${exactComputationVerified.expected}, answer ${exactComputation.answer}`);
-      }
-      const arithmetic = exactComputation && exactComputationVerified?.matches
-        ? {
-          expression: exactComputation.expression,
-          normalizedExpression: exactComputation.expression,
-          value: Number(exactComputation.result.numerator) / Number(exactComputation.result.denominator),
-          valueText: exactComputation.resultText,
-          answer: exactComputation.answer,
-          audit: exactComputation.audit
-        }
-        : formalArithmetic;
-      if (arithmetic && requestedAuthority !== "creative" && requestedAuthority !== "translation") {
-        markTiming("graphSliceMs");
-        const graph: GraphSlice = { nodes: [], edges: [], hyperedges: [], bounded: true, query: {} };
-        const field = fieldEngine.activate({ text: input.text, nodes: [], edges: [], previous: runtimeState.lastField, evaluation: fieldEvaluation });
-        runtimeState.lastField = field;
-        const entailment = createArithmeticEntailment({ requestText: sourceComputation ? arithmetic.answer : input.text, arithmetic, field, idFactory, createdAt: clock.now() });
-        markTiming("proofMs");
-        const construct = programBuilder.build({ episodeId, text: input.text, entailment, evidence: [], createdAt: clock.now() });
-        const computationSpoken = sourceComputation ? await mouth.speak({ requestText: input.text, verifiedComputation: sourceComputation,
-          construct, field, entailment, evidence: [], requestedAuthority, languageMemory: authorityLanguage.state,
-          languageProfile: selectedSurfaceProfile ?? runtimeLanguageProfile(clock.now()) }) : undefined;
-        if (sourceComputation) kernelTrace({stage:"turn.source_computation",label:"kernel.turn",counts:{sourcePatterns:sourceComputation.patternIds.length},support:{patternIds:sourceComputation.patternIds,realizationAvailability:computationSpoken?.realizationAvailability,surfaceValid:computationSpoken?.surfaceValid,selected:computationSpoken?.realizationTrace.selected,surfaceContract:computationSpoken?.realizationTrace.surfaceContract}});
-        const computationSurfaceAccepted = !sourceComputation || Boolean(computationSpoken?.surfaceValid && computationSpoken.realizationAvailability.status === "realized" && computationSpoken.text === arithmetic.answer);
-        const answer = computationSurfaceAccepted ? computationSpoken?.text ?? arithmetic.answer : "";
-        const pcaReport = pca.certify({ answer, evidence: [], force: entailment.force });
-        const validation = validationBuilder.build({ construct, entailment, pca: pcaReport as unknown as JsonValue });
-        const rawEmission = emissionEngine.emit({ construct, validation, entailment, answer, pca: pcaReport as unknown as JsonValue });
-        const emission = { ...rawEmission, answer:computationSurfaceAccepted?rawEmission.answer:"", assistantForce: computationSurfaceAccepted ? "reasoned_answer" as const : "insufficient_support" as const };
-        timingParts.candidateMs = 0;
-        timingParts.planningMs = 0;
-        timingParts.mouthMs = 0;
-        markTiming("validationMs");
-        const state = prediction.state({ episodeId, graph, alphaTrace: field.alphaTrace, t: clock.now() });
-        const forecast = prediction.forecast({ states: [], source: state, horizon: 2, createdAt: clock.now() });
-        markTiming("forecastMs");
-        timingParts.maintenanceMs = 0;
-        runtimeState.lastEpisodeId = episodeId;
-        runtimeState.lastOutput = emission.answer;
-        events.push(await append(eventFactory.create({ episodeId, typeId: "ComputationEvaluated", payload: sourceComputation
-          ? toJsonValue({ ...jsonRecord(arithmetic.audit), sourcePatternIds: sourceComputation.patternIds, roleBindings: sourceComputation.roleBindings, surfaceEmitted:computationSurfaceAccepted }) : arithmetic.audit })));
-        if (computationSpoken) events.push(await append(eventFactory.create({ episodeId, typeId: "MouthSpoken", payload: { text: computationSpoken.text, evidenceRefs: computationSpoken.evidenceRefs, trace: toJsonValue(computationSpoken.realizationTrace) } })));
-        events.push(await append(eventFactory.create({ episodeId, typeId: "SemanticEntailmentChecked", payload: { proofId: entailment.proof.id, force: entailment.force, assistantForce: emission.assistantForce, support: entailment.support, contradiction: entailment.contradiction, deterministicArithmetic: true } })));
-        events.push(await append(eventFactory.create({ episodeId, typeId: "EmissionGraphBuilt", payload: emission })));
-        const timing = buildTiming("deferred");
-        events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeClosed", payload: { output: emission.answer, deterministicArithmetic: true, timing } })));
-        runtimeState.lastTurnTiming = timing;
-        const episodeConsolidation = await consolidateCurrentEpisode();
-        return {
-          episodeId,
-          requestedAuthority,
+      const exactComputationResult = await runExactComputationTurn({
+        requestText: input.text,
+        episodeId,
+        requestedAuthority,
+        sourceComputation,
+        formalExactComputation,
+        formalArithmetic,
+        previousField: runtimeState.lastField,
+        fieldEvaluation,
+        languageMemory: authorityLanguage.state,
+        languageProfile: () => selectedSurfaceProfile ?? runtimeLanguageProfile(clock.now()),
+        runtimeAudit: runtimeDag.audit,
+        safetyAudit: safetyDecision.audit,
+        events
+      }, {
+        clock,
+        idFactory,
+        fieldEngine,
+        programBuilder,
+        mouth,
+        pca,
+        validationBuilder,
+        emissionEngine,
+        prediction,
+        recordFailure: failure => failures.push(failure),
+        markTiming,
+        setTimingPart: (stage, value) => { timingParts[stage] = value; },
+        buildTiming,
+        applyStatePatch: patch => { Object.assign(runtimeState, patch); },
+        appendEvent: event => append(eventFactory.create(event)),
+        kernelTrace,
+        consolidateCurrentEpisode,
+        resultFields: () => ({
           calibrationTaskClass,
           requestedAuthorityDecision: toJsonValue(requestedAuthorityDecision),
           requestCommunicativeAct: requestCommunicativeActTrace(requestAct),
           requirementField: toJsonValue(requirementField),
           operatorActivations: toJsonValue(operatorActivations),
-          answer: emission.answer,
-          epistemicForce: emission.epistemicForce,
-          assistantForce: emission.assistantForce,
-          evidence: [],
-          field,
-          entailment,
-          constructGraph: construct,
-          validationGraph: validation,
-          emissionGraph: emission,
-          forecast,
-          learningNeeds: [],
-          actionGraph: toJsonValue({ deterministicArithmetic: arithmetic.audit, runtime: runtimeDag.audit, safety: safetyDecision.audit, maintenanceDeferred: true }),
-          proofCarryingAnswer: pcaReport.audit,
-          languageAcquisition: toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
-          mouth: computationSpoken ? toJsonValue(computationSpoken.realizationTrace) : toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
-          ...(computationSpoken?{realizationAvailability:toJsonValue(!computationSurfaceAccepted?{status:"realization_unavailable",reasonId:"computation_surface_contract_rejected",eligibleCandidateCount:0}:computationSpoken.realizationAvailability)}:{}),
           corrections: correctionMemory.summarize(detectedCorrections),
           userModelStore: userModelStoreToJson(userModelStore),
           userModelProvenance: userModelStoreProvenanceSummary(userModelStore),
-          learningLoop: toJsonValue({ maintenanceDeferred: true, deterministicArithmetic: true }),
-          episodeConsolidation,
-          relevantPastEpisodes: undefined,
           repoCognition,
-          documentGeneration,
-          timing,
-          ...evaluationTraceResult(),
-          ...turnContract({
-            entailment,
-            evidence: [],
-            assistantForce: emission.assistantForce,
-            unsupportedContentBlocked: !computationSurfaceAccepted,
-            // The spoken quantity and the computed quantity are the same number: an algebraic invariant, not an estimate.
-            ...(exactComputationVerified && computationSurfaceAccepted
-              ? {
-                scoreTraces: [invariantScore({
-                  value: exactComputationVerified.matches ? 1 : 0,
-                  range: [0, 1],
-                  meaning: "exact computation result equals the quantity in the spoken answer",
-                  inputs: [exactComputation!.expression, exactComputationVerified.expected],
-                  provenance: ["exact-computation.verifyExactResultMatchesClaim"],
-                  idSeed: `exact:${exactComputation!.expression}:${exactComputationVerified.expected}`
-                })]
-              }
-              : {})
-          }),
-          events
-        };
-      }
+          documentGeneration
+        }),
+        evaluationTraceResult,
+        turnContract
+      });
+      if (exactComputationResult) return exactComputationResult;
       const routedDiscourseObject = discourseObjectStateFromMetadata(input.metadata);
       // The server builds the object before this turn measures what the request names, so it read the previous request's identities.
       const requestNamedIdentities = routedDiscourseObject ? corpusNamedIdentities(input.text) : [];
@@ -4982,57 +4938,26 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // rhetorical-generation machinery never gets a chance to run at all. Attaching whenever a local-evidence
       // plan exists, not only when it exactly matches the judge's pick, costs nothing when a different
       // candidate wins (the facts simply go unused) and unlocks the real generation lanes when it does.
-      const localSourceContent = longPathBasisAnswer ? localEvidenceAnswerClaimSurface(longPathBasisAnswer) : "";
-      const localAnswerConstructGraph = runtimeDiagnosticRequested
-        ? assembly.constructGraph
-        : longPathBasisAnswer
-          ? attachLocalEvidenceAnswerConstruct({
-            construct: assembly.constructGraph,
-            plan: longPathBasisAnswer.plan,
-            requestText: input.text,
-            brainMarker: brain,
-            hasher,
-            closedClassWords: requestClosedClassWords(),
-            selectedAnswer: { text: localSourceContent, claimText: localSourceContent,
-              evidenceIds: longPathBasisAnswer.evidence.map(span => String(span.id)) },
-            additionalFacts: temporalConstructFact ? [temporalConstructFact] : undefined,
-            additionalEvidence: temporalConstructFact ? temporalBoundEvidence : undefined
-          })
-          : temporalConstructFact
-            ? attachSourceBoundAnswerConstruct({
-              construct: assembly.constructGraph,
-              requestText: input.text,
-              brainMarker: brain,
-              hasher,
-              facts: [temporalConstructFact],
-              evidence: temporalBoundEvidence,
-              identitySeed: requestValueBinding?.resolverId
-            })
-            : assembly.constructGraph;
-      // Learned graph prior: the graph-node answer / insufficient-support constructs the mouth already knows how to realize.
-      const priorConstructGraph = runtimeDiagnosticRequested
-        ? localAnswerConstructGraph
-        : attachLearnedGraphPriorConstruct({ construct: localAnswerConstructGraph, requestText: input.text, graph, field, selectedEvidence, brainMarker: brain, hasher });
-      const proposalConstructGraph = attachCognitiveProposal({ construct: priorConstructGraph, proposal: selectedProposal });
-      const selectedInventions = selectedInvention ? [selectedInvention] : [];
-      const inventionConstructGraph = selectedInventions.reduce(
-        (current, invention) => attachInventionConstruct({ construct: current, invention }),
-        proposalConstructGraph
-      );
-      const runtimeDiagnosticConstructGraph = attachRuntimeDiagnosticConstruct({
-        construct: inventionConstructGraph,
-        enabled: runtimeDiagnosticRequested,
+      const { construct: spokenConstructGraph } = assembleTurnConstruct({
+        baseConstruct: assembly.constructGraph,
         requestText: input.text,
         brainMarker: brain,
         hasher,
-        locale
-      });
-      const spokenConstructGraph = attachRuntimeMotionConstruct({
-        construct: runtimeDiagnosticConstructGraph,
-        requestText: input.text,
-        motion: runtimeSurfaceMotion,
-        answerSurface: runtimeSurfaceMotion ? authorityCandidateField.candidates[0]?.answer : undefined,
-        hasher
+        closedClassWords: longPathBasisAnswer && !runtimeDiagnosticRequested ? requestClosedClassWords() : undefined,
+        localEvidenceAnswer: longPathBasisAnswer,
+        boundFact: temporalConstructFact,
+        boundFactEvidence: temporalBoundEvidence,
+        boundFactIdentitySeed: requestValueBinding?.resolverId,
+        learnedPrior: { graph, field, selectedEvidence },
+        proposal: selectedProposal,
+        invention: selectedInvention,
+        runtimeDiagnostic: { enabled: runtimeDiagnosticRequested, locale },
+        ...(runtimeSurfaceMotion ? {
+          runtimeMotion: {
+            motion: runtimeSurfaceMotion,
+            answerSurface: authorityCandidateField.candidates[0]?.answer
+          }
+        } : {})
       });
       events.push(await append(eventFactory.create({ episodeId, typeId: "ConstructGraphBuilt", payload: construct })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "ConstructGraphBuilt", payload: { substrate: assembly.audit, constructGraphId: spokenConstructGraph.id } })));
@@ -6415,29 +6340,6 @@ async function dispatchBuildTestThroughExecutive(input: {
 }
 
 // Wikipedia teaches the language of facts, Gutenberg the language of prose, code corpora the language of code.
-/** The conversation's own turns, as surfaces. Kept in their own namespace: never projected into evidence ids. */
-export function conversationTurnSurfacesFromMetadata(metadata: JsonValue | undefined): ConversationTurnSurface[] {
-  const session = jsonRecord(jsonRecord(metadata).session);
-  const sessionId = kernelString(session.sessionId);
-  const rows = Array.isArray(session.recentTurns) ? session.recentTurns : [];
-  if (!sessionId) return [];
-  return rows
-    .map((value, index): ConversationTurnSurface | undefined => {
-      const record = jsonRecord(value as JsonValue);
-      const surface = (kernelString(record.text) ?? "").trim();
-      if (!surface) return undefined;
-      const turnIndex = Number(record.turnIndex);
-      return {
-        turnId: kernelString(record.id) || `${sessionId}:${index}`,
-        turnIndex: Number.isFinite(turnIndex) ? turnIndex : index,
-        ...(kernelString(record.roleId) ? { roleId: kernelString(record.roleId) } : {}),
-        surface
-      };
-    })
-    .filter((turn): turn is ConversationTurnSurface => turn !== undefined)
-    .sort((left, right) => left.turnIndex - right.turnIndex);
-}
-
 function surfaceCorpusRoleForAuthority(authority: RequestedAuthority): CorpusRoleId | undefined {
   switch (authority) {
     case "factual":
@@ -6478,91 +6380,6 @@ function requireHydratedSurfaceLanguage<T>(value: T | undefined, context: string
 
 function isResidentRuntimeNotWarmError(error: unknown): boolean {
   return error instanceof Error && error.message.startsWith("hydrated runtime unavailable: resident");
-}
-
-export function typedSemanticInputForMouth(input: {
-  construct: ConstructGraph;
-  graph: GraphSnapshot;
-  authority: MouthSemanticInput["authority"];
-}): MouthSemanticInput | undefined {
-  const nodes = (input.construct as unknown as {
-    nodes?: Array<{ kind?: string; metadata?: JsonValue }>;
-  }).nodes ?? [];
-  const selectedFacts = nodes.flatMap(node => {
-    if (node.kind !== "construct:semantic_answer") return [];
-    const value = jsonRecord(node.metadata ?? {});
-    return Array.isArray(value.selectedFacts)
-      ? value.selectedFacts.map(jsonRecord)
-      : [];
-  });
-  if (selectedFacts.length !== 1) return undefined;
-  const fact = selectedFacts[0]!;
-  const sourceNodeId = kernelString(fact.sourceNodeId);
-  const targetNodeId = kernelString(fact.targetNodeId);
-  const relationId = kernelString(fact.relationId);
-  const subject = kernelString(fact.subject);
-  const object = kernelString(fact.object);
-  if (!sourceNodeId || !targetNodeId || !relationId || !subject || !object) {
-    return undefined;
-  }
-  const matching = input.graph.hyperedges.filter(hyperedge =>
-    String(hyperedge.relationId) === relationId
-    && hyperedge.participantPorts.some(port =>
-      String(port.nodeId ?? "") === sourceNodeId)
-    && hyperedge.participantPorts.some(port =>
-      String(port.nodeId ?? "") === targetNodeId));
-  if (matching.length !== 1) return undefined;
-  const hyperedge = matching[0]!;
-  const sourcePorts = hyperedge.participantPorts.filter(port =>
-    String(port.nodeId ?? "") === sourceNodeId
-    && port.realization === "observed"
-    && Boolean(port.roleId));
-  const targetPorts = hyperedge.participantPorts.filter(port =>
-    String(port.nodeId ?? "") === targetNodeId
-    && port.realization === "observed"
-    && Boolean(port.roleId));
-  if (sourcePorts.length !== 1 || targetPorts.length !== 1) return undefined;
-  const sourcePort = sourcePorts[0]!;
-  const targetPort = targetPorts[0]!;
-  const factEvidenceIds = Array.isArray(fact.evidenceIds)
-    ? fact.evidenceIds
-    : [];
-  const evidenceIds = uniqueKernelStrings([
-    ...factEvidenceIds.flatMap(value =>
-      typeof value === "string" ? [value] : []),
-    ...hyperedge.evidenceIds.map(String)
-  ]);
-  const sourceSlotId = `mouth.slot.graph.${sourceNodeId}.source`;
-  const targetSlotId = `mouth.slot.graph.${targetNodeId}.target`;
-  return {
-    schema: "scce.mouth.semantic_input.v1",
-    authority: input.authority,
-    slots: [
-      {
-        id: sourceSlotId,
-        roleId: String(sourcePort.roleId),
-        value: subject,
-        evidenceIds: evidenceIds as MouthSemanticInput["slots"][number]["evidenceIds"],
-        sourceId: sourceNodeId
-      },
-      {
-        id: targetSlotId,
-        roleId: String(targetPort.roleId),
-        value: object,
-        evidenceIds: evidenceIds as MouthSemanticInput["slots"][number]["evidenceIds"],
-        sourceId: targetNodeId
-      }
-    ],
-    relations: [{
-      id: `mouth.relation.graph.${hyperedge.id}`,
-      relationId,
-      sourceSlotId,
-      targetSlotId,
-      evidenceIds: evidenceIds as NonNullable<
-        MouthSemanticInput["relations"]
-      >[number]["evidenceIds"]
-    }]
-  };
 }
 
 /** Undefined when the host exposed no accounting, or when the two snapshots cannot be differenced. */
@@ -6817,209 +6634,6 @@ function evidenceAdmissibleUnderAccessPolicy(
   })));
 }
 
-export function dialogueInterpretationAdjustmentsFromMetadata(
-  metadata: JsonValue | undefined,
-  previousState?: import("./discourse-state.js").DialogueCognitiveStateV2,
-  durableAdjustments: readonly DiscourseInterpretationAdjustmentV2[] = []
-): DiscourseInterpretationAdjustmentV2[] {
-  const dialogue = jsonRecord(jsonRecord(metadata).dialogue);
-  const byId = new Map<string, DiscourseInterpretationAdjustmentV2>();
-  for (const value of previousState?.interpretationAdjustments ?? []) {
-    if (isDiscourseInterpretationAdjustmentV2(value)) byId.set(value.id, value);
-  }
-  for (const value of durableAdjustments) {
-    if (isDiscourseInterpretationAdjustmentV2(value)) byId.set(value.id, value);
-  }
-  const incoming = Array.isArray(dialogue.interpretationAdjustments) ? dialogue.interpretationAdjustments : [];
-  for (const value of incoming) {
-    if (!isDiscourseInterpretationAdjustmentV2(value)) continue;
-    byId.delete(value.id);
-    byId.set(value.id, value);
-  }
-  return [...byId.values()].slice(-128);
-}
-
-export function typedDialoguePreselectionV2(input: {
-  conversationId: string;
-  turnId: string;
-  turnIndex: number;
-  roleId: string;
-  surfaceHash: string;
-  requirementField: TurnRequirementField;
-  entailment: TurnResult["entailment"];
-  graph: GraphSnapshot;
-  selectedEvidence: readonly EvidenceSpan[];
-  previousState?: import("./discourse-state.js").DialogueCognitiveStateV2;
-  hasher: ReturnType<typeof createHasher>;
-}): {
-  observation: DiscourseTurnObservationV2;
-  candidates: DiscoursePreselectionCandidateV2[];
-} {
-  const selectedEvidenceIds = new Set(input.selectedEvidence.map(span => String(span.id)));
-  const proofEvidenceIds = new Set(input.entailment.evidenceIds.map(String).filter(id => selectedEvidenceIds.has(id)));
-  const roleIds = uniqueKernelStrings(input.requirementField.requiredFeatures.map(feature => feature.origin.semanticRoleId));
-  const frameIds = uniqueKernelStrings(input.requirementField.activatedFrameIds);
-  const previousByNodeId = new Map(
-    (input.previousState?.referents ?? []).flatMap(referent => referent.nodeIds.map(nodeId => [String(nodeId), referent] as const))
-  );
-  const graphNodeById = new Map(input.graph.nodes.map(node => [String(node.id), node] as const));
-  const previousByEvidenceId = new Map<string, import("./discourse-state.js").DialogueCognitiveStateV2["referents"][number] | undefined>();
-  for (const referent of input.previousState?.referents ?? []) {
-    for (const evidenceId of referent.evidenceIds) {
-      const key = String(evidenceId);
-      const prior = previousByEvidenceId.get(key);
-      if (prior && prior.id !== referent.id) previousByEvidenceId.set(key, undefined);
-      else if (!previousByEvidenceId.has(key)) previousByEvidenceId.set(key, referent);
-    }
-  }
-  const proofNodes = input.graph.nodes.filter(node => node.evidenceIds.some(id => proofEvidenceIds.has(String(id))));
-  const evidenceById = new Map(input.selectedEvidence.map(span => [String(span.id), span]));
-  const mappings = input.entailment.mappings.filter(mapping => mapping.evidenceIds.some(id => proofEvidenceIds.has(String(id))));
-  const mentions = mappings.flatMap(mapping => {
-    const evidenceIds = uniqueKernelStrings(mapping.evidenceIds.map(String).filter(id => proofEvidenceIds.has(id)));
-    const candidateNodes = proofNodes.filter(node => node.evidenceIds.some(id => evidenceIds.includes(String(id))));
-    if (!candidateNodes.length) return [];
-    const candidateReferentIds = uniqueKernelStrings(candidateNodes.map(node => {
-      const referent = previousByNodeId.get(String(node.id))
-        ?? node.evidenceIds.map(id => previousByEvidenceId.get(String(id))).find((value): value is NonNullable<typeof value> => Boolean(value));
-      return referent?.id ?? String(node.id);
-    }));
-    const sourceVersionIds = uniqueKernelStrings([
-      ...mapping.sourceVersionIds.map(String),
-      ...evidenceIds.map(id => String(evidenceById.get(id)?.sourceVersionId ?? ""))
-    ]);
-    return [{
-      schema: "scce.discourse_mention.v2" as const,
-      id: `disc2.preselection.mention.${input.hasher.digestHex(`${mapping.id}:${evidenceIds.join("|")}:${candidateReferentIds.join("|")}`).slice(0, 32)}`,
-      sourceIdentityIds: uniqueKernelStrings([mapping.id, mapping.obligationId, ...evidenceIds, ...candidateReferentIds]),
-      kindId: mapping.kind,
-      surfaceHash: input.hasher.digestHex(mapping.claimText),
-      semanticRoleIds: roleIds,
-      requestedSlotIds: [mapping.obligationId],
-      learnedFrameIds: frameIds,
-      candidateNodeIds: uniqueKernelStrings(candidateNodes.map(node => String(node.id))),
-      candidateReferentIds,
-      scopeIds: sourceVersionIds
-    }];
-  });
-  const observation = createDiscourseTurnObservationV2({
-    conversationId: input.conversationId,
-    turnId: input.turnId,
-    turnIndex: input.turnIndex,
-    roleId: input.roleId,
-    surfaceHash: input.surfaceHash,
-    learnedFrameIds: frameIds,
-    requestedSlotIds: uniqueKernelStrings(mentions.flatMap(mention => mention.requestedSlotIds)),
-    explicitAnchorNodeIds: uniqueKernelStrings(proofNodes.map(node => String(node.id))),
-    scopeIds: uniqueKernelStrings(mentions.flatMap(mention => mention.scopeIds)),
-    mentions
-  }, input.hasher);
-  const candidates: DiscoursePreselectionCandidateV2[] = [];
-  for (const mention of mentions) {
-    for (const referentId of mention.candidateReferentIds) {
-      const nodeIds = mention.candidateNodeIds.filter(nodeId => {
-        const referent = previousByNodeId.get(nodeId)
-          ?? graphNodeById.get(nodeId)?.evidenceIds
-            .map(id => previousByEvidenceId.get(String(id))).find((value): value is NonNullable<typeof value> => Boolean(value));
-        return (referent?.id ?? nodeId) === referentId;
-      });
-      const proofForReferent = uniqueKernelStrings(proofNodes
-        .filter(node => nodeIds.includes(String(node.id)))
-        .flatMap(node => node.evidenceIds.map(String).filter(id => proofEvidenceIds.has(id))));
-      if (!proofForReferent.length) continue;
-      candidates.push({
-        referentId,
-        semanticRoleIds: [...mention.semanticRoleIds],
-        requestedSlotIds: [...mention.requestedSlotIds],
-        learnedFrameIds: [...mention.learnedFrameIds],
-        scopeIds: [...mention.scopeIds],
-        proofEvidenceIds: proofForReferent
-      });
-    }
-  }
-  return { observation, candidates };
-}
-
-export function typedDialogueTurnContextV2(candidates: readonly DiscoursePreselectionCandidateV2[]): Pick<DiscoursePreselectionCandidateV2, "semanticRoleIds" | "requestedSlotIds" | "learnedFrameIds" | "scopeIds"> {
-  return {
-    semanticRoleIds: uniqueKernelStrings(candidates.flatMap(context => context.semanticRoleIds)),
-    requestedSlotIds: uniqueKernelStrings(candidates.flatMap(context => context.requestedSlotIds)),
-    learnedFrameIds: uniqueKernelStrings(candidates.flatMap(context => context.learnedFrameIds)),
-    scopeIds: uniqueKernelStrings(candidates.flatMap(context => context.scopeIds))
-  };
-}
-
-export function preselectionReferentProofEvidenceIdsV2(candidates: readonly DiscoursePreselectionCandidateV2[]): string[][] {
-  const byReferent = new Map<string, Set<string>>();
-  for (const candidate of candidates) {
-    const ids = byReferent.get(candidate.referentId) ?? new Set<string>();
-    for (const id of candidate.proofEvidenceIds) ids.add(id);
-    byReferent.set(candidate.referentId, ids);
-  }
-  return [...byReferent.values()].map(ids => [...ids].sort());
-}
-
-function preferredDialogueEvidenceForAdjustments(
-  candidates: readonly DiscoursePreselectionCandidateV2[],
-  adjustments: readonly DiscourseInterpretationAdjustmentV2[]
-): ReadonlySet<string> | undefined {
-  if (!adjustments.length) return undefined;
-  const context = typedDialogueTurnContextV2(candidates);
-  const owners = new Map<string, Set<string>>();
-  for (const candidate of candidates) {
-    const ids = owners.get(candidate.referentId) ?? new Set<string>();
-    for (const id of candidate.proofEvidenceIds) ids.add(id);
-    owners.set(candidate.referentId, ids);
-  }
-  const ranked = [...owners].map(([referentId, evidenceIds]) => ({ evidenceIds, selection: interpretationAdjustmentSelectionForTypedCandidateV2({
-    candidate: { referentId, ...context, proofEvidenceIds: [...evidenceIds] }, adjustments
-  }) })).sort((left, right) => right.selection.delta - left.selection.delta);
-  const first = ranked[0];
-  return first && first.selection.delta > 0 && first.selection.delta > (ranked[1]?.selection.delta ?? 0)
-    ? first.evidenceIds : undefined;
-}
-
-export function applyDialogueInterpretationAdjustmentsV2(input: {
-  field: CandidateField;
-  candidates: readonly DiscoursePreselectionCandidateV2[];
-  adjustments: readonly DiscourseInterpretationAdjustmentV2[];
-}): CandidateField {
-  if (!input.adjustments.length || !input.candidates.length) return input.field;
-  // A field candidate answers the whole request, so its typed context is the turn's, not one mention's source.
-  const turnContext = typedDialogueTurnContextV2(input.candidates);
-  let adjustedCount = 0;
-  const candidates = input.field.candidates.map(candidate => {
-    const evidenceIds = new Set(candidate.evidenceIds.map(String));
-    const contexts = input.candidates.filter(context => context.proofEvidenceIds.some(id => evidenceIds.has(id)));
-    const referentIds = uniqueKernelStrings(contexts.map(context => context.referentId));
-    // A candidate carrying evidence for multiple typed referents is ambiguous;
-    // leave it neutral rather than letting feedback choose among unresolved proof.
-    if (referentIds.length !== 1) return candidate;
-    const selection = interpretationAdjustmentSelectionForTypedCandidateV2({
-      candidate: { referentId: referentIds[0]!, ...turnContext, proofEvidenceIds: uniqueKernelStrings(contexts.flatMap(context => context.proofEvidenceIds)) },
-      adjustments: input.adjustments
-    });
-    if (!selection.delta) return candidate;
-    adjustedCount++;
-    return {
-      ...candidate,
-      selectionAdjustment: selection.delta,
-      audit: toJsonValue({
-        ...jsonRecord(candidate.audit),
-        typedDialogueSelection: {
-          referentId: referentIds[0],
-          delta: selection.delta,
-          adjustmentIds: selection.adjustmentIds,
-          proofEvidenceIds: contexts.flatMap(context => context.proofEvidenceIds)
-        }
-      })
-    };
-  });
-  return adjustedCount
-    ? { ...input.field, candidates }
-    : input.field;
-}
-
 /** The act classification as the result carries it: the classifier's status travels with its verdict. */
 function requestCommunicativeActTrace(classification: RequestCommunicativeActClassification): JsonValue {
   return toJsonValue({
@@ -7155,118 +6769,4 @@ function projectSessionEvidenceWith(
     // A projection that cannot be built must not fail the turn: the evidence path is unchanged and still answers.
     return undefined;
   }
-}
-
-/** A verified reasoned realization need not be a contiguous source quotation. */
-export function reasonedRealizationPreservesContract(input: {
-  requestedAuthority: RequestedAuthority;
-  requirementField: Pick<TurnRequirementField, "sourceDependence" | "semanticPreservation" | "inferentialDepth" | "dialogueDependence">;
-  spoken: Pick<SpokenOutput, "text" | "surfaceValid" | "evidenceRefs">;
-  realizationContract?: SemanticRealizationContract;
-  closedClassWords?: ReadonlySet<string>;
-  hasher?: ReturnType<typeof createHasher>;
-}): boolean {
-  const { requirementField: field, realizationContract: contract, spoken } = input;
-  if (input.requestedAuthority !== "reasoned" || !spoken.surfaceValid || !spoken.text.trim()) return false;
-  // Explicit source-preserving tasks retain their exact-excerpt contract.
-  const preservationFloor = calibrated("turn_requirements.source_preservation_floor");
-  if (field.semanticPreservation >= preservationFloor || field.sourceDependence >= preservationFloor
-    || field.sourceDependence >= Math.max(field.inferentialDepth, field.dialogueDependence)) return false;
-  if (!contract?.evidenceIds.length
-    || !contract.evidenceIds.every(id => spoken.evidenceRefs.some(ref => String(ref) === id))) return false;
-  // The atomizer can miss an added clause when its vocabulary has no
-  // learned relation for it. Do not let that blind spot widen this exception.
-  const fact = contract.sourceFact;
-  const licensedUnits = surfaceUnits([fact.subject, fact.predicate, fact.object].join(" ").toLocaleLowerCase());
-  if (surfaceUnits(spoken.text.toLocaleLowerCase()).some(unit =>
-    !input.closedClassWords?.has(unit)
-    && !licensedUnits.some(licensed => requestUnitSharesStem(unit, licensed)))) return false;
-  return candidateSurvivesRealizationContract(spoken.text, contract, input.hasher).survives;
-}
-
-/** A surface that realizes nothing the request did not already say. */
-export function learnedSurfaceRealizesNothing(input: Pick<LearnedSurfaceRecoveryInput, "learnedSurface" | "requestText" | "closedClassWords">): boolean {
-  const requestUnits = surfaceUnits(input.requestText);
-  return !surfaceUnits(input.learnedSurface).some(unit => !input.closedClassWords?.has(unit)
-    && !requestUnits.some(requestUnit => requestUnitSharesStem(requestUnit, unit)));
-}
-
-/**
- * Whether a fallback may recite an admitted span verbatim, under the same admission primary selection applies:
- * mouth.ts refuses a surface that is unparsed markup, that the structural residue measure calls apparatus, or that
- * covers none of the request. A recitation is admission, so it answers to all three. The relation is deliberately
- * NOT required here: the contradiction lane exists for evidence that contradicts the request's premise, and that
- * premise is by construction absent from the evidence. Pure.
- */
-export function recitedEvidenceAdmissibility(input: { surface: string; span: EvidenceSpan; requestText: string }):
-  "admissible" | "markup" | "apparatus" | "uncovered" {
-  if (isUnparsedMarkupText(input.surface)) return "markup";
-  if (isStructuralResidueSurface(input.surface)) return "apparatus";
-  if (!answerCoversRequest([input.surface], input.span, requestContentEvidenceUnits(input.requestText), input.requestText)) return "uncovered";
-  return "admissible";
-}
-
-/** Request obligations a surface carries: each request content unit, plus each value the realization contract binds. */
-export function surfaceRequestAdequacy(surface: string, input: Omit<LearnedSurfaceRecoveryInput, "learnedSurface">): { carried: number; owed: number } {
-  const owedUnits = uniqueKernelStrings(surfaceUnits(input.requestText).filter(unit => !input.closedClassWords?.has(unit)));
-  const units = surfaceUnits(surface);
-  const boundValues = Object.values(input.realizationContract?.boundValues ?? {}).filter(Boolean);
-  const normalized = surface.toLocaleLowerCase();
-  return {
-    carried: owedUnits.filter(unit => units.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit))).length
-      + boundValues.filter(value => normalized.includes(value.toLocaleLowerCase())).length,
-    owed: owedUnits.length + boundValues.length
-  };
-}
-
-export interface LearnedSurfaceRecoveryInput {
-  learnedSurface: string;
-  requestText: string;
-  closedClassWords?: ReadonlySet<string>;
-  realizationContract?: SemanticRealizationContract;
-}
-
-/** Whether the learned surface must consult the source-bound realization before it is kept. */
-export function learnedSurfaceConsultsSourceBound(input: LearnedSurfaceRecoveryInput & {
-  preserved: boolean;
-  learnedNotAnExcerpt: boolean;
-}): boolean {
-  const learned = input.learnedSurface.trim();
-  if (!learned) return true;
-  if (input.preserved) return false;
-  if (input.learnedNotAnExcerpt) return true;
-  const adequacy = surfaceRequestAdequacy(learned, input);
-  return adequacy.carried < adequacy.owed;
-}
-
-/** A learned surface yields to a source-bound realization that contains it and carries more of the request. */
-export function learnedSurfaceTruncatesSourceBound(input: LearnedSurfaceRecoveryInput & { sourceBound: string }): boolean {
-  const learned = input.learnedSurface.trim();
-  const sourceBound = input.sourceBound.trim();
-  if (!learned || sourceBound.length <= learned.length || !sourceBound.includes(learned)) return false;
-  return surfaceRequestAdequacy(sourceBound, input).carried > surfaceRequestAdequacy(learned, input).carried;
-}
-
-/** Learned dialogue intent can be source-independent without requesting novelty. */
-export function sourceIndependentDialogueRequirements(field: Pick<TurnRequirementField,
-  "sourceDependence" | "dialogueDependence" | "externalTruthAuthority" | "semanticPreservation"
->): boolean {
-  return field.dialogueDependence > Math.max(field.externalTruthAuthority, field.sourceDependence, field.semanticPreservation);
-}
-
-/** A source-free dialogue surface belongs to its own authority lane. */
-export function sourceIndependentDialogueSurfaceAcceptable(input: {
-  requestedAuthority: RequestedAuthority;
-  requirementField: Pick<TurnRequirementField,
-    "sourceDependence" | "dialogueDependence" | "externalTruthAuthority" | "semanticPreservation"
-  >;
-  spoken: Pick<SpokenOutput, "text" | "surfaceValid" | "evidenceRefs">;
-  selectedEvidenceCount: number;
-}): boolean {
-  return input.requestedAuthority === "reasoned"
-    && input.selectedEvidenceCount === 0
-    && input.spoken.surfaceValid
-    && input.spoken.text.trim().length > 0
-    && input.spoken.evidenceRefs.length === 0
-    && sourceIndependentDialogueRequirements(input.requirementField);
 }

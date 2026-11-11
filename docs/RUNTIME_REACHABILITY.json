@@ -1,19 +1,19 @@
 {
- "generatedAt": "2026-11-11T00:43:59.438Z",
+ "generatedAt": "2026-11-11T07:46:41.043Z",
  "method": "word-match over source reachable from the real entry points; a name shared with a method or local elsewhere reads as reached, so the orphan count is a lower bound",
  "totals": {
-  "exports": 2942,
-  "reached": 2139,
-  "internalHelpersOnly": 694,
-  "orphans": 109,
+  "exports": 3010,
+  "reached": 2204,
+  "internalHelpersOnly": 693,
+  "orphans": 113,
   "declaredConstants": 5,
-  "compatibilityAliases": 14,
+  "compatibilityAliases": 18,
   "legacyMigration": 0,
   "hostContracts": 1,
-  "testOnlyHelpers": 60,
+  "testOnlyHelpers": 59,
   "implementedButUncalled": 89,
-  "ofWhichCoveredByTestsOnly": 60,
-  "ofWhichNoCallerAnywhere": 22,
+  "ofWhichCoveredByTestsOnly": 59,
+  "ofWhichNoCallerAnywhere": 23,
   "ofWhichDeliberatelyUnwired": 13,
   "retiredLanguageJoinProductionReferences": 0
  },
@@ -106,6 +106,15 @@
   {
    "name": "artifactRoleForProjectPath",
    "file": "packages/adapters-node/src/project-artifact-declarations.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": false
+  },
+  {
+   "name": "isSegmentationWitnessArchive",
+   "file": "packages/adapters-node/src/segmentation-witness-archive-storage.ts",
    "caller": "",
    "usedInOwnFile": false,
    "alias": false,
@@ -403,6 +412,33 @@
    "testOnly": false
   },
   {
+   "name": "createCorpusObjectManifest",
+   "file": "packages/kernel/src/evidence-ref.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "createEvidenceRef",
+   "file": "packages/kernel/src/evidence-ref.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "resolveEvidenceRefs",
+   "file": "packages/kernel/src/evidence-ref.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": false,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
    "name": "clearFreeFormLexicon",
    "file": "packages/kernel/src/free-form-lexicon.ts",
    "caller": "",
@@ -609,42 +645,6 @@
    "testOnly": false
   },
   {
-   "name": "recitedEvidenceAdmissibility",
-   "file": "packages/kernel/src/production-turn-runtime.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "learnedSurfaceConsultsSourceBound",
-   "file": "packages/kernel/src/production-turn-runtime.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "learnedSurfaceTruncatesSourceBound",
-   "file": "packages/kernel/src/production-turn-runtime.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
-   "name": "sourceIndependentDialogueSurfaceAcceptable",
-   "file": "packages/kernel/src/production-turn-runtime.ts",
-   "caller": "",
-   "usedInOwnFile": false,
-   "alias": false,
-   "hostContract": false,
-   "testOnly": true
-  },
-  {
    "name": "validateProgramCompositionBehavior",
    "file": "packages/kernel/src/program-composition.ts",
    "caller": "",
@@ -733,6 +733,42 @@
    "alias": true,
    "hostContract": false,
    "testOnly": false
+  },
+  {
+   "name": "separateSourceDerivedLanguageUnitMetadata",
+   "file": "packages/kernel/src/source-language-artifact-derivation.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "separateSourceDerivedSemanticFrameBody",
+   "file": "packages/kernel/src/source-language-artifact-derivation.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "mergeSourceDerivedLanguageUnitMetadata",
+   "file": "packages/kernel/src/source-language-artifact-derivation.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
+  },
+  {
+   "name": "mergeSourceDerivedSemanticFrameBody",
+   "file": "packages/kernel/src/source-language-artifact-derivation.ts",
+   "caller": "",
+   "usedInOwnFile": false,
+   "alias": true,
+   "hostContract": false,
+   "testOnly": true
   },
   {
    "name": "sourceSegmentationSurfaceBearingArcIndices",

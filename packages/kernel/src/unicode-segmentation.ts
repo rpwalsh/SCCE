@@ -2,6 +2,22 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
 
+/**
+ * A supplementary, default-ignorable blank reserved for length-preserving source-role projections. One marker
+ * occupies the same two UTF-16 code units and one code point as any supplementary source character. It is a
+ * coordinate placeholder, never a language symbol.
+ */
+export const SOURCE_ROLE_PROJECTION_SUPPLEMENTARY_BLANK = "\u{E0000}";
+
+/** This exact reserved coordinate placeholder has no learnable character identity. */
+export function isSourceRoleProjectionBlankCodePoint(value: string): boolean {
+  return value === SOURCE_ROLE_PROJECTION_SUPPLEMENTARY_BLANK;
+}
+
+export function containsSourceRoleProjectionBlank(value: string): boolean {
+  return value.includes(SOURCE_ROLE_PROJECTION_SUPPLEMENTARY_BLANK);
+}
+
 export type UnicodeSurfaceSegmentKind =
   | "word"
   | "grapheme"
@@ -270,7 +286,9 @@ function isWhitespace(surface: string): boolean {
 }
 
 function isControl(surface: string): boolean {
-  return /^\p{Control}+$/u.test(surface);
+  // U+E0000 is reserved by the source-role projector as a default-ignorable, supplementary-width blank. It may
+  // join the preceding grapheme, so containment (not an anchored category test) is intentional for this marker.
+  return /^\p{Control}+$/u.test(surface) || containsSourceRoleProjectionBlank(surface);
 }
 
 function isPunctuation(surface: string): boolean {

@@ -410,7 +410,9 @@ describe("learned rows carry the shard's provenance once", () => {
     const observedPatternIds = compiledBatches[0]!.sourceObservedConstructionPatternIds;
     expect(observedPatternIds.length).toBeGreaterThan(0);
     expect(new Set(observedPatternIds).size).toBe(observedPatternIds.length);
-    expect(fixture.state.patterns.filter(isConstructionBundle)).toEqual([]);
+    const publishedConstructions = fixture.state.patterns.filter(isConstructionBundle);
+    expect(publishedConstructions.filter(pattern => !isCreativeSpeechConstructionBundle(pattern))).toEqual([]);
+    expect(publishedConstructions.filter(isCreativeSpeechConstructionBundle).length).toBeGreaterThan(0);
     expect(first.constructionObservationReceipt).toMatchObject({ candidateCount: observedPatternIds.length,
       sourceVersionId: String(evidence.sourceVersionId) });
     const runtime = createLanguageMemoryRuntime({ hasher: corpusTestHasher, idFactory: corpusTestIds });
@@ -1049,13 +1051,21 @@ describe("prepared corpus training", () => {
       expect(spy).toHaveBeenCalledTimes(1);
       expect(preparationReference).toBeDefined();
       spy.mockClear();
-      await new Promise(resolve => setTimeout(resolve, 0));
-      const inspector = new Session();
-      inspector.connect();
-      try { await inspector.post("HeapProfiler.collectGarbage"); } finally { inspector.disconnect(); }
-      if (process.env.SCCE_CORPUS_RETENTION_REPORT === "1") console.log(JSON.stringify({ sourceBytes: Buffer.byteLength(input.text), compilerRetained: compiledReference?.deref() !== undefined, ...process.memoryUsage() }));
-      expect(compiledReference?.deref() === undefined).toBe(true);
-      expect(preparationReference?.deref() === undefined).toBe(true);
+      let compilerRetained = true;
+      let preparationRetained = true;
+      for (let attempt = 0; attempt < 5 && (compilerRetained || preparationRetained); attempt += 1) {
+        // A successful deref keeps its target alive until the end of the current job. Cross an event-loop
+        // turn before every bounded retry so the previous probe cannot manufacture the retention it tests.
+        await new Promise<void>(resolve => setImmediate(resolve));
+        const inspector = new Session();
+        inspector.connect();
+        try { await inspector.post("HeapProfiler.collectGarbage"); } finally { inspector.disconnect(); }
+        compilerRetained = compiledReference?.deref() !== undefined;
+        preparationRetained = preparationReference?.deref() !== undefined;
+      }
+      if (process.env.SCCE_CORPUS_RETENTION_REPORT === "1") console.log(JSON.stringify({ sourceBytes: Buffer.byteLength(input.text), compilerRetained, ...process.memoryUsage() }));
+      expect(compilerRetained).toBe(false);
+      expect(preparationRetained).toBe(false);
       const put = fixture.storage.languageMemory.putNgramModels;
       fixture.storage.languageMemory.putNgramModels = async () => { throw new Error("retained commit retry"); };
       await expect(commitLanguageCorpusTraining(input, prepared)).rejects.toThrow("retained commit retry");
@@ -1882,7 +1892,9 @@ describe("multi-corpus training", () => {
     expect(result.constructionAcquisition?.sourceObserved).toBeGreaterThanOrEqual(result.constructionCandidates);
     expect(result.constructionAcquisition?.documentHeldOutQualified).toBe(0);
     expect(result.constructionAcquisition?.rejectedQualification).toBe(result.constructionCandidates);
-    expect(fixture.state.patterns.filter(isConstructionBundle)).toEqual([]);
+    const publishedConstructions = fixture.state.patterns.filter(isConstructionBundle);
+    expect(publishedConstructions.filter(pattern => !isCreativeSpeechConstructionBundle(pattern))).toEqual([]);
+    expect(publishedConstructions.filter(isCreativeSpeechConstructionBundle).length).toBeGreaterThan(0);
     expect(result.constructionObservationReceipt).toMatchObject({ candidateCount: result.constructionCandidates,
       sourceEvidenceCount: 1, sourceEvidenceIds: [String(evidence[0]!.id)], sourceEvidenceIdsTruncated: false });
     expect(result.constructionObservationReceipt.observationCount).toBeGreaterThanOrEqual(result.constructionCandidates);
@@ -2222,7 +2234,8 @@ describe("multi-corpus training", () => {
     const initial = await trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "wikipedia", sourceUri: "https://example.org/canonical-replay", streamUri: "https://example.org/canonical-replay",
       text, createdAt: 1700000000000, informationLabel: publicCorpusInformationLabel, ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 17,
       skipNgramObservationPersistence: true });
-    expect(fixture.state.patterns.some(isConstructionBundle)).toBe(false);
+    expect(fixture.state.patterns.filter(isConstructionBundle)
+      .filter(pattern => !isCreativeSpeechConstructionBundle(pattern))).toEqual([]);
     expect(initial.constructionObservationReceipt.candidateCount).toBeGreaterThan(0);
     expect(initial.constructionObservationReceipt.observationCount).toBeGreaterThanOrEqual(initial.constructionObservationReceipt.candidateCount);
     expect(fixture.state.patterns.some(row => recordOf(row.patternJson).schema === "scce.induced_language_model.morphology_memory.v1")).toBe(true);
@@ -2254,7 +2267,8 @@ describe("multi-corpus training", () => {
     expect(replay.batchesFailed).toEqual([]);
     expect(replay.reports.some(report => report.constructionObservationReceipt.candidateCount > 0)).toBe(true);
     expect(replay.reports.every(report => (report.constructionAcquisition?.documentHeldOutQualified ?? 0) === 0)).toBe(true);
-    expect(fixture.state.patterns.some(isConstructionBundle)).toBe(false);
+    expect(fixture.state.patterns.filter(isConstructionBundle)
+      .filter(pattern => !isCreativeSpeechConstructionBundle(pattern))).toEqual([]);
     expect(replay.reports.every(report => report.ngramModels === 0 && report.languageUnits === 0 && report.semanticFrames === 0)).toBe(true);
     expect({ models: fixture.state.models, units: fixture.state.units, frames: fixture.state.frames,
       receipts: fixture.state.patterns.filter(row => row.patternKind === "source_compilation"
@@ -3491,6 +3505,12 @@ function isConstructionBundle(pattern: LanguagePatternRecord): boolean {
   const row = pattern.patternJson;
   return Boolean(row && typeof row === "object" && !Array.isArray(row)
     && (row as Record<string, JsonValue>).schema === "scce.language_construction_pattern.v1");
+}
+
+function isCreativeSpeechConstructionBundle(pattern: LanguagePatternRecord): boolean {
+  const row = pattern.patternJson as { schema?: string; bundle?: { bindingId?: string } };
+  return row.schema === "scce.language_construction_pattern.v1"
+    && row.bundle?.bindingId?.startsWith("surface.creative_event.speech.") === true;
 }
 
 function symbolPatternLearnedPayload(state: MemoryState): Record<string, JsonValue> | undefined {

@@ -3,7 +3,7 @@
 import { canonicalStringify } from "./primitives.js";
 import { jsonRecord, kernelString, kernelStringArray } from "./kernel-answer-primitives.js";
 import { surfaceContainsBoundValue } from "./surface-linguistics.js";
-import type { ScceStorage } from "./storage.js";
+import type { GraphEvidenceAssociationPage, ScceStorage } from "./storage.js";
 import type { SemanticClaimGraphReference, SemanticClaimObservation } from "./semantic-memory-consolidation.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, GraphEdge, GraphNode, GraphSlice, Hasher, JsonValue } from "./types.js";
 
@@ -155,17 +155,49 @@ export async function readSemanticConsolidationGraph(input: {
   const graph = await input.storage.graph.getSlice({ evidenceIds: validIds, evidenceBoundOnly: true, radius: 0, limitNodes: 64, limitEdges: 128 });
   const nodes = new Map(graph.nodes.map(node => [String(node.id), node]));
   const edges = new Map(graph.edges.map(edge => [String(edge.id), edge]));
-  const recovered = valid.filter(observation => {
+  const associationPages = new Map<string, Promise<GraphEvidenceAssociationPage>>();
+  const recovered: SemanticClaimObservation[] = [];
+  for (const observation of valid) {
     const reference = observation.graphReference!;
     const subject = nodes.get(reference.subjectNodeId);
     const target = nodes.get(reference.targetNodeId);
     const edge = edges.get(reference.edgeId);
-    return subject && target && edge && edge.source === subject.id && edge.target === target.id
-      && String(edge.relationId) === reference.relationId && observation.evidenceIds.every(id => edge.evidenceIds.some(evidenceId => String(evidenceId) === id))
-      && nodeFingerprint(subject, input.hasher) === reference.subjectFingerprint
-      && nodeFingerprint(target, input.hasher) === reference.targetFingerprint
-      && edgeFingerprint(edge, input.hasher) === reference.edgeFingerprint;
-  });
+    if (!subject || !target || !edge || edge.source !== subject.id || edge.target !== target.id
+      || String(edge.relationId) !== reference.relationId
+      || nodeFingerprint(subject, input.hasher) !== reference.subjectFingerprint
+      || nodeFingerprint(target, input.hasher) !== reference.targetFingerprint
+      || edgeFingerprint(edge, input.hasher) !== reference.edgeFingerprint) continue;
+    let carriesEvidence = observation.evidenceIds.every(id => edge.evidenceIds.some(evidenceId => String(evidenceId) === id));
+    if (input.storage.graph.listEvidenceForOwner) {
+      let pending = associationPages.get(String(edge.id));
+      if (!pending) {
+        pending = input.storage.graph.listEvidenceForOwner({
+          ownerKind: "edge",
+          ownerId: String(edge.id),
+          limit: EVIDENCE_LIMIT,
+          maxDecodedBytes: 1024 * 1024
+        });
+        associationPages.set(String(edge.id), pending);
+      }
+      const page = await pending;
+      const pageIds = new Set(page.associations.map(association => String(association.evidenceId)));
+      const missing = observation.evidenceIds.filter(id => !pageIds.has(id));
+      carriesEvidence = missing.length === 0;
+      if (missing.length && page.coverage.completeness === "partial" && input.storage.graph.getEvidenceAssociationMembership) {
+        const memberships = await Promise.all(missing.map(evidenceId => input.storage.graph.getEvidenceAssociationMembership!({
+          ownerKind: "edge",
+          ownerId: String(edge.id),
+          evidenceId: evidenceId as EvidenceId
+        })));
+        carriesEvidence = memberships.every(membership => membership.present
+          && membership.coverage.completeness === "complete"
+          && membership.coverage.scope === "authorized_membership");
+      }
+      // A missing row from a partial page is never treated as absence. Without a complete direct lookup the
+      // observation remains unqualified and cannot re-enter the proof graph.
+    }
+    if (carriesEvidence) recovered.push(observation);
+  }
   const recoveredIds = new Set(recovered.flatMap(observation => observation.evidenceIds));
   result.evidence = current.filter(span => recoveredIds.has(String(span.id)));
   const recoveredNodes = new Set(recovered.flatMap(observation => [observation.graphReference!.subjectNodeId, observation.graphReference!.targetNodeId]));

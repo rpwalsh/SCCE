@@ -1,7 +1,26 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { boundedLanguageShard, createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
+import {
+  canonicalStringify,
+  compileLanguageTrainingBatch,
+  createClock,
+  createEvidenceExtractor,
+  createHasher,
+  createIdFactory,
+  createLanguageAcquisitionEngine,
+  createLanguageMemoryRuntime,
+  hydrateLanguageConstructionPatterns,
+  preparePooledLanguageProfileBinding,
+  symbolizeData
+} from "@scce/kernel";
+import { normalizeWikiText, wikipediaLanguageSurface } from "../wikipedia.js";
+import {
+  boundedLanguageShard,
+  createWikipediaV3Ingestor,
+  wikipediaLanguageInductionDocuments,
+  wikipediaLanguageTextProjection
+} from "../wikipedia-v3-ingestor.js";
 
 // Measured over 150 wiki pages: flushing a shard only at block boundaries offered 4,023,980 characters across
 // 2 shards and lost 1,623,980 of them -- 40.4% of the corpus -- because boundedLanguageShard is a bounded
@@ -100,5 +119,138 @@ describe("shard building loses no corpus text", () => {
     const bounded = boundedLanguageShard(samples as never, 1_200_000, 2048);
     expect(bounded.droppedChars).toBe(0);
     expect(bounded.text.length).toBe(offered + 2 * (samples.length - 1));
+  });
+
+  it("keeps projected source coordinates owned through a pooled shard and creative compilation", () => {
+    const filename = "Bee 🐝 on rock rose.jpg";
+    const raw = [
+      "Ada visits Paris. Bea visits Rome. Ada visits Berlin. Bea visits Madrid.",
+      "<gallery widths=\"240\">",
+      `${filename} | visits flowers.`,
+      "</gallery>",
+      "Cora visits Lima. Dana visits Oslo. Cora visits Quito. Dana visits Tokyo."
+    ].join("\n");
+    const canonicalEvidence = normalizeWikiText(raw);
+    const languageSurface = wikipediaLanguageSurface(raw, undefined, canonicalEvidence);
+    const afterGallery = "Cora visits Lima.";
+    const afterUtf16 = canonicalEvidence.indexOf(afterGallery);
+    const afterCodePoint = [...canonicalEvidence.slice(0, afterUtf16)].length;
+
+    expect(canonicalEvidence).toContain(filename);
+    expect(languageSurface.text).not.toContain(filename);
+    expect(languageSurface.text.slice(afterUtf16, afterUtf16 + afterGallery.length)).toBe(afterGallery);
+    expect([...languageSurface.text].slice(afterCodePoint, afterCodePoint + [...afterGallery].length).join(""))
+      .toBe(afterGallery);
+    expect(languageSurface.text).toHaveLength(canonicalEvidence.length);
+    expect([...languageSurface.text]).toHaveLength([...canonicalEvidence].length);
+    expect(symbolizeData(languageSurface.text)).not.toContain("\u{E0000}");
+
+    const hasher = createHasher();
+    const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true, namespace: "wiki-role-projection" });
+    const language = createLanguageAcquisitionEngine({ idFactory: ids });
+    const sourceId = ids.sourceId("wikipedia", "fixture://wiki-role-projection");
+    const sourceVersionId = ids.sourceVersionId(canonicalStringify({ sourceId, contentHash: ids.contentHash(canonicalEvidence) }));
+    const pageProfile = language.acquire({ sourceVersionId, text: languageSurface.text, createdAt: 1 });
+    const evidence = createEvidenceExtractor({ idFactory: ids, hasher }).extract({
+      sourceId,
+      sourceVersionId,
+      namespace: "wikipedia-fixture",
+      uri: "fixture://wiki-role-projection",
+      mediaType: "text/plain",
+      text: canonicalEvidence,
+      languageProfile: pageProfile,
+      sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1,
+        independenceGroup: "wikimedia:wikipedia", accessScope: "fixture", licenseStatus: "fixture" },
+      observedAt: 1,
+      metadata: {},
+      exactSourceText: true,
+      maxChunkBytes: 65_536
+    }).spans.map(span => ({ ...span, status: "promoted" as const,
+      provenance: { ...(span.provenance as object), sourceFamilyId: "wikimedia:wikipedia" } }));
+    const sampleWithProjection = {
+      ...sample(0, 0),
+      uri: "fixture://wiki-role-projection",
+      title: "Bee ecology",
+      sourceVersionId,
+      text: languageSurface.text,
+      languageProjection: languageSurface.mappings,
+      evidence
+    };
+    const bounded = boundedLanguageShard([sampleWithProjection] as never, 65_536, 2_048);
+    const projection = wikipediaLanguageTextProjection([sampleWithProjection]);
+    expect(bounded.droppedChars).toBe(0);
+    expect(bounded.evidence.map(span => span.text).join(" ")).toContain(filename);
+    expect(projection).toBeDefined();
+
+    const pooledSourceVersionId = ids.sourceVersionId(`fixture://wiki-role-shard\u001f${bounded.text}`);
+    const pooledProfile = language.acquire({ sourceVersionId: pooledSourceVersionId, text: bounded.text, createdAt: 1 });
+    expect(canonicalStringify(pooledProfile)).not.toContain(filename);
+    expect(canonicalStringify(pooledProfile)).not.toContain("\u{E0000}");
+    const binding = preparePooledLanguageProfileBinding({
+      profile: pooledProfile,
+      text: bounded.text,
+      sourceVersionId: pooledSourceVersionId,
+      parentSourceVersionIds: [String(sourceVersionId)],
+      evidence: bounded.evidence,
+      sourceFamilyRanges: bounded.sourceFamilyRanges,
+      hasher,
+      textProjection: projection
+    });
+    const inductionDocuments = wikipediaLanguageInductionDocuments(bounded.evidence, projection);
+    expect(inductionDocuments.map(document => document.text).join(" ")).not.toContain(filename);
+    expect(inductionDocuments.map(document => document.text).join(" ")).toContain(afterGallery);
+
+    const compiled = compileLanguageTrainingBatch({
+      runtime: createLanguageMemoryRuntime({ hasher, idFactory: ids }),
+      hasher,
+      batch: {
+        streamId: "fixture://wiki-role-shard",
+        sourceSystem: "wikipedia",
+        sourceVersionId: pooledSourceVersionId,
+        profile: pooledProfile,
+        text: bounded.text,
+        evidence: bounded.evidence,
+        inductionDocuments,
+        textProjection: projection,
+        profileBinding: binding,
+        retainNgramObservations: false,
+        createdAt: 1
+      }
+    });
+    const sourceWitnesses = compiled.patterns.filter(pattern =>
+      (pattern.patternJson as { schema?: string }).schema === "scce.source_segmentation_witness.v2");
+    const learnedPatterns = compiled.patterns.filter(pattern => !sourceWitnesses.includes(pattern));
+    const learned = canonicalStringify({ patterns: learnedPatterns, units: compiled.units, models: compiled.models,
+      semanticFrames: compiled.semanticFrames });
+    expect(learned).not.toContain(filename);
+    const markerAt = learned.indexOf("\u{E0000}");
+    const markerOwners = [
+      ...learnedPatterns.map((value, index) => ({ kind: "pattern", index, value })),
+      ...compiled.units.map((value, index) => ({ kind: "unit", index, value })),
+      ...compiled.models.map((value, index) => ({ kind: "model", index, value }))
+    ].filter(row => canonicalStringify(row.value).includes("\u{E0000}"))
+      .map(row => `${row.kind}:${row.index}:${(row.value as any).patternKind ?? ""}:${(row.value as any).patternJson?.schema ?? ""}`);
+    expect(markerAt, markerOwners.join(",")).toBe(-1);
+    expect(sourceWitnesses.length).toBeGreaterThan(0);
+    expect(sourceWitnesses.every(pattern =>
+      !symbolizeData(String((pattern.patternJson as { text?: string }).text ?? "")).includes("\u{E0000}"))).toBe(true);
+    expect(compiled.semanticFrames.every(frame => {
+      const preview = (frame.frameJson as { preview?: string }).preview ?? "";
+      return !/[\uD800-\uDBFF]$/u.test(preview) && !/^[\uDC00-\uDFFF]/u.test(preview);
+    })).toBe(true);
+    const creativePatterns = compiled.constructionPatterns.filter(pattern =>
+      (pattern.patternJson as { schema?: string }).schema === "scce.creative_event_construction_pattern.v3");
+    expect(creativePatterns.length, canonicalStringify(compiled.audit)).toBeGreaterThan(0);
+    const coldHydrated = hydrateLanguageConstructionPatterns({ patterns: creativePatterns, evidence: bounded.evidence, hasher });
+    expect(coldHydrated.rejected).toEqual([]);
+    expect(coldHydrated.bundles).toHaveLength(creativePatterns.length);
+    expect(canonicalStringify(coldHydrated.bundles)).not.toContain(filename);
+    const coldConstructions = hydrateLanguageConstructionPatterns({ patterns: compiled.constructionPatterns,
+      evidence: bounded.evidence, hasher });
+    const speechBundles = coldConstructions.bundles.filter(bundle =>
+      bundle.bindingId.startsWith("surface.creative_event.speech."));
+    expect(coldConstructions.rejected).toEqual([]);
+    expect(speechBundles.length).toBeGreaterThan(0);
+    expect(canonicalStringify(speechBundles)).not.toContain(filename);
   });
 });

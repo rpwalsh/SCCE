@@ -70,6 +70,10 @@ import {
   CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
   REQUEST_SEED_PATTERN_JSON_FIELDS,
   REQUEST_SEED_FRAME_JSON_FIELDS,
+  PREDICTION_SCORING_PATTERN_JSON_FIELDS,
+  PREDICTION_SCORING_FRAME_JSON_FIELDS,
+  PREDICTION_SCORING_UNIT_METADATA_FIELDS,
+  PREDICTION_SCORING_DEFERRED_PATTERN_SCHEMAS,
   REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
   REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE,
   REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
@@ -80,6 +84,9 @@ import {
   CONTEXTUAL_QA_SOURCE_SYSTEM,
   requestSeedLanguagePattern,
   requestSeedSemanticFrame,
+  predictionScoringLanguageUnit,
+  predictionScoringLanguagePattern,
+  predictionScoringSemanticFrame,
   type AlphaTraceRecord,
   type AlphaTrace,
   type BenchmarkStore,
@@ -114,6 +121,9 @@ import {
   type ForecastStore,
   type FlowCacheStore,
   type GraphEdge,
+  type GraphEvidenceAssociationMembership,
+  type GraphEvidenceAssociationPage,
+  type GraphEvidenceOwnerKind,
   type GraphNode,
   type GraphSliceQuery,
   type GraphStore,
@@ -437,6 +447,7 @@ export class PostgresStorageAdapter implements ScceStorage {
         }
         await client.query(statement);
       }
+      await migrateGraphEvidenceAssociations(this, client);
       await migrateSemanticProjectionStorage(this, client);
       await migrateSegmentationWitnessArchives(this, client);
       if (freshSchema) for (const statement of freshSchemaIndexStatements(this.q)) await client.query(statement);
@@ -500,6 +511,17 @@ export class PostgresStorageAdapter implements ScceStorage {
         ["segmentation_witness_archive_storage"]
       ).catch(() => []);
       if (!archive[0]?.marker) errors.push("missing segmentation witness replay-storage migration");
+    }
+    if (tables.includes("storage_meta") && tables.includes("graph_evidence_associations")) {
+      const generation = await this.query<{ value_json: JsonValue }>(
+        `SELECT value_json FROM ${this.table("storage_meta")} WHERE key=$1`,
+        ["graph_evidence_association_generation"]
+      ).catch(() => []);
+      const value = generation[0]?.value_json;
+      if (!value || typeof value !== "object" || Array.isArray(value)
+          || value.schema !== GRAPH_EVIDENCE_MIGRATION_SCHEMA) {
+        errors.push("missing graph evidence association label migration");
+      }
     }
     if (!vector[0]?.installed) errors.push("missing extension: vector");
     if (tables.includes("storage_meta")) {
@@ -871,6 +893,137 @@ async function requiredSchemaErrors(client: Pick<PoolClient, "query">, schema: s
     for (const column of requiredColumns) if (!existing.has(column)) errors.push(`missing column: ${table}.${column}`);
   }
   return errors;
+}
+
+const GRAPH_EVIDENCE_MIGRATION_PAGE_SIZE = 4096;
+const GRAPH_EVIDENCE_MIGRATION_SCHEMA = "scce.graph_evidence_association_generation.v2";
+
+interface GraphEvidenceMigrationRow {
+  association_order: string;
+  entity_id: string;
+  parent_information_label: InformationLabel;
+  evidence_information_label: InformationLabel;
+  version_information_label: InformationLabel;
+}
+
+/**
+ * Backfill legacy arrays and tighten every legacy parent to the joined evidence
+ * and source-version label before schema 36 can be published. The cursor is the
+ * identity order, so a single heavily shared parent remains bounded and can be
+ * tightened across multiple pages without reconstructing its full population.
+ */
+async function migrateGraphEvidenceAssociations(
+  storage: PostgresStorageAdapter,
+  client: Pick<PoolClient, "query">
+): Promise<void> {
+  const generation = await client.query<{ value_json: JsonValue }>(
+    `SELECT value_json FROM ${storage.table("storage_meta")} WHERE key='graph_evidence_association_generation'`
+  );
+  const generationValue = generation.rows[0]?.value_json;
+  if (generationValue && typeof generationValue === "object" && !Array.isArray(generationValue)
+      && generationValue.schema === GRAPH_EVIDENCE_MIGRATION_SCHEMA) {
+    return;
+  }
+
+  await client.query(
+    `INSERT INTO ${storage.table("graph_evidence_associations")}(entity_kind,entity_id,evidence_id)
+     SELECT entity_kind,entity_id,evidence_id FROM (
+       SELECT 'node' AS entity_kind,id AS entity_id,evidence_id,ordinality
+       FROM ${storage.table("graph_nodes")} CROSS JOIN LATERAL unnest(evidence_ids) WITH ORDINALITY evidence(evidence_id,ordinality)
+       UNION ALL
+       SELECT 'edge',id,evidence_id,ordinality
+       FROM ${storage.table("graph_edges")} CROSS JOIN LATERAL unnest(evidence_ids) WITH ORDINALITY evidence(evidence_id,ordinality)
+       UNION ALL
+       SELECT 'hyperedge',id,evidence_id,ordinality
+       FROM ${storage.table("graph_hyperedges")} CROSS JOIN LATERAL unnest(evidence_ids) WITH ORDINALITY evidence(evidence_id,ordinality)
+     ) existing
+     ORDER BY entity_kind,entity_id,ordinality
+     ON CONFLICT(entity_kind,entity_id,evidence_id) DO NOTHING`
+  );
+
+  const explicitMergeAuthority = storage.informationAccess?.explicitMergeAuthority === true;
+  for (const ownerKind of ["node", "edge", "hyperedge"] as const) {
+    const parentTable = storage.table(graphOwnerTable(ownerKind));
+    const invalid = await client.query<{ association_order: string }>(
+      `SELECT association.association_order::text AS association_order
+       FROM ${storage.table("graph_evidence_associations")} association
+       WHERE association.entity_kind=$1 AND (
+         NOT EXISTS (SELECT 1 FROM ${parentTable} parent WHERE parent.id=association.entity_id)
+         OR NOT EXISTS (
+           SELECT 1 FROM ${storage.table("evidence_spans")} evidence
+           JOIN ${storage.table("source_versions")} version ON version.id=evidence.source_version_id
+           WHERE evidence.id=association.evidence_id
+         )
+       )
+       ORDER BY association.association_order
+       LIMIT 1`,
+      [ownerKind]
+    );
+    if (invalid.rows.length) {
+      throw new Error(`graph evidence association migration has an unresolved ${ownerKind} dependency`);
+    }
+
+    let afterAssociationOrder = "0";
+    for (;;) {
+      const result = await client.query<GraphEvidenceMigrationRow>(
+        `SELECT association.association_order::text AS association_order,
+                association.entity_id,
+                parent.information_label AS parent_information_label,
+                evidence.information_label AS evidence_information_label,
+                version.information_label AS version_information_label
+         FROM ${storage.table("graph_evidence_associations")} association
+         JOIN ${parentTable} parent ON parent.id=association.entity_id
+         JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=association.evidence_id
+         JOIN ${storage.table("source_versions")} version ON version.id=evidence.source_version_id
+         WHERE association.entity_kind=$1 AND association.association_order>$2::bigint
+         ORDER BY association.association_order
+         LIMIT $3
+         FOR UPDATE OF parent`,
+        [ownerKind, afterAssociationOrder, GRAPH_EVIDENCE_MIGRATION_PAGE_SIZE]
+      );
+      if (!result.rows.length) break;
+      const labelsByParent = new Map<string, InformationLabel[]>();
+      for (const row of result.rows) {
+        const labels = labelsByParent.get(row.entity_id);
+        if (labels) {
+          labels.push(
+            normalizeInformationLabel(row.evidence_information_label),
+            normalizeInformationLabel(row.version_information_label)
+          );
+        } else {
+          labelsByParent.set(row.entity_id, [
+            normalizeInformationLabel(row.parent_information_label),
+            normalizeInformationLabel(row.evidence_information_label),
+            normalizeInformationLabel(row.version_information_label)
+          ]);
+        }
+      }
+      const payload = [...labelsByParent].map(([id, labels]) => ({
+        id,
+        information_label: joinInformationLabels(labels, { explicitMergeAuthority })
+      }));
+      await client.query(
+        `UPDATE ${parentTable} parent
+         SET information_label=input.information_label
+         FROM jsonb_to_recordset($1::jsonb) AS input(id text,information_label jsonb)
+         WHERE parent.id=input.id AND parent.information_label IS DISTINCT FROM input.information_label`,
+        [canonicalStringify(payload)]
+      );
+      afterAssociationOrder = result.rows[result.rows.length - 1]!.association_order;
+    }
+  }
+
+  await client.query(
+    `INSERT INTO ${storage.table("storage_meta")}(key,value_json,updated_at)
+     VALUES('graph_evidence_association_generation',$1::jsonb,NOW())
+     ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=NOW()`,
+    [canonicalStringify({
+      schema: GRAPH_EVIDENCE_MIGRATION_SCHEMA,
+      representation: "association_plus_legacy_read",
+      writeMode: "association_only",
+      labelInvariant: "parent_joins_evidence_and_source_version"
+    })]
+  );
 }
 
 async function storedSchemaVersion(storage: Pick<PostgresStorageAdapter, "query" | "table">): Promise<number | undefined> {
@@ -1408,7 +1561,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         );
         const informationLabel = labels.get(source.sourceVersionId)!;
         await storage.query(`INSERT INTO ${storage.table("sources")}(id, namespace, canonical_uri, first_seen_at, last_seen_at) VALUES($1,$2,$3,TO_TIMESTAMP($4/1000.0),TO_TIMESTAMP($4/1000.0)) ON CONFLICT(id) DO UPDATE SET last_seen_at=GREATEST(sources.last_seen_at,EXCLUDED.last_seen_at)`, [source.sourceId, source.namespace, source.canonicalUri, source.observedAt]);
-        const changes = await storage.query(`WITH prior AS MATERIALIZED (
+        const changes = await storage.query<{ id: string; information_label: InformationLabel; label_changed: boolean }>(`WITH prior AS MATERIALIZED (
           SELECT id,information_label,metadata_json FROM ${storage.table("source_versions")} WHERE id=$1
         ), written AS (
         INSERT INTO ${storage.table("source_versions")} AS stored(id, source_id, content_hash, media_type, observed_at, byte_length, trust_vector, metadata_json, information_label) VALUES($1,$2,$3,$4,TO_TIMESTAMP($5/1000.0),$6,$7::jsonb,$8::jsonb,$9::jsonb) ON CONFLICT(id) DO UPDATE SET information_label=EXCLUDED.information_label,
@@ -1427,10 +1580,18 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
             THEN jsonb_build_object('sourceMetadataBinding', EXCLUDED.metadata_json->'sourceMetadataBinding') ELSE '{}'::jsonb END
           || ${sourceTranscriptArchiveAppendSql(storage.table("blobs"), storage.table("sources"))}
           RETURNING id,information_label,metadata_json
-        ) SELECT 1 AS language_memory_changed FROM written LEFT JOIN prior USING(id)
+        ) SELECT 1 AS language_memory_changed,written.id,written.information_label,
+            (prior.id IS NULL OR written.information_label IS DISTINCT FROM prior.information_label) AS label_changed
+          FROM written LEFT JOIN prior USING(id)
           WHERE prior.id IS NULL OR (written.information_label,written.metadata_json)
             IS DISTINCT FROM (prior.information_label,prior.metadata_json)`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
         if (changes.length) storage.markLanguageMemoryChanged();
+        const tightenedLabels = new Map(changes
+          .filter(row => row.label_changed)
+          .map(row => [row.id, normalizeInformationLabel(row.information_label)]));
+        if (tightenedLabels.size) {
+          await tightenGraphLabelsForDependencies(storage, { sourceVersionLabels: tightenedLabels });
+        }
       });
     },
     async putEvidenceVisual(input) {
@@ -1955,8 +2116,9 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
     observed_at_ms: span.observedAt,
       information_label: labels.get(span.id)!
     }));
+    const tightenedLabels = new Map<string, InformationLabel>();
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
-      const changes = await storage.query(
+      const changes = await storage.query<{ id: string; information_label: InformationLabel; label_changed: boolean }>(
         `WITH prior AS MATERIALIZED (
        SELECT id,status,alpha,trust_vector,provenance_json,information_label,features
        FROM ${storage.table("evidence_spans")}
@@ -2018,12 +2180,20 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        information_label=EXCLUDED.information_label,
        features=ARRAY(SELECT DISTINCT value FROM unnest(ev.features || EXCLUDED.features) AS merged(value) ORDER BY value)
       RETURNING id,status,alpha,trust_vector,provenance_json,information_label,features
-      ) SELECT 1 AS language_memory_changed FROM upserted LEFT JOIN prior USING(id)
+      ) SELECT 1 AS language_memory_changed,upserted.id,upserted.information_label,
+          (prior.id IS NULL OR upserted.information_label IS DISTINCT FROM prior.information_label) AS label_changed
+        FROM upserted LEFT JOIN prior USING(id)
        WHERE prior.id IS NULL OR (upserted.status,upserted.alpha,upserted.trust_vector,upserted.provenance_json,upserted.information_label,upserted.features)
          IS DISTINCT FROM (prior.status,prior.alpha,prior.trust_vector,prior.provenance_json,prior.information_label,prior.features)`,
         [payloadChunk]
       );
       if (changes.length) storage.markLanguageMemoryChanged();
+      for (const row of changes) {
+        if (row.label_changed) tightenedLabels.set(row.id, normalizeInformationLabel(row.information_label));
+      }
+    }
+    if (tightenedLabels.size) {
+      await tightenGraphLabelsForDependencies(storage, { evidenceLabels: tightenedLabels });
     }
   });
 }
@@ -2053,10 +2223,102 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
       const limit = Math.max(1, Math.min(200_000, Math.floor(query.limit)));
       const offset = Math.max(0, Math.floor(query.offset ?? 0));
       const rows = await storage.query<GraphEdgeRow>(
-        `SELECT * FROM ${storage.table("graph_edges")} ORDER BY source_node_id, target_node_id, id LIMIT $1 OFFSET $2`,
+        `SELECT ${graphEdgeColumns(storage, "edge_row")} FROM ${storage.table("graph_edges")} edge_row ORDER BY source_node_id, target_node_id, id LIMIT $1 OFFSET $2`,
         [limit, offset]
       );
       return rows.map(rowToGraphEdge);
+    },
+    async listEvidenceForOwner(query) {
+      const ownerKind = graphEvidenceOwnerKind(query.ownerKind);
+      const ownerId = requiredGraphAssociationIdentity(query.ownerId, "ownerId");
+      const after = decimalAssociationCursor(query.afterAssociationOrder);
+      const limit = boundedGraphAssociationLimit(query.limit);
+      const maxDecodedBytes = boundedGraphAssociationBytes(query.maxDecodedBytes);
+      const ownerTable = storage.table(graphOwnerTable(ownerKind));
+      const ownerAccess = storage.informationAccessPredicate("owner_record", 5);
+      const evidenceAccess = storage.informationAccessPredicate("evidence", 5 + ownerAccess.params.length);
+      const versionAccess = storage.informationAccessPredicate("version", 5 + ownerAccess.params.length + evidenceAccess.params.length);
+      const rows = await storage.query<GraphEvidenceAssociationRow>(
+        `SELECT association.association_order::text AS association_order,
+                association.entity_kind,association.entity_id,association.evidence_id,
+                evidence.source_version_id,
+                COALESCE(NULLIF(version.trust_vector->>'independenceGroup',''),evidence.source_id,evidence.source_version_id) AS source_family
+         FROM ${storage.table("graph_evidence_associations")} association
+         JOIN ${ownerTable} owner_record ON owner_record.id=association.entity_id
+         JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=association.evidence_id
+         JOIN ${storage.table("source_versions")} version ON version.id=evidence.source_version_id
+         WHERE association.entity_kind=$1 AND association.entity_id=$2
+           AND association.association_order>$3::bigint
+           AND ${ownerAccess.sql} AND ${evidenceAccess.sql} AND ${versionAccess.sql}
+         ORDER BY association.association_order
+         LIMIT $4`,
+        [ownerKind, ownerId, after, limit + 1, ...ownerAccess.params, ...evidenceAccess.params, ...versionAccess.params]
+      );
+      return graphEvidenceAssociationPage(rows, limit, maxDecodedBytes, "authorized_owner", "association_order");
+    },
+    async listOwnersForEvidence(query) {
+      const ownerKind = graphEvidenceOwnerKind(query.ownerKind);
+      const evidenceId = requiredGraphAssociationIdentity(query.evidenceId, "evidenceId");
+      const afterOwnerId = query.afterOwnerId === undefined
+        ? ""
+        : requiredGraphAssociationIdentity(query.afterOwnerId, "afterOwnerId");
+      const limit = boundedGraphAssociationLimit(query.limit);
+      const maxDecodedBytes = boundedGraphAssociationBytes(query.maxDecodedBytes);
+      const ownerTable = storage.table(graphOwnerTable(ownerKind));
+      const ownerAccess = storage.informationAccessPredicate("owner_record", 5);
+      const evidenceAccess = storage.informationAccessPredicate("evidence", 5 + ownerAccess.params.length);
+      const versionAccess = storage.informationAccessPredicate("version", 5 + ownerAccess.params.length + evidenceAccess.params.length);
+      const rows = await storage.query<GraphEvidenceAssociationRow>(
+        `SELECT association.association_order::text AS association_order,
+                association.entity_kind,association.entity_id,association.evidence_id,
+                evidence.source_version_id,
+                COALESCE(NULLIF(version.trust_vector->>'independenceGroup',''),evidence.source_id,evidence.source_version_id) AS source_family
+         FROM ${storage.table("graph_evidence_associations")} association
+         JOIN ${ownerTable} owner_record ON owner_record.id=association.entity_id
+         JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=association.evidence_id
+         JOIN ${storage.table("source_versions")} version ON version.id=evidence.source_version_id
+         WHERE association.entity_kind=$1 AND association.evidence_id=$2
+           AND association.entity_id>$3
+           AND ${ownerAccess.sql} AND ${evidenceAccess.sql} AND ${versionAccess.sql}
+         ORDER BY association.entity_id
+         LIMIT $4`,
+        [ownerKind, evidenceId, afterOwnerId, limit + 1, ...ownerAccess.params, ...evidenceAccess.params, ...versionAccess.params]
+      );
+      return graphEvidenceAssociationPage(rows, limit, maxDecodedBytes, "authorized_evidence", "entity_id");
+    },
+    async getEvidenceAssociationMembership(query): Promise<GraphEvidenceAssociationMembership> {
+      const ownerKind = graphEvidenceOwnerKind(query.ownerKind);
+      const ownerId = requiredGraphAssociationIdentity(query.ownerId, "ownerId");
+      const evidenceId = requiredGraphAssociationIdentity(query.evidenceId, "evidenceId");
+      const ownerTable = storage.table(graphOwnerTable(ownerKind));
+      const ownerAccess = storage.informationAccessPredicate("owner_record", 4);
+      const evidenceAccess = storage.informationAccessPredicate("evidence", 4 + ownerAccess.params.length);
+      const versionAccess = storage.informationAccessPredicate("version", 4 + ownerAccess.params.length + evidenceAccess.params.length);
+      const rows = await storage.query<{ present: boolean }>(
+        `SELECT EXISTS(
+           SELECT 1 FROM ${storage.table("graph_evidence_associations")} association
+           JOIN ${ownerTable} owner_record ON owner_record.id=association.entity_id
+           JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=association.evidence_id
+           JOIN ${storage.table("source_versions")} version ON version.id=evidence.source_version_id
+           WHERE association.entity_kind=$1 AND association.entity_id=$2 AND association.evidence_id=$3
+             AND ${ownerAccess.sql} AND ${evidenceAccess.sql} AND ${versionAccess.sql}
+         ) AS present`,
+        [ownerKind, ownerId, evidenceId, ...ownerAccess.params, ...evidenceAccess.params, ...versionAccess.params]
+      );
+      const present = rows[0]?.present === true;
+      return {
+        schema: "scce.graph_evidence_association_membership.v1",
+        ownerKind,
+        ownerId,
+        evidenceId: evidenceId as EvidenceId,
+        present,
+        coverage: {
+          schema: "scce.graph_evidence_association_coverage.v1",
+          scope: "authorized_membership",
+          completeness: "complete",
+          returnedCount: present ? 1 : 0
+        }
+      };
     },
     async getSlice(query) {
       const nodesPromise = queryNodes(storage, query);
@@ -2067,8 +2329,8 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
         const groups: string[][] = [];
         for (let index = 0; index < evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) groups.push(evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP));
         const edgeRowsByGroup = await queryEvidenceGroups(groups, group => storage.query<GraphEdgeRow>(
-            `SELECT * FROM ${storage.table("graph_edges")} AS edge_row
-             WHERE evidence_ids && $1::text[] AND ${access.sql}
+            `SELECT ${graphEdgeColumns(storage, "edge_row")} FROM ${storage.table("graph_edges")} AS edge_row
+             WHERE ${graphEvidenceMatchSql(storage, "edge", "edge_row", 1)} AND ${access.sql}
              ORDER BY alpha DESC, updated_at DESC, id LIMIT $2`,
             [group, edgeLimit, ...access.params]
           ));
@@ -2077,8 +2339,8 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
         const hyperedgeLimit = Math.max(1, Math.min(edgeLimit, Math.floor(edgeLimit / 2) || 1));
         const hyperedgeAccess = storage.informationAccessPredicate("hyperedge", 3);
         const hyperedgeRowsByGroup = await queryEvidenceGroups(groups, group => storage.query<HyperedgeRow>(
-            `SELECT * FROM ${storage.table("graph_hyperedges")} AS hyperedge
-             WHERE evidence_ids && $1::text[] AND ${hyperedgeAccess.sql}
+            `SELECT ${graphHyperedgeColumns(storage, "hyperedge")} FROM ${storage.table("graph_hyperedges")} AS hyperedge
+             WHERE ${graphEvidenceMatchSql(storage, "hyperedge", "hyperedge", 1)} AND ${hyperedgeAccess.sql}
              ORDER BY updated_at DESC LIMIT $2`,
             [group, hyperedgeLimit, ...hyperedgeAccess.params]
           ));
@@ -2133,7 +2395,7 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
                SELECT * FROM target_candidates
              ) candidates
            )
-           SELECT edge_row.*, ranked_candidates.seed_ord, ranked_candidates.edge_rank
+           SELECT ${graphEdgeColumns(storage, "edge_row")}, ranked_candidates.seed_ord, ranked_candidates.edge_rank
            FROM ranked_candidates
            JOIN ${storage.table("graph_edges")} edge_row ON edge_row.id=ranked_candidates.id
            WHERE edge_rank=1
@@ -2152,7 +2414,7 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
       for (let index = 0; index < hyperedgeMemberIds.length; index += EVIDENCE_LOOKUP_GROUP) {
         const group = hyperedgeMemberIds.slice(index, index + EVIDENCE_LOOKUP_GROUP);
         const rows = await storage.query<HyperedgeRow>(
-          `SELECT *
+          `SELECT ${graphHyperedgeColumns(storage, "hyperedge")}
            FROM ${storage.table("graph_hyperedges")} hyperedge
            WHERE member_node_ids && $1
              AND ${hyperedgeAccess.sql}
@@ -2180,13 +2442,383 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
   };
 }
 
+interface GraphEvidenceAssociationRow {
+  association_order: string;
+  entity_kind: GraphEvidenceOwnerKind;
+  entity_id: string;
+  evidence_id: string;
+  source_version_id: string;
+  source_family: string;
+}
+
+function graphEvidenceAssociationPage(
+  rows: readonly GraphEvidenceAssociationRow[],
+  limit: number,
+  maxDecodedBytes: number,
+  scope: "authorized_owner" | "authorized_evidence",
+  cursor: "association_order" | "entity_id"
+): GraphEvidenceAssociationPage {
+  const associations = rows.slice(0, limit).map(row => {
+    const associationOrder = decimalAssociationCursor(row.association_order);
+    const sourceFamily = requiredGraphAssociationIdentity(row.source_family, "sourceFamily");
+    return {
+      associationOrder,
+      ownerKind: graphEvidenceOwnerKind(row.entity_kind),
+      ownerId: requiredGraphAssociationIdentity(row.entity_id, "ownerId"),
+      evidenceId: requiredGraphAssociationIdentity(row.evidence_id, "evidenceId") as EvidenceId,
+      sourceVersionId: requiredGraphAssociationIdentity(row.source_version_id, "sourceVersionId") as SourceVersionId,
+      sourceFamily
+    };
+  });
+  let more = rows.length > associations.length;
+  while (associations.length) {
+    const continuation = more
+      ? cursor === "association_order"
+        ? associations.at(-1)!.associationOrder
+        : associations.at(-1)!.ownerId
+      : undefined;
+    const page: GraphEvidenceAssociationPage = {
+      schema: "scce.graph_evidence_association_page.v1",
+      associations: [...associations],
+      coverage: {
+        schema: "scce.graph_evidence_association_coverage.v1",
+        scope,
+        completeness: more ? "partial" : "complete",
+        returnedCount: associations.length,
+        ...(continuation === undefined ? {} : { continuation })
+      },
+      decodedBytes: 0
+    };
+    const complete = exactGraphEvidenceAssociationPage(page);
+    if (complete.decodedBytes <= maxDecodedBytes) return complete;
+    associations.pop();
+    more = true;
+  }
+  if (rows.length) throw new Error("graph evidence association maxDecodedBytes is too small for one association");
+  const empty: GraphEvidenceAssociationPage = {
+    schema: "scce.graph_evidence_association_page.v1",
+    associations: [],
+    coverage: {
+      schema: "scce.graph_evidence_association_coverage.v1",
+      scope,
+      completeness: "complete",
+      returnedCount: 0
+    },
+    decodedBytes: 0
+  };
+  return exactGraphEvidenceAssociationPage(empty);
+}
+
+function exactGraphEvidenceAssociationPage(page: GraphEvidenceAssociationPage): GraphEvidenceAssociationPage {
+  let decodedBytes = page.decodedBytes;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = { ...page, decodedBytes };
+    const measured = Buffer.byteLength(canonicalStringify(candidate), "utf8");
+    if (measured === decodedBytes) return candidate;
+    decodedBytes = measured;
+  }
+  throw new Error("graph evidence association decoded byte count did not converge");
+}
+
+function boundedGraphAssociationLimit(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 10_000) {
+    throw new Error("graph evidence association limit must be an integer from 1 through 10000");
+  }
+  return value;
+}
+
+function boundedGraphAssociationBytes(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 256 || value > 16 * 1024 * 1024) {
+    throw new Error("graph evidence association maxDecodedBytes must be from 256 through 16777216");
+  }
+  return value;
+}
+
+function decimalAssociationCursor(value: string | undefined): string {
+  if (value === undefined) return "0";
+  const normalized = String(value).trim();
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(normalized)) {
+    throw new Error("graph evidence association cursor must be an unsigned decimal BIGINT");
+  }
+  return normalized;
+}
+
+function requiredGraphAssociationIdentity(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value.normalize("NFKC").trim()) {
+    throw new Error(`graph evidence association ${name} must be a non-empty string`);
+  }
+  return value.normalize("NFKC").trim();
+}
+
+function graphEvidenceOwnerKind(value: unknown): GraphEvidenceOwnerKind {
+  if (value !== "node" && value !== "edge" && value !== "hyperedge") {
+    throw new Error("graph evidence association ownerKind is unsupported");
+  }
+  return value;
+}
+
+function graphOwnerTable(kind: GraphEvidenceOwnerKind): "graph_nodes" | "graph_edges" | "graph_hyperedges" {
+  if (kind === "node") return "graph_nodes";
+  if (kind === "edge") return "graph_edges";
+  return "graph_hyperedges";
+}
+
+function graphEvidenceIdsSql(
+  storage: PostgresStorageAdapter,
+  kind: GraphEvidenceOwnerKind,
+  alias: string
+): string {
+  return `ARRAY(
+    SELECT ordered.evidence_id FROM (
+      SELECT legacy.evidence_id,0 AS lane,legacy.ordinality::bigint AS first_seen
+      FROM unnest(${alias}.evidence_ids) WITH ORDINALITY legacy(evidence_id,ordinality)
+      UNION ALL
+      SELECT association.evidence_id,1 AS lane,association.association_order AS first_seen
+      FROM ${storage.table("graph_evidence_associations")} association
+      WHERE association.entity_kind='${kind}' AND association.entity_id=${alias}.id
+        AND NOT association.evidence_id=ANY(${alias}.evidence_ids)
+    ) ordered ORDER BY ordered.lane,ordered.first_seen
+  )`;
+}
+
+function graphEvidenceMatchSql(
+  storage: PostgresStorageAdapter,
+  kind: GraphEvidenceOwnerKind,
+  alias: string,
+  parameter: number
+): string {
+  return `${alias}.id IN (
+    SELECT association.entity_id FROM ${storage.table("graph_evidence_associations")} association
+    WHERE association.entity_kind='${kind}'
+      AND association.evidence_id=ANY($${parameter}::text[])
+  )`;
+}
+
+function graphNodeColumns(storage: PostgresStorageAdapter, alias: string): string {
+  return `${alias}.id,${alias}.type_id,${alias}.representation_json,${alias}.alpha,
+    ${graphEvidenceIdsSql(storage, "node", alias)} AS evidence_ids,
+    ${alias}.features,${alias}.created_at,${alias}.updated_at,${alias}.metadata_json,${alias}.information_label`;
+}
+
+function graphEdgeColumns(storage: PostgresStorageAdapter, alias: string): string {
+  return `${alias}.id,${alias}.source_node_id,${alias}.target_node_id,${alias}.relation_id,${alias}.alpha,${alias}.weight,${alias}.temporal_scope,
+    ${graphEvidenceIdsSql(storage, "edge", alias)} AS evidence_ids,
+    ${alias}.created_at,${alias}.updated_at,${alias}.metadata_json,${alias}.information_label`;
+}
+
+function graphHyperedgeColumns(storage: PostgresStorageAdapter, alias: string): string {
+  return `${alias}.id,${alias}.schema_id,${alias}.relation_id,${alias}.participant_ports,${alias}.member_node_ids,${alias}.qualifiers_json,${alias}.modality_json,
+    ${graphEvidenceIdsSql(storage, "hyperedge", alias)} AS evidence_ids,
+    ${alias}.weight_vector,${alias}.temporal_scope,${alias}.provenance_refs,${alias}.created_at,${alias}.updated_at,${alias}.information_label`;
+}
+
+async function upsertGraphEvidenceAssociations(
+  storage: PostgresStorageAdapter,
+  ownerKind: GraphEvidenceOwnerKind,
+  parentTable: "graph_nodes" | "graph_edges" | "graph_hyperedges",
+  payloadChunk: string
+): Promise<void> {
+  await storage.query(
+    `WITH requested AS MATERIALIZED (
+       SELECT r.id,r.updated_at_ms,evidence.value AS evidence_id,
+              r.payload_ordinality,evidence.evidence_ordinality
+       FROM ROWS FROM (
+         jsonb_to_recordset($1::jsonb) AS (
+           id text,evidence_ids_json jsonb,updated_at_ms double precision
+         )
+       ) WITH ORDINALITY AS r(id,evidence_ids_json,updated_at_ms,payload_ordinality)
+       CROSS JOIN LATERAL jsonb_array_elements_text(r.evidence_ids_json)
+         WITH ORDINALITY evidence(value,evidence_ordinality)
+     ), inserted AS (
+       INSERT INTO ${storage.table("graph_evidence_associations")}(entity_kind,entity_id,evidence_id)
+       SELECT '${ownerKind}',id,evidence_id FROM requested
+       ORDER BY payload_ordinality,evidence_ordinality
+       ON CONFLICT(entity_kind,entity_id,evidence_id) DO NOTHING
+       RETURNING entity_id
+     ), changed AS (
+       SELECT DISTINCT entity_id FROM inserted
+     ), timestamps AS (
+       SELECT requested.id,MAX(requested.updated_at_ms) AS updated_at_ms
+       FROM requested JOIN changed ON changed.entity_id=requested.id
+       GROUP BY requested.id
+     )
+     UPDATE ${storage.table(parentTable)} parent
+     SET updated_at=TO_TIMESTAMP(timestamps.updated_at_ms/1000.0)
+     FROM timestamps
+     WHERE parent.id=timestamps.id
+       AND parent.updated_at IS DISTINCT FROM TO_TIMESTAMP(timestamps.updated_at_ms/1000.0)`,
+    [payloadChunk]
+  );
+}
+
+interface GraphEvidenceLabeledRecord {
+  id: string;
+  evidenceIds: readonly EvidenceId[];
+  informationLabel?: InformationLabel;
+}
+
+/**
+ * A graph object's public evidence-id population is only safe when the graph
+ * object is at least as restrictive as every evidence record and source
+ * version it names. Lock both dependencies for the duration of the
+ * parent/association transaction, then join their labels into the submitted
+ * parent before publication. New associations fail closed when either owner is
+ * absent; later dependency tightening propagates through the same lock order.
+ */
+async function graphRecordLabelsWithEvidence(
+  storage: PostgresStorageAdapter,
+  records: readonly GraphEvidenceLabeledRecord[]
+): Promise<Array<{ id: string; informationLabel: InformationLabel }>> {
+  const evidenceIds = [...new Set(records.flatMap(record => record.evidenceIds.map(String)))].sort();
+  const rows = evidenceIds.length
+    ? await storage.query<{ id: string; information_label: InformationLabel; source_information_label: InformationLabel }>(
+      `SELECT evidence.id,evidence.information_label,
+              version.information_label AS source_information_label
+       FROM ${storage.table("evidence_spans")} evidence
+       JOIN ${storage.table("source_versions")} version ON version.id=evidence.source_version_id
+       WHERE evidence.id=ANY($1::text[])
+       ORDER BY evidence.id
+       FOR SHARE OF evidence,version`,
+      [evidenceIds]
+    )
+    : [];
+  const labelsByEvidenceId = new Map(rows.map(row => [row.id, [
+    normalizeInformationLabel(row.information_label),
+    normalizeInformationLabel(row.source_information_label)
+  ] as const]));
+  if (labelsByEvidenceId.size !== evidenceIds.length) {
+    throw new Error("graph evidence association requires every evidence record to exist");
+  }
+  const access = storage.requireInformationAccess();
+  return records.map(record => {
+    const labels = [storage.requireWritableInformationLabel(record.informationLabel)];
+    for (const evidenceId of record.evidenceIds) {
+      const dependencyLabels = labelsByEvidenceId.get(String(evidenceId));
+      if (dependencyLabels) labels.push(...dependencyLabels);
+    }
+    const informationLabel = joinInformationLabels(labels, {
+      explicitMergeAuthority: access.explicitMergeAuthority === true
+    });
+    return { id: record.id, informationLabel: storage.requireWritableInformationLabel(informationLabel) };
+  });
+}
+
+interface GraphEvidenceDependencyAssociationRow {
+  association_order: string;
+  entity_kind: GraphEvidenceOwnerKind;
+  entity_id: string;
+  evidence_id: string;
+  source_version_id: string | null;
+}
+
+/**
+ * Evidence and source-version labels only tighten through their durable joins.
+ * Propagate that tightening to every associated graph parent in the same
+ * transaction. Graph publication takes dependency locks before parent locks in
+ * the same order, so concurrent writes cannot publish between the dependency
+ * change and this propagation.
+ */
+async function tightenGraphLabelsForDependencies(
+  storage: PostgresStorageAdapter,
+  input: {
+    evidenceLabels?: ReadonlyMap<string, InformationLabel>;
+    sourceVersionLabels?: ReadonlyMap<string, InformationLabel>;
+  }
+): Promise<void> {
+  const evidenceIds = [...(input.evidenceLabels?.keys() ?? [])].sort();
+  const sourceVersionIds = [...(input.sourceVersionLabels?.keys() ?? [])].sort();
+  if (!evidenceIds.length && !sourceVersionIds.length) return;
+  let afterAssociationOrder = "0";
+  for (;;) {
+    const rows = await storage.query<GraphEvidenceDependencyAssociationRow>(
+      `SELECT association.association_order::text AS association_order,
+              association.entity_kind,association.entity_id,association.evidence_id,
+              evidence.source_version_id
+       FROM ${storage.table("graph_evidence_associations")} association
+       LEFT JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=association.evidence_id
+       WHERE association.association_order>$1::bigint
+         AND (association.evidence_id=ANY($2::text[]) OR evidence.source_version_id=ANY($3::text[]))
+       ORDER BY association.association_order
+       LIMIT $4`,
+      [afterAssociationOrder, evidenceIds, sourceVersionIds, GRAPH_EVIDENCE_MIGRATION_PAGE_SIZE]
+    );
+    if (!rows.length) break;
+    const grouped = new Map<GraphEvidenceOwnerKind, Map<string, InformationLabel[]>>();
+    for (const row of rows) {
+      const labels: InformationLabel[] = [];
+      const evidenceLabel = input.evidenceLabels?.get(row.evidence_id);
+      if (evidenceLabel) labels.push(evidenceLabel);
+      const sourceVersionLabel = row.source_version_id
+        ? input.sourceVersionLabels?.get(row.source_version_id)
+        : undefined;
+      if (sourceVersionLabel) labels.push(sourceVersionLabel);
+      if (!labels.length || row.source_version_id === null) {
+        throw new Error("graph evidence association label propagation has an unresolved dependency");
+      }
+      let byOwner = grouped.get(row.entity_kind);
+      if (!byOwner) {
+        byOwner = new Map();
+        grouped.set(row.entity_kind, byOwner);
+      }
+      byOwner.set(row.entity_id, [...(byOwner.get(row.entity_id) ?? []), ...labels]);
+    }
+    for (const ownerKind of ["node", "edge", "hyperedge"] as const) {
+      const byOwner = grouped.get(ownerKind);
+      if (byOwner?.size) await tightenGraphParentLabels(storage, ownerKind, byOwner);
+    }
+    afterAssociationOrder = rows[rows.length - 1]!.association_order;
+  }
+}
+
+async function tightenGraphParentLabels(
+  storage: PostgresStorageAdapter,
+  ownerKind: GraphEvidenceOwnerKind,
+  dependenciesByOwner: ReadonlyMap<string, readonly InformationLabel[]>
+): Promise<void> {
+  const entries = [...dependenciesByOwner].sort((left, right) => left[0].localeCompare(right[0]));
+  const parentTable = graphOwnerTable(ownerKind);
+  for (let offset = 0; offset < entries.length; offset += 512) {
+    const page = entries.slice(offset, offset + 512);
+    const joined = await joinDurableRecordLabels(
+      storage,
+      parentTable,
+      page.flatMap(([id, labels]) => labels.map(informationLabel => ({ id, informationLabel })))
+    );
+    const payload = [...joined].map(([id, information_label]) => ({ id, information_label }));
+    const result = await storage.query<{ parents_present: boolean; updated_count: string }>(
+      `WITH input AS MATERIALIZED (
+         SELECT * FROM jsonb_to_recordset($1::jsonb) AS row(id text,information_label jsonb)
+       ), missing AS MATERIALIZED (
+         SELECT input.id FROM input
+         LEFT JOIN ${storage.table(parentTable)} parent ON parent.id=input.id
+         WHERE parent.id IS NULL
+       ), updated AS (
+         UPDATE ${storage.table(parentTable)} parent
+         SET information_label=input.information_label
+         FROM input
+         WHERE parent.id=input.id
+           AND NOT EXISTS (SELECT 1 FROM missing)
+           AND parent.information_label IS DISTINCT FROM input.information_label
+         RETURNING parent.id
+       )
+       SELECT NOT EXISTS (SELECT 1 FROM missing) AS parents_present,
+              (SELECT COUNT(*)::text FROM updated) AS updated_count`,
+      [canonicalStringify(payload)]
+    );
+    if (result[0]?.parents_present !== true) {
+      throw new Error(`graph evidence association references a missing ${ownerKind} parent`);
+    }
+  }
+}
+
 async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: readonly GraphNode[]): Promise<void> {
   if (!nodes.length) return;
   await storage.transaction(async () => {
+    const evidenceJoinedLabels = await graphRecordLabelsWithEvidence(storage, nodes);
     const labels = await joinDurableRecordLabels(
       storage,
       "graph_nodes",
-      nodes.map(node => ({ id: node.id, informationLabel: node.informationLabel }))
+      evidenceJoinedLabels
     );
     const payload = nodes.map(node => ({
       id: node.id,
@@ -2208,7 +2840,7 @@ async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: rea
        r.type_id,
        r.representation_json,
        r.alpha,
-       (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
+       ARRAY[]::text[],
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.features_json) AS v(value)),
        TO_TIMESTAMP(r.created_at_ms/1000.0),
        TO_TIMESTAMP(r.updated_at_ms/1000.0),
@@ -2226,27 +2858,17 @@ async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: rea
        metadata_json jsonb,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(n.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(n.evidence_ids || EXCLUDED.evidence_ids))), features=(SELECT ARRAY(SELECT DISTINCT unnest(n.features || EXCLUDED.features))), updated_at=EXCLUDED.updated_at, metadata_json=n.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label
-     -- Rewrite only a row this page would actually change.
-     --
-     -- The unions above are unconditional, so a node every page touches was re-sorted and rewritten every
-     -- page whether or not anything new arrived. Measured on scce5: two observation_store nodes had reached
-     -- 34,592 evidence ids and 2,297 kB, and writing 21 nodes cost 3,858ms while writing 231 in the next call
-     -- cost 992ms -- the cost was in re-materialising arrays that already contained everything being added,
-     -- then re-indexing 2.3MB in a 288MB GIN, twice a page.
-     --
-     -- The containment test is "is contained by": when this page's evidence ids and features are already
-     -- present, its alpha is no higher, and its metadata and label add nothing, the row is unchanged and is
-     -- left alone. updated_at is
-     -- deliberately NOT a reason to rewrite: a node that nothing new was learned about was not updated, and
-     -- treating the clock as a change makes every row dirty on every page.
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(n.alpha,EXCLUDED.alpha), features=(SELECT ARRAY(SELECT DISTINCT unnest(n.features || EXCLUDED.features))), updated_at=EXCLUDED.updated_at, metadata_json=n.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label
+     -- Evidence membership is published separately in the same transaction. The parent row changes only
+     -- when its compact intrinsic fields change; association insertion updates updated_at only for a genuinely
+     -- first-seen membership and never rewrites a growing evidence array.
      WHERE EXCLUDED.alpha > n.alpha
-        OR NOT (EXCLUDED.evidence_ids <@ n.evidence_ids)
         OR NOT (EXCLUDED.features <@ n.features)
         OR n.metadata_json <> (n.metadata_json || EXCLUDED.metadata_json)
         OR n.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
+      await upsertGraphEvidenceAssociations(storage, "node", "graph_nodes", payloadChunk);
     }
   });
 }
@@ -2254,10 +2876,11 @@ async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: rea
 async function upsertGraphEdgesBatch(storage: PostgresStorageAdapter, edges: readonly GraphEdge[]): Promise<void> {
   if (!edges.length) return;
   await storage.transaction(async () => {
+    const evidenceJoinedLabels = await graphRecordLabelsWithEvidence(storage, edges);
     const labels = await joinDurableRecordLabels(
       storage,
       "graph_edges",
-      edges.map(edge => ({ id: edge.id, informationLabel: edge.informationLabel }))
+      evidenceJoinedLabels
     );
     const payload = edges.map(edge => ({
       id: edge.id,
@@ -2284,7 +2907,7 @@ async function upsertGraphEdgesBatch(storage: PostgresStorageAdapter, edges: rea
        r.alpha,
        r.weight,
        r.temporal_scope,
-       (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
+       ARRAY[]::text[],
        TO_TIMESTAMP(r.created_at_ms/1000.0),
        TO_TIMESTAMP(r.updated_at_ms/1000.0),
        r.metadata_json,
@@ -2303,9 +2926,13 @@ async function upsertGraphEdgesBatch(storage: PostgresStorageAdapter, edges: rea
        metadata_json jsonb,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(e.alpha,EXCLUDED.alpha), weight=GREATEST(e.weight,EXCLUDED.weight), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(e.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, metadata_json=e.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label`,
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(e.alpha,EXCLUDED.alpha), weight=GREATEST(e.weight,EXCLUDED.weight), updated_at=EXCLUDED.updated_at, metadata_json=e.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label
+     WHERE EXCLUDED.alpha > e.alpha OR EXCLUDED.weight > e.weight
+       OR e.metadata_json <> (e.metadata_json || EXCLUDED.metadata_json)
+       OR e.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
+      await upsertGraphEvidenceAssociations(storage, "edge", "graph_edges", payloadChunk);
     }
   });
 }
@@ -2314,10 +2941,11 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
   if (!edges.length) return;
   for (const edge of edges) assertCanonicalHyperedge(edge);
   await storage.transaction(async () => {
+    const evidenceJoinedLabels = await graphRecordLabelsWithEvidence(storage, edges);
     const labels = await joinDurableRecordLabels(
       storage,
       "graph_hyperedges",
-      edges.map(edge => ({ id: edge.id, informationLabel: edge.informationLabel }))
+      evidenceJoinedLabels
     );
     const payload = edges.map(edge => ({
       id: edge.id,
@@ -2346,7 +2974,7 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.member_node_ids_json) AS v(value)),
        r.qualifiers_json,
        r.modality_json,
-       (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
+       ARRAY[]::text[],
        r.weight_vector,
        r.temporal_scope,
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.provenance_refs_json) AS v(value)),
@@ -2369,9 +2997,19 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
        updated_at_ms double precision,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET schema_id=EXCLUDED.schema_id, participant_ports=EXCLUDED.participant_ports, member_node_ids=EXCLUDED.member_node_ids, qualifiers_json=EXCLUDED.qualifiers_json, modality_json=EXCLUDED.modality_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(h.evidence_ids || EXCLUDED.evidence_ids))), weight_vector=EXCLUDED.weight_vector, temporal_scope=EXCLUDED.temporal_scope, provenance_refs=(SELECT ARRAY(SELECT DISTINCT unnest(h.provenance_refs || EXCLUDED.provenance_refs))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
+     ON CONFLICT(id) DO UPDATE SET schema_id=EXCLUDED.schema_id, participant_ports=EXCLUDED.participant_ports, member_node_ids=EXCLUDED.member_node_ids, qualifiers_json=EXCLUDED.qualifiers_json, modality_json=EXCLUDED.modality_json, weight_vector=EXCLUDED.weight_vector, temporal_scope=EXCLUDED.temporal_scope, provenance_refs=(SELECT ARRAY(SELECT DISTINCT unnest(h.provenance_refs || EXCLUDED.provenance_refs))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label
+     WHERE h.schema_id IS DISTINCT FROM EXCLUDED.schema_id
+        OR h.participant_ports IS DISTINCT FROM EXCLUDED.participant_ports
+        OR h.member_node_ids IS DISTINCT FROM EXCLUDED.member_node_ids
+        OR h.qualifiers_json IS DISTINCT FROM EXCLUDED.qualifiers_json
+        OR h.modality_json IS DISTINCT FROM EXCLUDED.modality_json
+        OR h.weight_vector IS DISTINCT FROM EXCLUDED.weight_vector
+        OR h.temporal_scope IS DISTINCT FROM EXCLUDED.temporal_scope
+        OR NOT (EXCLUDED.provenance_refs <@ h.provenance_refs)
+        OR h.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
+      await upsertGraphEvidenceAssociations(storage, "hyperedge", "graph_hyperedges", payloadChunk);
     }
   });
 }
@@ -2505,7 +3143,7 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
   if (query.seedNodeIds?.length) {
     const access = storage.informationAccessPredicate("node", 3);
     return (await storage.query<GraphNodeRow>(
-      `SELECT * FROM ${storage.table("graph_nodes")} node WHERE id=ANY($1) AND ${access.sql} LIMIT $2`,
+      `SELECT ${graphNodeColumns(storage, "node")} FROM ${storage.table("graph_nodes")} node WHERE id=ANY($1) AND ${access.sql} LIMIT $2`,
       [query.seedNodeIds, query.limitNodes ?? 800, ...access.params]
     )).map(rowToGraphNode);
   }
@@ -2528,9 +3166,9 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
     }
     const rowsByGroup = await queryEvidenceGroups(groups, group => storage.query<GraphNodeRow>(
         `WITH evidence_candidates AS MATERIALIZED (
-       SELECT *
+       SELECT ${graphNodeColumns(storage, "node")}
        FROM ${storage.table("graph_nodes")} node
-       WHERE evidence_ids && $1
+       WHERE ${graphEvidenceMatchSql(storage, "node", "node", 1)}
          AND ${access.sql}${representationBound}
      )
      SELECT *
@@ -2552,7 +3190,7 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
   if (features.length) {
     const access = storage.informationAccessPredicate("node", 3);
     return (await storage.query<GraphNodeRow>(
-      `SELECT * FROM ${storage.table("graph_nodes")} node WHERE features && $1 AND ${access.sql} ORDER BY (SELECT COALESCE(SUM(1.0 / GREATEST(1, array_position($1::text[], feature))), 0) FROM unnest(features) feature WHERE feature=ANY($1)) DESC, alpha DESC, updated_at DESC LIMIT $2`,
+      `SELECT ${graphNodeColumns(storage, "node")} FROM ${storage.table("graph_nodes")} node WHERE features && $1 AND ${access.sql} ORDER BY (SELECT COALESCE(SUM(1.0 / GREATEST(1, array_position($1::text[], feature))), 0) FROM unnest(features) feature WHERE feature=ANY($1)) DESC, alpha DESC, updated_at DESC LIMIT $2`,
       [features, query.limitNodes ?? 800, ...access.params]
     )).map(rowToGraphNode);
   }
@@ -2564,7 +3202,7 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
     // is simply not cached; a lookup that actually needs it still fetches it by id.
     const bound = query.maxRepresentationBytes;
     return (await storage.query<GraphNodeRow>(
-      `SELECT * FROM ${storage.table("graph_nodes")} node WHERE ${access.sql}${bound ? " AND pg_column_size(node.representation_json) <= " + Math.floor(bound) : ""} ORDER BY alpha DESC, updated_at DESC, id LIMIT $1`,
+      `SELECT ${graphNodeColumns(storage, "node")} FROM ${storage.table("graph_nodes")} node WHERE ${access.sql}${bound ? " AND pg_column_size(node.representation_json) <= " + Math.floor(bound) : ""} ORDER BY alpha DESC, updated_at DESC, id LIMIT $1`,
       [query.limitNodes ?? 800, ...access.params]
     )).map(rowToGraphNode);
   }
@@ -4341,6 +4979,13 @@ function requestSeedPatternJsonSql(value: string, schema: string): string {
       ELSE '{}'::jsonb END END)`;
 }
 
+function predictionScoringPatternJsonSql(value: string, schema: string): string {
+  return `(${jsonbFieldsSql(value, PREDICTION_SCORING_PATTERN_JSON_FIELDS)} || CASE
+    WHEN ${schema}='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}'
+      THEN jsonb_build_object('templates','[]'::jsonb)
+    ELSE '{}'::jsonb END)`;
+}
+
 const semanticFrameSurfaceHasher = createHasher();
 const SEMANTIC_FRAME_SURFACE_BACKFILL_PAGE_ROWS = 256;
 
@@ -4783,6 +5428,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         .map(row => ({ id: row.id, profileId: row.profile_id, informationLabel: row.information_label }));
     },
     async listNgramModels(query = {}) {
+      if (query.view === "prediction_scoring"
+        && (!Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) {
+        throw new Error("prediction-scoring n-gram reads require a positive finite decoded byte bound");
+      }
       const params: unknown[] = [];
       const where: string[] = [];
       if (query.streamId) { params.push(query.streamId); where.push(`model.stream_id=$${params.length}`); }
@@ -4870,7 +5519,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         let runningStoredBytes = 0;
         const sized = candidates.filter((row, index) => {
           runningStoredBytes += Number(row.stored_bytes);
-          return runningStoredBytes <= budgetBytes || index === 0;
+          return runningStoredBytes <= budgetBytes || (query.view !== "prediction_scoring" && index === 0);
         });
         const jsonById = new Map<string, { json: JsonValue; jsonBytes: number; updatedAtMs: number }>();
         const readBlobs = async (ids: readonly string[]): Promise<void> => {
@@ -4898,7 +5547,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           const jsonBytes = ngramModelJsonBytes(storage, row.id, row.updated_at.getTime());
           if (jsonBytes === undefined) return false;
           runningJsonBytes += jsonBytes;
-          return runningJsonBytes <= budgetBytes || index === 0;
+          return runningJsonBytes <= budgetBytes || (query.view !== "prediction_scoring" && index === 0);
         });
         const unread = admitted.filter(row => {
           if (jsonById.has(row.id)) return false;
@@ -5041,6 +5690,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       return { units, decodedBytes, oversized, nextAfterId, hasMore: processed < rows.length || rows.length === query.limit };
     },
     async listLanguageUnits(query = {}) {
+      if (query.view === "prediction_scoring"
+        && (!Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) {
+        throw new Error("prediction-scoring unit reads require a positive finite decoded byte bound");
+      }
       const params: unknown[] = [];
       const where: string[] = [];
       if (query.profileIds) {
@@ -5053,6 +5706,36 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       appendInformationAccess(storage, "unit", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 1000);
       const unitLimitParam = params.length;
+      if (query.view === "prediction_scoring") {
+        params.push(Math.floor(query.maxTotalJsonBytes!));
+        const byteBudgetParam = params.length;
+        const rows = await storage.query<LanguageUnitRow>(
+          `WITH candidates AS MATERIALIZED (
+             SELECT unit.id,unit.profile_id,unit.source_version_id,unit.script,unit.unit_kind,unit.unit_text,
+               ARRAY[]::text[] AS features,ARRAY[]::double precision[] AS competence_vector,unit.alpha,unit.evidence_ids,
+               ${jsonbFieldsSql("unit.metadata_json", PREDICTION_SCORING_UNIT_METADATA_FIELDS)} AS metadata_json,
+               unit.information_label
+             FROM ${storage.table("language_units")} unit
+             WHERE ${where.join(" AND ")}
+             ORDER BY unit.alpha DESC,unit.id ASC
+             LIMIT $${unitLimitParam}
+           ), sized AS MATERIALIZED (
+             SELECT candidates.*,octet_length(to_jsonb(candidates)::text)::bigint AS decoded_json_bytes
+             FROM candidates
+           ), ranked AS (
+             SELECT sized.*,
+               SUM(CASE WHEN decoded_json_bytes<=$${byteBudgetParam} THEN decoded_json_bytes ELSE 0 END)
+                 OVER (ORDER BY alpha DESC,id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes
+             FROM sized
+           )
+           SELECT id,profile_id,source_version_id,script,unit_kind,unit_text,features,competence_vector,alpha,evidence_ids,metadata_json,information_label
+           FROM ranked
+           WHERE decoded_json_bytes<=$${byteBudgetParam} AND running_json_bytes<=$${byteBudgetParam}
+           ORDER BY alpha DESC,id ASC LIMIT $${unitLimitParam}`,
+          params
+        );
+        return rows.map(row => predictionScoringLanguageUnit(rowToLanguageUnit(row)));
+      }
       // Same cumulative byte budget as listNgramModels (see the note
       // there): language_units grew to ~660KB average per row after
       // whole-novel training, so count limits stopped bounding memory.
@@ -5085,7 +5768,12 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     async listLanguagePatterns(query = {}) {
       if (query.requireComplete && (!Number.isSafeInteger(query.limit) || query.limit! <= 0
         || !Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) throw new Error("complete pattern reads require positive finite row and decoded byte bounds");
+      if (query.view === "prediction_scoring"
+        && (!Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) {
+        throw new Error("prediction-scoring pattern reads require a positive finite decoded byte bound");
+      }
       const requestedPatternIds = query.patternIds ? [...new Set(query.patternIds)] : undefined;
+      const projectedView = query.view === "request_seed" || query.view === "prediction_scoring";
       const params: unknown[] = [];
       const projectionSets: string[] = [];
       const projectionScope: string[] = [];
@@ -5118,11 +5806,16 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       // Segmentation witnesses are durable audit evidence, not generative/search memory. They are visible only
       // through an ordinary exact-ID audit read; request-seed projection must never hydrate their large bodies.
-      if (!requestedPatternIds || query.view === "request_seed") {
+      if (!requestedPatternIds || projectedView) {
         // IS DISTINCT FROM is intentional: historical active language patterns predate the generated schema
         // header and therefore carry NULL. SQL NOT IN would turn that legitimate row into UNKNOWN and drop it.
         scopeWhere.push(`(${ARCHIVAL_LANGUAGE_PATTERN_SCHEMAS
           .map(schema => `pattern.pattern_schema IS DISTINCT FROM '${schema}'`).join(" AND ")})`);
+      }
+      if (query.view === "prediction_scoring") {
+        scopeWhere.push(`(${PREDICTION_SCORING_DEFERRED_PATTERN_SCHEMAS
+          .map(schema => `pattern.pattern_schema IS DISTINCT FROM '${schema}'`).join(" AND ")}
+          AND (pattern.pattern_schema IS NULL OR pattern.pattern_schema NOT LIKE 'scce.creative_event_construction_pattern.%'))`);
       }
       if (query.profileIds) {
         if (!query.profileIds.length) return [];
@@ -5341,12 +6034,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ELSE 'other'
       END`;
       const narrow = "decoded_jsonb_bytes,id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label,pattern_schema,pattern_language,source_system";
-      const decodedJsonbBytes = query.view === "request_seed" ? "CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_artifact_jsonb_bytes ELSE NULL::numeric END" : "pattern.decoded_artifact_jsonb_bytes";
+      const decodedJsonbBytes = query.view === "request_seed"
+        ? "CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_artifact_jsonb_bytes ELSE NULL::numeric END"
+        : query.view === "prediction_scoring" ? "NULL::numeric" : "pattern.decoded_artifact_jsonb_bytes";
       // Exact prerequisites share one budget; category quotas apply only to searches.
       const partition = (alias: string) => query.patternIds ? "" : `PARTITION BY ${category(alias)} `;
       const byteAllowance = query.patternIds ? `$${params.length}` : `CEIL($${params.length}::numeric / category_counts.n)`;
+      const categoryMinimum = requestedPatternIds || query.view === "prediction_scoring" ? "" : " OR ranked.category_relevance_rank = 1";
       // Seed admission measures projected metadata after the bounded candidate selection.
-      const admitted = byteBudget && query.view !== "request_seed"
+      const admitted = byteBudget && !projectedView
         ? `SELECT ${narrow} FROM (
              SELECT candidate.*,
                SUM(candidate.stored_bytes) OVER (${partition("candidate")}ORDER BY ${order("candidate")} ROWS UNBOUNDED PRECEDING) AS running_stored_bytes,
@@ -5363,7 +6059,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                ROW_NUMBER() OVER (${partition("eligible")}ORDER BY ${order("eligible")}) AS category_relevance_rank
              FROM eligible_patterns eligible
            ) ranked CROSS JOIN category_counts
-           WHERE ranked.running_json_bytes <= ${byteAllowance}${requestedPatternIds ? "" : " OR ranked.category_relevance_rank = 1"}
+           WHERE ranked.running_json_bytes <= ${byteAllowance}${categoryMinimum}
            ORDER BY ${order("ranked")} LIMIT $${limitParam}`
         : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
       const resultSelect = query.requireComplete
@@ -5432,7 +6128,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
              admitted.id, admitted.profile_id, admitted.pattern_kind, admitted.support, admitted.entropy, admitted.evidence_ids, admitted.updated_at, admitted.information_label,
              ${query.view === "request_seed"
                ? requestSeedPatternJsonSql("pattern.pattern_json", "admitted.pattern_schema")
-               : "pattern.pattern_json"} AS pattern_json,
+               : query.view === "prediction_scoring"
+                 ? predictionScoringPatternJsonSql("pattern.pattern_json", "admitted.pattern_schema")
+                 : "pattern.pattern_json"} AS pattern_json,
              admitted.pattern_schema,
              admitted.decoded_jsonb_bytes,
              profile.source_version_id,
@@ -5476,6 +6174,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         const returnedPatternIds = new Set(rows.map(row => row.id));
         if (rows.length !== requestedPatternIds.length || requestedPatternIds.some(id => !returnedPatternIds.has(id))) return [];
       }
+      if (query.view === "prediction_scoring") {
+        return rows.map(row => predictionScoringLanguagePattern(rowToLanguagePattern(row)));
+      }
       const metadata = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.pattern_json, profileId: row.profile_id, informationLabel: row.information_label })));
       const archives = await decodeSegmentationWitnessArchives(
         metadata.map((value, index) => ({ value, profileId: rows[index]!.profile_id })),
@@ -5491,8 +6192,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       });
     },
     async listSemanticFrames(query = {}) {
+      if (query.view === "prediction_scoring"
+        && (!Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) {
+        throw new Error("prediction-scoring semantic-frame reads require a positive finite decoded byte bound");
+      }
       const params: unknown[] = [];
       const where: string[] = [];
+      const projectedView = query.view === "request_seed" || query.view === "prediction_scoring";
       const normalizedRequestSurface = query.requestSurface === undefined ? undefined : normalizePriorKey(query.requestSurface);
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`frame.frame_json->>'sourceSystem'=$${params.length}`); }
       if (query.surface) {
@@ -5505,7 +6211,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         where.push("jsonb_typeof(frame.frame_json->'surface')='string'",
           `frame.normalized_surface_hash=$${params.length}`);
       }
-      if (query.view === "request_seed") {
+      if (projectedView) {
         where.push("jsonb_typeof(frame.frame_json->'surface')='string'",
           "btrim(frame.frame_json->>'surface',E' \\t\\n\\r')<>''",
           "jsonb_typeof(frame.frame_json->'requirementCoefficients')='object'");
@@ -5517,7 +6223,43 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       appendInformationAccess(storage, "frame", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 500);
-      const rows = await storage.query<SemanticFrameRow>(`SELECT id, ${query.view === "request_seed" ? `${jsonbFieldsSql("frame.frame_json", REQUEST_SEED_FRAME_JSON_FIELDS)} AS frame_json, '[]'::text AS embedding` : "frame_json, embedding::text AS embedding"}, evidence_ids, alpha, created_at, information_label FROM ${storage.table("semantic_frames")} frame WHERE ${where.join(" AND ")} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params);
+      const limitParam = params.length;
+      let rows: SemanticFrameRow[];
+      if (query.view === "prediction_scoring") {
+        params.push(Math.floor(query.maxTotalJsonBytes!));
+        const byteBudgetParam = params.length;
+        rows = await storage.query<SemanticFrameRow>(
+          `WITH projected AS MATERIALIZED (
+             SELECT frame.id,${jsonbFieldsSql("frame.frame_json", PREDICTION_SCORING_FRAME_JSON_FIELDS)} AS frame_json,
+               '[]'::text AS embedding,frame.evidence_ids,frame.alpha,frame.created_at,frame.information_label
+             FROM ${storage.table("semantic_frames")} frame
+             WHERE ${where.join(" AND ")}
+             ORDER BY frame.alpha DESC,frame.created_at DESC,frame.id ASC
+             LIMIT $${limitParam}
+           ), sized AS MATERIALIZED (
+             SELECT projected.*,octet_length(to_jsonb(projected)::text)::bigint AS decoded_json_bytes FROM projected
+           ), ranked AS (
+             SELECT sized.*,
+               SUM(CASE WHEN decoded_json_bytes<=$${byteBudgetParam} THEN decoded_json_bytes ELSE 0 END)
+                 OVER (ORDER BY alpha DESC,created_at DESC,id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes
+             FROM sized
+           )
+           SELECT id,frame_json,embedding,evidence_ids,alpha,created_at,information_label
+           FROM ranked
+           WHERE decoded_json_bytes<=$${byteBudgetParam} AND running_json_bytes<=$${byteBudgetParam}
+           ORDER BY alpha DESC,created_at DESC,id ASC LIMIT $${limitParam}`,
+          params
+        );
+      } else {
+        rows = await storage.query<SemanticFrameRow>(`SELECT id, ${query.view === "request_seed" ? `${jsonbFieldsSql("frame.frame_json", REQUEST_SEED_FRAME_JSON_FIELDS)} AS frame_json, '[]'::text AS embedding` : "frame_json, embedding::text AS embedding"}, evidence_ids, alpha, created_at, information_label FROM ${storage.table("semantic_frames")} frame WHERE ${where.join(" AND ")} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${limitParam}`, params);
+      }
+      if (query.view === "prediction_scoring") {
+        const frames = rows.map(row => rowToSemanticFrame(row)).flatMap(frame => predictionScoringSemanticFrame(frame) ?? []);
+        return query.requestSurface === undefined ? frames : frames.filter(frame => {
+          const surface = semanticFrameSurface(frame.frameJson);
+          return surface !== undefined && normalizePriorKey(surface) === normalizedRequestSurface;
+        });
+      }
       const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.frame_json, informationLabel: row.information_label })));
       const frames = rows.map((row, index) => rowToSemanticFrame({ ...row, frame_json: decoded[index] as JsonValue }));
       const matched = query.requestSurface === undefined ? frames : frames.filter(frame => {

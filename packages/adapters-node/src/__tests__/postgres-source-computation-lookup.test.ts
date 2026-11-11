@@ -55,7 +55,7 @@ it("preserves only the compact binding in request metadata without expanding a c
 });
 
 it("retains the partial full-form computation lookup without source body rewrites", () => {
-  expect(POSTGRES_SCHEMA_VERSION).toBe(35);
+  expect(POSTGRES_SCHEMA_VERSION).toBe(36);
   const statements = schemaStatements('"fixture"'), lookup = statements.filter(sql => sql.includes("_source_computation_binding_lookup"));
   expect(lookup).toEqual([`CREATE INDEX IF NOT EXISTS idx_fixture_source_computation_binding_lookup ON "fixture".language_patterns(source_system,(pattern_json->>'bindingId'),support DESC,updated_at DESC,id) WHERE pattern_json->>'schema'='${schema}'`]);
   expect(statements.some(sql => /UPDATE\s+\S*language_patterns\s+SET\s+pattern_json/iu.test(sql))).toBe(false);

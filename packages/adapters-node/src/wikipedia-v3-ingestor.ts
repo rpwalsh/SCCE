@@ -24,6 +24,7 @@ import {
   sourceLanguageInductionDocuments,
   observedEntitySurfacesFromInducedLanguageModel,
   preparePooledLanguageProfileBinding,
+  projectSourceOwnedText,
   compileRelationPromotionModel,
   relationPromotionNeedsPriors,
   compileOpaqueRoleModel,
@@ -51,6 +52,7 @@ import {
   type ScceStorage,
   type SourceVersion,
   type SourceVersionId,
+  type SourceOwnedTextProjection,
   type StructuredSemanticCandidate
 } from "@scce/kernel";
 import { evidenceSourceFamilyId } from "@scce/kernel";
@@ -58,9 +60,9 @@ import type { SourceLanguageFamilyRange } from "@scce/kernel";
 import { effectiveNgramShardChars, type ScceRuntimeConfig } from "./config.js";
 import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, languageCorpusTrainingRecipeId, type LanguageCorpusTrainingInput } from "./language-corpus-trainer.js";
 import { blobContentHash } from "./postgres.js";
-import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, spanProvenanceMetadata, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
+import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, spanProvenanceMetadata, streamWikipediaMultistream, wikipediaLanguageSurface, wikipediaRootUri, type ResolvedWikipediaCorpus, type WikipediaLanguageSurface, type WikipediaLanguageSurfaceMapping } from "./wikipedia.js";
 import { createWikipediaInputManifest, wikipediaInputSourcesStillMatch, type WikipediaInputManifest } from "./wikipedia-input-manifest.js";
-import { WIKIPEDIA_SURFACE_TRANSFORM } from "./wikipedia-markup.js";
+import { WIKIPEDIA_LANGUAGE_SURFACE_TRANSFORM, WIKIPEDIA_SURFACE_TRANSFORM } from "./wikipedia-markup.js";
 import { ingestionCodeIdentity } from "./ingestion-code-identity.js";
 import { runSourceInductionExecution, type SourceInductionExecutionReceipt } from "./source-induction-execution.js";
 import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationLoader, type PreparedLanguageTrainingSegmentation } from "./language-training-segmentation.js";
@@ -141,6 +143,7 @@ interface WikipediaLanguageShardSample {
   title?: string;
   sourceVersionId: SourceVersionId;
   text: string;
+  languageProjection?: WikipediaLanguageSurfaceMapping[];
   evidence: EvidenceSpan[];
   createdAt: number;
   languageAliases: string[];
@@ -1087,6 +1090,13 @@ export class WikipediaV3Ingestor {
       if (!Buffer.from(derivative.text, "utf8").equals(Buffer.from(derivative.bytes))) throw new Error(`Wikipedia derivative bytes do not encode text: ${file.uri}`);
       file = { ...file, bytes: derivative.bytes, text: derivative.text, mediaType: "text/plain; charset=utf-8" };
     }
+    const declaredLanguageSurface = objectOrEmpty(normalization.languageSurface ?? null);
+    const projectedLanguageSurface = wikipediaLanguageSurface(originalFile.text, undefined, file.text);
+    const declaredLanguageTransform = stringValue(declaredLanguageSurface.transformId);
+    if (declaredLanguageTransform && declaredLanguageTransform !== projectedLanguageSurface.transformId) {
+      throw new Error(`Wikipedia language-surface transform mismatch for ${file.uri}: expected ${declaredLanguageTransform}, got ${projectedLanguageSurface.transformId}`);
+    }
+    const languageText = projectedLanguageSurface.text;
     // Derived, not stored yet: everything this method computes comes from the page's bytes alone, so the whole
     // derivation runs before the first write. That ordering is what shortens the transaction's write span, and
     // it is the seam a worker thread needs -- compute is pure, only the writes below need the database.
@@ -1122,7 +1132,7 @@ export class WikipediaV3Ingestor {
       } } : {})
     };
     const profile = {
-      ...pageStage("page.language-profile", () => this.language.acquire({ sourceVersionId, text: file.text, createdAt: now })),
+      ...pageStage("page.language-profile", () => this.language.acquire({ sourceVersionId, text: languageText, createdAt: now })),
       informationLabel: WIKIPEDIA_INFORMATION_LABEL
     };
     const extractSpan = pageTrace.span("page.evidence-extract");
@@ -1159,7 +1169,7 @@ export class WikipediaV3Ingestor {
     // Both graph producers are pure derivations. Finish them before opening the write transaction.
     const admittedSpans = stampEvidence(extracted.spans, metadata, WIKIPEDIA_INFORMATION_LABEL);
     const typedProjection = decision.disposition === "promote" ? pageStage("page.typed-project", () =>
-      this.typedIngest.project({ sourceId, sourceVersionId, uri: file.uri, mediaType: file.mediaType, text: file.text, metadata, evidence: admittedSpans, observedAt: now })) : undefined;
+      this.typedIngest.project({ sourceId, sourceVersionId, uri: file.uri, mediaType: file.mediaType, text: languageText, metadata, evidence: admittedSpans, observedAt: now })) : undefined;
     const builtGraph = decision.disposition === "promote" ? pageStage("page.graph-build", () =>
       this.graphBuilder.build({ sourceVersionId, uri: file.uri, mediaType: file.mediaType, languageProfile: profile, evidence: admittedSpans, observedAt: now })) : undefined;
     return this.storage.transaction(async () => {
@@ -1353,7 +1363,8 @@ export class WikipediaV3Ingestor {
         uri: file.uri,
         title: stringValue(objectOrEmpty(metadata).title),
         sourceVersionId,
-        text: file.text,
+        text: languageText,
+        languageProjection: projectedLanguageSurface.mappings,
         evidence: admittedSpans,
         createdAt: now,
         languageAliases: languageAliasSurfacesFromMetadata(metadata),
@@ -1397,9 +1408,10 @@ export class WikipediaV3Ingestor {
     };
     profileSpan.end({ pages: samples.length, chars: text.length });
     const evidence = boundedShard.evidence;
+    const textProjection = wikipediaLanguageTextProjection(samples);
     await control.onPhase?.("language-induction");
     const inductionSpan = trace.span("language.induction");
-    const documents = sourceLanguageInductionDocuments(evidence);
+    const documents = wikipediaLanguageInductionDocuments(evidence, textProjection);
     const workerInduction = this.config.runtime.sourceInductionExecution
       ? await runSourceInductionExecution({ policy: this.config.runtime.sourceInductionExecution,
         run: execution => prepareConstructionInductionAsync({ documents, hasher: this.hasher, execution,
@@ -1412,7 +1424,8 @@ export class WikipediaV3Ingestor {
     await control.onPhase?.("language-profile-binding");
     const bindingSpan = trace.span("language.profile-binding");
     const profileBinding = preparePooledLanguageProfileBinding({ profile, sourceVersionId, text, evidence,
-      parentSourceVersionIds: boundedShard.sourceFamilyRanges.map(range => String(range.sourceVersionId)), sourceFamilyRanges: boundedShard.sourceFamilyRanges, hasher: this.hasher });
+      parentSourceVersionIds: boundedShard.sourceFamilyRanges.map(range => String(range.sourceVersionId)), sourceFamilyRanges: boundedShard.sourceFamilyRanges,
+      hasher: this.hasher, ...(textProjection ? { textProjection } : {}) });
     bindingSpan.end({ evidence: evidence.length });
     const ngramMaxOrder = this.config.runtime.corpora?.wikipedia?.ngramMaxOrder ?? 4;
     const ngramMaxCounters = this.config.runtime.corpora?.wikipedia?.ngramMaxCountersPerOrder ?? 128;
@@ -1431,6 +1444,8 @@ export class WikipediaV3Ingestor {
       evidence,
       profile,
       preparedInduction,
+      inductionDocuments: documents,
+      ...(textProjection ? { textProjection } : {}),
       profileBinding,
       sourceFamilyRanges: boundedShard.sourceFamilyRanges,
       informationLabel: WIKIPEDIA_INFORMATION_LABEL,
@@ -1693,6 +1708,13 @@ function isWikipediaLanguageShardSample(value: unknown): value is WikipediaLangu
     && (sample.title === undefined || typeof sample.title === "string")
     && typeof sample.sourceVersionId === "string" && sample.sourceVersionId.length > 0
     && typeof sample.text === "string"
+    && (sample.languageProjection === undefined || Array.isArray(sample.languageProjection) && sample.languageProjection.every(item => {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
+      const mapping = item as Record<string, unknown>;
+      return mapping.role === "gallery-filename" && typeof mapping.replacement === "string"
+        && ["sourceCharStart", "sourceCharEnd", "evidenceUtf16Start", "evidenceUtf16End", "evidenceCodePointStart", "evidenceCodePointEnd"]
+          .every(key => Number.isSafeInteger(mapping[key]) && Number(mapping[key]) >= 0);
+    }))
     && Array.isArray(sample.evidence) && sample.evidence.every(item => typeof item === "object" && item !== null && !Array.isArray(item))
     && typeof sample.createdAt === "number" && Number.isFinite(sample.createdAt)
     && Array.isArray(sample.languageAliases) && sample.languageAliases.every(item => typeof item === "string")
@@ -1832,6 +1854,34 @@ export function stampEvidence(spans: EvidenceSpan[], metadata: JsonValue, inform
       forceClass: "direct_evidence"
     }
   };
+  });
+}
+
+export function wikipediaLanguageTextProjection(samples: ReadonlyArray<{
+  sourceVersionId: SourceVersionId;
+  languageProjection?: readonly WikipediaLanguageSurfaceMapping[];
+}>): SourceOwnedTextProjection | undefined {
+  const ranges = samples.flatMap(sample => (sample.languageProjection ?? []).map(mapping => ({
+    sourceVersionId: sample.sourceVersionId,
+    startCodePoint: mapping.evidenceCodePointStart,
+    endCodePoint: mapping.evidenceCodePointEnd,
+    startUtf16: mapping.evidenceUtf16Start,
+    endUtf16: mapping.evidenceUtf16End,
+    replacement: mapping.replacement
+  })));
+  return ranges.length ? { transformId: WIKIPEDIA_LANGUAGE_SURFACE_TRANSFORM, ranges } : undefined;
+}
+
+/** Canonical spans stay persisted and graph-visible; only their induction documents receive the declared role projection. */
+export function wikipediaLanguageInductionDocuments(
+  evidence: readonly EvidenceSpan[],
+  projection?: SourceOwnedTextProjection
+) {
+  const parents = new Map(evidence.map(span => [String(span.id), span]));
+  return sourceLanguageInductionDocuments(evidence).map(document => {
+    const parent = parents.get(document.id)!;
+    return { ...document, text: projectSourceOwnedText({ text: parent.text, sourceVersionId: parent.sourceVersionId,
+      sourceCodePointStart: parent.charStart, projection }) };
   });
 }
 

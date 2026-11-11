@@ -1,9 +1,16 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { isLanguageConstructionPattern, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "./language-construction-memory.js";
+import {
+  CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA, isLanguageConstructionPattern, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+  OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2
+} from "./language-construction-memory.js";
+import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA } from "./creative-event-compatibility.js";
+import { OPTIONAL_NULL_REALIZATION_PATTERN_SCHEMA } from "./optional-null-realization.js";
+import { PAIRED_ANTI_UNIFIED_PATTERN_SCHEMA } from "./paired-anti-unification.js";
+import { REVERSIBLE_CONSTRUCTION_PATTERN_SCHEMA } from "./reversible-construction.js";
 import { REQUEST_REQUIREMENT_PATTERN_SCHEMA } from "./request-requirement-learning.js";
 import { INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA } from "./language-induction-memory.js";
-import type { LanguagePatternRecord, SemanticFrameRecord } from "./storage.js";
+import type { LanguagePatternRecord, LanguageUnitRecord, SemanticFrameRecord } from "./storage.js";
 import type { JsonValue } from "./types.js";
 
 export const SOURCE_CONSTRUCTION_READ_BUDGET = Object.freeze({ limit: 512, maxTotalJsonBytes: 8 * 1024 * 1024 });
@@ -23,6 +30,44 @@ export const REQUEST_SEED_FRAME_JSON_FIELDS = [
   "surface", "semanticRoleId", "requirementCoefficients"
 ] as const;
 
+/**
+ * Hard decoded-input contract for the prediction/scoring operation. The four
+ * family budgets sum to this value; the runtime also measures the projected
+ * records after authorization and rejects an over-budget aggregate.
+ */
+export const PREDICTION_SCORING_MAX_DECODED_BYTES = 64 * 1024 * 1024;
+export const PREDICTION_SCORING_DECODED_BYTE_BUDGETS = Object.freeze({
+  ngramModels: 48 * 1024 * 1024,
+  languageUnits: 8 * 1024 * 1024,
+  languagePatterns: 4 * 1024 * 1024,
+  semanticFrames: 4 * 1024 * 1024
+});
+
+/** Known scalar/statistical inputs consumed by score, candidate generation, and discourse probes. */
+export const PREDICTION_SCORING_PATTERN_JSON_FIELDS = [
+  ...REQUEST_SEED_PATTERN_JSON_FIELDS,
+  "sentenceCount", "paragraphCount", "sentenceSymbolLengths", "paragraphSymbolLengths",
+  "dialogueTurnMarkers", "paragraphShapeTransitions", "dialogueTurnRate"
+] as const;
+
+export const PREDICTION_SCORING_FRAME_JSON_FIELDS = REQUEST_SEED_FRAME_JSON_FIELDS;
+
+/** Unit metadata is not a general body in this view; only learned boundary/cadence hints are causal. */
+export const PREDICTION_SCORING_UNIT_METADATA_FIELDS = [
+  "boundarySignals", "boundaries", "separators", "connectors", "transitions", "joiners", "cadence"
+] as const;
+
+/** Bodies compiled for other operations; prediction/scoring must not detoast or hydrate them. */
+export const PREDICTION_SCORING_DEFERRED_PATTERN_SCHEMAS = [
+  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+  OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2,
+  CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA,
+  REVERSIBLE_CONSTRUCTION_PATTERN_SCHEMA,
+  PAIRED_ANTI_UNIFIED_PATTERN_SCHEMA,
+  OPTIONAL_NULL_REALIZATION_PATTERN_SCHEMA,
+  CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA
+] as const;
+
 export function requestSeedSemanticFrame(frame: SemanticFrameRecord): SemanticFrameRecord | undefined {
   const row = record(frame.frameJson);
   const coefficients = row.requirementCoefficients;
@@ -31,6 +76,25 @@ export function requestSeedSemanticFrame(frame: SemanticFrameRecord): SemanticFr
   const projected: Record<string, JsonValue> = {};
   for (const key of REQUEST_SEED_FRAME_JSON_FIELDS) if (row[key] !== undefined) projected[key] = row[key]!;
   return { ...frame, frameJson: projected, embedding: [] };
+}
+
+export function predictionScoringSemanticFrame(frame: SemanticFrameRecord): SemanticFrameRecord | undefined {
+  const row = record(frame.frameJson);
+  const coefficients = row.requirementCoefficients;
+  if (typeof row.surface !== "string" || !row.surface.trim()
+    || !coefficients || typeof coefficients !== "object" || Array.isArray(coefficients)) return undefined;
+  const projected: Record<string, JsonValue> = {};
+  for (const key of PREDICTION_SCORING_FRAME_JSON_FIELDS) if (row[key] !== undefined) projected[key] = row[key]!;
+  return { ...frame, frameJson: projected, embedding: [] };
+}
+
+export function predictionScoringLanguageUnit(unit: LanguageUnitRecord): LanguageUnitRecord {
+  const metadata = record(unit.metadata);
+  const projectedMetadata: Record<string, JsonValue> = {};
+  for (const key of PREDICTION_SCORING_UNIT_METADATA_FIELDS) {
+    if (metadata[key] !== undefined) projectedMetadata[key] = metadata[key]!;
+  }
+  return { ...unit, features: [], competenceVector: [], metadata: projectedMetadata };
 }
 
 function record(value: JsonValue | undefined): Record<string, JsonValue> {
@@ -113,4 +177,28 @@ export function requestSeedLanguagePattern(pattern: LanguagePatternRecord): Lang
     }) : [];
   }
   return { ...pattern, patternJson: projected };
+}
+
+/**
+ * Projection for next-symbol prediction, score(), and the existing bounded
+ * candidate-realization/generation probes. Request requirements are projected
+ * too: their complete compiler/audit body belongs to request interpretation,
+ * not this operation.
+ */
+export function predictionScoringLanguagePattern(pattern: LanguagePatternRecord): LanguagePatternRecord {
+  const row = record(pattern.patternJson);
+  const projected: Record<string, JsonValue> = {};
+  for (const key of PREDICTION_SCORING_PATTERN_JSON_FIELDS) if (row[key] !== undefined) projected[key] = row[key]!;
+  if (row.schema === INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA) projected.templates = [];
+  return { ...pattern, patternJson: projected };
+}
+
+/** Heavy compiled programs are inventory rows only in this view and never enter runtime hydration. */
+export function predictionScoringPatternIsHydratable(pattern: LanguagePatternRecord): boolean {
+  if (isLanguageConstructionPattern(pattern)) return false;
+  const schema = record(pattern.patternJson).schema;
+  return schema !== REVERSIBLE_CONSTRUCTION_PATTERN_SCHEMA
+    && schema !== PAIRED_ANTI_UNIFIED_PATTERN_SCHEMA
+    && schema !== OPTIONAL_NULL_REALIZATION_PATTERN_SCHEMA
+    && schema !== CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA;
 }

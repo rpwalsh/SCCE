@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { JsonValue } from "./types.js";
 import { entropy, toJsonValue, symbolizeData } from "./primitives.js";
+import { isSourceRoleProjectionBlankCodePoint } from "./unicode-segmentation.js";
 
 export interface NgramProseProfile {
   symbolOrders: Array<{ order: number; total: number; unique: number; entropy: number; top: Array<{ ngram: string; count: number; continuation: number }> }>;
@@ -24,7 +25,8 @@ export function createNgramProseAnalyzer(options: { maxOrder?: number; topK?: nu
   return {
     analyze(text: string): NgramProseProfile {
       const symbols = symbolizeData(text);
-      const chars = [...text.normalize("NFC").toLowerCase()].filter(char => !/\s/u.test(char));
+      const chars = [...text.normalize("NFC").toLowerCase()]
+        .filter(char => !/\s/u.test(char) && !isSourceRoleProjectionBlankCodePoint(char));
       const symbolOrders = [];
       for (let order = 1; order <= maxOrder; order++) symbolOrders.push(orderStats(symbols, order, topK));
       const charOrders = [];

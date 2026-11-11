@@ -11,8 +11,11 @@ import { requestUnitMatchesSurface } from "../local-evidence-runtime.js";
 const humanCreativePair = JSON.parse(readFileSync(new URL("./fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string };
 import {
   compileLanguageTrainingBatch,
+  creativeEventCompatibilityDecision,
+  CREATIVE_REQUEST_FRAME_SCHEMA,
   CORPUS_SOURCE_SYSTEM_IDS,
   CORPUS_ROLE_IDS,
+  createCreativeEventSpeechGrammarIndex,
   createClock,
   createHasher,
   createIdFactory,
@@ -50,6 +53,23 @@ describe("shared language training batch", () => {
       expect(patterns[0]!.evidenceIds).toEqual([evidence[0]!.id]);
       const state = scopeLanguageMemoryStateToLanguage(runtime.hydrate({ models: compiled.models, patterns: compiled.patterns, units: compiled.units,
         semanticFrames: compiled.semanticFrames, constructionEvidence: evidence }), "language.fixture", { profile: () => "language.fixture", corpus: () => "language.fixture" });
+      const sourceEvents = state.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? []);
+      const sourceSpeech = createCreativeEventSpeechGrammarIndex(state.importedConstructionBundles);
+      expect(sourceEvents.length).toBeGreaterThan(0);
+      expect(sourceEvents.every(event => sourceSpeech.forEvent(event).length > 0)).toBe(true);
+      // Plain prose teaches an observed event form, not which future creative
+      // request is allowed to select it. That gate needs real request/reply data.
+      expect(state.creativeEventCompatibilityModels).toEqual([]);
+      const unownedRole = { id: "request.role.unowned", roleId: "request.role.unowned",
+        span: { text: "unowned", charStart: 0, charEnd: 7, byteStart: 0, byteEnd: 7 } };
+      expect(creativeEventCompatibilityDecision(state.creativeEventCompatibilityModels, {
+        schema: CREATIVE_REQUEST_FRAME_SCHEMA,
+        id: "request.frame.unowned",
+        compilerId: "request.compiler.unowned",
+        focus: unownedRole,
+        arguments: [],
+        sourceActivationIds: []
+      }, sourceEvents[0]!)).toBeUndefined();
       primeLearnedAnswerUnitForms({ deltas: state.structuralDeltas ?? [], profileIds: new Set(state.importedPatterns.map(pattern => pattern.profileId)) });
       expect(requestUnitMatchesSurface("walla", "wallawalla")).toBe(true);
       expect(requestUnitMatchesSurface("walla", "wallaxwalla")).toBe(false);

@@ -42,7 +42,8 @@ const unprojected = await storage.query(`
   WHERE e.status = 'promoted'
     ${uriLike ? "AND s.canonical_uri LIKE $2" : ""}
     AND NOT EXISTS (
-      SELECT 1 FROM ${storage.table("graph_nodes")} g WHERE g.evidence_ids && ARRAY[e.id]
+      SELECT 1 FROM ${storage.table("graph_evidence_associations")} association
+      WHERE association.entity_kind='node' AND association.evidence_id=e.id
     )
   GROUP BY e.source_id, e.source_version_id
   ORDER BY COUNT(*) DESC

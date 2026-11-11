@@ -7,6 +7,7 @@ import { constructionSourceExampleStorageJson as exactJson } from './constructio
 import type { GraphBoundConstruction, GraphBoundConstructionSlot, LanguageInductionDocument, LexicalClass, SemanticFrameCandidate } from './language-induction.js';
 import type { EvidenceId, Hasher } from './types.js';
 import type { RelationHypothesisModel } from './relation-hypothesis.js';
+import { SOURCE_ROLE_PROJECTION_SUPPLEMENTARY_BLANK } from './unicode-segmentation.js';
 
 export const SEMANTIC_INDUCTION_FACTORS_SCHEMA = "scce.semantic_induction_factors.v1" as const;
 export const SEMANTIC_INDUCTION_PROJECTION_SCHEMA = "scce.semantic_induction_projection.v1" as const;
@@ -47,7 +48,8 @@ export function compileSemanticInductionFactors(input: { documents: readonly Lan
   const documents = input.documents.map(doc => ({ id: doc.id, sourceId: doc.sourceFamilyId ?? doc.id,
     evidenceIds: [...(doc.evidenceIds ?? [])], trust: clamp01(doc.trust ?? 0.5),
     ...(trackSourceWindows ? { sourceWindow: { ...(doc.sourceWindow ?? { ownerDocumentId: doc.id, startUtf16: 0, endUtf16: doc.text.length }) } } : {}) }));
-  const sentences = input.documents.flatMap((doc, documentIndex) => sentenceSegments(doc.text, input.hasher).map((sentence, sentenceIndex) => {
+  const sentences = input.documents.flatMap((doc, documentIndex) => sentenceSegments(doc.text, input.hasher).map((sourceSentence, sentenceIndex) => {
+    const sentence = sourceSentence.replaceAll(SOURCE_ROLE_PROJECTION_SUPPLEMENTARY_BLANK, "");
     const symbols = lexicalSurfaceSymbols(sentence, `${doc.id}.frame.${sentenceIndex}`, input.hasher)
       .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char)));
     const hypotheses: Array<[number, number, number]> = symbols.length < 2 ? [] : inferRelationHypotheses({ symbols, model: input.relationModel,

@@ -13,7 +13,6 @@ export interface SourceAdmissionPolicy {
   maximumBinaryRatio: number;
   requireText: boolean;
   allowNetworkSources: boolean;
-  allowOpaqueLicenses: boolean;
   rejectNamespaces: string[];
   sensitiveFeatureIds: string[];
   maxEvidenceAlphaForSensitiveUnpromoted: number;
@@ -46,7 +45,6 @@ export const DEFAULT_ADMISSION_POLICY: SourceAdmissionPolicy = {
   maximumBinaryRatio: 0.12,
   requireText: true,
   allowNetworkSources: true,
-  allowOpaqueLicenses: true,
   rejectNamespaces: [],
   sensitiveFeatureIds: [],
   maxEvidenceAlphaForSensitiveUnpromoted: 0.42
@@ -72,8 +70,6 @@ export function createSourceAdmissionController(policy: Partial<SourceAdmissionP
       const sourceTrust = input.source.sourceTrust;
       const trustVectorValid = sourceTrustDimensionsValid(sourceTrust);
       const directEvidence = input.context.intendedUse === "direct_evidence";
-      const licenseAllowed = sourceTrust.licenseStatus !== "restricted"
-        && (p.allowOpaqueLicenses || sourceTrust.licenseStatus !== "unknown");
       const trustChecks: Record<string, boolean> = {
         vectorValid: trustVectorValid,
         identity: sourceTrust.identity >= p.minimumIdentity,
@@ -84,7 +80,6 @@ export function createSourceAdmissionController(policy: Partial<SourceAdmissionP
         authority: !directEvidence || sourceTrust.authority >= p.minimumAuthorityForEvidence,
         independenceGroup: Boolean(sourceTrust.independenceGroup.trim()),
         accessScope: Boolean(sourceTrust.accessScope.trim()),
-        licenseStatus: Boolean(sourceTrust.licenseStatus.trim()) && licenseAllowed,
         textPresent: Boolean(textTrust)
       };
       const trustGatePassed = Object.values(trustChecks).every(Boolean);

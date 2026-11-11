@@ -24,6 +24,7 @@ export * from "./sparse-ranking-calibration.js";
 export { FTRL_GRAPH_NODE_RANK_TASK_CLASS, type FtrlShadowRanking, type FtrlShadowRankedEntry } from "./sparse-ranking-shadow.js";
 export * from "./benchmarks.js";
 export * from "./evidence.js";
+export * from "./evidence-ref.js";
 export * from "./evidence-mass.js";
 export * from "./graphbuild.js";
 export * from "./admission.js";
@@ -45,6 +46,7 @@ export * from "./kneser-ney.js";
 export * from "./kneser-ney-training-replay.js";
 export * from "./ngram-prose.js";
 export * from "./ngram-memory.js";
+export * from "./source-language-artifact-derivation.js";
 export * from "./translation.js";
 export * from "./unicode-segmentation.js";
 export * from "./unicode-segmentation-v2.js";
@@ -108,6 +110,7 @@ export * from "./sparse-fused-transport.js";
 export * from "./transport-evidence-allocation.js";
 export * from "./language-training-batch.js";
 export * from "./creative-event-compatibility.js";
+export * from "./creative-event-speech-grammar.js";
 export * from "./calibration-spine.js";
 export * from "./cognitive-credit.js";
 export * from "./closed-class-words.js";
@@ -351,7 +354,13 @@ export { isCanonicalSegmentationArchiveSchema, stampSourceLanguageCompilation, v
 export * from "./language-pattern-publication.js";
 export * from "./source-reference-bindings.js";
 export { CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "./language-training-recipe.js";
-export { REQUEST_SEED_PATTERN_JSON_FIELDS, requestSeedLanguagePattern, REQUEST_SEED_FRAME_JSON_FIELDS, requestSeedSemanticFrame } from "./request-language-hydration.js";
+export {
+  REQUEST_SEED_PATTERN_JSON_FIELDS, requestSeedLanguagePattern, REQUEST_SEED_FRAME_JSON_FIELDS, requestSeedSemanticFrame,
+  PREDICTION_SCORING_MAX_DECODED_BYTES, PREDICTION_SCORING_DECODED_BYTE_BUDGETS,
+  PREDICTION_SCORING_PATTERN_JSON_FIELDS, PREDICTION_SCORING_FRAME_JSON_FIELDS,
+  PREDICTION_SCORING_UNIT_METADATA_FIELDS, PREDICTION_SCORING_DEFERRED_PATTERN_SCHEMAS, predictionScoringLanguageUnit,
+  predictionScoringLanguagePattern, predictionScoringSemanticFrame, predictionScoringPatternIsHydratable
+} from "./request-language-hydration.js";
 export * from "./program-native-abi.js";
 
 export * from "./workspace-code-contracts.js";

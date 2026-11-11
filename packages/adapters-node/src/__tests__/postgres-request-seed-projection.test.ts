@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, expect, it } from "vitest";
-import { createHasher, createLanguageInductionEngine, requestSeedLanguagePattern, requestSeedSemanticFrame, semanticInductionProjection,
+import { createHasher, createLanguageInductionEngine, predictionScoringLanguagePattern, requestSeedLanguagePattern, requestSeedSemanticFrame, semanticInductionProjection,
   toJsonValue, type LanguagePatternRecord, type SemanticFrameRecord } from "@scce/kernel";
 import { normalizePriorKey } from "../../../kernel/src/kernel-answer-primitives.js";
 import { PostgresStorageAdapter } from "../postgres.js";
@@ -41,9 +41,12 @@ function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRe
     }
     if (!sql.includes("pattern_headers AS MATERIALIZED")) return [];
     const seeded = sql.includes("jsonb_object_agg(seed_field.key,seed_field.value)");
+    const predictionScoring = sql.includes("'sentenceCount'") && sql.includes("'paragraphShapeTransitions'");
     let rows = seeded ? patterns.map(row => {
       const physical = row.patternJson as Record<string, unknown>;
-      if (!Object.hasOwn(physical, SEMANTIC_PROJECTION_STORAGE_KEY)) return requestSeedLanguagePattern(row);
+      if (!Object.hasOwn(physical, SEMANTIC_PROJECTION_STORAGE_KEY)) return predictionScoring
+        ? predictionScoringLanguagePattern(row)
+        : requestSeedLanguagePattern(row);
       const seed = requestSeedLanguagePattern(row), json = seed.patternJson as Record<string, unknown>;
       const { graphBoundConstructions: _graphs, lexicalClasses: _classes, ...headers } = json;
       return { ...seed, patternJson: { ...headers,
@@ -71,7 +74,7 @@ function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRe
   return { adapter, calls };
 }
 
-it.each(["request_seed", "full"] as const)("binds only consumed parameters in a scoped %s read without active projections", async view => {
+it.each(["request_seed", "prediction_scoring", "full"] as const)("binds only consumed parameters in a scoped %s read without active projections", async view => {
   for (const receipt of [false, true]) {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ ...(view === "full" ? {} : { view }),
@@ -136,6 +139,69 @@ it("budgets projected metadata rather than full physical pages or decoded-progra
   expect((await adapter.languageMemory.listLanguagePatterns({ limit: 8, maxTotalJsonBytes: 2048 }))).toEqual([pages[0]]);
   expect(calls.at(-1)!.sql).toContain("running_stored_bytes");
   expect(calls.at(-1)!.sql).toContain("pattern.decoded_artifact_jsonb_bytes AS decoded_jsonb_bytes");
+});
+
+it("rejects deferred construction and creative bodies at prediction/scoring headers before pattern JSON expansion", async () => {
+  const rows = [pattern("pattern.ordinary", { schema: "scce.long_form_discourse_pattern.v1", counts: { "lumen arc": 3 },
+    sentenceCount: 2, sourceBody: "ordinary body is not causal" }),
+  pattern("surface.construction.bundle.heavy", { schema: "scce.language_construction_pattern.v1", surface: "lumen arc",
+    bundle: { sourceExamples: [{ surface: "secret body", roles: [], nullRoles: [] }], program: "x".repeat(4096) } })];
+  const { adapter, calls } = fixture(rows);
+  const projected = await adapter.languageMemory.listLanguagePatterns({ view: "prediction_scoring", limit: 8, maxTotalJsonBytes: 4096 });
+  expect(projected).toEqual(rows.map(predictionScoringLanguagePattern));
+  expect(JSON.stringify(projected)).not.toContain("secret body");
+  expect(JSON.stringify(projected)).not.toContain("ordinary body is not causal");
+  const sql = calls.at(-1)!.sql;
+  const headerScope = sql.indexOf("pattern_headers AS MATERIALIZED");
+  const bodyJoin = sql.indexOf(`JOIN "seed_projection"."language_patterns" pattern ON pattern.id=admitted.id`);
+  expect(sql).toContain("pattern.pattern_schema IS DISTINCT FROM 'scce.language_construction_pattern.v1'");
+  expect(sql).toContain("pattern.pattern_schema NOT LIKE 'scce.creative_event_construction_pattern.%'");
+  expect(headerScope).toBeGreaterThan(-1);
+  expect(bodyJoin).toBeGreaterThan(headerScope);
+  expect(sql.indexOf("pattern.pattern_schema IS DISTINCT FROM 'scce.language_construction_pattern.v1'"))
+    .toBeLessThan(bodyJoin);
+  expect(sql).not.toContain("running_stored_bytes");
+  expect(sql).toContain("octet_length(eligible.pattern_json::text)");
+});
+
+it("bounds projected prediction/scoring frames before returning decoded rows", async () => {
+  const rows = [frame("frame.prediction", { surface: "lumen arc", profileId: "profile.owned", sourceSystem: "workspace",
+    requirementCoefficients: { noveltyDemand: 2 }, content: { sourceBody: "not causal" } })];
+  const { adapter, calls } = fixture([], rows);
+  const projected = await adapter.languageMemory.listSemanticFrames({ view: "prediction_scoring", limit: 8, maxTotalJsonBytes: 2048 });
+  expect(projected).toEqual(rows.flatMap(row => requestSeedSemanticFrame(row) ?? []));
+  expect(JSON.stringify(projected)).not.toContain("not causal");
+  const sql = calls.at(-1)!.sql;
+  expect(sql).toContain("WITH projected AS MATERIALIZED");
+  expect(sql).toContain("octet_length(to_jsonb(projected)::text)");
+  expect(sql).toContain("running_json_bytes");
+  expect(sql).toContain("decoded_json_bytes<=");
+  await expect(adapter.languageMemory.listSemanticFrames({ view: "prediction_scoring", limit: 8 }))
+    .rejects.toThrow("positive finite decoded byte bound");
+});
+
+it("bounds minimal prediction/scoring units without decoding stored metadata bodies", async () => {
+  const adapter = new PostgresStorageAdapter({ url: "postgres://offline.invalid/none", schema: "seed_projection", informationAccess: {
+    tenantId: "tenant.owned", principalId: "principal.owned", compartments: [], maximumExportClass: "restricted"
+  } });
+  adapters.push(adapter);
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+    calls.push({ sql, params });
+    return [{ id: "unit.prediction", profile_id: "profile.owned", source_version_id: "version.owned", script: "script.Latn",
+      unit_kind: "phrase", unit_text: "lumen arc", features: [], competence_vector: [], alpha: "0.8", evidence_ids: [],
+      metadata_json: { connectors: ["therefore"] }, information_label: label }] as unknown as T[];
+  };
+  const units = await adapter.languageMemory.listLanguageUnits({ view: "prediction_scoring", profileIds: ["profile.owned"], limit: 8, maxTotalJsonBytes: 2048 });
+  expect(units).toMatchObject([{ id: "unit.prediction", text: "lumen arc", features: [], competenceVector: [], metadata: { connectors: ["therefore"] } }]);
+  const sql = calls.at(-1)!.sql;
+  expect(sql).toContain("WITH candidates AS MATERIALIZED");
+  expect(sql).toContain("ARRAY[]::text[] AS features");
+  expect(sql).toContain("octet_length(to_jsonb(candidates)::text)");
+  expect(sql).toContain("decoded_json_bytes<=");
+  expect(sql).not.toContain("source_artifact_metadata");
+  await expect(adapter.languageMemory.listLanguageUnits({ view: "prediction_scoring", limit: 8 }))
+    .rejects.toThrow("positive finite decoded byte bound");
 });
 
 it("keeps source-conditioned requirements intact and projects only entity classes and syntax metadata", async () => {

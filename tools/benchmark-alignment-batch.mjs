@@ -40,10 +40,18 @@ if (values["export-fixture"]) {
     const evidence = await storage.evidence.getEvidenceBatch(rows.map(row => row.id));
     const sourceOrder = new Map(sourceVersionIds.map((id, index) => [id, index]));
     evidence.sort((a, b) => sourceOrder.get(a.sourceVersionId) - sourceOrder.get(b.sourceVersionId) || a.charStart - b.charStart || String(a.id).localeCompare(String(b.id)));
-    const graph = await storage.graph.getSlice({ evidenceIds: evidence.map(span => span.id), limitNodes: 100_000, limitEdges: 200_000 });
-    const hyperedgeRows = await storage.query(`SELECT * FROM ${schema}.graph_hyperedges WHERE evidence_ids && $1::text[] AND modality_json ? 'extractionChannel'`, [evidence.map(span => span.id)]);
+    const graph = await storage.graph.getSlice({
+      evidenceIds: evidence.map(span => span.id),
+      evidenceBoundOnly: true,
+      limitNodes: 100_000,
+      limitEdges: 200_000
+    });
+    // The graph API reconstructs ordered evidence membership from the normalized association table.
     // The trainer compiles promoted hyperedges before adding storage access labels.
-    const hyperedges = hyperedgeRows.map(row => ({ schema: row.schema_id, id: row.id, relationId: row.relation_id, participantPorts: row.participant_ports, memberNodeIds: row.member_node_ids, qualifiers: row.qualifiers_json, modality: row.modality_json, evidenceIds: row.evidence_ids, weightVector: row.weight_vector, temporalScope: row.temporal_scope, provenanceRefs: row.provenance_refs, createdAt: row.created_at.getTime(), updatedAt: row.updated_at.getTime() }));
+    const hyperedges = graph.hyperedges.filter(edge => edge.modality
+      && typeof edge.modality === "object"
+      && !Array.isArray(edge.modality)
+      && Object.prototype.hasOwnProperty.call(edge.modality, "extractionChannel"));
     const loadedNodes = new Set(graph.nodes.map(node => String(node.id)));
     const missingNodeIds = [...new Set(hyperedges.flatMap(edge => edge.memberNodeIds))].filter(id => !loadedNodes.has(String(id)));
     if (missingNodeIds.length) {

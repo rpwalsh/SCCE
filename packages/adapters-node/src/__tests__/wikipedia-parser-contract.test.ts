@@ -6,8 +6,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createClock, createEvidenceExtractor, createHasher, createIdFactory, createLanguageAcquisitionEngine } from "@scce/kernel";
-import { normalizeWikiText, streamWikipediaMultistream, wikiPageStructure, type ResolvedWikipediaCorpus } from "../wikipedia.js";
+import { createClock, createEvidenceExtractor, createHasher, createIdFactory, createLanguageAcquisitionEngine, createTypedIngestProjector } from "@scce/kernel";
+import { normalizeWikiText, streamWikipediaMultistream, wikipediaLanguageSurface, wikiPageStructure, type ResolvedWikipediaCorpus } from "../wikipedia.js";
 import { decodeWikiEntities, type WikiNormalizationDiagnostics } from "../wikipedia-markup.js";
 import { wikipediaSourceVersionIdentities } from "../wikipedia-v3-ingestor.js";
 
@@ -204,6 +204,55 @@ describe("Wikipedia source and surface contract", () => {
         expect([...derived.text].slice(span.charStart, span.charEnd).join("")).toBe(span.text);
       }
       expect(version).not.toBe(original);
+    } finally { await f.close(); }
+  });
+
+  it("routes a gallery filename through exact evidence and typed figure structure, not the prose prior", async () => {
+    const filename = "Bee on rock rose.jpg";
+    const raw = "Honey bees collect nectar and pollen from flowering plants. ".repeat(4)
+      + `\n<gallery widths=\"240\">\n${filename} | western honey bees.\n</gallery>\n`
+      + "The colony returns to its hive after foraging.";
+    const f = await dumpFixture(Buffer.from(pageXml(raw)));
+    try {
+      const entry = (await collect(streamWikipediaMultistream(f.corpus))).find(item => item.type === "file");
+      if (!entry || entry.type !== "file") throw new Error("missing source page");
+      const evidence = entry.file.evidenceDerivative!;
+      const metadata = entry.file.metadata as any;
+      const language = wikipediaLanguageSurface(raw);
+
+      expect(entry.file.text).toBe(raw);
+      expect(evidence.text).toContain(`${filename} | western honey bees.`);
+      expect(language.text).not.toContain(filename);
+      expect(language.text).toContain("western honey bees.");
+      expect(metadata.structure.figures).toEqual([expect.objectContaining({
+        id: filename,
+        caption: "western honey bees.",
+        origin: "gallery",
+        sourceCoordinateSpace: "original-source-utf16-code-units"
+      })]);
+      const figure = metadata.structure.figures[0];
+      expect(raw.slice(figure.filenameCharStart, figure.filenameCharEnd)).toBe(filename);
+      expect(metadata.normalization.languageSurface.transformId).toBe(language.transformId);
+
+      const clock = createClock({ fixedTime: 1700000000000 }), hasher = createHasher();
+      const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+      const identity = wikipediaSourceVersionIdentities(entry.file, ids);
+      const projected = createTypedIngestProjector({ idFactory: ids, hasher }).project({
+        sourceId: identity.sourceId,
+        sourceVersionId: identity.evidenceVersionId,
+        uri: entry.file.uri,
+        mediaType: "text/plain; charset=utf-8",
+        text: language.text,
+        metadata: entry.file.metadata,
+        evidence: [],
+        observedAt: clock.now()
+      });
+      expect(projected.observations).toEqual(expect.arrayContaining([expect.objectContaining({
+        kind: "figure",
+        figureId: filename,
+        caption: "western honey bees."
+      })]));
+      expect(projected.languageText).not.toContain(filename);
     } finally { await f.close(); }
   });
 

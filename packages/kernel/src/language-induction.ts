@@ -32,6 +32,7 @@ import {
 } from "./segmentation-population.js";
 import type { SegmentationPopulationInferenceModel } from "./segmentation-population.js";
 import type { VerifiedCorpusSegmentation } from "./corpus-segmentation-cursor.js";
+import { containsSourceRoleProjectionBlank, isSourceRoleProjectionBlankCodePoint } from "./unicode-segmentation.js";
 import { validateCorpusSegmentationForDocuments } from "./corpus-segmentation-input.js";
 import {
   compileLanguageSegmentationWitness,
@@ -580,7 +581,7 @@ function induceBoundariesFromLattices(
   const rightCounts = new Map<string, number>();
   for (const lattice of lattices) {
     const graphemes = lattice.units
-      .filter(unit => unit.overlapClass === "base_partition")
+      .filter(unit => unit.overlapClass === "base_partition" && !containsSourceRoleProjectionBlank(unit.surface))
       .sort((left, right) => left.graphemeStart - right.graphemeStart);
     for (let index = 0; index < graphemes.length - 1; index += 1) {
       const left = graphemes[index]!;
@@ -616,7 +617,7 @@ function induceBoundariesFromLattices(
 function induceScripts(text: string): ScriptProfile[] {
   const byScript = new Map<string, string[]>();
   for (const char of text) {
-    if (/\s/u.test(char)) continue;
+    if (/\s/u.test(char) || isSourceRoleProjectionBlankCodePoint(char)) continue;
     const script = scriptOf(char);
     const bucket = byScript.get(script) ?? [];
     if (bucket.length < 128) bucket.push(char);
@@ -642,7 +643,9 @@ function induceScripts(text: string): ScriptProfile[] {
 
 function countScript(text: string, script: string): number {
   let count = 0;
-  for (const char of text) if (!/\s/u.test(char) && scriptOf(char) === script) count++;
+  for (const char of text) {
+    if (!/\s/u.test(char) && !isSourceRoleProjectionBlankCodePoint(char) && scriptOf(char) === script) count++;
+  }
   return count;
 }
 

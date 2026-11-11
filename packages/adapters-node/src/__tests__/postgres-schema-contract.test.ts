@@ -90,6 +90,21 @@ const pageHydrationColumns = {
   creative_event_lexical_pages: ["id", "kind", "member_ids", "value_json"],
   construction_source_decision_pages: ["id", "owner_key", "kind", "value_json", "information_label"]
 };
+const associationHydrationColumns = {
+  graph_evidence_associations: ["association_order", "entity_kind", "entity_id", "evidence_id"]
+};
+function associationAdditions(statements: readonly string[], q: string): string[] {
+  const found = statements.filter(sql =>
+    sql.startsWith(`CREATE TABLE IF NOT EXISTS ${q}.graph_evidence_associations (`)
+    || sql.startsWith(`CREATE INDEX IF NOT EXISTS idx_${q.replaceAll('"', '')}_graph_evidence_reverse `)
+    || sql.startsWith(`CREATE INDEX IF NOT EXISTS idx_${q.replaceAll('"', '')}_graph_evidence_owner_order `)
+  );
+  expect(found).toHaveLength(3);
+  expect(found[0]).toContain("association_order BIGINT GENERATED ALWAYS AS IDENTITY");
+  expect(found[1]).toContain("(evidence_id,entity_kind,entity_id)");
+  expect(found[2]).toContain("(entity_kind,entity_id,association_order,evidence_id)");
+  return found;
+}
 function pageAdditions(statements: readonly string[], q: string): string[] {
   const expected = [
     `CREATE TABLE IF NOT EXISTS ${q}.creative_event_lexical_pages (id BYTEA PRIMARY KEY,kind TEXT NOT NULL CHECK(kind='lexical_forms_page'),member_ids BYTEA[] NOT NULL,value_json JSONB NOT NULL)`,
@@ -123,6 +138,7 @@ describe("Postgres schema contract extraction", () => {
     const statements = schema.schemaStatements(fixture.q, fixture.access);
     const schema32 = schema32Additions(statements, fixture.q);
     const pages = pageAdditions(statements, fixture.q);
+    const associations = associationAdditions(statements, fixture.q);
     const key = fixture.q.replaceAll('"', "");
     const addedColumn = `ALTER TABLE ${fixture.q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`;
     const retiredIndex = `DROP INDEX IF EXISTS ${fixture.q}.idx_${key}_semantic_frames_surface_rank`;
@@ -146,8 +162,8 @@ describe("Postgres schema contract extraction", () => {
     expect(statements).toContain(retiredAnchorTable);
     expect(statements).not.toContain(anchorTable);
     expect(statements).not.toContain(anchorIndex);
-    expect(statements).toHaveLength(fixture.statementCount + 5 + schema32.length + pages.length);
-    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql))
+    expect(statements).toHaveLength(fixture.statementCount + 5 + schema32.length + pages.length + associations.length);
+    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql) && !associations.includes(sql))
       .map(sql => sql === hashIndex ? oldIndex : sql === retiredAnchorTable ? anchorTable : sql);
     const nodeFeatureIndex = prior.indexOf(`CREATE INDEX IF NOT EXISTS idx_${key}_nodes_features ON ${fixture.q}.graph_nodes USING GIN(features)`);
     expect(nodeFeatureIndex).toBeGreaterThan(0);
@@ -161,7 +177,7 @@ describe("Postgres schema contract extraction", () => {
     expect(columns.semantic_frames).toContain("normalized_surface_hash");
     expect(columns.evidence_spans).toContain("text_sha256");
     const priorColumns = { ...columns };
-    for (const [name, expected] of Object.entries({ ...schema32HydrationColumns, ...pageHydrationColumns })) {
+    for (const [name, expected] of Object.entries({ ...schema32HydrationColumns, ...pageHydrationColumns, ...associationHydrationColumns })) {
       expect(columns[name]).toEqual(expected);
       delete priorColumns[name];
     }

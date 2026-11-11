@@ -41,7 +41,7 @@ import { compilationArtifactIds, ownedSourceFixture } from "./owned-source-fixtu
 import { sessionOwnerObservationSurface } from "../kernel.js";
 
 describe("kernel training", () => {
-  it("keeps single-source construction observations out of the active hydration contract", async () => {
+  it("keeps unqualified single-source grammar out while retaining evidence-owned creative speech", async () => {
     const clock = createClock({ fixedTime: 800, stepMs: 1 });
     const hasher = createHasher();
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
@@ -58,22 +58,34 @@ describe("kernel training", () => {
     const train = () => kernel.train({ config: { learningGoals: ["cat dog chased mouse ball"], promotion: { minTrust: 0.45 } } });
     await train();
     const stored = fixture.learned.patterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === "scce.language_construction_pattern.v1");
-    expect(stored).toEqual([]);
+    expect(stored.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
+    const speechPatternIds = stored.filter(isCreativeSpeechPattern).map(pattern => pattern.id).sort();
+    expect(speechPatternIds.length).toBeGreaterThan(0);
     const active = await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] });
-    expect(active).toEqual([]);
-    const hydrated = hydrateLanguageConstructionPatterns({ patterns: active, evidence: [span], hasher });
+    expect(active.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
+    expect(active.filter(isCreativeSpeechPattern).map(pattern => pattern.id).sort()).toEqual(speechPatternIds);
+    const hydrated = hydrateLanguageConstructionPatterns({ patterns: active.filter(pattern => !isCreativeSpeechPattern(pattern)), evidence: [span], hasher });
     expect(hydrated.rejected).toEqual([]);
     expect(hydrated.constructions).toEqual([]);
     expect(hydrated.bundles).toEqual([]);
+    const hydratedSpeech = hydrateLanguageConstructionPatterns({ patterns: active.filter(isCreativeSpeechPattern), evidence: [span], hasher });
+    expect(hydratedSpeech.rejected).toEqual([]);
+    expect(hydratedSpeech.bundles.length).toBeGreaterThan(0);
+    expect(hydratedSpeech.bundles.every(bundle => bundle.bindingId.startsWith("surface.creative_event.speech."))).toBe(true);
     const modelWrites = fixture.languageWrites.models;
     await train();
     expect(fixture.languageWrites.models).toBe(modelWrites);
-    expect(await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] })).toEqual([]);
+    let repeated = await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] });
+    expect(repeated.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
+    expect(repeated.filter(isCreativeSpeechPattern).map(pattern => pattern.id).sort()).toEqual(speechPatternIds);
     removeFixtureLanguagePatternProjections(fixture.storage.languageMemory);
-    expect(await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] })).toEqual([]);
+    repeated = await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] });
+    expect(repeated.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
     await train();
     expect(fixture.languageWrites.models).toBeGreaterThan(modelWrites);
-    expect(await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] })).toEqual([]);
+    repeated = await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] });
+    expect(repeated.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
+    expect(fixture.learned.patterns.filter(isCreativeSpeechPattern).map(pattern => pattern.id).sort()).toEqual(speechPatternIds);
     const repairedWrites = fixture.languageWrites.models;
     await train();
     expect(fixture.languageWrites.models).toBe(repairedWrites);
@@ -796,6 +808,12 @@ function emptyAlphaTrace(): AlphaTrace {
 
 function emptyCommandResult() {
   return { code: 0, stdout: "", stderr: "", durationMs: 0 };
+}
+
+function isCreativeSpeechPattern(pattern: LanguagePatternRecord): boolean {
+  const row = pattern.patternJson as { schema?: string; bundle?: { bindingId?: string } };
+  return row.schema === "scce.language_construction_pattern.v1"
+    && row.bundle?.bindingId?.startsWith("surface.creative_event.speech.") === true;
 }
 
 function unusedStore(): Record<string, (...args: never[]) => Promise<JsonValue>> {

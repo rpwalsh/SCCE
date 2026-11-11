@@ -80,6 +80,51 @@ describe("semantic consolidation recovers the canonical source graph", () => {
     expect((await f.read()).recoveredObservations).toBe(1);
   });
 
+  it("uses explicit association coverage and direct membership instead of treating a partial page as absence", async () => {
+    const f = fixture();
+    const observed = f.observe(417, "version.a", "source.lab");
+    f.persist(observed.observations);
+    const calls: string[] = [];
+    f.storage.graph.listEvidenceForOwner = async query => {
+      calls.push(`page:${query.ownerId}`);
+      return {
+        schema: "scce.graph_evidence_association_page.v1",
+        associations: [],
+        coverage: {
+          schema: "scce.graph_evidence_association_coverage.v1",
+          scope: "authorized_owner",
+          completeness: "partial",
+          returnedCount: 0,
+          continuation: "1"
+        },
+        decodedBytes: 256
+      };
+    };
+    f.storage.graph.getEvidenceAssociationMembership = async query => {
+      calls.push(`membership:${query.ownerId}:${String(query.evidenceId)}`);
+      return {
+        schema: "scce.graph_evidence_association_membership.v1",
+        ownerKind: query.ownerKind,
+        ownerId: query.ownerId,
+        evidenceId: query.evidenceId,
+        present: true,
+        coverage: {
+          schema: "scce.graph_evidence_association_coverage.v1",
+          scope: "authorized_membership",
+          completeness: "complete",
+          returnedCount: 1
+        }
+      };
+    };
+
+    const read = await f.read();
+    expect(read.recoveredObservations).toBe(1);
+    expect(calls).toEqual([
+      `page:${String(observed.edge.id)}`,
+      `membership:${String(observed.edge.id)}:${String(observed.span.id)}`
+    ]);
+  });
+
   it.each(["removed", "quarantined", "changed_text", "changed_source", "changed_graph", "forged_value"])("rejects stale or wrong-value dependencies: %s", async mutation => {
     const f = fixture();
     const first = f.observe(417, "version.a");

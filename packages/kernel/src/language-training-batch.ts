@@ -12,6 +12,7 @@ import {
 } from "./language-construction-memory.js";
 import { compileCreativeSourceCorrespondences } from "./creative-source-correspondence.js";
 import { compileCreativeSourceUtterancePatterns } from "./creative-source-utterance.js";
+import { compileCreativeEventSpeechGrammarPatterns } from "./creative-event-speech-grammar.js";
 import { compileSourceReferenceBindingPattern, type SourceReferenceBindingDeclaration } from "./source-reference-bindings.js";
 import type { TranscriptTurn } from "./dialogue-communicative-act-learning.js";
 import type { SourceInductionBatchExecution } from "./source-induction-execution.js";
@@ -113,7 +114,7 @@ import { sourceInductionBatches } from "./source-window-induction.js";
 import { inductionCharBudget } from "./training-orchestrator.js";
 import { createIdFactory } from "./ids.js";
 import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
-import type { PooledLanguageProfileBinding } from "./pooled-language-profile-binding.js";
+import { projectSourceOwnedText, type PooledLanguageProfileBinding, type SourceOwnedTextProjection } from "./pooled-language-profile-binding.js";
 import { LANGUAGE_TRAINING_BATCH_RECIPE_ID, LANGUAGE_TRAINING_CHUNK_UTF16_LIMIT, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "./language-training-recipe.js";
 import { stampSourceLanguageCompilation } from "./source-language-compilation.js";
 import { CORPUS_ROLE_IDS, corpusRoleIdForSourceSystem } from "./corpus-registry.js";
@@ -128,6 +129,7 @@ import type {
 } from "./storage.js";
 import type { ScceStorage } from "./storage.js";
 import { dominantScriptId, reconstructFromSegmentationModel, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
+import { isSourceRoleProjectionBlankCodePoint } from "./unicode-segmentation.js";
 import type { InformationLabel } from "./types.js";
 import { segmentationAggregateInformationLabel, segmentationAggregateKeyId, segmentationAggregateSpacedRatio } from "./segmentation-aggregate.js";
 import type {
@@ -170,6 +172,9 @@ export interface LanguageTrainingBatch {
   languageOnly?: boolean;
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
   preparedInduction?: PreparedConstructionInduction;
+  /** Caller-projected, source-owned documents for role-aware construction and creative induction. */
+  inductionDocuments?: readonly import("./language-induction.js").LanguageInductionDocument[];
+  textProjection?: SourceOwnedTextProjection;
   segmentationIdentity?: JsonValue;
   profileBinding?: PooledLanguageProfileBinding;
   /** Owned durable evidence for construction learning; n-grams and graph alignment still use this document's evidence. */
@@ -327,6 +332,16 @@ export function compileLanguageTrainingBatch(input: {
   const { batch } = input;
   const formalCode = Boolean(batch.sourceSystem && corpusRoleIdForSourceSystem(batch.sourceSystem) === CORPUS_ROLE_IDS.softwareSymbolic);
   const induceNaturalLanguage = !formalCode && !batch.languageOnly;
+  const ownedConstructionEvidence = batch.constructionEvidence ?? batch.evidence;
+  const constructionEvidence = induceNaturalLanguage ? batch.evidence.filter(span => span.status === "promoted") : [];
+  const induction = prepareLanguageTrainingInduction({ evidence: constructionEvidence, constructionEvidence: induceNaturalLanguage ? ownedConstructionEvidence : [],
+    inductionDocuments: induceNaturalLanguage ? batch.inductionDocuments : [], textProjection: induceNaturalLanguage ? batch.textProjection : undefined,
+    constructionContextDocuments: induceNaturalLanguage ? batch.constructionContextDocuments : [], hasher: input.hasher,
+    prepared: induceNaturalLanguage ? batch.preparedInduction : undefined });
+  const preparedInduction = induction.prepared;
+  const trainingEvidence = induceNaturalLanguage
+    ? projectedLanguageTrainingEvidence(batch.evidence, induction.documents)
+    : batch.evidence;
   const textChunks = boundedTrainingTextChunks(batch.text);
   const memories = batch.artifactScope === "construction_only" ? [] : textChunks.map((text, index) => input.runtime.train({
     streamId: textChunks.length === 1
@@ -336,7 +351,7 @@ export function compileLanguageTrainingBatch(input: {
     profile: batch.profile,
     sourceVersionId: batch.sourceVersionId,
     text,
-    evidence: batch.evidence,
+    evidence: trainingEvidence,
     createdAt: batch.createdAt,
     maxOrder: batch.maxOrder,
     maxCountersPerOrder: batch.maxCountersPerOrder,
@@ -344,15 +359,9 @@ export function compileLanguageTrainingBatch(input: {
     retainObservations: batch.retainNgramObservations,
     retainSemanticFrames: index === 0
   }));
-  const ownedConstructionEvidence = batch.constructionEvidence ?? batch.evidence;
-  const constructionEvidence = induceNaturalLanguage ? batch.evidence.filter(span => span.status === "promoted") : [];
-  const induction = prepareLanguageTrainingInduction({ evidence: constructionEvidence, constructionEvidence: induceNaturalLanguage ? ownedConstructionEvidence : [],
-    constructionContextDocuments: induceNaturalLanguage ? batch.constructionContextDocuments : [], hasher: input.hasher,
-    prepared: induceNaturalLanguage ? batch.preparedInduction : undefined });
-  const preparedInduction = induction.prepared;
   const constructionSplit = induceNaturalLanguage ? induction.split : splitConstructionEvidence(formalCode ? [] : ownedConstructionEvidence, input.hasher);
   const inducedLanguageProducts = induceNaturalLanguage
-    ? preparedLanguageInductionProducts({ documents: sourceLanguageInductionDocuments(constructionEvidence), hasher: input.hasher, prepared: preparedInduction })
+    ? preparedLanguageInductionProducts({ documents: induction.documents, hasher: input.hasher, prepared: preparedInduction })
     : undefined;
   const inducedLanguagePatterns = inducedLanguageProducts?.models.flatMap(model => languageMemoryPatternsFromInducedLanguageModel({
     model, profiles: [batch.profile],
@@ -371,6 +380,8 @@ export function compileLanguageTrainingBatch(input: {
     profileId: batch.profile.id,
     hasher: input.hasher,
     preparedInduction,
+    inductionDocuments: induction.documents,
+    textProjection: batch.textProjection,
     graphSnapshot: batch.graphSnapshot
   });
   const maxAlignmentTextBytes = Math.max(512, Math.min(65536, Math.floor(batch.maxAlignmentTextBytes ?? 8192)));
@@ -694,11 +705,22 @@ export function compileLanguageTrainingBatch(input: {
 
   const creativeEventCompiler = induceNaturalLanguage ? input.creativeEventCompiler ?? createUniversalCreativeEventConstructionCompiler() : undefined;
   const creativeEventCompilation = creativeEventCompiler?.compile({ profileId: batch.profile.id, evidence: batch.evidence,
-    hasher: input.hasher, updatedAt: batch.createdAt, preparedInduction });
+    hasher: input.hasher, updatedAt: batch.createdAt, preparedInduction, inductionDocuments: induction.documents,
+    textProjection: batch.textProjection });
   const creativePatterns = creativeEventCompilation?.status === "compiled" ? creativeEventCompilation.patterns ?? [creativeEventCompilation.pattern] : [];
   const ownedCreativePatterns = input.creativeEventCompiler ? creativePatterns.map(pattern => structuredClone(pattern)) : creativePatterns;
   constructionPatterns.push(...ownedCreativePatterns.filter(isLanguageConstructionPattern));
   promotion.report.sourceObservedInducedConstructionSets += ownedCreativePatterns.filter(isCreativeEventConstructionPattern).length;
+  const creativeEventBundles = creativeEventCompilation?.status === "compiled"
+    ? creativeEventCompilation.bundles ?? [creativeEventCompilation.bundle]
+    : [];
+  const creativeSpeechGrammar = creativeEventBundles.length
+    ? compileCreativeEventSpeechGrammarPatterns({ eventBundles: creativeEventBundles, profileId: batch.profile.id,
+      evidence: batch.evidence, textProjection: batch.textProjection, hasher: input.hasher, updatedAt: batch.createdAt })
+    : { patterns: [], candidateCount: 0, compiledCount: 0, rejectionCodes: [] };
+  constructionPatterns.push(...creativeSpeechGrammar.patterns);
+  promotion.report.sourceObservedInducedConstructionSets += creativeSpeechGrammar.patterns.length;
+  warnings.push(...creativeSpeechGrammar.rejectionCodes);
   if (creativeEventCompilation?.status === "rejected" && creativeEventCompilation.issues.some(issue => issue.code !== LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction)) {
     warnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
   }
@@ -709,12 +731,12 @@ export function compileLanguageTrainingBatch(input: {
   const referenceBindings = sourceReferences?.bindings ? [sourceReferences.bindings] : [];
   const sourceCorrespondencePatterns = batch.transcriptTurns && creativeEventCompilation?.status === "compiled"
     ? compileCreativeSourceCorrespondences({ turns: batch.transcriptTurns, profileId: batch.profile.id, updatedAt: batch.createdAt,
-      evidence: batch.evidence, events: (creativeEventCompilation.bundles ?? [creativeEventCompilation.bundle]).flatMap(bundle => bundle.creativeEvents ?? []),
+      evidence: batch.evidence, events: creativeEventBundles.flatMap(bundle => bundle.creativeEvents ?? []),
       referenceBindings, hasher: input.hasher }) : [];
   let sourceUtteranceCandidates = 0;
   let compiledSourceUtterances = 0;
   if (sourceCorrespondencePatterns.length && creativeEventCompilation?.status === "compiled") {
-    const eventBundles = creativeEventCompilation.bundles ?? [creativeEventCompilation.bundle];
+    const eventBundles = creativeEventBundles;
     const utterances = compileCreativeSourceUtterancePatterns({ patterns: sourceCorrespondencePatterns,
       events: eventBundles.flatMap(bundle => bundle.creativeEvents ?? []), eventBundles,
       profileId: batch.profile.id, evidence: batch.evidence, referenceBindings, hasher: input.hasher, updatedAt: batch.createdAt });
@@ -1334,13 +1356,30 @@ function qualificationWindowSample(documents: readonly import("./language-induct
 interface LanguageTrainingInductionInput {
   evidence: readonly EvidenceSpan[];
   constructionEvidence?: readonly EvidenceSpan[];
+  inductionDocuments?: readonly import("./language-induction.js").LanguageInductionDocument[];
+  textProjection?: SourceOwnedTextProjection;
   constructionContextDocuments?: readonly import("./language-induction.js").LanguageInductionDocument[];
   hasher: Hasher;
   prepared?: PreparedConstructionInduction;
 }
 
 function planLanguageTrainingInduction(input: LanguageTrainingInductionInput) {
-  const documents = sourceLanguageInductionDocuments(input.evidence);
+  const canonicalDocuments = sourceLanguageInductionDocuments(input.evidence);
+  const parentsById = new Map(input.evidence.map(span => [String(span.id), span]));
+  const documents = input.inductionDocuments ? [...input.inductionDocuments] : canonicalDocuments;
+  if (input.inductionDocuments) {
+    if (documents.length !== canonicalDocuments.length || new Set(documents.map(document => document.id)).size !== documents.length) {
+      throw new Error("language induction projection is not source-owned");
+    }
+    for (const document of documents) {
+      const parent = parentsById.get(document.id);
+      const expected = parent ? projectSourceOwnedText({ text: parent.text, sourceVersionId: parent.sourceVersionId,
+        sourceCodePointStart: parent.charStart, projection: input.textProjection }) : undefined;
+      if (!parent || parent.status !== "promoted" || document.sourceVersionId !== parent.sourceVersionId
+        || document.sourceWindow !== undefined || document.evidenceIds?.length !== 1 || String(document.evidenceIds[0]) !== String(parent.id)
+        || document.text !== expected) throw new Error("language induction projection is not source-owned");
+    }
+  }
   const owned = [...new Map([...(input.constructionEvidence ?? []), ...input.evidence].map(span => [String(span.id), span])).values()];
   const currentIds = new Set(input.evidence.map(span => String(span.id)));
   const parents = new Map(owned.map(span => [String(span.id), span]));
@@ -1394,7 +1433,7 @@ export function prepareLanguageTrainingInduction(input: LanguageTrainingInductio
   const plan = planLanguageTrainingInduction(input);
   const prepared = prepareConstructionInduction({ documents: plan.documents, hasher: input.hasher, contextDocuments: plan.sampledContext,
     additionalDocumentSets: plan.split.heldOut.length ? [plan.qualificationDocuments.train] : [], ...(input.prepared ? { prepared: input.prepared } : {}) });
-  return { prepared, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
+  return { prepared, documents: plan.documents, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
 }
 
 export async function prepareLanguageTrainingInductionAsync(input: LanguageTrainingInductionInput & {
@@ -1405,7 +1444,7 @@ export async function prepareLanguageTrainingInductionAsync(input: LanguageTrain
     additionalDocumentSets: plan.split.heldOut.length ? [plan.qualificationDocuments.train] : [], execution: input.execution,
     ...(input.corpusLoader ? { corpusLoader: input.corpusLoader } : {}), ...(input.signal ? { signal: input.signal } : {}),
     ...(input.prepared ? { prepared: input.prepared } : {}) });
-  return { prepared, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
+  return { prepared, documents: plan.documents, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
 }
 
 export async function prepareLanguageTrainingInductionFromCorpus(input: LanguageTrainingInductionInput & { corpusLoader: CorpusSegmentationBatchLoader }) {
@@ -1413,7 +1452,7 @@ export async function prepareLanguageTrainingInductionFromCorpus(input: Language
   const prepared = await prepareConstructionInductionFromCorpus({ documents: plan.documents, hasher: input.hasher, contextDocuments: plan.sampledContext,
     additionalDocumentSets: plan.split.heldOut.length ? [plan.qualificationDocuments.train] : [], corpusLoader: input.corpusLoader,
     ...(input.prepared ? { prepared: input.prepared } : {}) });
-  return { prepared, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
+  return { prepared, documents: plan.documents, qualificationDocuments: plan.qualificationDocuments, qualificationSample: plan.qualificationSample, split: plan.split };
 }
 
 function splitConstructionEvidence(evidence: readonly EvidenceSpan[], hasher: Hasher): { train: EvidenceSpan[]; heldOut: EvidenceSpan[] } {
@@ -1476,6 +1515,29 @@ function ratio(numerator: number, denominator: number): number {
 
 function clampUnit(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+}
+
+/**
+ * Runtime n-gram/unit/frame derivation sees the same source-owned projection as construction induction. The
+ * canonical evidence objects remain the batch's graph/ownership inputs; these short-lived views retain ids and
+ * coordinates while preventing a structured-only role from re-entering through semantic-frame previews.
+ */
+function projectedLanguageTrainingEvidence(
+  evidence: readonly EvidenceSpan[],
+  documents: readonly import("./language-induction.js").LanguageInductionDocument[]
+): EvidenceSpan[] {
+  const textByEvidence = new Map(documents.map(document => [document.id, document.text]));
+  return evidence.map(span => {
+    const text = textByEvidence.get(String(span.id));
+    if (text === undefined || text === span.text) return span;
+    const collapsed = [...text]
+      .map(char => isSourceRoleProjectionBlankCodePoint(char) ? " " : char)
+      .join("")
+      .replace(/\s+/gu, " ")
+      .trim();
+    const preview = [...collapsed].slice(0, 700).join("");
+    return { ...span, text, textPreview: preview };
+  });
 }
 
 function boundedTrainingTextChunks(text: string, maxUtf16Length = LANGUAGE_TRAINING_CHUNK_UTF16_LIMIT): string[] {

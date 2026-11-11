@@ -4,7 +4,13 @@ import { estimateRetainedProgramBytes } from "./retained-program-size.js";
 import { traceEvent } from "./debug/trace.js";
 import { canonicalDigestHex, canonicalJsonByteLength } from "./canonical-json-digest.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
-import { conversationalConstructionBinding, requestConstructionCandidate, requestSeedLanguagePattern, requestSeedSemanticFrame, sourceConstructionCandidate, SOURCE_CONSTRUCTION_READ_BUDGET } from "./request-language-hydration.js";
+import {
+  conversationalConstructionBinding, requestConstructionCandidate, requestSeedLanguagePattern, requestSeedSemanticFrame,
+  sourceConstructionCandidate, SOURCE_CONSTRUCTION_READ_BUDGET,
+  PREDICTION_SCORING_DECODED_BYTE_BUDGETS, PREDICTION_SCORING_MAX_DECODED_BYTES,
+  predictionScoringLanguagePattern, predictionScoringLanguageUnit, predictionScoringPatternIsHydratable,
+  predictionScoringSemanticFrame
+} from "./request-language-hydration.js";
 import { conversationalActBindingId } from "./conversational-act-binding.js";
 import { DIALOGUE_ACT_IDS, type DialogueActId } from "./dialogue-pragmatics.js";
 import { CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
@@ -32,7 +38,7 @@ import {
 import { primeNumericTokenCounts } from "./numeric-token-statistics.js";
 import { createClock, createHasher, sourceTextSurface, toJsonValue } from "./primitives.js";
 import { isRequestRequirementPattern, REQUEST_REQUIREMENT_PATTERN_SCHEMA } from "./request-requirement-learning.js";
-import type { LanguageContinuationPopulation, LanguagePatternRecord, NgramObservation, ScceKernelDeps, SemanticFrameRecord, TargetProfilePatternRecord } from "./storage.js";
+import type { LanguageContinuationPopulation, LanguagePatternRecord, LanguageUnitRecord, NgramObservation, ScceKernelDeps, SemanticFrameRecord, TargetProfilePatternRecord } from "./storage.js";
 import type { SegmentationPopulationModelRecord } from "./segmentation-population-persistence.js";
 import type {
   EvidenceSpan,
@@ -161,6 +167,92 @@ function boundedSurfaceLanguageMemoryCacheSet<K, V extends { approxEstimatedByte
 
 const DEFAULT_SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ENTRIES = 500;
 const DEFAULT_SURFACE_CANDIDATE_PROFILE_CACHE_MAX_ENTRIES = 2_000;
+
+export type SurfaceLanguageHydrationPurpose = "request_seed" | "prediction_scoring";
+
+export interface PredictionScoringLanguageViewReceipt {
+  schema: "scce.language_operation_view_receipt.v1";
+  operation: "prediction_scoring";
+  coverage: {
+    scope: "authorized_bounded_operation_input";
+    completeness: "bounded";
+    includedCapabilities: readonly ["next_symbol_prediction", "string_scoring", "candidate_realization_probe", "candidate_generation_probe"];
+    excludedCapabilities: readonly ["source_realization", "structured_creative_generation", "proof_contradiction", "global_learning"];
+  };
+  hydratedRows: { ngramModels: number; languageUnits: number; languagePatterns: number; semanticFrames: number; constructionEvidence: 0 };
+  qualifiedCapabilities: {
+    ngramOrders: number[];
+    maxNgramOrder: number;
+    unitKinds: LanguageUnitRecord["unitKind"][];
+    patternSchemas: string[];
+    recognizedSemanticFrameCount: number;
+  };
+  decodedBytes: number;
+  maxDecodedBytes: typeof PREDICTION_SCORING_MAX_DECODED_BYTES;
+  measuredHeapBytes: number;
+}
+
+function boundedPredictionScoringDecodedBytes(input: {
+  models: readonly unknown[];
+  units: readonly unknown[];
+  patterns: readonly unknown[];
+  semanticFrames: readonly unknown[];
+}): number {
+  const decodedBytes = canonicalJsonByteLength(input, PREDICTION_SCORING_MAX_DECODED_BYTES);
+  if (decodedBytes > PREDICTION_SCORING_MAX_DECODED_BYTES) {
+    throw new Error(`prediction-scoring operation input exceeds ${PREDICTION_SCORING_MAX_DECODED_BYTES} decoded bytes`);
+  }
+  return decodedBytes;
+}
+
+function predictionScoringViewReceipt(input: {
+  models: readonly unknown[];
+  units: readonly LanguageUnitRecord[];
+  patterns: readonly LanguagePatternRecord[];
+  semanticFrames: readonly SemanticFrameRecord[];
+  state: LanguageMemoryRuntimeState;
+  decodedBytes: number;
+  measuredHeapBytes: number;
+}): PredictionScoringLanguageViewReceipt {
+  const patternSchemas = [...new Set(input.state.importedPatterns.flatMap(pattern => {
+    const schema = jsonRecord(pattern.patternJson).schema;
+    return typeof schema === "string" && schema ? [schema] : [];
+  }))].sort();
+  const recognizedSemanticFrameCount = input.state.importedSemanticFrames.filter(frame => {
+    const row = jsonRecord(frame.frameJson);
+    return typeof row.surface === "string" && Boolean(row.surface.trim())
+      && row.requirementCoefficients !== null && typeof row.requirementCoefficients === "object"
+      && !Array.isArray(row.requirementCoefficients);
+  }).length;
+  const ngramOrders = [...new Set(input.state.models.map(model => model.order))].sort((left, right) => left - right);
+  return {
+    schema: "scce.language_operation_view_receipt.v1",
+    operation: "prediction_scoring",
+    coverage: {
+      scope: "authorized_bounded_operation_input",
+      completeness: "bounded",
+      includedCapabilities: ["next_symbol_prediction", "string_scoring", "candidate_realization_probe", "candidate_generation_probe"],
+      excludedCapabilities: ["source_realization", "structured_creative_generation", "proof_contradiction", "global_learning"]
+    },
+    hydratedRows: {
+      ngramModels: input.models.length,
+      languageUnits: input.units.length,
+      languagePatterns: input.patterns.length,
+      semanticFrames: input.semanticFrames.length,
+      constructionEvidence: 0
+    },
+    qualifiedCapabilities: {
+      ngramOrders,
+      maxNgramOrder: ngramOrders.at(-1) ?? 0,
+      unitKinds: [...new Set(input.state.importedUnits.map(unit => unit.unitKind))].sort(),
+      patternSchemas,
+      recognizedSemanticFrameCount
+    },
+    decodedBytes: input.decodedBytes,
+    maxDecodedBytes: PREDICTION_SCORING_MAX_DECODED_BYTES,
+    measuredHeapBytes: input.measuredHeapBytes
+  };
+}
 
 // Opt-in like SCCE_TRACE_GC below: sizing the payload restringifies every hydrated row, seconds of event loop for a trace number.
 const approxJsonMb = (rows: readonly unknown[]): number => {
@@ -371,7 +463,7 @@ export function createSurfaceLanguageRuntime(options: {
     /** Scope the hydration to a learned language identity instead of to the cluster's document membership. */
     languageId?: string;
     /** Request interpretation consumes the canonical population statistics, not generative history indexes. */
-    purpose?: "request_seed";
+    purpose?: SurfaceLanguageHydrationPurpose;
   };
 
 
@@ -403,7 +495,7 @@ export function createSurfaceLanguageRuntime(options: {
     preferredSurface = "",
     languageId?: string,
     generation = languageMemoryGeneration,
-    purpose?: "request_seed"
+    purpose?: SurfaceLanguageHydrationPurpose
   ) {
     const boundedLimit = Math.max(1, Math.min(256, Math.floor(limit)));
     // Request-seed uses typed natural-language roles below; the unsupervised surface cluster may be symbolic.
@@ -432,11 +524,22 @@ export function createSurfaceLanguageRuntime(options: {
     const hydrationByteBudgets = {
       // Memory bounds, not relevance knobs: JSON of this size hydrates to roughly 25x in Map-heavy heap (measured 120MB
       // -> 3.3GB), so 96MB of JSON per hydration is about 2.4GB, and a 5GB cache holds two of them.
-      ngramModelJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_NGRAM_MB) || 48) * 1024 * 1024,
-      languageUnitJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_UNITS_MB) || 16) * 1024 * 1024,
-      languagePatternJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_PATTERNS_MB) || 32) * 1024 * 1024
+      ngramModelJsonBytes: purpose === "prediction_scoring"
+        ? Math.min((Number(process.env.SCCE_LANGUAGE_HYDRATE_NGRAM_MB) || 48) * 1024 * 1024, PREDICTION_SCORING_DECODED_BYTE_BUDGETS.ngramModels)
+        : (Number(process.env.SCCE_LANGUAGE_HYDRATE_NGRAM_MB) || 48) * 1024 * 1024,
+      languageUnitJsonBytes: purpose === "prediction_scoring"
+        ? Math.min((Number(process.env.SCCE_LANGUAGE_HYDRATE_UNITS_MB) || 16) * 1024 * 1024, PREDICTION_SCORING_DECODED_BYTE_BUDGETS.languageUnits)
+        : (Number(process.env.SCCE_LANGUAGE_HYDRATE_UNITS_MB) || 16) * 1024 * 1024,
+      languagePatternJsonBytes: purpose === "prediction_scoring"
+        ? Math.min((Number(process.env.SCCE_LANGUAGE_HYDRATE_PATTERNS_MB) || 32) * 1024 * 1024, PREDICTION_SCORING_DECODED_BYTE_BUDGETS.languagePatterns)
+        : (Number(process.env.SCCE_LANGUAGE_HYDRATE_PATTERNS_MB) || 32) * 1024 * 1024,
+      semanticFrameJsonBytes: purpose === "prediction_scoring"
+        ? PREDICTION_SCORING_DECODED_BYTE_BUDGETS.semanticFrames
+        : undefined
     };
-    const hydrationShare = (total: number, fanOut: number) => Math.max(256 * 1024, Math.floor(total / Math.max(1, fanOut)));
+    const hydrationShare = (total: number, fanOut: number) => purpose === "prediction_scoring"
+      ? Math.max(1, Math.floor(total / Math.max(1, fanOut)))
+      : Math.max(256 * 1024, Math.floor(total / Math.max(1, fanOut)));
     const exactProfileOwnerCount = Math.max(1, profileIds?.length ?? 0);
     // Per-profile scaling is capped at the general bounded limits: 214 profiles asked for
     // 54,784 observations (then trimmed to 3,840 after loading) -- 1.8GB of heap for nothing.
@@ -453,8 +556,8 @@ export function createSurfaceLanguageRuntime(options: {
       : languageMemoryHydrationPlan(corpusRegistry, hydrationLimits, preferredCorpusRoleId ? "role-scoped" : "unscoped");
     const [active, requestControlPatterns, continuationPopulation] = await Promise.all([
       deps.storage.brainImports.active(),
-      requestControlPatternsCached(),
-      languageId ? continuationPopulationCached(languageId) : undefined
+      purpose === "prediction_scoring" ? Promise.resolve([] as LanguagePatternRecord[]) : requestControlPatternsCached(),
+      languageId && purpose !== "prediction_scoring" ? continuationPopulationCached(languageId) : undefined
     ]);
     const learnedRequestControlPatterns = latestRequestRequirementPatterns(requestControlPatterns);
     const populationSeed = purpose === "request_seed" && continuationPopulation !== undefined
@@ -471,18 +574,30 @@ export function createSurfaceLanguageRuntime(options: {
         semanticFrames: [],
         constructionEvidence: []
       });
+      const unscopedState = markLanguageMemoryStateUnscoped(hydrated, unscopedReason);
+      const measuredHeapBytes = Math.max(0, process.memoryUsage().heapUsed - hydrateHeapStart);
+      const operationView = purpose === "prediction_scoring"
+        ? predictionScoringViewReceipt({
+          models: [], units: [], patterns: [], semanticFrames: [], state: unscopedState,
+          decodedBytes: boundedPredictionScoringDecodedBytes({ models: [], units: [], patterns: [], semanticFrames: [] }),
+          measuredHeapBytes
+        })
+        : undefined;
       return {
         models: [],
         observations: [],
         units: [],
         patterns: [],
         semanticFrames: [],
+        constructionEvidence: [],
         segmentationPopulationModels: [] as SegmentationPopulationModelRecord[],
         requestControlPatterns: learnedRequestControlPatterns,
-        state: markLanguageMemoryStateUnscoped(hydrated, unscopedReason),
+        state: unscopedState,
+        retainedProgramState: undefined as LanguageMemoryRuntimeState | undefined,
         surfaceProfile: undefined as LanguageProfile | undefined,
         clusterMembers: [] as LanguageProfile[],
-        measuredHeapBytes: Math.max(0, process.memoryUsage().heapUsed - hydrateHeapStart),
+        measuredHeapBytes,
+        ...(operationView ? { operationView } : {}),
         active,
         corpusPlan,
         // Nothing here depends on the surface; rescoping returns the same
@@ -520,16 +635,16 @@ export function createSurfaceLanguageRuntime(options: {
       persistedProfiles,
       segmentationPopulationModels
     ] = await Promise.all([
-      (populationSeed ? Promise.resolve([]) : Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels), maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.ngramModelJsonBytes, hydrationQueries.length) })))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listNgramModels", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languageUnitJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguageUnits", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      (populationSeed ? Promise.resolve([]) : Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ ...(purpose === "prediction_scoring" ? { view: purpose } : {}), sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels), maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.ngramModelJsonBytes, hydrationQueries.length) })))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listNgramModels", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ ...(purpose === "prediction_scoring" ? { view: purpose } : {}), profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languageUnitJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguageUnits", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ ...(purpose ? { view: purpose } : {}), profileIds: item.profileIds, sourceSystem: item.sourceSystem, languageId: item.profileIds ? undefined : languageId, limit: item.limits.languagePatterns, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languagePatternJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguagePatterns", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ ...(purpose ? { view: purpose } : {}), profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listSemanticFrames", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ ...(purpose ? { view: purpose } : {}), profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames, ...(hydrationByteBudgets.semanticFrameJsonBytes ? { maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.semanticFrameJsonBytes, hydrationQueries.length) } : {}) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listSemanticFrames", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       preferredCorpusRoleId
         ? surfaceProfileCache
           ? Promise.resolve(surfaceProfileCache.value)
           : deps.storage.model.listLanguageProfiles({ limit: surfaceLanguageProfileLimit, referencedByLanguageMemory: true })
         : Promise.resolve([] as LanguageProfile[]),
-      deps.storage.segmentationPopulations
+      purpose !== "prediction_scoring" && deps.storage.segmentationPopulations
         ? deps.storage.segmentationPopulations.listRecent({
           profileIds,
           limit: Math.max(4, Math.min(32, boundedLimit))
@@ -538,12 +653,19 @@ export function createSurfaceLanguageRuntime(options: {
     ]);
     const models = uniqueRecordsById(modelsBySource.flat(), Math.max(boundedLimit, corpusPlan.reduce((sum, item) => sum + item.limits.ngramModels, 0)));
     const observations: NgramObservation[] = [];
-    const units = uniqueRecordsById(unitsBySource.flat(), Math.max(512, boundedLimit * 128));
+    const units = uniqueRecordsById(unitsBySource.flat(), Math.max(512, boundedLimit * 128))
+      .map(unit => purpose === "prediction_scoring" ? predictionScoringLanguageUnit(unit) : unit);
     const patterns = uniqueRecordsById(patternsBySource.flat(), Math.max(256, boundedLimit * 64))
-      .map(pattern => purpose === "request_seed" ? requestSeedLanguagePattern(pattern) : pattern);
+      .map(pattern => purpose === "request_seed"
+        ? requestSeedLanguagePattern(pattern)
+        : purpose === "prediction_scoring" ? predictionScoringLanguagePattern(pattern) : pattern);
     const queriedSemanticFrames = uniqueRecordsById(semanticFramesBySource.flat(), Math.max(512, boundedLimit * 96));
-    const semanticFrames = purpose === "request_seed" ? queriedSemanticFrames.flatMap(frame => requestSeedSemanticFrame(frame) ?? []) : queriedSemanticFrames;
-    const constructionEvidenceIds = purpose === "request_seed" ? [] : [...new Set(patterns
+    const semanticFrames = purpose === "request_seed"
+      ? queriedSemanticFrames.flatMap(frame => requestSeedSemanticFrame(frame) ?? [])
+      : purpose === "prediction_scoring"
+        ? queriedSemanticFrames.flatMap(frame => predictionScoringSemanticFrame(frame) ?? [])
+        : queriedSemanticFrames;
+    const constructionEvidenceIds = purpose ? [] : [...new Set(patterns
       .filter(isLanguageConstructionPattern)
       .flatMap(pattern => pattern.evidenceIds.map(String)))]
       .sort()
@@ -559,15 +681,20 @@ export function createSurfaceLanguageRuntime(options: {
       observations,
       units,
       patterns: uniqueRecordsById([
-        ...patterns.filter(pattern => purpose !== "request_seed" || !isLanguageConstructionPattern(pattern)),
-        ...(purpose === "request_seed" ? [] : requestControlCompatibilityPatterns)
+        ...patterns.filter(pattern => purpose === "request_seed"
+          ? !isLanguageConstructionPattern(pattern)
+          : purpose === "prediction_scoring" ? predictionScoringPatternIsHydratable(pattern) : true),
+        ...(purpose ? [] : requestControlCompatibilityPatterns)
       ], Math.max(256, boundedLimit * 64)),
       semanticFrames,
       constructionEvidence
     };
+    const predictionScoringDecodedBytes = purpose === "prediction_scoring"
+      ? boundedPredictionScoringDecodedBytes({ models, units, patterns: hydrationInput.patterns, semanticFrames })
+      : undefined;
     const hydratedBase = languageMemoryRuntime.hydrateFromImportedBrain(hydrationInput);
     const hydrated = continuationPopulation ? cloneLanguageMemoryRuntimeState(hydratedBase, { continuationPopulation }) : hydratedBase;
-    if (purpose !== "request_seed") void hydrated.importedConstructionBundles;
+    if (!purpose) void hydrated.importedConstructionBundles;
     const constructionPeek = peekLanguageMemoryConstructionState(hydrated);
     hydrateHeapTrace("language.hydrate.built", { elapsedMs: Date.now() - hydrateStartedAt, importedUnits: hydrated.importedUnits?.length ?? 0, importedPatterns: hydrated.importedPatterns?.length ?? 0, constructionBundles: constructionPeek.bundles?.length ?? -1, rejectedBundles: constructionPeek.rejected?.length ?? -1 });
     const roleProfileIds = new Set<string>([
@@ -652,6 +779,13 @@ export function createSurfaceLanguageRuntime(options: {
       };
     };
     const scoped = scopeForSurface(preferredSurface);
+    const measuredHeapBytes = Math.max(0, process.memoryUsage().heapUsed - hydrateHeapStart);
+    const operationView = purpose === "prediction_scoring"
+      ? predictionScoringViewReceipt({
+        models, units, patterns: hydrationInput.patterns, semanticFrames, state: scoped.state,
+        decodedBytes: predictionScoringDecodedBytes!, measuredHeapBytes
+      })
+      : undefined;
     return {
       models,
       observations,
@@ -670,7 +804,8 @@ export function createSurfaceLanguageRuntime(options: {
       rescopeForSurface: scopeForSurface,
       // Measured, not estimated: Map-heavy n-gram state is invisible to JSON-size estimates
       // (120MB of JSON hydrated to 3.3GB of heap while the estimator never triggered eviction).
-      measuredHeapBytes: Math.max(0, process.memoryUsage().heapUsed - hydrateHeapStart)
+      measuredHeapBytes,
+      ...(operationView ? { operationView } : {})
     };
   }
 
@@ -859,7 +994,9 @@ export function createSurfaceLanguageRuntime(options: {
       }
       return await pending;
     }
-    if (preferredCorpusRoleId && preferredSurface.trim() && surfaceProfileCache) {
+    // Operation-specific hydrations have a distinct durable projection and receipt. A resident full/seed
+    // hydration for the same corpus role is not a valid substitute, even when its language scope matches.
+    if (!hydrationOptions.purpose && preferredCorpusRoleId && preferredSurface.trim() && surfaceProfileCache) {
       // The role id ends the cache key, so it is matched as a suffix; the old "\u001f<role>\u001f" marker never matched.
       const roleKey = `\u001f${preferredCorpusRoleId}`;
       const residentRoleMatch = [...surfaceLanguageMemoryCache.entries()]
@@ -922,6 +1059,11 @@ export function createSurfaceLanguageRuntime(options: {
       // resident compatible state if one exists. A miss remains a fast,
       // inspectable not-warmed result for the caller to handle.
       warmSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, hydrationOptions);
+      // A purpose-specific miss cannot borrow a broader resident hydration:
+      // that would bypass both its durable projection and its truthful receipt.
+      if (hydrationOptions.purpose) {
+        return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
+      }
       const languageResident = languageId
         ? surfaceLanguageMemoryCache.get(`${languageId}\u001flanguage\u001f${preferredCorpusRoleId ?? "corpus-role:any"}`)?.value
         : undefined;

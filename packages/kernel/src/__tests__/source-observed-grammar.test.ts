@@ -59,7 +59,11 @@ describe("ordinary source grammar acquisition", () => {
     const { trained, restarted, evidence } = compile(text);
     expect(evidence).toHaveLength(1);
     expect(trained.constructionCandidates).toBeGreaterThan(0);
-    expect(trained.constructionPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === "scce.language_construction_pattern.v1")).toEqual([]);
+    const publishedConstructions = trained.constructionPatterns.filter(pattern =>
+      (pattern.patternJson as { schema?: string }).schema === "scce.language_construction_pattern.v1");
+    const speechPatterns = publishedConstructions.filter(isCreativeSpeechPattern);
+    expect(publishedConstructions.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
+    expect(speechPatterns.length).toBeGreaterThan(0);
     expect(trained.sourceObservedConstructionPatternIds).toHaveLength(51);
     expect(trained).not.toHaveProperty("sourceObservedConstructionPatterns");
     expect(trained.rejectedConstructionCandidates).toBe(0);
@@ -67,9 +71,12 @@ describe("ordinary source grammar acquisition", () => {
     expect(trained.constructionPromotion.sourceObservedInducedConstructionSets).toBeGreaterThanOrEqual(trained.sourceObservedConstructionPatternIds.length);
     expect(trained.constructionPromotion.rejections.every(row => row.reason === "no_heldout_evidence")).toBe(true);
     expect(restarted.rejectedConstructionPatterns).toEqual([]);
-    expect(restarted.importedConstructionBundles.filter(bundle => !bundle.creativeEvents?.length)).toEqual([]);
+    expect(restarted.importedConstructionBundles.filter(bundle =>
+      !bundle.creativeEvents?.length && !bundle.bindingId.startsWith("surface.creative_event.speech."))).toEqual([]);
+    expect(restarted.importedConstructionBundles.filter(bundle =>
+      bundle.bindingId.startsWith("surface.creative_event.speech.")).length).toBe(speechPatterns.length);
     expect(trained.sourceObservedConstructionPatternIds.length
-      / Math.max(1, trained.constructionPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === "scce.language_construction_pattern.v1").length)).toBeGreaterThan(10);
+      / Math.max(1, publishedConstructions.filter(pattern => !isCreativeSpeechPattern(pattern)).length)).toBeGreaterThan(10);
     expect(trained.patterns.some(pattern => trained.sourceObservedConstructionPatternIds.includes(pattern.id))).toBe(false);
     expect(trained.constructionObservationReceipt).toMatchObject({
       candidateCount: trained.sourceObservedConstructionPatternIds.length,
@@ -113,3 +120,9 @@ describe("ordinary source grammar acquisition", () => {
     expect(restarted.importedConstructionBundles.some(bundle => bundle.qualificationStatus === "document_heldout_qualified")).toBe(true);
   });
 });
+
+function isCreativeSpeechPattern(pattern: { patternJson: unknown }): boolean {
+  const row = pattern.patternJson as { schema?: string; bundle?: { bindingId?: string } };
+  return row.schema === "scce.language_construction_pattern.v1"
+    && row.bundle?.bindingId?.startsWith("surface.creative_event.speech.") === true;
+}

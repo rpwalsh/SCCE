@@ -7,15 +7,27 @@ import type { EvidenceSpan, Hasher, LanguageProfile, SourceVersionId } from "./t
 
 export interface SourceLanguageFamilyRange { start: number; end: number; sourceFamilyId: string; sourceVersionId?: SourceVersionId }
 export interface PooledLanguageProfileBinding { readonly inputDigest: string }
+export interface SourceOwnedTextProjectionRange {
+  sourceVersionId: SourceVersionId;
+  startCodePoint: number;
+  endCodePoint: number;
+  startUtf16: number;
+  endUtf16: number;
+  replacement: string;
+}
+export interface SourceOwnedTextProjection {
+  transformId: string;
+  ranges: readonly SourceOwnedTextProjectionRange[];
+}
 export const POOLED_LANGUAGE_PROFILE_OWNERSHIP_SCHEMA = "scce.pooled_language_profile_ownership.v1" as const;
 export interface PooledLanguageProfileOwnership {
   schema: typeof POOLED_LANGUAGE_PROFILE_OWNERSHIP_SCHEMA; id: string; profileId: string; sourceVersionId: SourceVersionId;
-  profileDigest: string; bindingDigest: string; textDigest: string;
+  profileDigest: string; bindingDigest: string; textDigest: string; textProjectionDigest?: string;
   parents: readonly string[]; ranges: readonly SourceLanguageFamilyRange[];
   evidence: readonly Pick<EvidenceSpan, "id" | "sourceId" | "sourceVersionId" | "contentHash" | "byteStart" | "byteEnd" | "charStart" | "charEnd">[];
 }
 interface HeldBinding { readonly profileId: string; readonly sourceVersionId: SourceVersionId; readonly parents: readonly string[]; readonly evidenceIds: readonly string[]; readonly families: readonly string[]; readonly inputDigest: string;
-  readonly measurementDigest: string; readonly textDigest: string; readonly ranges: readonly SourceLanguageFamilyRange[]; readonly evidence: PooledLanguageProfileOwnership["evidence"] }
+  readonly measurementDigest: string; readonly textDigest: string; readonly textProjectionDigest?: string; readonly ranges: readonly SourceLanguageFamilyRange[]; readonly evidence: PooledLanguageProfileOwnership["evidence"] }
 const bindings = new WeakMap<PooledLanguageProfileBinding, HeldBinding>();
 const preparedOwnership = new WeakSet<PooledLanguageProfileOwnership>();
 const measuredProfile = (profile: LanguageProfile) => ({ id: profile.id, sourceVersionId: profile.sourceVersionId, scripts: profile.scripts,
@@ -26,10 +38,51 @@ function profileDigest(profile: LanguageProfile, hasher: Hasher): string {
   return canonicalDigestHex(body, hasher);
 }
 
+/** Apply a declared, length-preserving source projection to one canonical evidence slice. */
+export function projectSourceOwnedText(input: {
+  text: string;
+  sourceVersionId: SourceVersionId;
+  sourceCodePointStart: number;
+  projection?: SourceOwnedTextProjection;
+}): string {
+  if (!input.projection) return input.text;
+  const chars = [...input.text];
+  const sliceEnd = input.sourceCodePointStart + chars.length;
+  for (const range of validatedProjectionRanges(input.projection).filter(range => range.sourceVersionId === input.sourceVersionId)) {
+    const overlapStart = Math.max(input.sourceCodePointStart, range.startCodePoint);
+    const overlapEnd = Math.min(sliceEnd, range.endCodePoint);
+    if (overlapEnd <= overlapStart) continue;
+    const replacement = [...range.replacement].slice(overlapStart - range.startCodePoint, overlapEnd - range.startCodePoint);
+    chars.splice(overlapStart - input.sourceCodePointStart, overlapEnd - overlapStart, ...replacement);
+  }
+  return chars.join("");
+}
+
+function validatedProjectionRanges(projection: SourceOwnedTextProjection): SourceOwnedTextProjectionRange[] {
+  if (!projection.transformId.trim()) throw new Error("source-owned text projection requires a transform identity");
+  const ranges = [...projection.ranges].sort((left, right) => String(left.sourceVersionId).localeCompare(String(right.sourceVersionId))
+    || left.startCodePoint - right.startCodePoint || left.startUtf16 - right.startUtf16);
+  const previous = new Map<string, { codePoint: number; utf16: number }>();
+  for (const range of ranges) {
+    const prior = previous.get(String(range.sourceVersionId)) ?? { codePoint: 0, utf16: 0 };
+    if (!range.sourceVersionId || !Number.isSafeInteger(range.startCodePoint) || !Number.isSafeInteger(range.endCodePoint)
+      || !Number.isSafeInteger(range.startUtf16) || !Number.isSafeInteger(range.endUtf16)
+      || range.startCodePoint < prior.codePoint || range.startUtf16 < prior.utf16
+      || range.endCodePoint <= range.startCodePoint || range.endUtf16 <= range.startUtf16
+      || [...range.replacement].length !== range.endCodePoint - range.startCodePoint
+      || range.replacement.length !== range.endUtf16 - range.startUtf16) {
+      throw new Error("source-owned text projection ranges are invalid");
+    }
+    previous.set(String(range.sourceVersionId), { codePoint: range.endCodePoint, utf16: range.endUtf16 });
+  }
+  return ranges;
+}
+
 /** A pooled profile owns only the exact admitted parent text its ranges declare. */
 export function preparePooledLanguageProfileBinding(input: {
   profile: LanguageProfile; text: string; sourceVersionId: SourceVersionId; parentSourceVersionIds: readonly string[];
   evidence: readonly EvidenceSpan[]; sourceFamilyRanges: readonly SourceLanguageFamilyRange[]; hasher: Hasher;
+  textProjection?: SourceOwnedTextProjection;
 }): PooledLanguageProfileBinding {
   const fail = (): never => { throw new Error("pooled language profile parent binding is not source-owned"); };
   if (input.profile.sourceVersionId !== input.sourceVersionId || !input.parentSourceVersionIds.length || !input.evidence.length) fail();
@@ -50,11 +103,15 @@ export function preparePooledLanguageProfileBinding(input: {
     if (!range) return fail();
     let body = points.get(range);
     if (!body) { body = [...input.text.slice(range.start, range.end)]; points.set(range, body); }
-    if (body.slice(span.charStart, span.charEnd).join("") !== span.text) fail();
+    const projected = projectSourceOwnedText({ text: span.text, sourceVersionId: span.sourceVersionId,
+      sourceCodePointStart: span.charStart, projection: input.textProjection });
+    if (body.slice(span.charStart, span.charEnd).join("") !== projected) fail();
   }
   if (parents.some(parent => !input.evidence.some(span => String(span.sourceVersionId) === parent))) fail();
+  const textProjectionDigest = input.textProjection ? canonicalDigestHex(input.textProjection, input.hasher) : undefined;
   const material = { profileId: input.profile.id, sourceVersionId: input.sourceVersionId, parents: Object.freeze(parents),
-    evidenceIds: Object.freeze([...new Set(input.evidence.map(span => String(span.id)))].sort()), families: Object.freeze([...new Set(ranges.map(range => range.sourceFamilyId))].sort()) };
+    evidenceIds: Object.freeze([...new Set(input.evidence.map(span => String(span.id)))].sort()), families: Object.freeze([...new Set(ranges.map(range => range.sourceFamilyId))].sort()),
+    ...(textProjectionDigest ? { textProjectionDigest } : {}) };
   const held = Object.freeze({ ...material, inputDigest: input.hasher.digestHex(canonicalStringify({ ...material, textHash: input.hasher.digestHex(input.text), ranges })),
     measurementDigest: canonicalDigestHex(measuredProfile(input.profile), input.hasher), textDigest: input.hasher.digestHex(input.text),
     ranges: Object.freeze(ranges.map(range => Object.freeze({ ...range }))), evidence: Object.freeze(input.evidence.map(span => Object.freeze({
@@ -70,6 +127,7 @@ export function attachPooledLanguageProfileOwnership(profile: LanguageProfile, b
   if (!held || held.measurementDigest !== canonicalDigestHex(measuredProfile(profile), hasher)) throw new Error("pooled profile measurement changed");
   const body = { schema: POOLED_LANGUAGE_PROFILE_OWNERSHIP_SCHEMA, profileId: profile.id, sourceVersionId: profile.sourceVersionId,
     profileDigest: profileDigest(profile, hasher), bindingDigest: held.inputDigest, textDigest: held.textDigest,
+    ...(held.textProjectionDigest ? { textProjectionDigest: held.textProjectionDigest } : {}),
     parents: held.parents, ranges: held.ranges, evidence: held.evidence };
   const ownership = Object.freeze({ ...body, id: canonicalDigestHex(body, hasher) });
   preparedOwnership.add(ownership);
@@ -87,7 +145,8 @@ export function validatePooledLanguageProfileOwnership(profile: LanguageProfile,
   const fail = (): never => { throw new Error("invalid pooled profile ownership"); };
   if (value.schema !== POOLED_LANGUAGE_PROFILE_OWNERSHIP_SCHEMA || value.profileId !== profile.id || value.sourceVersionId !== profile.sourceVersionId
     || value.profileDigest !== profileDigest(profile, hasher) || id !== canonicalDigestHex(body, hasher)
-    || !value.bindingDigest || !value.textDigest || !Array.isArray(value.parents) || !value.parents.length
+    || !value.bindingDigest || !value.textDigest || value.textProjectionDigest !== undefined && !value.textProjectionDigest
+    || !Array.isArray(value.parents) || !value.parents.length
     || new Set(value.parents).size !== value.parents.length || !Array.isArray(value.evidence) || !value.evidence.length
     || !Array.isArray(value.ranges) || !value.ranges.length || new Set(value.evidence.map(row => row.id)).size !== value.evidence.length) return fail();
   if (value.parents.some(parent => typeof parent !== "string" || !parent || !value.evidence.some(row => row.sourceVersionId === parent)

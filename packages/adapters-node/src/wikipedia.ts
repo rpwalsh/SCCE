@@ -6,9 +6,18 @@ import { createReadStream } from "node:fs";
 import { open, stat, type FileHandle } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
-import { redactSecretsWithMap, stripApparatusLines, type ContentHash, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue } from "@scce/kernel";
+import { redactSecretsWithMap, SOURCE_ROLE_PROJECTION_SUPPLEMENTARY_BLANK, stripApparatusLines, toJsonValue, type ContentHash, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue } from "@scce/kernel";
 import { effectiveMaxArticleChars, type ScceRuntimeConfig } from "./config.js";
-import { decodeWikiEntities, renderWikiLinks, renderWikiTemplates, WIKIPEDIA_SURFACE_TRANSFORM, type WikiNormalizationDiagnostics } from "./wikipedia-markup.js";
+import {
+  decodeWikiEntities,
+  projectWikiMarkupRoles,
+  renderWikiLinks,
+  renderWikiTemplates,
+  WIKIPEDIA_LANGUAGE_SURFACE_TRANSFORM,
+  WIKIPEDIA_SURFACE_TRANSFORM,
+  type WikiMarkupRoleProjection,
+  type WikiNormalizationDiagnostics
+} from "./wikipedia-markup.js";
 import { createRemoteWikipediaReader, readRemoteWikipediaSource, type RemoteWikipediaSource } from "./wikipedia-remote-source.js";
 
 type IngestStreamItem =
@@ -67,6 +76,7 @@ interface ParsedWikiPage {
   text: string;
   rawText: string;
   normalization: WikiNormalizationDiagnostics & { normalizedChars: number; truncatedChars: number };
+  languageSurface: WikipediaLanguageSurface;
   links: WikiPageLink[];
   headings: WikiPageHeading[];
 }
@@ -80,6 +90,26 @@ export interface WikiPageHeading {
   text: string;
   level: number;
   charStart: number;
+}
+
+export interface WikipediaLanguageSurface extends Omit<WikiMarkupRoleProjection, "languageWikitext"> {
+  text: string;
+  mappings: WikipediaLanguageSurfaceMapping[];
+  transformId: typeof WIKIPEDIA_LANGUAGE_SURFACE_TRANSFORM;
+  sourceCoordinateSpace: "original-source-utf16-code-units";
+  projectionCoordinateSpace: "role-projected-wikitext-utf16-code-units";
+}
+
+export interface WikipediaLanguageSurfaceMapping {
+  role: "gallery-filename";
+  sourceCharStart: number;
+  sourceCharEnd: number;
+  evidenceUtf16Start: number;
+  evidenceUtf16End: number;
+  evidenceCodePointStart: number;
+  evidenceCodePointEnd: number;
+  /** Same UTF-16 and code-point length as the excluded evidence surface. */
+  replacement: string;
 }
 
 /** Declared structure the normalizer would otherwise strip: article links (label → title) and section headings. */
@@ -533,10 +563,11 @@ function parseWikiPage(block: string, maxArticleChars: number): ParsedWikiPage |
   const normalized = normalizeWikiText(raw, diagnostics);
   let text = normalized.slice(0, maxArticleChars);
   if (/[\uD800-\uDBFF]$/u.test(text)) text = text.slice(0, -1);
+  const languageSurface = wikipediaLanguageSurface(raw, undefined, text);
   const structure = wikiPageStructure(raw);
   return { title: decodeXml(title), namespace, pageId, revisionId, redirect: block.includes("<redirect"), text, rawText: raw,
     normalization: { ...diagnostics, normalizedChars: normalized.length, truncatedChars: normalized.length - text.length },
-    links: structure.links, headings: structure.headings };
+    languageSurface, links: structure.links, headings: structure.headings };
 }
 
 function shouldSkip(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus): boolean {
@@ -550,6 +581,20 @@ function wikiPageFile(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus, pag
   const redacted = redactSecretsWithMap(page.text);
   const cleaned = redacted.text;
   const bytes = Buffer.from(page.rawText, "utf8");
+  const figures = page.languageSurface.figures.map(figure => {
+    const caption = figure.caption ? normalizeWikiText(figure.caption) : "";
+    return { id: figure.id, origin: figure.origin, sourceCharStart: figure.sourceCharStart, sourceCharEnd: figure.sourceCharEnd,
+      filenameCharStart: figure.filenameCharStart, filenameCharEnd: figure.filenameCharEnd,
+      ...(caption ? { caption } : {}),
+      ...(figure.captionCharStart !== undefined && figure.captionCharEnd !== undefined
+        ? { captionCharStart: figure.captionCharStart, captionCharEnd: figure.captionCharEnd } : {}),
+      sourceCoordinateSpace: "original-source-utf16-code-units" };
+  });
+  const tables = page.languageSurface.tables.map(table => {
+    const label = table.label ? normalizeWikiText(table.label) : "";
+    return { id: table.id, rows: table.rows, sourceCharStart: table.sourceCharStart, sourceCharEnd: table.sourceCharEnd,
+      ...(label ? { label } : {}), sourceCoordinateSpace: "original-source-utf16-code-units" };
+  });
   const safeTitle = encodeURIComponent(collapseWhitespace(page.title).replaceAll(" ", "_")).slice(0, 180);
   return {
     uri: `wikipedia://${corpus.wikiCode}/pages/${page.pageId}/${safeTitle}`,
@@ -567,7 +612,17 @@ function wikiPageFile(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus, pag
       sourceKind: "wikimedia_dump",
       ingestionLane: "wiki_stream",
       sourceFamilyId: "wikimedia:wikipedia",
-      normalization: { transformId: WIKIPEDIA_SURFACE_TRANSFORM, characterUnit: "utf16-code-units", ...page.normalization },
+      normalization: { transformId: WIKIPEDIA_SURFACE_TRANSFORM, characterUnit: "utf16-code-units", ...page.normalization,
+        languageSurface: toJsonValue({
+          transformId: page.languageSurface.transformId,
+          surfaceChars: page.languageSurface.text.length,
+          sourceCoordinateSpace: page.languageSurface.sourceCoordinateSpace,
+          projectionCoordinateSpace: page.languageSurface.projectionCoordinateSpace,
+          roleCounts: page.languageSurface.roleCounts,
+          roles: page.languageSurface.roles,
+          mappings: page.languageSurface.mappings.map(({ replacement: _replacement, ...mapping }) => mapping),
+          malformedConstructs: page.languageSurface.malformedConstructs
+        }) },
       forceClass: "direct_evidence",
       corpus: path.basename(corpus.dumpPath),
       wikiCode: corpus.wikiCode,
@@ -586,7 +641,8 @@ function wikiPageFile(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus, pag
       redirect: page.redirect,
       links: page.links.map(link => ({ target: link.target, label: link.label })),
       originalStructure: { coordinateSpace: "original-source-codepoints", headings: page.headings.map(heading => ({ ...heading })) },
-      structure: { coordinateSpace: "evidence-source-codepoints", headings: surfaceHeadings(page.headings, cleaned).map(heading => ({ ...heading })) }
+      structure: { coordinateSpace: "evidence-source-codepoints", headings: surfaceHeadings(page.headings, cleaned).map(heading => ({ ...heading })),
+        figures, tables }
     }
   };
 }
@@ -671,6 +727,98 @@ function decodeXml(value: string): string {
 
 export function normalizeWikiText(value: string, diagnostics?: WikiNormalizationDiagnostics): string {
   return collapseWhitespace(stripApparatusLines(wikiSurfaceLines(value, diagnostics))).trim();
+}
+
+/**
+ * The surface admitted to prose learning. Canonical wikitext and normalized evidence remain untouched; only
+ * roles with a typed structured route are removed here. Role ranges stay in original UTF-16 source coordinates.
+ */
+export function wikipediaLanguageSurface(value: string, diagnostics?: WikiNormalizationDiagnostics, evidenceSurface?: string): WikipediaLanguageSurface {
+  const projection = projectWikiMarkupRoles(value);
+  if (diagnostics) diagnostics.malformedConstructs += projection.malformedConstructs;
+  const { languageWikitext, ...roles } = projection;
+  const evidence = evidenceSurface ?? normalizeWikiText(value, diagnostics);
+  const projected = projectGalleryRecordsFromEvidence(value, evidence, roles.figures);
+  return {
+    ...roles,
+    text: projected.text,
+    mappings: projected.mappings,
+    transformId: WIKIPEDIA_LANGUAGE_SURFACE_TRANSFORM,
+    sourceCoordinateSpace: "original-source-utf16-code-units",
+    projectionCoordinateSpace: "role-projected-wikitext-utf16-code-units"
+  };
+}
+
+function projectGalleryRecordsFromEvidence(value: string, evidenceSurface: string, figures: WikiMarkupRoleProjection["figures"]): { text: string; mappings: WikipediaLanguageSurfaceMapping[] } {
+  let text = evidenceSurface;
+  let cursor = 0;
+  const mappings: WikipediaLanguageSurfaceMapping[] = [];
+  for (const figure of figures) {
+    if (figure.origin !== "gallery") continue;
+    const record = normalizeWikiText(value.slice(figure.sourceCharStart, figure.sourceCharEnd));
+    if (!record) continue;
+    const caption = figure.caption ? normalizeWikiText(figure.caption) : "";
+    // Anchor the record to its source prefix. A byte-identical "filename | caption" can be ordinary prose
+    // earlier in the article; searching by value alone would blank that valid mention instead of the gallery.
+    const sourceThroughRecord = normalizeWikiText(value.slice(0, figure.sourceCharEnd));
+    const redactedRecord = redactSecretsWithMap(record).text;
+    const candidates = redactedRecord === record ? [{ record, caption, through: sourceThroughRecord }] : [
+      { record, caption, through: sourceThroughRecord },
+      { record: redactedRecord, caption: redactSecretsWithMap(caption).text, through: redactSecretsWithMap(sourceThroughRecord).text }
+    ];
+    const found = candidates.map(candidate => {
+      const anchored = candidate.through.endsWith(candidate.record) ? candidate.through.length - candidate.record.length : -1;
+      if (anchored >= cursor && text.slice(anchored, anchored + candidate.record.length) === candidate.record) {
+        return { ...candidate, index: anchored };
+      }
+      // `stripApparatusLines` measures against the whole document, so independently normalizing a source prefix
+      // can retain lines that the full evidence surface dropped. Preserve source occurrence identity in that case:
+      // the gallery record is the same ordinal occurrence in the normalized source prefix and full evidence.
+      let sourceOccurrences = 0;
+      for (let at = candidate.through.indexOf(candidate.record); at >= 0;
+        at = candidate.through.indexOf(candidate.record, at + candidate.record.length)) sourceOccurrences++;
+      let index = -1;
+      let searchFrom = 0;
+      for (let ordinal = 0; ordinal < sourceOccurrences; ordinal++) {
+        index = text.indexOf(candidate.record, searchFrom);
+        if (index < 0) break;
+        searchFrom = index + candidate.record.length;
+      }
+      return { ...candidate, index };
+    }).find(candidate => candidate.index >= cursor
+      && text.slice(candidate.index, candidate.index + candidate.record.length) === candidate.record);
+    if (!found) continue; // The exact record may lie beyond a clipped evidence derivative.
+    const captionOffset = found.caption ? found.record.lastIndexOf(found.caption) : found.record.length;
+    const blankEnd = found.index + (captionOffset >= 0 ? captionOffset : found.record.length);
+    const removed = text.slice(found.index, blankEnd);
+    const replacement = roleBlank(removed);
+    const before = text.slice(0, found.index);
+    mappings.push({
+      role: "gallery-filename",
+      sourceCharStart: figure.filenameCharStart,
+      sourceCharEnd: figure.filenameCharEnd,
+      evidenceUtf16Start: found.index,
+      evidenceUtf16End: blankEnd,
+      evidenceCodePointStart: [...before].length,
+      evidenceCodePointEnd: [...before, ...removed].length,
+      replacement
+    });
+    text = `${before}${replacement}${text.slice(blankEnd)}`;
+    cursor = blankEnd;
+  }
+  return { text, mappings };
+}
+
+function roleBlank(value: string): string {
+  // U+E0000 is a default-ignorable supplementary format character. It preserves both UTF-16 width and one
+  // code-point coordinate for each supplementary source character. Put markers after an owned blank so Unicode
+  // grapheme extension cannot attach one to the preceding prose character; the rest of the range stays blank.
+  const characters = [...value];
+  const supplementary = characters.filter(char => char.length === 2).length;
+  const bmp = characters.length - supplementary;
+  if (!supplementary) return " ".repeat(bmp);
+  if (!bmp) return SOURCE_ROLE_PROJECTION_SUPPLEMENTARY_BLANK.repeat(supplementary);
+  return ` ${SOURCE_ROLE_PROJECTION_SUPPLEMENTARY_BLANK.repeat(supplementary)}${" ".repeat(bmp - 1)}`;
 }
 
 /** The page's surface with wiki constructs resolved and its line structure still intact: that population is what

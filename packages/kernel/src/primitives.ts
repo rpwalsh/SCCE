@@ -3,7 +3,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { Clock, Hasher, JsonValue, SourceRedactionInterval } from "./types.js";
-import { unicodeSymbolSegments } from "./unicode-segmentation.js";
+import { isSourceRoleProjectionBlankCodePoint, unicodeSymbolSegments } from "./unicode-segmentation.js";
 import { createStringMemo } from "./pure-memo.js";
 
 interface NativeSha256Hash {
@@ -204,7 +204,9 @@ function computeFeatureSet(text: string, limit: number): string[] {
   for (const symbol of symbols) features.add(`sym:${symbol}`);
   for (let i = 0; i < symbols.length - 1; i++) features.add(`bi:${symbols[i]}|${symbols[i + 1]}`);
   for (let i = 0; i < symbols.length - 2; i++) features.add(`tri:${symbols[i]}|${symbols[i + 1]}|${symbols[i + 2]}`);
-  for (const char of safe.toLowerCase()) if (!/\s/u.test(char)) features.add(`char:${char}`);
+  for (const char of safe.toLowerCase()) {
+    if (!/\s/u.test(char) && !isSourceRoleProjectionBlankCodePoint(char)) features.add(`char:${char}`);
+  }
   return [...features].sort().slice(0, limit);
 }
 

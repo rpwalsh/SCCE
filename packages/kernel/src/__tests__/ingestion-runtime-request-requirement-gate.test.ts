@@ -32,25 +32,33 @@ const REQUEST_REQUIREMENT_CORPUS_TEXT = JSON.stringify({
 });
 
 describe("request-requirement corpus ingestion gate", () => {
-  it("keeps single-source construction observations diagnostic instead of publishing them as active grammar", async () => {
+  it("keeps unqualified single-source grammar diagnostic while publishing evidence-owned creative speech", async () => {
     const text = ["cat chased mouse.", "dog chased mouse.", "cat chased ball.", "dog chased ball.",
       "cat chased mouse.", "dog chased ball.", "cat chased ball.", "dog chased mouse."].join(" ");
     const fixture = await ingestFixtureText({}, text);
     const schema = "scce.language_construction_pattern.v1";
     const stored = fixture.learnedPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === schema);
-    expect(stored).toEqual([]);
+    expect(stored.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
+    const speechPatternIds = stored.filter(isCreativeSpeechPattern).map(pattern => pattern.id).sort();
+    expect(speechPatternIds.length).toBeGreaterThan(0);
     const active = await fixture.store.listLanguagePatterns({ patternSchemas: [schema] });
-    expect(active).toEqual([]);
-    const hydrated = hydrateLanguageConstructionPatterns({ patterns: active, evidence: fixture.evidence, hasher: fixture.hasher });
+    expect(active.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
+    expect(active.filter(isCreativeSpeechPattern).map(pattern => pattern.id).sort()).toEqual(speechPatternIds);
+    const hydrated = hydrateLanguageConstructionPatterns({ patterns: active.filter(pattern => !isCreativeSpeechPattern(pattern)), evidence: fixture.evidence, hasher: fixture.hasher });
     expect(hydrated.rejected).toEqual([]);
     expect(hydrated.constructions).toEqual([]);
     expect(hydrated.bundles).toEqual([]);
     await fixture.ingest(text);
-    expect(await fixture.store.listLanguagePatterns({ patternSchemas: [schema] })).toEqual([]);
+    let repeated = await fixture.store.listLanguagePatterns({ patternSchemas: [schema] });
+    expect(repeated.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
+    expect(repeated.filter(isCreativeSpeechPattern).map(pattern => pattern.id).sort()).toEqual(speechPatternIds);
     await fixture.ingest("A single observation.");
     expect(fixture.publications.at(-1)!.projection.patternIds).toEqual([]);
-    expect(await fixture.store.listLanguagePatterns({ patternSchemas: [schema] })).toEqual([]);
-    expect(fixture.learnedPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === schema)).toEqual([]);
+    repeated = await fixture.store.listLanguagePatterns({ patternSchemas: [schema] });
+    expect(repeated.filter(pattern => !isCreativeSpeechPattern(pattern))).toEqual([]);
+    expect(fixture.learnedPatterns.filter(pattern =>
+      (pattern.patternJson as { schema?: string }).schema === schema && !isCreativeSpeechPattern(pattern))).toEqual([]);
+    expect(fixture.learnedPatterns.filter(isCreativeSpeechPattern).map(pattern => pattern.id).sort()).toEqual(speechPatternIds);
   });
   it("persists ordinary upload models and forms atomically without raw count duplicates", async () => {
     const text = "Zephyr valve pressure remains stable. Measurements follow the recorded calibration.";
@@ -93,6 +101,12 @@ describe("request-requirement corpus ingestion gate", () => {
     expect(learnedPatterns.some(isRequestRequirementPattern)).toBe(true);
   });
 });
+
+function isCreativeSpeechPattern(pattern: LanguagePatternRecord): boolean {
+  const row = pattern.patternJson as { schema?: string; bundle?: { bindingId?: string } };
+  return row.schema === "scce.language_construction_pattern.v1"
+    && row.bundle?.bindingId?.startsWith("surface.creative_event.speech.") === true;
+}
 
 function isRequestRequirementPattern(pattern: LanguagePatternRecord): boolean {
   const value = pattern.patternJson;

@@ -5,6 +5,7 @@ import type { EvidenceSpan, JsonValue, LanguageCompetenceVector, LanguageProfile
 import { clamp01, entropy, symbolizeData } from "./primitives.js";
 import { compactKneserNeyForProfile, trainKneserNey } from "./kneser-ney.js";
 import { createNgramProseAnalyzer } from "./ngram-prose.js";
+import { isSourceRoleProjectionBlankCodePoint } from "./unicode-segmentation.js";
 
 export interface LanguageProfileSurfaceMatch {
   profile: LanguageProfile;
@@ -389,7 +390,8 @@ export function createLanguageAcquisitionEngine(options: { idFactory: IdFactory 
       createdAt: number;
       discoveredNames?: LanguageProfile["discoveredNames"];
     }): LanguageProfile {
-      const chars = [...input.text.normalize("NFC")].filter(char => !/\s/u.test(char));
+      const chars = [...input.text.normalize("NFC")]
+        .filter(char => !/\s/u.test(char) && !isSourceRoleProjectionBlankCodePoint(char));
       const scripts = scriptMass(chars);
       const symbols = symbolizeData(input.text).slice(0, 10000);
       const shapeCounts = count(symbols.map(symbolShape));

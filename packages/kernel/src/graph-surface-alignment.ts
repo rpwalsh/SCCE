@@ -14,6 +14,7 @@ import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
 import { UNRESOLVED_SEMANTIC_ROLE_ID_PREFIX } from "./opaque-role-induction.js";
 import { surfaceSentenceRanges } from "./surface-linguistics.js";
 import type { EvidenceSpan, GraphSnapshot, Hasher, JsonValue } from "./types.js";
+import { projectSourceOwnedText, type SourceOwnedTextProjection } from "./pooled-language-profile-binding.js";
 
 /**
  * First module of the graph-surface alignment / construction-induction seam:
@@ -359,16 +360,35 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   hasher: Hasher;
   maxObservationsPerConstruction?: number;
   preparedInduction?: PreparedConstructionInduction;
+  inductionDocuments?: readonly LanguageInductionDocument[];
+  textProjection?: SourceOwnedTextProjection;
   graphSnapshot?: GraphSnapshot;
 }): SourceBoundLanguageConstructionTrainingSet[] {
   const promoted = input.evidence.filter(span => span.status === "promoted");
   if (!promoted.length) return [];
-  const documents: LanguageInductionDocument[] = promoted.map(span => ({
+  const canonicalDocuments: LanguageInductionDocument[] = promoted.map(span => ({
     id: String(span.id),
     text: span.text,
     evidenceIds: [span.id],
     sourceVersionId: span.sourceVersionId
   }));
+  const documents = input.inductionDocuments ? [...input.inductionDocuments] : canonicalDocuments;
+  const promotedById = new Map(promoted.map(span => [String(span.id), span]));
+  if (documents.length !== promoted.length || new Set(documents.map(document => document.id)).size !== documents.length) {
+    throw new Error("source-bound construction projection is not source-owned");
+  }
+  for (const document of documents) {
+    const span = promotedById.get(document.id);
+    const expected = span ? projectSourceOwnedText({ text: span.text, sourceVersionId: span.sourceVersionId,
+      sourceCodePointStart: span.charStart, projection: input.textProjection }) : undefined;
+    if (!span || document.sourceVersionId !== span.sourceVersionId || document.sourceWindow !== undefined
+      || document.evidenceIds?.length !== 1 || String(document.evidenceIds[0]) !== String(span.id)
+      || document.text !== expected || document.text.length !== span.text.length
+      || [...document.text].length !== [...span.text].length) {
+      throw new Error("source-bound construction projection is not source-owned");
+    }
+  }
+  const documentsById = new Map(documents.map(document => [document.id, document]));
   // Corpus ingestors (Gutenberg, OSS docs/code) call this with evidence
   // covering an entire source file's worth of spans -- unlike the live turn
   // path, nothing upstream caps total evidence text size here. induce()'s
@@ -400,7 +420,8 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   }> = [];
   const graphBindings = sourceGraphRoleBindings(input.graphSnapshot);
 
-  for (const span of promoted) {
+  for (const canonicalSpan of promoted) {
+    const span = { ...canonicalSpan, text: documentsById.get(String(canonicalSpan.id))!.text };
     const evidenceIds = [String(span.id)];
     const lexical = segmentUnicodeSurfaceV2(span.text, input.hasher).lexicalSegments;
     const sentenceRanges = surfaceSentenceRanges(span.text);

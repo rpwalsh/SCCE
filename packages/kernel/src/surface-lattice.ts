@@ -20,6 +20,7 @@ import {
 import type { SegmentationAdjacencyFactors } from "./segmentation-adjacency-factors.js";
 import { encodeSegmentationAdjacencyFactors } from "./segmentation-adjacency-storage.js";
 import { dominantScriptId, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
+import { containsSourceRoleProjectionBlank } from "./unicode-segmentation.js";
 import type { EvidenceId, Hasher, JsonValue, SourceVersionId } from "./types.js";
 import type { PreparedCorpusSegmentationMeasurement, CorpusSegmentationContextSlice } from "./corpus-segmentation-cursor.js";
 import { canonicalDigestHex } from "./canonical-json-digest.js";
@@ -290,7 +291,7 @@ export function buildNgramSurfaceProjection(options: {
     const lattice = buildSurfaceLattice({ ...options, maxUnits: configuredMaxUnits });
     const canonicalSurfaces = canonicalSurfaceSequence(lattice).map(unit => unit.surface);
     const graphemes = lattice.units
-      .filter(unit => unit.kind === "grapheme")
+      .filter(unit => unit.kind === "grapheme" && !containsSourceRoleProjectionBlank(unit.surface))
       .sort((left, right) => left.utf16Start - right.utf16Start)
       .map(unit => unit.surface);
     return {
@@ -310,7 +311,7 @@ export function buildNgramSurfaceProjection(options: {
     };
   }
   const textHash = options.hasher.digestHex(options.text);
-  const graphemes = segments.map(segment => segment.segment);
+  const graphemes = segments.map(segment => segment.segment).filter(segment => !containsSourceRoleProjectionBlank(segment));
   const canonicalSurfaces = graphemes.filter(isCanonicalSurface);
   return {
     schema: NGRAM_SURFACE_PROJECTION_SCHEMA,
@@ -857,7 +858,8 @@ export function canonicalSurfaceSequence(
 }
 
 function isCanonicalSurface(surface: string): boolean {
-  return surface.length > 0 && !/^\s+$/u.test(surface) && !/^\p{Control}+$/u.test(surface);
+  return surface.length > 0 && !/^\s+$/u.test(surface) && !/^\p{Control}+$/u.test(surface)
+    && !containsSourceRoleProjectionBlank(surface);
 }
 
 /**
@@ -1264,7 +1266,8 @@ function graphemeCandidates(text: string, coordinates: SurfaceCoordinateIndex): 
 
 function surfaceSegmentCandidates(segments: ReturnType<typeof segmentUnicodeSurfaceV2>["surfaceSegments"]): CandidateUnit[] {
   return segments
-    .filter(segment => segment.kind !== "whitespace" && segment.surface.length > 0)
+    .filter(segment => segment.kind !== "whitespace" && segment.surface.length > 0
+      && !containsSourceRoleProjectionBlank(segment.surface))
     .map(segment => ({
       kind: "surface_segment" as const,
       surface: segment.surface,
