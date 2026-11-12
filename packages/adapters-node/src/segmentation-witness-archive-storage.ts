@@ -52,7 +52,10 @@ interface SourceArchiveReference {
   schema: typeof SOURCE_SEGMENTATION_WITNESS_ARCHIVE_SCHEMA;
   logicalDigest: string;
   replay: SurfaceSegmentationReplayRecipe;
+  textPatches?: SourceTextPatch[];
 }
+
+interface SourceTextPatch { startUtf16: number; endUtf16: number; replacement: string }
 
 interface ManifestArchiveReference {
   schema: typeof LANGUAGE_SEGMENTATION_MANIFEST_ARCHIVE_SCHEMA;
@@ -119,9 +122,12 @@ export async function encodeSegmentationWitnessArchives(
     }
     if (source.logical.sourceUtf16End > owner.text.length) fail("segmentation witness source range exceeds its evidence owner");
     const text = owner.text.slice(source.logical.sourceUtf16Start, source.logical.sourceUtf16End);
-    if (text !== source.logical.text || hasher.digestHex(text) !== source.logical.lattice.textHash) {
-      fail("segmentation witness source slice differs from its evidence owner");
+    const textPatches = sourceTextPatches(text, source.logical.text);
+    const restored = applySourceTextPatches(text, textPatches);
+    if (restored !== source.logical.text || hasher.digestHex(restored) !== source.logical.lattice.textHash) {
+      fail("segmentation witness source projection differs from its evidence owner");
     }
+    source.reference = { ...source.reference, textPatches };
   }
 
   for (const source of sources) {
@@ -198,7 +204,8 @@ export async function decodeSegmentationWitnessArchives(
       fail("segmentation witness source version differs from its evidence owner");
     }
     if (source.header.sourceUtf16End > owner.text.length) fail("segmentation witness source range exceeds its evidence owner");
-    const text = owner.text.slice(source.header.sourceUtf16Start, source.header.sourceUtf16End);
+    const ownerText = owner.text.slice(source.header.sourceUtf16Start, source.header.sourceUtf16End);
+    const text = applySourceTextPatches(ownerText, source.reference.textPatches ?? []);
     const lattice = requiredRecord(source.header.lattice, "source segmentation lattice archive");
     if (typeof lattice.textHash !== "string" || hasher.digestHex(text) !== lattice.textHash) {
       fail("segmentation witness source slice differs from its lattice hash");
@@ -316,12 +323,49 @@ function archivePatternId(witnessId: string, profileId: string): string {
 }
 
 function sourceReference(value: Record<string, unknown>): SourceArchiveReference {
-  exactKeys(value, ["schema", "logicalDigest", "replay"], "source witness archive reference");
+  exactKeys(value, ["schema", "logicalDigest", "replay", ...(Object.hasOwn(value, "textPatches") ? ["textPatches"] : [])], "source witness archive reference");
   if (value.schema !== SOURCE_SEGMENTATION_WITNESS_ARCHIVE_SCHEMA || !digest(value.logicalDigest)) {
     fail("invalid source witness archive reference");
   }
   const replay = validateSurfaceSegmentationReplayRecipe(value.replay, hasher);
-  return { schema: value.schema, logicalDigest: value.logicalDigest, replay } as unknown as SourceArchiveReference;
+  const textPatches = Object.hasOwn(value, "textPatches") ? validateSourceTextPatches(value.textPatches) : undefined;
+  return { schema: value.schema, logicalDigest: value.logicalDigest, replay, ...(textPatches ? { textPatches } : {}) } as SourceArchiveReference;
+}
+
+function sourceTextPatches(ownerText: string, projectedText: string): SourceTextPatch[] {
+  if (ownerText.length !== projectedText.length) fail("segmentation witness source projection changed UTF-16 length");
+  const patches: SourceTextPatch[] = [];
+  for (let index = 0; index < ownerText.length;) {
+    if (ownerText[index] === projectedText[index]) { index++; continue; }
+    const startUtf16 = index;
+    while (index < ownerText.length && ownerText[index] !== projectedText[index]) index++;
+    patches.push({ startUtf16, endUtf16: index, replacement: projectedText.slice(startUtf16, index) });
+  }
+  return patches;
+}
+
+function validateSourceTextPatches(value: unknown): SourceTextPatch[] {
+  if (!Array.isArray(value)) fail("invalid source witness text patches");
+  let previousEnd = 0;
+  return value.map(raw => {
+    const patch = requiredRecord(raw, "source witness text patch");
+    exactKeys(patch, ["startUtf16", "endUtf16", "replacement"], "source witness text patch");
+    if (!natural(patch.startUtf16) || !natural(patch.endUtf16) || patch.startUtf16 < previousEnd
+      || patch.endUtf16 <= patch.startUtf16 || typeof patch.replacement !== "string"
+      || patch.replacement.length !== patch.endUtf16 - patch.startUtf16) fail("invalid source witness text patch");
+    previousEnd = patch.endUtf16;
+    return { startUtf16: patch.startUtf16, endUtf16: patch.endUtf16, replacement: patch.replacement };
+  });
+}
+
+function applySourceTextPatches(ownerText: string, patches: readonly SourceTextPatch[]): string {
+  let cursor = 0, restored = "";
+  for (const patch of patches) {
+    if (patch.startUtf16 < cursor || patch.endUtf16 > ownerText.length) fail("source witness text patch exceeds its evidence owner");
+    restored += ownerText.slice(cursor, patch.startUtf16) + patch.replacement;
+    cursor = patch.endUtf16;
+  }
+  return restored + ownerText.slice(cursor);
 }
 
 function manifestReference(value: Record<string, unknown>): ManifestArchiveReference {

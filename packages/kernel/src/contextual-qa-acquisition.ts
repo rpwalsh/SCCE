@@ -711,7 +711,11 @@ function compileContextualQaRequestControls(documents: readonly ConversationalCo
       const exampleSupport = typeof value.exampleSupport === "number" ? value.exampleSupport : 0;
       if (!surface || !anchor || !authority || value.requestSpanRole !== "control" || exampleSupport < 2) return [];
       return [{ key: canonicalStringify([anchor, surface, authority]), surface, anchor: anchor as "start" | "end", authority, exampleSupport }];
-    }).sort((a, b) => b.exampleSupport - a.exampleSupport || unicodeLexicalSegments(b.surface).length - unicodeLexicalSegments(a.surface).length
+    // A shorter control with more corpus support (for example a generic question opener)
+    // must not swallow a longer, independently repeated relation control.  Both have
+    // already crossed the same evidence threshold; specificity owns the argument
+    // boundary, while support breaks ties between equally specific observations.
+    }).sort((a, b) => unicodeLexicalSegments(b.surface).length - unicodeLexicalSegments(a.surface).length || b.exampleSupport - a.exampleSupport
       || compareSurface(a.key, b.key));
     if (controls.length) result.set(key, controls);
   }

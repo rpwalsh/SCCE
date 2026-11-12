@@ -249,11 +249,16 @@ it("uses an independently repeated request control to bound adjacent multiword r
   const documents = names.map((name, index) => document(name, String(101 + index), index,
     `${name} ${index % 2 ? "ki" : "lo"} ${101 + index}.`, `q ${index % 2 ? "ki" : "lo"} ${name}?`));
   const learned = acquireContextualQaConstructions({ documents, authorship: "human_authored", hasher, updatedAt: 1 });
-  expect(learned.families, JSON.stringify(learned.families.map(family => ({ applicability: family.applicability,
-    requestForm: (family.pattern.patternJson as Record<string, unknown>).contextualQaRequestForm })))).toHaveLength(1);
-  expect(learned.families[0]!.applicability).toMatchObject({ fitBindings: 3, heldOutBindings: 1, outOfApplicability: 12 });
+  const learnedForms = learned.families.map(family => ({ applicability: family.applicability,
+    requestForm: (family.pattern.patternJson as Record<string, unknown>).contextualQaRequestForm }));
+  expect(learnedForms).toHaveLength(2);
+  expect(learnedForms.map(row => row.requestForm)).toEqual(expect.arrayContaining([
+    ["q ki ", { slotIndex: 0 }, "?"], ["q lo ", { slotIndex: 0 }, "?"]
+  ]));
+  expect(learnedForms.every(row => row.applicability.fitBindings === 3 && row.applicability.heldOutBindings === 1
+    && row.applicability.outOfApplicability === 0)).toBe(true);
   const reversed = acquireContextualQaConstructions({ documents: [...documents].reverse(), authorship: "human_authored", hasher, updatedAt: 1 });
-  expect(reversed.families[0]!.pattern).toEqual(learned.families[0]!.pattern);
+  expect(reversed.families.map(family => family.pattern)).toEqual(learned.families.map(family => family.pattern));
 });
 it("retains ambiguous or non-independent observations unqualified", () => {
   const duplicated = sources().map(doc => ({ ...doc, transcriptTurns: doc.transcriptTurns.map(turn => ({ ...turn, sourceRecordId: "same.original" })) }));

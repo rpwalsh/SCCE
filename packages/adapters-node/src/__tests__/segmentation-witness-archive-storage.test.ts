@@ -65,7 +65,36 @@ function logicalFixture() {
   };
 }
 
+function projectedFixture() {
+  const owner = logicalFixture(), ownerText = owner.sourceWitness.text;
+  const projectedText = ownerText.replace("alpha 0", "alpha x");
+  expect(projectedText).not.toBe(ownerText);
+  expect(projectedText.length).toBe(ownerText.length);
+  const products = compileSourceInductionWindows({
+    documents: [{ id: owner.sourceWitness.ownerDocumentId,
+      sourceVersionId: owner.sourceWitness.sourceVersionId as never,
+      sourceFamilyId: owner.sourceWitness.sourceFamilyId,
+      evidenceIds: [...owner.sourceWitness.evidenceIds] as never[], text: projectedText }],
+    hasher
+  });
+  const sourceWitness = products.models[0]!.segmentationWitness.populations.flatMap(population => population.documents)[0]!;
+  return { sourceWitness, ownerDocuments: new Map([[sourceWitness.ownerDocumentId, {
+    text: ownerText, sourceVersionId: String(sourceWitness.sourceVersionId)
+  }]]) };
+}
+
 describe("PostgreSQL segmentation witness archive storage", () => {
+  it("stores a bounded exact delta when a length-preserving source projection differs from its evidence owner", async () => {
+    const logical = projectedFixture(), storage = fixtureAccess(logical.ownerDocuments);
+    const encoded = await encodeSegmentationWitnessArchives([{ value: logical.sourceWitness, profileId }], storage);
+    const wire = encoded[0]!.value as Record<string, unknown>;
+    const reference = wire[SEGMENTATION_WITNESS_ARCHIVE_KEY] as { textPatches: unknown[] };
+    expect(reference.textPatches.length).toBeGreaterThan(0);
+    expect(wire).not.toHaveProperty("text");
+    const decoded = await decodeSegmentationWitnessArchives([{ value: wire, profileId }], storage);
+    expect(decoded[0]!.value).toEqual(logical.sourceWitness);
+  });
+
   it("reuses evidence-owned text, stores replay state without a DAG body, and cold-restores the identical logical witness", async () => {
     const logical = logicalFixture(), storage = fixtureAccess(logical.ownerDocuments);
     const encoded = await encodeSegmentationWitnessArchives([
@@ -81,8 +110,10 @@ describe("PostgreSQL segmentation witness archive storage", () => {
     expect(sourceWire).toHaveProperty(SEGMENTATION_WITNESS_ARCHIVE_KEY);
     expect(JSON.stringify(sourceWire)).not.toContain(Buffer.from(logical.sourceWitness.text).toString("base64"));
     const sourceReference = sourceWire[SEGMENTATION_WITNESS_ARCHIVE_KEY] as {
-      replay: { schema: string; boundaryFeatureFactors: { surfaceFormDocumentCounts: number[]; boundaryContextClassCounts: number[] } | null }
+      replay: { schema: string; boundaryFeatureFactors: { surfaceFormDocumentCounts: number[]; boundaryContextClassCounts: number[] } | null };
+      textPatches: unknown[];
     };
+    expect(sourceReference.textPatches).toEqual([]);
     expect(sourceReference.replay.schema).toBe("scce.surface_segmentation_replay.v1");
     expect(sourceReference.replay.boundaryFeatureFactors?.surfaceFormDocumentCounts).toBeInstanceOf(Array);
     expect(sourceReference.replay.boundaryFeatureFactors?.boundaryContextClassCounts).toBeInstanceOf(Array);
