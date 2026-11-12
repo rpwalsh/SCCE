@@ -115,6 +115,19 @@ describe("source-backed response-form learning", () => {
     expect(subject).not.toContain("short");
   });
 
+  it("learns a repeated request control when paired answers copy no request units", () => {
+    const compiled = compileRequestRequirementCorpus({
+      corpus: { schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA, language: "und", examples: [
+        ["zora Aster?", "17"], ["zora Beryl harbour?", "29"], ["zora Cobalt strand?", "41"]
+      ].map(([text, responseText]) => ({ text: text!, responseText: responseText!, authority: "factual" as const })) },
+      profileId: "profile.zero-copy", sourceVersionId: "source-version.zero-copy" as SourceVersionId,
+      evidenceIds: ["evidence.zero-copy" as EvidenceId], sourceSystem: "dialogue", updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const roles = compiled.patterns.map(pattern => pattern.patternJson as Record<string, unknown>);
+    expect(roles.some(row => row.requestSpanRole === "control"), JSON.stringify(roles)).toBe(true);
+  });
+
   it("does not hydrate request patterns compiled with stale semantics", () => {
     const compiled = compileRequestRequirementCorpus({
       corpus: {

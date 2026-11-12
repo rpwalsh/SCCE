@@ -289,8 +289,6 @@ function tableContracts(vectorDimensions: number, capacity: CorpusCapacityEstima
       col("byte_end", "BIGINT", false, "byte end"),
       col("char_start", "BIGINT", false, "char start"),
       col("char_end", "BIGINT", false, "char end"),
-      col("text", "TEXT", false, "bounded extracted text", { encrypted: true }),
-      col("text_sha256", "BYTEA", false, "actual UTF8 body digest maintained by the canonical evidence write trigger"),
       col("text_preview", "TEXT", false, "safe preview"),
       col("features", "JSONB", false, "feature list"),
       col("status", "TEXT", false, "quarantine or promoted"),

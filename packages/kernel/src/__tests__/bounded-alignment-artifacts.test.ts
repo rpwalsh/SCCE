@@ -31,6 +31,12 @@ class MemoryBlobs implements BlobStore {
     }
   }
 
+  async putRanges(items: Parameters<BlobStore["putRanges"]>[0], parent: Parameters<BlobStore["putRanges"]>[1]): Promise<void> {
+    const stored = this.values.get(parent.contentHash);
+    if (!stored || !Buffer.from(stored).equals(Buffer.from(parent.bytes))) throw new Error("missing canonical range parent");
+    for (const item of items) this.values.set(item.contentHash, parent.bytes.slice(item.byteStart, item.byteEnd));
+  }
+
   async get(hash: ContentHash): Promise<Uint8Array> {
     this.gets.push(String(hash));
     const value = this.values.get(hash);

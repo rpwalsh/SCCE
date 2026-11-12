@@ -157,6 +157,27 @@ it("accepts real ctime-only metadata changes only after hashing pinned bytes, th
   expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile})).toBe(true);expect(calls).toBe(2);
   await chmod(paths.dumpPath,0o666);await chmod(paths.indexPath,0o666);
 });
+it("reuses an exact durable verification receipt after a reconstructed manifest",async()=>{
+  const paths=await fixture(),manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));
+  await changeMetadataOnly(paths.dumpPath);let hashCalls=0,reads=0,writes=0;
+  const receipts=new Map<string,string>();
+  const cache={
+    read:async(source:typeof manifest.inputs.dump,current:typeof manifest.inputs.dump.stat)=>{
+      reads++;return receipts.get(source.sha256)===JSON.stringify(current);
+    },
+    write:async(source:typeof manifest.inputs.dump,current:typeof manifest.inputs.dump.stat)=>{
+      writes++;receipts.set(source.sha256,JSON.stringify(current));
+    }
+  };
+  const hashFile=async(filePath:string,chunkSize:number)=>{hashCalls++;return hashWikipediaInputFile(filePath,{chunkSize});};
+  expect(await wikipediaInputSourcesStillMatch(manifest,{hashFile,verificationCache:cache})).toBe(true);
+  expect({hashCalls,writes}).toEqual({hashCalls:1,writes:1});
+  // JSON reconstruction gives the second check fresh object identities, as a new server process would.
+  const reconstructed=JSON.parse(JSON.stringify(manifest)) as typeof manifest;
+  expect(await wikipediaInputSourcesStillMatch(reconstructed,{hashFile:async()=>{throw new Error("receipt missed");},verificationCache:cache})).toBe(true);
+  expect(reads).toBeGreaterThanOrEqual(2);
+  await chmod(paths.dumpPath,0o666);
+});
 it("rejects same-size changed bytes with restored mtime rather than treating ctime as harmless",async()=>{
   const paths=await fixture("aaaa\n"),time=new Date(1700000000000);await utimes(paths.dumpPath,time,time);
   const manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));

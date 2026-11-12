@@ -13,6 +13,7 @@ import { boundedCanonicalJsonBytes } from "../alignment-event-artifacts.js";
 
 class MemoryBlobs implements BlobStore {
   readonly values = new Map<string, Uint8Array>();
+  readonly ranges = new Map<string, { parentHash: ContentHash; byteStart: number; byteEnd: number }>();
   readonly reads: string[] = [];
 
   async put(content: Uint8Array, _mediaType: string): Promise<ContentHash> {
@@ -21,15 +22,28 @@ class MemoryBlobs implements BlobStore {
     return hash as ContentHash;
   }
 
+  async putRanges(items: Parameters<BlobStore["putRanges"]>[0], parent: Parameters<BlobStore["putRanges"]>[1]): Promise<void> {
+    const stored = this.values.get(String(parent.contentHash));
+    if (!stored || blobContentHash(stored) !== parent.contentHash) throw new Error("missing canonical range parent");
+    for (const item of items) {
+      if (item.parentHash !== parent.contentHash || blobContentHash(parent.bytes.subarray(item.byteStart, item.byteEnd)) !== item.contentHash) {
+        throw new Error("invalid canonical range");
+      }
+      this.ranges.set(String(item.contentHash), { parentHash: item.parentHash, byteStart: item.byteStart, byteEnd: item.byteEnd });
+    }
+  }
+
   async get(hash: string): Promise<Uint8Array> {
     this.reads.push(hash);
     const value = this.values.get(hash);
-    if (!value) throw new Error(`missing blob ${hash}`);
-    return new Uint8Array(value);
+    if (value) return new Uint8Array(value);
+    const range = this.ranges.get(hash);
+    if (!range) throw new Error(`missing blob ${hash}`);
+    return (await this.get(range.parentHash)).slice(range.byteStart, range.byteEnd);
   }
 
   async exists(hash: string): Promise<boolean> {
-    return this.values.has(hash);
+    return this.values.has(hash) || this.ranges.has(hash);
   }
 }
 

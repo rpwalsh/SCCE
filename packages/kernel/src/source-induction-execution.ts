@@ -4,16 +4,27 @@ import type { LanguageInductionDocument, InducedLanguageModel } from "./language
 import type { InducedLanguageMemoryModel } from "./language-induction-memory.js";
 import type { CorpusSegmentationBatchLoader, PreparedCorpusSegmentationMeasurement, VerifiedCorpusSegmentation } from "./corpus-segmentation-cursor.js";
 import type { SourceInductionWindow } from "./source-window-induction.js";
+import type { SurfaceSegmentationReplayRecipe } from "./surface-lattice.js";
 
 export interface SourceInductionBatch {
   documents: LanguageInductionDocument[];
   windows: SourceInductionWindow[];
 }
 export interface SourceInductionBatchIdentity { batchKey: string; corpusBinding?: string }
-export interface SourceInductionBatchProduct { compact: InducedLanguageMemoryModel; fullModel?: InducedLanguageModel }
+export interface SourceInductionSegmentationReplay {
+  witnessId: string;
+  recipe: SurfaceSegmentationReplayRecipe;
+}
+export interface SourceInductionBatchProduct {
+  compact: InducedLanguageMemoryModel;
+  fullModel?: InducedLanguageModel;
+  /** Explicit worker-wire state. Reattached as producer-only metadata before publication. */
+  segmentationReplay: SourceInductionSegmentationReplay[];
+}
 export interface SourceInductionBatchJob {
   ordinal: number;
   batch: SourceInductionBatch;
+  relationContextDocuments?: LanguageInductionDocument[];
   retainFullModel: boolean;
   corpusIdentity?: CorpusSegmentationBatchLoader["identity"];
   batchBudgetUtf16: number;

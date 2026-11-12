@@ -290,9 +290,15 @@ export function buildSegmentationForest(input: SegmentationForestBuildInput): Su
       unitIds: path.unitIds,
       energy: path.energy,
       energyTrace: path.energyTrace,
-      posterior: quantize(Number.isFinite(fullPartitionLogZ)
+      // A path probability is mathematically bounded by one. The retained
+      // path energy is quantized at every DP step while the log partition is
+      // accumulated in floating point, so a long exact cover can differ by a
+      // final ulp and exponentiate to 1.000000000000... . Clamp before the
+      // public quantization boundary, as we already do for marginals and
+      // aggregate posterior masses.
+      posterior: quantize(clamp01(Number.isFinite(fullPartitionLogZ)
         ? Math.exp(-path.energy - fullPartitionLogZ)
-        : 0)
+        : 0))
     };
   });
   const retainedPosteriorMass = quantize(clamp01(

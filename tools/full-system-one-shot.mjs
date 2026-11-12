@@ -202,7 +202,7 @@ const ingestDocument = async (document) => {
     const matching = versions.find(row => String(row.contentHash).replace(/^sha256_/u, "") === expectedHash
       && Number(row.byteLength) === bytes.byteLength);
     const blob = matching
-      ? (await runtime.storage.query(`SELECT content FROM ${runtime.storage.table("blobs")} WHERE content_hash = $1`, [matching.contentHash]))[0]?.content
+      ? await runtime.storage.blobs.get(matching.contentHash)
       : undefined;
     rawSourceIdentity = {
       path: document.sourcePath,

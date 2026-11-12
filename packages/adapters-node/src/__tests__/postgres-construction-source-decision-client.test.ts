@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { createClock, createHasher, createIdFactory, createEventFactory, type InformationLabel } from "@scce/kernel";
 import { PostgresStorageAdapter } from "../postgres.js";
 
@@ -12,6 +13,8 @@ it("reads construction evidence on the event append client with a one-client poo
     tenantId: "tenant", principalId: "owner", compartments: [], maximumExportClass: "restricted" } });
   adapter.pool.options.max = 1;
   const pages = new Map<string, Record<string, unknown>>(), events: Record<string, unknown>[] = [];
+  const evidenceText = "abcd ".repeat(40), evidenceBytes = Buffer.from(evidenceText, "utf8");
+  const evidenceHash = `sha256_${createHash("sha256").update(evidenceBytes).digest("hex")}`;
   const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
   let active = false, escapedQueries = 0;
   const client = {
@@ -24,11 +27,14 @@ it("reads construction evidence on the event append client with a one-client poo
         expect(params[0]).toEqual(["evidence"]);
         expect(sql).toContain("evidence.information_label");
         expect(params).toContain("tenant");
-        return { rows: [{ id: "evidence", source_id: "source", source_version_id: "version", chunk_id: "chunk", content_hash: "hash",
-          media_type: "text/plain", byte_start: 0, byte_end: 200, char_start: 0, char_end: 200,
-          text_content: "abcd ".repeat(40), text_preview: "abcd", language_hints: {}, script_hints: {}, trust_vector: {},
+        return { rows: [{ id: "evidence", source_id: "source", source_version_id: "version", chunk_id: "chunk", content_hash: evidenceHash,
+          media_type: "text/plain", byte_start: 0, byte_end: evidenceBytes.byteLength, char_start: 0, char_end: [...evidenceText].length,
+          text_preview: "abcd", language_hints: {}, script_hints: {}, trust_vector: {},
           provenance_json: {}, features: [], status: "promoted", alpha: 1, observed_at: new Date(1), information_label: label }] };
       }
+      if (sql.includes('"source_versions" sv')) return { rows: [{ id: "version", source_id: "source", content_hash: evidenceHash, byte_length: String(evidenceBytes.byteLength) }] };
+      if (sql.includes('"blobs" blob')) return { rows: params[0] === evidenceHash ? [{ content: evidenceBytes, byte_length: String(evidenceBytes.byteLength),
+        range_parent_hash: null, range_start: null, range_end: null, archive_reference: null, archive: null }] : [] };
       if (sql.includes('"construction_source_decision_pages"')) {
         if (sql.startsWith("INSERT")) {
           expect(active).toBe(true);
@@ -65,7 +71,7 @@ it("reads construction evidence on the event append client with a one-client poo
       sourceCompilationId: "compilation", contentDigest: digest,
       bundle: { schema: "scce.language_construction_pattern.v1", id: `surface.construction.bundle.${digest}`, contentDigest: digest,
         bindingId: `language.source_relation.${index}`, sourceProfileId: "profile", targetProfileId: "profile", sourceVersionIds: ["version"],
-        evidenceIds: ["evidence"], evidenceContentHashes: ["hash"], acquisitionStatus: "source_observed",
+        evidenceIds: ["evidence"], evidenceContentHashes: [evidenceHash], acquisitionStatus: "source_observed",
         sourceExamples: [0, 5, 10].map(start => ({ evidenceIndex: 0, surfaceStartCodePoint: start, surfaceEndCodePoint: start + 4,
           roles: [{ slotIndex: 0, occurrenceIndex: 0, startCodePoint: 0, endCodePoint: 2 },
             { slotIndex: 1, occurrenceIndex: 0, startCodePoint: 2, endCodePoint: 4 }], nullRoles: [] })) } };

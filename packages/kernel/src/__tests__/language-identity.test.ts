@@ -8,6 +8,7 @@ import {
   majorityClosedClass,
   otsuThreshold,
   selectLanguageIdentityForSurface,
+  type LanguageIdentityRecord,
   type LanguageProfileSignature
 } from "../language-identity.js";
 import { createHasher } from "../primitives.js";
@@ -122,6 +123,28 @@ describe("language identity discovery", () => {
     expect(selectLanguageIdentityForSurface(identities, "What does White Rabbit carry for?", {
       excludeCorpusRoleIds: [CORPUS_ROLE_IDS.softwareSymbolic]
     })).toBeUndefined();
+  });
+
+  it("uses learned form-word prevalence instead of corpus size to resolve equal coverage", () => {
+    const identity = (id: string, profileCount: number, documentShare: number): LanguageIdentityRecord => ({
+      schema: "scce.language_identity.v2",
+      id,
+      script: "script:Latn",
+      directions: [{ direction: "ltr", count: profileCount }],
+      closedClass: [{ word: "forma", documentShare }],
+      families: [],
+      corpusRoles: [{ corpusRoleId: CORPUS_ROLE_IDS.encyclopedic, count: profileCount }],
+      profileCount,
+      membershipCut: 0,
+      createdAt: 1
+    } as LanguageIdentityRecord);
+    const largeIncidental = identity("language.large", 1000, 0.15);
+    const smallMeasured = identity("language.measured", 10, 0.9);
+
+    expect(selectLanguageIdentityForSurface([largeIncidental, smallMeasured], "forma subject")?.identity)
+      .toBe(smallMeasured);
+    expect(selectLanguageIdentityForSurface([smallMeasured, identity("language.tied", 5000, 0.9)], "forma subject"))
+      .toBeUndefined();
   });
 
   it("reads a signature from a profile's compact Kneser-Ney summary and drops apparatus symbols", () => {

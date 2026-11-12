@@ -30,7 +30,9 @@ export function createSourceInductionWorkerSession(job: SourceInductionBatchJob)
           return { preparation, contextSlice: slice.contextSlice };
         }) };
       }
-      prepared = prepareSourceInductionBatch({ batch: job.batch, hasher, ...(verified ? { verified } : {}) });
+      prepared = prepareSourceInductionBatch({ batch: job.batch, hasher,
+        ...(job.relationContextDocuments?.length ? { relationContextDocuments: job.relationContextDocuments } : {}),
+        ...(verified ? { verified } : {}) });
       return { batchKey: prepared.batchKey, ...(prepared.corpusBinding ? { corpusBinding: prepared.corpusBinding } : {}) };
     },
     induce() {

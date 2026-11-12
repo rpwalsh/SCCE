@@ -20,7 +20,7 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
   const label={tenantId:"owner",principals:["owner"],compartments:[],exportClass:"internal" as const,mergePolicy:"same_owner" as const};
   const texts=Array.from({length:sourceCount},(_,index)=>index%2===0?`opaque alpha delta. opaque beta delta. opaque alpha delta. e\u0301?? ${index}`:`opaque alpha delta. opaque gamma delta. opaque alpha delta. ??? ${index}`);
   const owners=texts.map((text,index)=>({evidenceId:`evidence.${index}`,sourceId:`source.${index}`,sourceVersionId:`version.${index}`,
-    sourceContentHash:`hash.${index}`,evidenceContentHash:`sha256_${createHash("sha256").update(text).digest("hex")}`,textSha256:createHash("sha256").update(text).digest("hex"),
+    sourceContentHash:`hash.${index}`,evidenceContentHash:`sha256_${createHash("sha256").update(text).digest("hex")}`,
     codePoints:[...text].length,sourceFamilyId:`source.${index}`,byteStart:0,byteEnd:Buffer.byteLength(text),charStart:0,charEnd:[...text].length,
     informationLabel:label,sourceInformationLabel:label}));
   let state="building", runJson:JsonValue=null, snapshot:unknown, active:JsonValue|null=null, failPublication=false;
@@ -34,7 +34,7 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
     mutateLanguageMemory:async(sql:string,params:unknown[])=>{calls.push({sql,params});state="complete";active=JSON.parse(String(params[2]));if(failPublication)throw new Error("publication failed");return true;},
     query:async<T>(sql:string,params:unknown[]=[]):Promise<T[]>=>{ calls.push({sql,params});
       const membership = await corpusMembershipSqlFixture(sql,params,memory); if(membership) return membership as T[];
-      if(sql.includes("pg_catalog.pg_trigger"))return [{valid:true}] as T[];
+      if(sql.includes("pg_catalog.pg_class c")&&sql.includes("AS valid"))return [{valid:true}] as T[];
       if(sql.includes("INSERT INTO")&&sql.includes("(run_id,scope_id,state,run_json")){runJson=JSON.parse(String(params[2]));return [{run_id:"owned-run"}] as T[];}
       if(sql.includes("segmentation_consolidation_active")&&sql.includes("SELECT r.run_json"))return active&&params[0]===(runJson as Record<string,JsonValue>).scopeId?[{run_json:runJson,snapshot_json:snapshot,inference_json:active,fits:true}] as T[]:[];
       if(sql.includes("END AS run_json")&&!sql.includes("segmentation_consolidation_active"))return [{fits:true,run_json:runJson}] as T[];
@@ -45,8 +45,11 @@ async function fixture(pageRows:number, corrupt=false, sourceCount=2, sharedFami
       if(sql.includes("'input/inventory'")) {await memory.putMany("input/inventory",owners.map((value,index)=>({orderKey:segmentationOrdinalKey(index+1),value})));return [];}
       if(sql.includes("RETURNING order_key")){const rows=JSON.parse(String(params[2]));await memory.putMany(String(params[1]),rows);return rows.map((row:any)=>({order_key:row.orderKey})) as T[];}
       if(sql.includes("WITH selected AS"))return (params[0] as string[]).flatMap(id=>{const source=owners.find(owner=>owner.sourceVersionId===id);return source?[{fits:true,value:{sourceVersionId:source.sourceVersionId,sourceId:source.sourceId,parentSourceVersionId:null,sourceRole:"original",informationLabel:label}}]:[];}) as T[];
-      if(sql.includes("SELECT substring")){const index=owners.findIndex(owner=>owner.evidenceId===params[0]);const text=texts[index]!;
-        return [{text:corrupt?"changed":[...text].slice(Number(params[2])-1,Number(params[2])-1+Number(params[3])).join("")}] as T[];}
+      if(sql.includes("SELECT e.content_hash")&&sql.includes("e.status='promoted'")){const index=owners.findIndex(owner=>owner.evidenceId===params[0]);
+        return [{content_hash:owners[index]!.evidenceContentHash}] as T[];}
+      if(sql.includes("FROM \"fixture\".\"blobs\" blob")){const index=owners.findIndex(owner=>owner.evidenceContentHash===params[0]);
+        if(index<0)return [];const content=Buffer.from(corrupt?"changed":texts[index]!,"utf8");return [{content,byte_length:String(content.byteLength),
+          range_parent_hash:null,range_start:null,range_end:null,archive_reference:null,archive:null}] as T[];}
       if(sql.includes("WITH candidate")&&sql.includes("evidence_id"))return owners.filter(owner=>owner.evidenceId>String(params[0])).slice(0,pageRows).map(row_json=>({evidence_id:row_json.evidenceId,row_json,admitted:true})) as T[];
       if(sql.includes("WITH candidate")){const rows=[];for await(const page of memory.pages({collection:String(params[1]),afterKey:String(params[2]),prefix:String(params[3]),pageRows:Number(params[4]),maxPageBytes:12000})){rows.push(...page);break;}
         return rows.map(row=>({order_key:row.orderKey,row_json:row.value,admitted:true,decoded_bytes:Buffer.byteLength(JSON.stringify(row))})) as T[];}
@@ -80,7 +83,7 @@ it("compiles all owned Unicode windows through the real statistics producer with
   expect(f.calls.some(call=>call.sql.includes("e.status='promoted'")&&call.sql.includes("sv.information_label=")&&call.sql.includes("e.information_label="))).toBe(true);
   const inventorySql=f.calls.filter(call=>call.sql.includes("'evidenceContentHash'"));
   expect(inventorySql.length).toBeGreaterThan(0);
-  expect(inventorySql.every(call=>call.sql.includes("encode(e.text_sha256,'hex')")&&call.sql.includes("'codePoints',e.char_end-e.char_start"))).toBe(true);
+  expect(inventorySql.every(call=>!call.sql.includes("textSha256")&&call.sql.includes("'codePoints',e.char_end-e.char_start"))).toBe(true);
   expect(inventorySql.some(call=>/sha256\(.*text_content|char_length\(e.text_content\)/u.test(call.sql))).toBe(false);
 });
 it("has identical source/statistics identities across storage page sizes",async()=>{
@@ -90,7 +93,7 @@ it("has identical source/statistics identities across storage page sizes",async(
   expect(results[0]).toBe(results[1]);
 });
 it("refuses changed canonical bytes before a fit snapshot can be sealed",async()=>{
-  const f=await fixture(2,true);await expect(prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28})).rejects.toThrow(/length differs|hash differs/);
+  const f=await fixture(2,true);await expect(prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28})).rejects.toThrow(/length differs|hash differs|integrity mismatch/);
   expect(f.getState()).toBe("building");expect(f.getSnapshot()).toBeUndefined();
 });
 
@@ -162,12 +165,12 @@ it("fits real source observations then publishes one matched snapshot atomically
   expect(Object.values(slice.featureContext.documentCountBySurfaceFormClass)).toContain(0);
   await expect(readActiveCorpusSegmentationRun(f.storage,f.run.run.scope,{...required,recipeId:"different"},f.run.bounds)).rejects.toThrow(/incompatible/);
   await expect(loadCorpusSegmentationContextSlice({storage:f.storage,run:f.run,measurement:preparation,expected:{...model,featureContextId:"different"}})).rejects.toThrow(/does not match/);
-  const owned=f.owners[0]!,originalDigest=owned.textSha256;
-  const identityBefore={evidenceId:owned.evidenceId,sourceVersionId:owned.sourceVersionId,evidenceContentHash:owned.evidenceContentHash};
-  owned.textSha256=createHash("sha256").update("same declared hash, modified actual body").digest("hex");
+  const owned=f.owners[0]!,originalDigest=owned.evidenceContentHash;
+  const identityBefore={evidenceId:owned.evidenceId,sourceVersionId:owned.sourceVersionId};
+  owned.evidenceContentHash=`sha256_${createHash("sha256").update("modified canonical identity").digest("hex")}`;
   await expect(readActiveCorpusSegmentationRun(f.storage,f.run.run.scope,required,f.run.bounds)).rejects.toThrow(/dependencies changed/);
-  expect({evidenceId:owned.evidenceId,sourceVersionId:owned.sourceVersionId,evidenceContentHash:owned.evidenceContentHash}).toEqual(identityBefore);
-  owned.textSha256=originalDigest;
+  expect({evidenceId:owned.evidenceId,sourceVersionId:owned.sourceVersionId}).toEqual(identityBefore);
+  owned.evidenceContentHash=originalDigest;
   expect((await readActiveCorpusSegmentationRun(f.storage,f.run.run.scope,required,f.run.bounds))?.inference.id).toBe(model.id);
   f.owners[0]!.sourceVersionId="changed-version";
   await expect(readActiveCorpusSegmentationRun(f.storage,f.run.run.scope,required,f.run.bounds)).rejects.toThrow(/dependencies changed|derivation dependencies/);
@@ -228,10 +231,10 @@ it("singleflights identical in-process jobs while refusing conflicting scope or 
   expect(f.calls.filter(call=>call.sql.includes("(run_id,scope_id,state,run_json"))).toHaveLength(1);
 });
 
-it("rejects disagreement between the declared span hash and the actual maintained body digest",async()=>{
-  const f=await fixture(2);f.owners[0]!.textSha256=createHash("sha256").update("tampered body").digest("hex");
+it("rejects disagreement between the declared span identity and the canonical body",async()=>{
+  const f=await fixture(2);f.owners[0]!.evidenceContentHash=`sha256_${createHash("sha256").update("tampered body").digest("hex")}`;
   await f.memory.putMany("input/inventory",f.owners.map((value,index)=>({orderKey:segmentationOrdinalKey(index+1),value})));
-  await expect(prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28})).rejects.toThrow(/source ownership/);
+  await expect(prepareCorpusSegmentationInput({storage:f.storage,run:f.run,windowUtf16:28})).rejects.toThrow(/text changed|inaccessible|integrity mismatch/);
   expect(f.getState()).toBe("building");expect(f.getSnapshot()).toBeUndefined();
 });
 

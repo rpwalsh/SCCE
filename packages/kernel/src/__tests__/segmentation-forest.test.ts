@@ -146,6 +146,36 @@ describe("packed segmentation forest", () => {
     expect(resolved.paths[1]!.energyTrace.semanticContext).toBe(3);
   });
 
+  it("keeps a long exact-cover posterior inside the probability domain after floating-point accumulation", () => {
+    const graphemeCount = 359;
+    const units: SegmentationForestUnit[] = Array.from({ length: graphemeCount }, (_, index) => ({
+      id: `rounding.${index}`,
+      kind: "grapheme",
+      overlapClass: "base_partition",
+      graphemeStart: index,
+      graphemeEnd: index + 1,
+      recurrenceCount: 1,
+      predictability: 0.5,
+      boundaryBefore: { boundaryProbability: index === 0 ? 1 : 0.5 },
+      boundaryAfter: { boundaryProbability: index === graphemeCount - 1 ? 1 : 0.5 }
+    }));
+    const descriptionEnergyByUnitId = Object.fromEntries(units.map(candidate => [candidate.id, 0.1]));
+
+    const forest = buildSegmentationForest({
+      latticeId: "lattice.posterior-rounding",
+      estimatorId: "estimator.posterior-rounding",
+      units,
+      descriptionEnergyByUnitId,
+      pathLimit: 1,
+      hasher: createHasher()
+    });
+
+    expect(forest.paths).toHaveLength(1);
+    expect(forest.paths[0]!.posterior).toBe(1);
+    expect(forest.retainedPosteriorMass).toBe(1);
+    expect(forest.omittedPosteriorMass).toBe(0);
+  });
+
   it("bounds arcs, states, derivations, residual mass, and construction depth without renormalizing", () => {
     const units = [
       unit("g0", 0, 1, "base_partition"),

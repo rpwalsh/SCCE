@@ -30,6 +30,8 @@ export interface StoredCorpusConstructionTrainingOptions {
   ngramVocabularyLimit?: number;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   sourceInductionExecution?: import("./source-induction-execution.js").SourceInductionWorkerExecution;
+  sourceInductionExecutionOwner?: Pick<import("./source-induction-execution.js").SourceInductionExecutionOwner, "execution" | "receipt">;
+  contextualQaExecution?: import("./contextual-qa-execution.js").ContextualQaWorkerExecution;
   storage: ScceStorage;
   sourceSystem?: string;
   maxTotalBytes?: number;
@@ -47,6 +49,8 @@ export interface StoredCorpusConstructionTrainingOptions {
   maxArticleBytes?: number;
   creativeEventCompiler?: CreativeEventConstructionCompiler;
   languageOnly?: boolean;
+  /** Publish contextual-QA constructions from retained dialogue archives without invoking corpus training. */
+  contextualQaOnly?: boolean;
   includeUriPrefixes?: readonly string[];
   signal?: AbortSignal;
 }
@@ -112,6 +116,10 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   const startBatchIndex = Math.max(0, Math.floor(input.startBatchIndex ?? 0));
   const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0 ? Math.floor(input.heapCheckpointMb) : undefined;
   const sourceSystem = canonicalCorpusSourceSystemId(input.sourceSystem ?? CORPUS_SOURCE_SYSTEM_IDS.wikipedia);
+  const contextualQaOnly = input.contextualQaOnly === true;
+  if (contextualQaOnly && sourceSystem !== CORPUS_SOURCE_SYSTEM_IDS.dialogue) {
+    throw new Error("contextual-QA-only publication requires the dialogue source system");
+  }
   const compiler = input.creativeEventCompiler ?? createUniversalCreativeEventConstructionCompiler();
   if (input.afterSourceVersionId !== undefined && startBatchIndex > 0) throw new Error("choose a source cursor or a legacy batch cursor, not both");
   const sourcePageSize = Math.max(1, Math.min(1024, Math.floor(input.sourcePageSize ?? 128)));
@@ -154,7 +162,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   let qaRetainedBytes = 0;
 
   const trainSource = async (item: ReplaySource): Promise<void> => {
-    if (segmentationBatch?.index !== batchIndex) segmentationBatch = {
+    if (!contextualQaOnly && segmentationBatch?.index !== batchIndex) segmentationBatch = {
       index: batchIndex, selection: await prepareLanguageTrainingSegmentationInput(input.storage, input.corpusSegmentation)
     };
     const initialLearning = item.profile === undefined;
@@ -167,10 +175,19 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
         ...item.evidence.map(span => span.informationLabel!)
       ], { explicitMergeAuthority: false });
       trainingLabel = informationLabel;
+      if (contextualQaOnly) {
+        if (item.transcriptTurns) {
+          qaRetainedBytes += item.transcriptRetainedBytes!;
+          qaPool(item.source, informationLabel).sources.push({ sourceUri: item.source.canonicalUri,
+            sourceVersionId: String(item.source.sourceVersionId), text: item.text, transcriptTurns: item.transcriptTurns });
+        }
+        return;
+      }
       const prefix = input.includeUriPrefixes?.find(value => item.source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(item.source.canonicalUri);
       let trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
         sourceInductionExecution: input.sourceInductionExecution,
+        sourceInductionExecutionOwner: input.sourceInductionExecutionOwner,
         ...(segmentationBatch ? { preparedCorpusSegmentation: segmentationBatch.selection } : {}),
         storage: input.storage,
         sourceSystem,
@@ -265,14 +282,21 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   if (inventory && sourcesConsidered >= inventory.eligibleSources) exhausted = true;
   const batchesTrained = successfulBatches.size;
   const nextBatchIndex = batchIndex + (exhausted && currentBatchBytes > 0 ? 1 : 0);
-  if (qaEnabled) for (const pool of qaPools.values()) {
+  // Publish compact, explicitly qualified cohorts before broad dialogue priors. This keeps one large
+  // exploratory pool from monopolizing the bounded worker reservation and makes completion resumable.
+  const orderedQaPools = [...qaPools.values()].sort((left, right) =>
+    left.sources.reduce((sum, source) => sum + Buffer.byteLength(source.text, "utf8"), 0)
+      - right.sources.reduce((sum, source) => sum + Buffer.byteLength(source.text, "utf8"), 0)
+    || left.rootUri.localeCompare(right.rootUri));
+  if (qaEnabled) for (const pool of orderedQaPools) {
     if (pool.deferred.length || storageFailure !== null || stoppedByInterruption) {
       contextualQa.deferred.push(...pool.deferred, ...pool.sources.map(source => ({ sourceVersionId: source.sourceVersionId, reason: "incomplete_owner_pool" })));
       continue;
     }
     if (pool.sources.length) {
       try { contextualQa.reports.push(await persistDialogueContextualQaComponent({ storage: input.storage, rootUri: pool.rootUri,
-        informationLabel: pool.informationLabel, authorship: pool.authorship, sources: pool.sources })); }
+        informationLabel: pool.informationLabel, authorship: pool.authorship, sources: pool.sources,
+        contextualQaExecution: input.contextualQaExecution, signal: input.signal })); }
       catch (error) {
         contextualQa.deferred.push(...pool.sources.map(source => ({ sourceVersionId: source.sourceVersionId, reason: errorText(error) })));
         if (markStorageFailure(error, pool.sources[0]!.sourceVersionId)) batchesFailed.push({ batchIndex,
@@ -302,7 +326,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   return result;
 
   function qaPool(source: SourceVersion, informationLabel: InformationLabel) {
-    const prefix = input.includeUriPrefixes?.find(value => source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(source.canonicalUri);
+    const prefix = storedContextualQaPoolRoot(source, input.includeUriPrefixes);
     const authorship = recordOf(source.metadata).authorship;
     const key = canonicalStringify({ prefix, informationLabel, authorship });
     let pool = qaPools.get(key);
@@ -396,5 +420,13 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
 
 function recordOf(value: JsonValue): Record<string, JsonValue> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}; }
 function canonicalCorpusRoot(uri: string): string { try { return new URL(".", uri).href; } catch { return uri; } }
+/** Preserve an explicitly laid-out transcript cohort; broad dialogue shards without a cohort declaration still learn together. */
+export function storedContextualQaPoolRoot(source: Pick<SourceVersion, "canonicalUri" | "metadata">,
+  includeUriPrefixes?: readonly string[]): string {
+  const metadata = recordOf(source.metadata), sourceMetadata = recordOf(metadata.sourceMetadata ?? null);
+  if (metadata.transcriptSchema === "scce.dialogue_transcript.v1"
+    && typeof sourceMetadata.layout === "string" && sourceMetadata.layout.length > 0) return source.canonicalUri;
+  return includeUriPrefixes?.find(value => source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(source.canonicalUri);
+}
 function errorText(error: unknown): string { return error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200); }
 function heapMiB(): number { return Math.round(process.memoryUsage().heapUsed / (1024 * 1024)); }

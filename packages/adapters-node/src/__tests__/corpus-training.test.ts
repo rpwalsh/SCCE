@@ -48,6 +48,7 @@ import { LANGUAGE_TRAINING_BATCH_RECIPE_ID } from "../../../kernel/src/language-
 import { blobContentHash } from "../postgres.js";
 import { OSS_CONTRACT_CLOSURE_RECIPE } from "../oss-owned-contract-closure.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
+import { readWikipediaArchiveBlob } from "../wikipedia.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
 import { MIN_WIKIPEDIA_MAX_ARTICLE_CHARS } from "../config.js";
 import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS,
@@ -484,7 +485,7 @@ describe("learned rows carry the shard's provenance once", () => {
     const recorded = storageFixtureForEvaluation({ evidence: fixture.state.evidence, clockNow: () => clock.now() });
     const storage: ScceStorage = { ...recorded.storage, languageMemory: fixture.storage.languageMemory,
       evidence: { ...recorded.storage.evidence, sourceVersionsForEvidence: async ids => fixture.state.sourceVersions.filter(source => fixture.state.evidence.some(span => ids.includes(span.id) && span.sourceVersionId === source.sourceVersionId)) },
-      blobs: { ...fixture.storage.blobs, get: async hash => { const bytes = fixture.state.blobs.find(bytes => blobContentHash(bytes) === hash); if (!bytes) throw new Error("canonical test source missing"); return bytes; } },
+      blobs: fixture.storage.blobs,
       transaction: fixture.storage.transaction, model: { ...fixture.storage.model,
         readModel: async () => ({ languageProfiles: fixture.state.profiles, latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }) } };
     const kernel = createScceKernel({ storage, clock, idFactory: createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "manual-kernel-producer" }), deterministicReplay: true,
@@ -515,6 +516,13 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(fixture.state.units.length).toBeGreaterThan(0);
     expect(fixture.state.patterns.length).toBeGreaterThan(0);
     expect(fixture.state.frames.length).toBeGreaterThan(0);
+    const source = fixture.state.sourceVersions.find(row => row.sourceVersionId === result.sourceVersionId)!;
+    const physicalBodies = new Set(fixture.state.blobs.map(bytes => blobContentHash(bytes)));
+    expect(physicalBodies).toContain(source.contentHash);
+    for (const span of fixture.state.evidence.filter(row => row.sourceVersionId === result.sourceVersionId)) {
+      if (span.contentHash !== source.contentHash) expect(physicalBodies).not.toContain(span.contentHash);
+      expect(Buffer.from(await fixture.storage.blobs.get(span.contentHash)).toString("utf8")).toBe(span.text);
+    }
     const before = structuredClone({ models: fixture.state.models, units: fixture.state.units, patterns: fixture.state.patterns, frames: fixture.state.frames, profiles: fixture.state.profiles });
     expect(recordOf(recordOf(before.models[0]!.modelJson).sourceCompilation).options).toMatchObject({ maxOrder: 2, maxCountersPerOrder: 64, vocabularyLimit: 11, languageOnly: true });
     const clock = createClock({ fixedTime: 130000, stepMs: 1 });
@@ -523,7 +531,7 @@ describe("learned rows carry the shard's provenance once", () => {
     const recorded = storageFixtureForEvaluation({ evidence: selected, clockNow: () => clock.now() });
     const storage: ScceStorage = { ...recorded.storage, languageMemory: fixture.storage.languageMemory, transaction: fixture.storage.transaction,
       evidence: { ...recorded.storage.evidence, sourceVersionsForEvidence: async () => fixture.state.sourceVersions.filter(source => source.sourceVersionId === result.sourceVersionId) },
-      blobs: { ...fixture.storage.blobs, get: async hash => { const bytes = fixture.state.blobs.find(bytes => blobContentHash(bytes) === hash); if (!bytes) throw new Error("canonical source missing"); return bytes; } },
+      blobs: fixture.storage.blobs,
       inducedLanguageModels: { putModel: async () => { throw new Error("canonical replay must not reproject induced artifacts"); }, readById: async () => undefined, listRecent: async () => [] },
       model: { ...fixture.storage.model, readModel: async () => ({ languageProfiles: fixture.state.profiles, latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }) } };
     const kernel = createScceKernel({ storage, clock, idFactory: createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "manual-nondefault-producer" }), deterministicReplay: true,
@@ -2075,7 +2083,7 @@ describe("multi-corpus training", () => {
       rootPath: root,
       maxFiles: 10,
       maxFilesPerRun: 2,
-      includeDocs: false,
+      includeDocs: true,
       includeSource: true,
       ngramMaxOrder: 2,
       ngramMaxCountersPerOrder: 64
@@ -2084,6 +2092,7 @@ describe("multi-corpus training", () => {
     expect(result.filesConsidered).toBe(2);
     expect(result.nextFileIndex).toBe(2);
     expect(result.codeTrained).toBe(1);
+    expect(result.docsTrained).toBe(1);
     expect(result.filesSkipped).toContainEqual(expect.objectContaining({
       path: "a-empty.ts",
       reason: "empty_language_training_projection"
@@ -2252,7 +2261,6 @@ describe("multi-corpus training", () => {
       .map(source => ({ sourceVersionId: source.sourceVersionId, contentHash: source.contentHash, canonicalUri: source.canonicalUri,
         byteLength: source.byteLength, maxAlpha: 1, promotedSpanCount: fixture.state.evidence.filter(span => span.sourceVersionId === source.sourceVersionId).length }));
     fixture.storage.evidence.sourceVersionsForEvidence = async ids => fixture.state.sourceVersions.filter(source => fixture.state.evidence.some(span => ids.includes(span.id) && span.sourceVersionId === source.sourceVersionId));
-    fixture.storage.blobs.get = async hash => { const bytes = fixture.state.blobs.find(bytes => blobContentHash(bytes) === hash); if (!bytes) throw new Error("canonical replay source missing"); return bytes; };
     fixture.storage.languageMemory.putLanguagePatterns = async rows => {
       for (const row of rows) {
         const prior = fixture.state.patterns.findIndex(existing => existing.id === row.id);
@@ -2555,7 +2563,6 @@ describe("multi-corpus training", () => {
       .slice(0, query.limit).map(source => ({ sourceVersionId: source.sourceVersionId, contentHash: source.contentHash, canonicalUri: source.canonicalUri,
         byteLength: source.byteLength, maxAlpha: 1, promotedSpanCount: fixture.state.evidence.filter(span => span.sourceVersionId === source.sourceVersionId).length }));
     fixture.storage.evidence.sourceVersionsForEvidence = async ids => fixture.state.sourceVersions.filter(source => fixture.state.evidence.some(span => ids.includes(span.id) && span.sourceVersionId === source.sourceVersionId));
-    fixture.storage.blobs.get = async hash => { const bytes = fixture.state.blobs.find(bytes => blobContentHash(bytes) === hash); if (!bytes) throw Error("missing owned replay bytes"); return bytes; };
     const checkpoints = new Map<string, IngestionCheckpoint>();
     fixture.storage.ingestion.get = async id => checkpoints.get(id) ?? null;
     fixture.storage.ingestion.put = async row => { checkpoints.set(row.id, row); };
@@ -2745,9 +2752,6 @@ describe("raw Wikipedia shares the canonical language compiler", () => {
       list: async (query: any) => [...checkpoints.values()].filter(row => row.rootUri === query.rootUri && (!query.status || row.status === query.status)
         && (!query.phase || row.phase === query.phase) && (!query.itemUriPrefix || row.itemUri.startsWith(query.itemUriPrefix)))
         .sort((left, right) => right.offsetBytes - left.offsetBytes).slice(0, query.limit) } as any;
-    const blobs = new Map<string, Uint8Array>();
-    fixture.storage.blobs.put = async bytes => { const hash = blobContentHash(bytes); blobs.set(hash, Uint8Array.from(bytes)); return hash; };
-    fixture.storage.blobs.get = async hash => { const bytes = blobs.get(String(hash)); if (!bytes) throw new Error("missing fixture blob"); return bytes; };
     fixture.storage.evidence.getEvidenceBatch = async ids => fixture.state.evidence.filter(span => ids.includes(span.id));
     fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence.filter(span => !query.sourceVersionId || String(span.sourceVersionId) === String(query.sourceVersionId))
       .map(span => ({ span, score: span.alpha, reason: "exact raw source" }));
@@ -2824,9 +2828,6 @@ describe("raw Wikipedia shares the canonical language compiler", () => {
       list: async (query: any) => [...checkpoints.values()].filter(row => row.rootUri === query.rootUri && (!query.status || row.status === query.status)
         && (!query.phase || row.phase === query.phase) && (!query.itemUriPrefix || row.itemUri.startsWith(query.itemUriPrefix)))
         .sort((left, right) => right.offsetBytes - left.offsetBytes).slice(0, query.limit) } as any;
-    const blobs = new Map<string, Uint8Array>();
-    fixture.storage.blobs.put = async bytes => { const hash = blobContentHash(bytes); blobs.set(hash, Uint8Array.from(bytes)); return hash; };
-    fixture.storage.blobs.get = async hash => { const bytes = blobs.get(String(hash)); if (!bytes) throw new Error("missing fixture blob"); return bytes; };
     fixture.storage.evidence.getEvidenceBatch = async ids => fixture.state.evidence.filter(span => ids.includes(span.id));
     fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence.filter(span => !query.sourceVersionId || String(span.sourceVersionId) === String(query.sourceVersionId))
       .map(span => ({ span, score: span.alpha, reason: "exact raw source" }));
@@ -3548,6 +3549,8 @@ function exposeOwnedDialogueEvidence(fixture: { storage: ScceStorage; state: Mem
 
 function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
   const projectCheckpoints = new Map<string, IngestionCheckpoint>();
+  const blobRanges = new Map<string, { parentHash: string; byteStart: number; byteEnd: number }>();
+  const blobArchives = new Map<string, { archive: JsonValue; reference: JsonValue; byteLength: number }>();
   const state: MemoryState = {
     events: [],
     sourceVersions: [],
@@ -3610,9 +3613,10 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     init: async () => undefined,
     transaction: async <T>(fn: () => Promise<T>) => {
       const before = Object.fromEntries(Object.entries(state).map(([key, rows]) => [key, [...rows]]));
+      const rangeBefore = new Map(blobRanges), archiveBefore = new Map(blobArchives);
       const restoreProjections = captureFixtureLanguagePatternProjections(storage.languageMemory);
       const checkpointBefore=new Map(projectCheckpoints);
-      try { return await fn(); } catch (error) { Object.assign(state, before);restoreProjections();projectCheckpoints.clear();for(const [id,row] of checkpointBefore)projectCheckpoints.set(id,row); throw error; }
+      try { return await fn(); } catch (error) { Object.assign(state, before);blobRanges.clear();for(const [id,row] of rangeBefore)blobRanges.set(id,row);blobArchives.clear();for(const [id,row] of archiveBefore)blobArchives.set(id,row);restoreProjections();projectCheckpoints.clear();for(const [id,row] of checkpointBefore)projectCheckpoints.set(id,row); throw error; }
     },
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),
@@ -3622,7 +3626,58 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     ingestion: {get:async(id:string)=>projectCheckpoints.get(id)??null,put:async(row:IngestionCheckpoint)=>{projectCheckpoints.set(row.id,row);},list:async()=>[...projectCheckpoints.values()]},
     graph: { getSlice: async (query: unknown) => ({ bounded: true, query, nodes: [], edges: [], hyperedges: [] }),
       upsertNodes: async () => undefined, upsertEdges: async () => undefined, upsertHyperedges: async () => undefined },
-    blobs: { put: async (bytes: Uint8Array) => { state.blobs.push(new Uint8Array(bytes)); return blobContentHash(bytes); },get:async(hash:string)=>{const bytes=state.blobs.find(row=>blobContentHash(row)===hash);if(!bytes)throw new Error("canonical fixture blob missing");return bytes;} },
+    blobs: {
+      put: async (bytes: Uint8Array) => {
+        const hash = blobContentHash(bytes);
+        if (!state.blobs.some(row => blobContentHash(row) === hash) && !blobRanges.has(hash) && !blobArchives.has(hash)) state.blobs.push(new Uint8Array(bytes));
+        return hash;
+      },
+      putArchiveReferences: async (input: Parameters<NonNullable<ScceStorage["blobs"]["putArchiveReferences"]>>[0]) => {
+        for (const item of input.items) {
+          const bytes = await readWikipediaArchiveBlob(input.archive, item.reference);
+          if (bytes.byteLength !== item.byteLength || blobContentHash(bytes) !== item.contentHash) throw new Error("fixture archive reference mismatch");
+          const next = { archive: structuredClone(input.archive), reference: structuredClone(item.reference), byteLength: item.byteLength };
+          if (!state.blobs.some(row => blobContentHash(row) === item.contentHash) && !blobRanges.has(item.contentHash)) blobArchives.set(item.contentHash, next);
+        }
+      },
+      putRanges: async (
+        items: Parameters<NonNullable<ScceStorage["blobs"]["putRanges"]>>[0],
+        parent: Parameters<NonNullable<ScceStorage["blobs"]["putRanges"]>>[1]
+      ) => {
+        if (blobContentHash(parent.bytes) !== parent.contentHash) throw new Error("fixture range parent mismatch");
+        const retainedParent = await storage.blobs.get(parent.contentHash);
+        if (!Buffer.from(retainedParent).equals(Buffer.from(parent.bytes))) throw new Error("fixture range parent is not retained canonically");
+        for (const item of items) {
+          const bytes = parent.bytes.subarray(item.byteStart, item.byteEnd);
+          if (item.parentHash !== parent.contentHash || blobContentHash(bytes) !== item.contentHash) throw new Error("fixture range mismatch");
+          if (item.contentHash === parent.contentHash) continue;
+          const next = { parentHash: item.parentHash, byteStart: item.byteStart, byteEnd: item.byteEnd };
+          if (!state.blobs.some(row => blobContentHash(row) === item.contentHash) && !blobArchives.has(item.contentHash)) blobRanges.set(item.contentHash, next);
+        }
+      },
+      get: async (hash: string) => {
+        const read = async (id: string, ancestors: ReadonlySet<string>): Promise<Uint8Array> => {
+          if (ancestors.has(id)) throw new Error("cyclic canonical fixture blob");
+          const body = state.blobs.find(row => blobContentHash(row) === id);
+          if (body) return new Uint8Array(body);
+          const range = blobRanges.get(id);
+          if (range) {
+            const parent = await read(range.parentHash, new Set([...ancestors, id]));
+            const bytes = parent.slice(range.byteStart, range.byteEnd);
+            if (blobContentHash(bytes) !== id) throw new Error("fixture range reconstruction mismatch");
+            return bytes;
+          }
+          const archive = blobArchives.get(id);
+          if (archive) {
+            const bytes = await readWikipediaArchiveBlob(archive.archive, archive.reference);
+            if (bytes.byteLength !== archive.byteLength || blobContentHash(bytes) !== id) throw new Error("fixture archive reconstruction mismatch");
+            return bytes;
+          }
+          throw new Error("canonical fixture blob missing");
+        };
+        return read(hash, new Set());
+      }
+    },
     quarantine: unusedStore(),
     proofs: unusedStore(),
     constructs: unusedStore(),

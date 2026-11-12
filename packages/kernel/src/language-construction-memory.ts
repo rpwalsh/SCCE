@@ -16,7 +16,9 @@ import type { SourceOwnedTextProjection } from "./pooled-language-profile-bindin
 import type { SourceInductionWindow } from "./source-window-induction.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
-import type { ContextualQaSupervision } from "./source-owned-contextual-qa.js";
+import { canonicalNormalizationContract } from "./normalization-contract.js";
+import { CONTEXTUAL_QA_ALIGNMENT_SEGMENTATION_RECIPE, CONTEXTUAL_QA_DERIVED_ALIGNMENT_METHOD,
+  type ContextualQaSupervision } from "./source-owned-contextual-qa.js";
 import type { SemanticRole } from "./semantic-graph.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
 
@@ -880,6 +882,21 @@ function prepareObservation(input: {
     return { issue: { code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.coordinates, evidenceId: observation.evidenceId } };
   }
   const supervision = observation.contextualQaSupervision;
+  const derived = supervision?.derivedAnswerAlignment;
+  const derivedValid = !supervision || !derived || (derived.method === CONTEXTUAL_QA_DERIVED_ALIGNMENT_METHOD
+    && derived.segmentationRecipe === CONTEXTUAL_QA_ALIGNMENT_SEGMENTATION_RECIPE
+    && derived.normalizationContractId === canonicalNormalizationContract().id
+    && supervision.answerRange === undefined
+    && validRange(derived.replyAnswerStartCodePoint, derived.replyAnswerEndCodePoint, evidencePoints.length)
+    && validRange(derived.sourceAnswerStartCodePoint, derived.sourceAnswerEndCodePoint, evidencePoints.length)
+    && derived.replyAnswerStartCodePoint >= supervision.replyStartCodePoint
+    && derived.replyAnswerEndCodePoint <= supervision.replyEndCodePoint
+    && derived.sourceAnswerStartCodePoint >= supervision.contextStartCodePoint
+    && derived.sourceAnswerEndCodePoint <= supervision.contextEndCodePoint
+    && derived.replyAnswerEndCodePoint > derived.replyAnswerStartCodePoint
+    && derived.sourceAnswerEndCodePoint > derived.sourceAnswerStartCodePoint
+    && evidencePoints.slice(derived.replyAnswerStartCodePoint, derived.replyAnswerEndCodePoint).join("")
+      === evidencePoints.slice(derived.sourceAnswerStartCodePoint, derived.sourceAnswerEndCodePoint).join(""));
   if (supervision && (!nonempty(supervision.sourceRecordId) || !nonempty(supervision.sourceId) || !nonempty(supervision.profileId)
     || (supervision.sourceFamilyId !== undefined && !nonempty(supervision.sourceFamilyId))
     || supervision.sourceId !== String(evidence.sourceId)
@@ -891,6 +908,7 @@ function prepareObservation(input: {
       || supervision.answerRange.endCodePoint <= supervision.answerRange.startCodePoint
       || evidencePoints.slice(supervision.answerRange.startCodePoint, supervision.answerRange.endCodePoint).join("")
         !== evidencePoints.slice(supervision.replyStartCodePoint, supervision.replyEndCodePoint).join("")))
+    || !derivedValid
     || supervision.replyStartCodePoint === supervision.replyEndCodePoint || supervision.contextStartCodePoint === supervision.contextEndCodePoint
     || rangesOverlap(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint, supervision.replyStartCodePoint, supervision.replyEndCodePoint)
     || rangesOverlap(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint, supervision.contextStartCodePoint, supervision.contextEndCodePoint)

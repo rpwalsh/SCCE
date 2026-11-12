@@ -1,6 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 
+import { clamp01 } from "./primitives.js";
+
 export const SEGMENTATION_ADJACENCY_FACTORS_SCHEMA = "scce.segmentation_adjacency_factors.v1" as const;
 export interface SegmentationAdjacencyFactors {
   schema: typeof SEGMENTATION_ADJACENCY_FACTORS_SCHEMA;
@@ -67,7 +69,7 @@ export function createSegmentationAdjacencyQuery(input: SegmentationAdjacencyFac
             if (rightIndices && !rightIndices.has(rightIndex)) continue;
             const suffix = backward[right[1]]!;
             if (!Number.isFinite(suffix)) continue;
-            const posterior = Math.exp(prefix - left[2] + bridge - right[2] + suffix - partitionLogZ);
+            const posterior = clamp01(Math.exp(prefix - left[2] + bridge - right[2] + suffix - partitionLogZ));
             if (posterior > 0) yield { leftArcIndex: leftIndex, rightArcIndex: rightIndex, posterior };
           } else {
             const previous = bridges.get(right[1]);

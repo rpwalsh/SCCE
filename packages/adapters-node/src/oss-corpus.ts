@@ -40,6 +40,7 @@ export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
   beforeSourceTraining?: (source: SourceBrainFileAdmission) => void | Promise<void>;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   sourceInductionExecution?: import("./source-induction-execution.js").SourceInductionWorkerExecution;
+  sourceInductionExecutionOwner?: Pick<import("./source-induction-execution.js").SourceInductionExecutionOwner, "execution" | "receipt">;
   storage: ScceStorage;
   rootPath: string;
   /** Provenance of a fetched repository snapshot, retained on every trained projection. */
@@ -250,6 +251,13 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
 
     const rawBytes = await readFile(file.absolutePath);
     if (file.contentHash && sha256Bytes(rawBytes) !== file.contentHash.replace(/^sha256[:_]/u, "")) throw new Error(`OSS source changed after snapshot inspection: ${file.path}`);
+    // A path or projection label is not source material. In particular, an empty
+    // code file must not manufacture a prose training report from its filename;
+    // source-brain publication binds every report to positive canonical bytes.
+    if (rawBytes.byteLength === 0) {
+      skipped.push({ path: file.path, reason: "empty_language_training_projection", byteLength: file.byteLength });
+      continue;
+    }
     const raw = rawBytes.toString("utf8");
     const artifactRole = await roles.roleFor(file.absolutePath);
     const license = await licenses.licenseFor(file.absolutePath);
@@ -304,6 +312,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       const trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
         sourceInductionExecution: input.sourceInductionExecution,
+        sourceInductionExecutionOwner: input.sourceInductionExecutionOwner,
         storage: input.storage,
         sourceSystem: projected.sourceSystem,
         streamUri: `${projected.sourceSystem}:${relativePath}`,

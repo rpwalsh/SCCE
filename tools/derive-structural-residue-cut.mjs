@@ -9,6 +9,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(path.join(here, "..", "packages", "adapters-node", "package.json"));
@@ -28,21 +29,23 @@ const sentences = text => String(text).replace(/\s+/gu, " ").trim()
 
 const client = new pg.Client({ connectionString: url, statement_timeout: 900000 });
 await client.connect();
+const corpus = createCanonicalCorpusReader(client, schema);
 const scores = [];
 let spans = 0;
 try {
   let cursor = "";
   while (spans < spanCap) {
     const rows = (await client.query(
-      `select id, text_content from ${schema}.evidence_spans
-       where status = 'promoted' and text_content is not null and id > $1 order by id limit 3000`,
+      `select id,content_hash,byte_start,byte_end,char_start,char_end from ${schema}.evidence_spans
+       where status = 'promoted' and id > $1 order by id limit 256`,
       [cursor]
     )).rows;
     if (!rows.length) break;
-    for (const row of rows) {
+    const texts = await corpus.evidenceTexts(rows);
+    for (const [index, row] of rows.entries()) {
       cursor = row.id;
       spans++;
-      for (const sentence of sentences(row.text_content)) scores.push(kernel.structuralResidueScore(sentence));
+      for (const sentence of sentences(texts[index])) scores.push(kernel.structuralResidueScore(sentence));
     }
   }
 } finally {

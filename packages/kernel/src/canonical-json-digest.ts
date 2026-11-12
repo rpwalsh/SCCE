@@ -73,7 +73,6 @@ export function canonicalJsonByteLength(value: unknown, allowance = Number.MAX_S
       let fields = 0;
       for (const key of Object.keys(input)) {
         if (bytes > allowance) break;
-        if (key === "__proto__") continue;
         if (fields++) bytes++;
         bytes += Buffer.byteLength(JSON.stringify(key), "utf8");
         bytes++;
@@ -140,10 +139,8 @@ function* canonicalTokens(
   }
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
-  // Preserve the old normalizer's special __proto__ assignment behavior and
-  // eager evaluation for accessor-bearing records. Durable artifact data has
-  // ordinary own data properties, and does not take this compatibility path.
-  if (keys.includes("__proto__") || keys.some(key => !Object.hasOwn(Object.getOwnPropertyDescriptor(record, key)!, "value"))) {
+  // Accessors retain the canonical normalizer's eager evaluation contract.
+  if (keys.some(key => !Object.hasOwn(Object.getOwnPropertyDescriptor(record, key)!, "value"))) {
     yield* jsonTokens(canonicalJsonValue(value));
     return;
   }
@@ -157,7 +154,15 @@ function* canonicalTokens(
   // JSON.stringify enumerates integer-index keys numerically even when the
   // normalizer inserted them in lexical order. Match that exact byte contract.
   const keyOrder: Record<string, null> = {};
-  for (const key of keys) keyOrder[key] = null;
+  for (const key of keys) {
+    if (key === "__proto__") Object.defineProperty(keyOrder, key, {
+      value: null,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+    else keyOrder[key] = null;
+  }
   active.add(value);
   yield "{";
   let index = 0;

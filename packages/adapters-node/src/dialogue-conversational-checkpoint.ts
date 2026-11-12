@@ -6,13 +6,17 @@ import { canonicalStringify, createHasher, toJsonValue, type ContentHash, type I
 export const DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID = "scce.dialogue_conversational_construction.v2";
 export const DIALOGUE_CONVERSATIONAL_CHECKPOINT_SCHEMA = "scce.dialogue_conversational_compilation.v2";
 
-export interface DialogueSourceComponentInput<T> {
+export interface DialogueSourceComponentInput<T, Prepared = undefined> {
   storage: ScceStorage;
   rootUri: string;
   informationLabel: InformationLabel;
   authorship: string;
-  sources: readonly { sourceUri: string; sourceVersionId: string; contentHash: string; byteLength: number; transcriptDigest?:string }[];
-  compile: () => Promise<{ report: T; projections: readonly LanguagePatternProjection[]; deferred?: boolean }>;
+  sources: readonly { sourceUri: string; sourceVersionId: string; contentHash: string; byteLength: number; transcriptDigest?: string;
+    /** Optional verified language-owner binding; when present it is part of the checkpoint identity. */
+    languageIdentityId?: string; languageIdentityDigest?: string }[];
+  /** Optional read/compute phase kept outside the short atomic publication transaction. */
+  prepare?: () => Promise<Prepared>;
+  compile: (prepared: Prepared) => Promise<{ report: T; projections: readonly LanguagePatternProjection[]; deferred?: boolean }>;
   unchanged: () => T;
 }
 export function conversationalCheckpointSources(sources: readonly { sourceUri: string; sourceVersionId: string; contentHash: string; byteLength: number; transcriptTurns?: readonly TranscriptTurn[] }[]): DialogueSourceComponentInput<unknown>["sources"] {
@@ -25,16 +29,16 @@ export function prepareDialogueSourceComponentBinding(input: Pick<DialogueSource
   return { binding: canonicalStringify({ rootUri: input.rootUri, informationLabel: input.informationLabel, authorship: input.authorship, sources }),
     byteLength: sources.reduce((sum, source) => sum + source.byteLength, 0) };
 }
-export function runDialogueConversationalComponent<T>(input:DialogueSourceComponentInput<T>):Promise<T>{
+export function runDialogueConversationalComponent<T, Prepared = undefined>(input:DialogueSourceComponentInput<T, Prepared>):Promise<T>{
   return runDialogueSourceComponent(input,DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID,DIALOGUE_CONVERSATIONAL_CHECKPOINT_SCHEMA,"dialogue_conversational_compilation");
 }
-export function runDialogueComputationComponent<T>(input:DialogueSourceComponentInput<T>):Promise<T>{
+export function runDialogueComputationComponent<T, Prepared = undefined>(input:DialogueSourceComponentInput<T, Prepared>):Promise<T>{
   return runDialogueSourceComponent(input,SOURCE_COMPUTATION_CONSTRUCTION_RECIPE,"scce.dialogue_computation_compilation.v1","dialogue_computation_compilation");
 }
-export function runDialogueContextualQaComponent<T>(input:DialogueSourceComponentInput<T>):Promise<T>{
-  return runDialogueSourceComponent(input,CONTEXTUAL_QA_CONSTRUCTION_RECIPE,"scce.dialogue_contextual_qa_compilation.v1","dialogue_contextual_qa_compilation",CONTEXTUAL_QA_COMPILER_FINGERPRINT);
+export function runDialogueContextualQaComponent<T, Prepared = undefined>(input:DialogueSourceComponentInput<T, Prepared>):Promise<T>{
+  return runDialogueSourceComponent(input,CONTEXTUAL_QA_CONSTRUCTION_RECIPE,"scce.dialogue_contextual_qa_compilation.v1","dialogue_contextual_qa_compilation",CONTEXTUAL_QA_COMPILER_FINGERPRINT,true);
 }
-async function runDialogueSourceComponent<T>(input:DialogueSourceComponentInput<T>,recipe:string,schema:string,idPrefix:string,compilerFingerprint=recipe):Promise<T>{
+async function runDialogueSourceComponent<T, Prepared = undefined>(input:DialogueSourceComponentInput<T, Prepared>,recipe:string,schema:string,idPrefix:string,compilerFingerprint=recipe,requirePublishedPattern=false):Promise<T>{
   if (!input.sources.length) return input.unchanged();
   const hasher = createHasher();
   const { binding, byteLength } = prepareDialogueSourceComponentBinding(input);
@@ -47,7 +51,9 @@ async function runDialogueSourceComponent<T>(input:DialogueSourceComponentInput<
       && metadata !== null && typeof metadata === "object" && !Array.isArray(metadata)
       && metadata?.schema === schema && metadata.binding === binding
       && metadata.compilerFingerprint === compilerFingerprint;
-    if (!valid || !metadata || typeof metadata !== "object" || Array.isArray(metadata) || !Array.isArray(metadata.projections)) return false;
+    if (!valid || !metadata || typeof metadata !== "object" || Array.isArray(metadata) || !Array.isArray(metadata.projections)
+      || requirePublishedPattern && !metadata.projections.some(raw => raw && typeof raw === "object" && !Array.isArray(raw)
+        && Array.isArray(raw.patternIds) && raw.patternIds.length > 0)) return false;
     for (const raw of metadata.projections) {
       if (!raw || typeof raw !== "object" || Array.isArray(raw) || typeof raw.profileId !== "string" || typeof raw.sourceId !== "string"
         || typeof raw.sourceVersionId !== "string" || raw.componentRecipe !== recipe
@@ -64,14 +70,37 @@ async function runDialogueSourceComponent<T>(input:DialogueSourceComponentInput<
     return true;
   };
   if (await current()) return input.unchanged();
-  return input.storage.transaction(async () => {
-    if (await current()) return input.unchanged();
-    const { report, projections, deferred } = await input.compile();
-    if (deferred) return report;
-    await input.storage.ingestion.put({ id, rootUri: input.rootUri, itemUri: input.rootUri, phase: "stored", status: "complete",
-      offsetBytes: byteLength, contentHash, byteLength, updatedAt: Date.now(), metadata: toJsonValue({
-        schema: schema, binding, compilerFingerprint, projections
-      }) });
-    return report;
-  });
+  const running = { id, rootUri: input.rootUri, itemUri: input.rootUri, phase: "extracting" as const, status: "running" as const,
+    offsetBytes: 0, contentHash, byteLength, updatedAt: Date.now(), metadata: toJsonValue({
+      schema, binding, compilerFingerprint, projections: [], preparation: "running"
+    }) };
+  let prepared = undefined as Prepared;
+  if (input.prepare) {
+    await input.storage.ingestion.put(running);
+    try { prepared = await input.prepare(); }
+    catch (error) {
+      await input.storage.ingestion.put({ ...running, phase: "failed", status: "failed", updatedAt: Date.now(),
+        reason: String(error instanceof Error ? error.message : error).slice(0, 500),
+        metadata: toJsonValue({ schema, binding, compilerFingerprint, projections: [], preparation: "failed" }) });
+      throw error;
+    }
+  }
+  try {
+    return await input.storage.transaction(async () => {
+      if (await current()) return input.unchanged();
+      const { report, projections, deferred } = await input.compile(prepared);
+      if (deferred) return report;
+      if (requirePublishedPattern && !projections.some(projection => projection.patternIds.length > 0)) return report;
+      await input.storage.ingestion.put({ id, rootUri: input.rootUri, itemUri: input.rootUri, phase: "stored", status: "complete",
+        offsetBytes: byteLength, contentHash, byteLength, updatedAt: Date.now(), metadata: toJsonValue({
+          schema: schema, binding, compilerFingerprint, projections
+        }) });
+      return report;
+    });
+  } catch (error) {
+    if (input.prepare) await input.storage.ingestion.put({ ...running, phase: "failed", status: "failed", updatedAt: Date.now(),
+      reason: String(error instanceof Error ? error.message : error).slice(0, 500),
+      metadata: toJsonValue({ schema, binding, compilerFingerprint, projections: [], preparation: "published_failed" }) });
+    throw error;
+  }
 }

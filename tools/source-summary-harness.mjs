@@ -20,6 +20,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { summarizeSource, unwrapTypographicLineBreaks } from "../packages/kernel/dist/source-summary.js";
 import { deriveClosedClassWords } from "../packages/kernel/dist/closed-class-words.js";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 // Resolved from the repository, not from one machine's checkout path (same recipe as scripts/db.mjs).
 const pg = createRequire(pathToFileURL(path.resolve("packages/adapters-node/package.json")))("pg");
 
@@ -59,7 +60,7 @@ async function closedClassWords(client) {
 }
 
 /** The version of this source with the most promoted spans, reassembled at its own character offsets. */
-async function wholeSource(client, title) {
+async function wholeSource(client, corpus, title) {
   const version = await client.query(`
     SELECT source_version_id, count(*) AS spans
     FROM evidence_spans WHERE source_title = $1 AND status = 'promoted'
@@ -67,29 +68,37 @@ async function wholeSource(client, title) {
   if (!version.rows.length) return { text: "", spans: 0, versionId: "" };
   const versionId = version.rows[0].source_version_id;
   const rows = await client.query(`
-    SELECT char_start, char_end, text_content FROM evidence_spans
+    SELECT char_start,char_end,content_hash,byte_start,byte_end FROM evidence_spans
     WHERE source_title = $1 AND source_version_id = $2 AND status = 'promoted'
     ORDER BY char_start`, [title, versionId]);
   const pieces = [];
+  const texts = await corpus.evidenceTexts(rows.rows);
   let cursor = 0;
-  for (const row of rows.rows) {
+  for (const [index, row] of rows.rows.entries()) {
     if (Number(row.char_end) <= cursor) continue;
     if (Number(row.char_start) > cursor) pieces.push("\n");
-    pieces.push(row.text_content);
+    pieces.push(texts[index]);
     cursor = Number(row.char_end);
   }
   return { text: pieces.join(""), spans: rows.rows.length, versionId };
 }
 
 /** The spans that carry the source's own title: what identity-bound admission puts in front of the summarizer. */
-async function identityWindow(client, title, versionId) {
+async function identityWindow(client, corpus, title, versionId) {
   if (!versionId) return { text: "", spans: 0 };
   const rows = await client.query(`
-    SELECT text_content FROM evidence_spans
+    SELECT content_hash,byte_start,byte_end,char_start,char_end FROM evidence_spans
     WHERE source_title = $1 AND source_version_id = $2 AND status = 'promoted'
-      AND text_content ILIKE '%' || $3 || '%'
-    ORDER BY char_start LIMIT $4`, [title, versionId, title, IDENTITY_WINDOW_SPANS]);
-  return { text: rows.rows.map(row => row.text_content).join("\n\n"), spans: rows.rows.length };
+    ORDER BY char_start`, [title, versionId]);
+  const selected = [];
+  const needle = title.toLocaleLowerCase();
+  for (let offset = 0; offset < rows.rows.length && selected.length < IDENTITY_WINDOW_SPANS; offset += 128) {
+    const texts = await corpus.evidenceTexts(rows.rows.slice(offset, offset + 128));
+    for (const text of texts) if (text.toLocaleLowerCase().includes(needle)) {
+      selected.push(text); if (selected.length === IDENTITY_WINDOW_SPANS) break;
+    }
+  }
+  return { text: selected.join("\n\n"), spans: selected.length };
 }
 
 function lineBreakMeasurement(text) {
@@ -118,17 +127,18 @@ await client.connect();
 await client.query(`SET search_path TO "${schema}"`);
 await client.query("SET statement_timeout = '120s'");
 await client.query("SET default_transaction_read_only = on");
+const corpus = createCanonicalCorpusReader(client, schema);
 
 const closedClass = await closedClassWords(client);
 console.log(`closed class: ${closedClass.size} units derived from the corpus's own continuation counts\n`);
 
 for (const title of titles) {
-  const whole = await wholeSource(client, title);
+  const whole = await wholeSource(client, corpus, title);
   if (!whole.text) {
     console.log(`######## ${title}: no promoted spans ########\n`);
     continue;
   }
-  const window = await identityWindow(client, title, whole.versionId);
+  const window = await identityWindow(client, corpus, title, whole.versionId);
   for (const view of [
     { name: "WHOLE SOURCE", text: whole.text, spans: whole.spans },
     { name: "IDENTITY WINDOW", text: window.text, spans: window.spans }

@@ -854,6 +854,15 @@ export interface BlobStore {
    * Optional, so an adapter without it keeps working through `put`; callers fall back to the loop.
    */
   putBatch?(items: readonly { content: Uint8Array; mediaType: string }[]): Promise<ContentHash[]>;
+  /**
+   * Verified byte ranges of an already published canonical blob; this is the only evidence-span publication
+   * representation. Stores must reject missing/changed parents and must never materialize a second chunk body.
+   */
+  putRanges(items: readonly { contentHash: ContentHash; parentHash: ContentHash; byteStart: number; byteEnd: number; mediaType: string }[],
+    parent: { contentHash: ContentHash; bytes: Uint8Array }): Promise<void>;
+  /** Register exact source representations without copying the retained corpus into the database. */
+  putArchiveReferences?(input: { archiveId: string; archive: JsonValue;
+    items: readonly { contentHash: ContentHash; mediaType: string; byteLength: number; reference: JsonValue }[] }): Promise<void>;
   get(hash: ContentHash): Promise<Uint8Array>;
   exists(hash: ContentHash): Promise<boolean>;
 }
@@ -889,6 +898,8 @@ export interface RelationObservationStore {
 
 export interface IngestionCheckpointStore {
   put(checkpoint: IngestionCheckpoint): Promise<void>;
+  /** Optimistic replacement used when a durable resume cursor changes ownership between executable attestations. */
+  compareAndPut?(checkpoint: IngestionCheckpoint, expected: IngestionCheckpoint): Promise<boolean>;
   get(id: string): Promise<IngestionCheckpoint | null>;
   list(query?: { rootUri?: string; status?: IngestionCheckpoint["status"]; phase?: IngestionCheckpoint["phase"]; itemUriPrefix?: string; orderBy?: "updatedAt" | "offsetBytes"; limit?: number }): Promise<IngestionCheckpoint[]>;
 }
@@ -1022,6 +1033,12 @@ export interface LanguageMemoryStore {
   replaceLanguagePatternProjection?(input: {
     patterns: readonly LanguagePatternRecord[];
     projection: LanguagePatternProjection;
+    /**
+     * The caller intentionally reuses immutable pattern instances across
+     * schema ledgers in one surrounding transaction. An adapter may reuse a
+     * completed physical write only for the exact same object instance.
+     */
+    reusePatternRowsFromCurrentTransaction?: boolean;
   }): Promise<void>;
   /** Reads an exact accessible active projection and optionally verifies its canonical compilation inventory. */
   getLanguagePatternProjection?(query: Omit<LanguagePatternProjection, "patternIds"> & { sourceCompilationId?: string }): Promise<LanguagePatternProjection | undefined>;
@@ -1046,7 +1063,7 @@ export interface LanguageMemoryStore {
   /** Maintenance only: locked keyset prefix, decoded full-row byte bound, and explicit oversized-row progress. */
   listUnitSourceMetadataPage?(query: { afterId?: string; limit: number; maxTotalJsonBytes: number }): Promise<UnitSourceMetadataPage>;
   /** Operation views retain only their named consumer fields; construction and creative bodies remain deferred. */
-  listLanguagePatterns(query?: { view?: LanguageMemoryReadView; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; limit?: number; maxTotalJsonBytes?: number; requireComplete?: boolean }): Promise<LanguagePatternRecord[]>;
+  listLanguagePatterns(query?: { view?: LanguageMemoryReadView; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; sourceSystems?: readonly string[]; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; limit?: number; maxTotalJsonBytes?: number; requireComplete?: boolean }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { view?: LanguageMemoryReadView; profileIds?: readonly string[]; sourceSystem?: string; surface?: string; requestSurface?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }
@@ -1447,7 +1464,7 @@ export interface KernelRuntimePorts {
 }
 
 // Includes bounded lexical pages and source-owned construction decision pages.
-export const POSTGRES_SCHEMA_VERSION = 36;
+export const POSTGRES_SCHEMA_VERSION = 41;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -1479,8 +1496,13 @@ export const POSTGRES_REQUIRED_TABLES = [
   "language_profile_aliases",
   "ngram_observations",
   "ngram_models",
+  "ngram_model_continuations",
   "language_units",
+  "language_unit_evidence_sets",
+  "language_unit_information_labels",
+  "language_unit_values",
   "language_patterns",
+  "source_text_replay_binding_sets",
   "creative_event_templates",
   "creative_event_lexemes",
   "creative_event_lexical_pages",

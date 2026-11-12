@@ -9,6 +9,7 @@ export * from "./ids.js";
 export * from "./storage.js";
 export * from "./brain-shards.js";
 export * from "./brain-lifecycle.js";
+export * from "./wikipedia-publication-qualification.js";
 export * from "./events.js";
 export * from "./math.js";
 export * from "./alpha.js";
@@ -67,6 +68,10 @@ export * from "./surface-lattice.js";
 export * from "./segmentation-aggregate.js";
 export * from "./language-induction-persistence.js";
 export * from "./language-induction-memory.js";
+export * from "./source-text-replay.js";
+export * from "./source-text-replay-binding-set.js";
+export * from "./syntax-source-replay-storage.js";
+export * from "./semantic-source-replay-storage.js";
 export * from "./pooled-language-profile-binding.js";
 export * from "./ppf.js";
 export * from "./powerwalk.js";
@@ -276,8 +281,13 @@ export {
   type RetrievalBindingContext
 } from "./retrieval-binding.js";
 export { measureRequestCorpusSubject, type RequestCorpusSubject } from "./corpus-identity-runtime.js";
-export { CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_COMPILER_FINGERPRINT, CONTEXTUAL_QA_SOURCE_SYSTEM, type ContextualQaRequestForm, type ContextualQaWitness } from "./source-owned-contextual-qa.js";
-export { acquireContextualQaConstructions, contextualQaRequestFeatures, contextualQaRequestMatches, verifyContextualQaConstruction, type AcquiredContextualQaFamily } from "./contextual-qa-acquisition.js";
+export { CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_COMPILER_FINGERPRINT, CONTEXTUAL_QA_SOURCE_SYSTEM,
+  CONTEXTUAL_QA_DERIVED_ALIGNMENT_METHOD, CONTEXTUAL_QA_ALIGNMENT_SEGMENTATION_RECIPE,
+  type ContextualQaRequestForm, type ContextualQaWitness } from "./source-owned-contextual-qa.js";
+export { acquireContextualQaConstructions, mergeContextualQaAcquisitionResults, contextualQaRequestFeatures, contextualQaRequestMatches,
+  inspectContextualQaConstructionVerification, inspectContextualQaLiteralAnswerAlignment, verifyContextualQaConstruction, type AcquiredContextualQaFamily,
+  type ContextualQaAcquisitionPartition, type ContextualQaAcquisitionResult, type ContextualQaLiteralAnswerCandidate,
+  type ContextualQaConstructionVerification, type ContextualQaLiteralAnswerInspection } from "./contextual-qa-acquisition.js";
 export * from "./dialogue-cognitive-memory.js";
 export * from "./conversation-plan-memory.js";
 export * from "./dialogue-cognitive-shadow.js";

@@ -26,6 +26,7 @@ describe("ingestion source derivative identity", () => {
     const evidence: EvidenceSpan[] = [];
     const quarantined: QuarantineSource[] = [];
     const blobs = new Map<string, Uint8Array>();
+    const ranges = new Map<string, { parentHash: ContentHash; byteStart: number; byteEnd: number }>();
     const events: ScceEvent[] = [];
     let transactions = 0;
     const informationLabel = {
@@ -36,7 +37,7 @@ describe("ingestion source derivative identity", () => {
       mergePolicy: "isolated" as const
     };
     const deps = {
-      maxChunkBytes: 4096,
+      maxChunkBytes: 24,
       informationAccess: {
         tenantId: "fixture.tenant",
         principalId: "fixture.owner",
@@ -54,6 +55,15 @@ describe("ingestion source derivative identity", () => {
             const hash = idFactory.contentHash(content);
             blobs.set(String(hash), new Uint8Array(content));
             return hash;
+          },
+          putRanges: async (items: readonly { contentHash: ContentHash; parentHash: ContentHash; byteStart: number; byteEnd: number }[], parent: { contentHash: ContentHash; bytes: Uint8Array }) => {
+            expect(idFactory.contentHash(parent.bytes)).toBe(parent.contentHash);
+            expect(Buffer.from(blobs.get(String(parent.contentHash)) ?? [])).toEqual(Buffer.from(parent.bytes));
+            for (const item of items) {
+              expect(item.parentHash).toBe(parent.contentHash);
+              expect(idFactory.contentHash(parent.bytes.subarray(item.byteStart, item.byteEnd))).toBe(item.contentHash);
+              if (item.contentHash !== parent.contentHash) ranges.set(String(item.contentHash), { parentHash: item.parentHash, byteStart: item.byteStart, byteEnd: item.byteEnd });
+            }
           }
         },
         evidence: {
@@ -133,6 +143,8 @@ describe("ingestion source derivative identity", () => {
     expect(Buffer.from(originalBytes).toString("utf8")).toContain(secret);
     expect(Buffer.from(derivativeBytes).toString("utf8")).not.toContain("correct-horse-battery-staple");
     expect(evidence.length).toBeGreaterThan(0);
+    expect(blobs.size).toBe(2);
+    expect(ranges.size).toBeGreaterThan(0);
     expect((original?.metadata as Record<string, unknown>).epistemicState).toBe("asserted");
     expect((original?.metadata as Record<string, unknown>).ownerLabel).toBe("fixture");
     for (const span of evidence) {
@@ -145,6 +157,11 @@ describe("ingestion source derivative identity", () => {
       expect(Buffer.from(derivativeBytes)
         .subarray(span.byteStart, span.byteEnd)
         .toString("utf8")).toBe(span.text);
+      const range = ranges.get(String(span.contentHash));
+      if (span.contentHash !== derivative?.contentHash) {
+        expect(range).toEqual({ parentHash: derivative?.contentHash, byteStart: span.byteStart, byteEnd: span.byteEnd });
+        expect(Buffer.from(bytesFor(blobs, range?.parentHash)).subarray(range?.byteStart, range?.byteEnd).toString("utf8")).toBe(span.text);
+      }
       expect(((span.provenance as Record<string, unknown>).metadata as Record<string, unknown>).epistemicState).toBe("asserted");
     }
     expect(quarantined.map(source => source.sourceVersionId)).toEqual([derivative?.sourceVersionId]);

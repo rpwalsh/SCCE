@@ -151,23 +151,25 @@ async function countLegacySchema(adapter: PostgresStorageAdapter, schemaName: st
 }
 
 const LEARNED_TABLES = [
-  "language_profiles", "language_profile_signatures", "ngram_observations", "ngram_models",
-  "language_units", "language_patterns", "semantic_frames"
+  ["language_profiles", "language_profiles"], ["language_profile_signatures", "language_profile_signatures"],
+  ["ngram_observations", "ngram_observations"], ["ngram_models", "ngram_models"],
+  ["language_units", "language_unit_values"], ["language_patterns", "language_patterns"],
+  ["semantic_frames", "semantic_frames"]
 ] as const;
 
 async function learnedSnapshot(adapter: PostgresStorageAdapter): Promise<LearnedSnapshot> {
   const counts: Record<string, number> = {};
   const contributions: Record<string, number> = {};
   const artifactDigests: Record<string, string> = {};
-  for (const table of LEARNED_TABLES) {
-    const rows = await adapter.query<{ row: Record<string, unknown> }>(`SELECT to_jsonb(t) AS row FROM ${adapter.table(table)} t`);
+  for (const [table, relation] of LEARNED_TABLES) {
+    const rows = await adapter.query<{ row: Record<string, unknown> }>(`SELECT to_jsonb(t) AS row FROM ${adapter.table(relation)} t`);
     counts[table] = rows.length;
     contributions[table] = rows.length;
     const canonicalRows = rows.map(item => normalize(item.row)).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
     artifactDigests[table] = stable(canonicalRows);
     if (table === "ngram_observations") {
       const totals = await adapter.query<{ observations: string; mass: string }>(
-        `SELECT COUNT(*)::text AS observations, COALESCE(SUM(count),0)::text AS mass FROM ${adapter.table(table)}`
+        `SELECT COUNT(*)::text AS observations, COALESCE(SUM(count),0)::text AS mass FROM ${adapter.table(relation)}`
       );
       contributions.ngramObservations = Number(totals[0]?.observations ?? "0");
       contributions.ngramObservationMass = Number(totals[0]?.mass ?? "0");

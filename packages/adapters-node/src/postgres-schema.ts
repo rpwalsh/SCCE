@@ -2,10 +2,13 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_SOURCE_SYSTEM,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type InformationAccessContext } from "@scce/kernel";
-import { evidenceTextDigestSchemaStatements } from "./evidence-text-digest.js";
+import { evidenceTextReferenceSchemaStatements } from "./evidence-text-reference-schema.js";
+import { canonicalBlobSchemaStatements } from "./canonical-evidence-text.js";
 import { LANGUAGE_PATTERN_SELECTION_HEADERS, languagePatternSelectionHeaderStatement } from "./postgres-language-pattern-headers.js";
 import { canonicalCreativeEventSchemaStatements } from "./canonical-creative-event-store.js";
 import { constructionSourceDecisionSchemaStatements } from "./construction-source-decision-store.js";
+import { canonicalLanguageUnitSchemaStatements } from "./canonical-language-unit-store.js";
+import { SOURCE_TEXT_REPLAY_BINDING_SET_RELATION, sourceTextReplayBindingSetSchemaStatements } from "./source-text-replay-binding-set-store.js";
 
 export type InformationLabeledTable =
   | "source_versions"
@@ -16,8 +19,10 @@ export type InformationLabeledTable =
   | "language_profiles"
   | "ngram_observations"
   | "ngram_models"
+  | "ngram_model_continuations"
   | "language_units"
   | "language_patterns"
+  | "source_text_replay_binding_sets"
   | "semantic_frames"
   | "translation_alignments";
 
@@ -44,6 +49,107 @@ export const DEFERRED_INDEX_RESTORE_PARALLEL_WORKERS = 2;
 /** Tables whose secondary indexes exist to serve reads and can be rebuilt after a corpus build. */
 export const BULK_LOAD_DEFERRABLE_TABLES = ["ngram_observations"] as const;
 
+/**
+ * Exact continuation counts projected once per model.  The canonical model
+ * remains replay-backed; this narrow, access-labeled projection prevents every
+ * server process from expanding every training tape merely to rank the
+ * language's learned function symbols.
+ */
+export const NGRAM_MODEL_CONTINUATION_RELATION = "ngram_model_continuations";
+
+function ngramModelContinuationBackfillStatement(q: string): string {
+  return `WITH pending AS MATERIALIZED (
+      SELECT model.id,model.profile_id,model.updated_at,model.information_label,model.model_json->'model' AS stored_model
+      FROM ${q}.ngram_models model
+      LEFT JOIN ${q}.${NGRAM_MODEL_CONTINUATION_RELATION} projection ON projection.model_id=model.id
+      WHERE projection.model_id IS NULL OR projection.model_updated_at IS DISTINCT FROM model.updated_at
+        OR projection.profile_id IS DISTINCT FROM model.profile_id
+        OR projection.information_label IS DISTINCT FROM model.information_label
+    ), projected AS (
+      SELECT pending.id,pending.profile_id,pending.updated_at,pending.information_label,item.key AS symbol,item.value::numeric AS contexts
+      FROM pending
+      CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(pending.stored_model->'continuationCounts')='object'
+        THEN pending.stored_model->'continuationCounts' ELSE '{}'::jsonb END) item
+      UNION ALL
+      SELECT pending.id,pending.profile_id,pending.updated_at,pending.information_label,
+        CASE WHEN pair.value::int<jsonb_array_length(pending.stored_model->'replay'->'vocabulary')
+          THEN pending.stored_model->'replay'->'vocabulary'->>pair.value::int
+          ELSE pending.stored_model->'projectionSymbols'->>(pair.value::int-jsonb_array_length(pending.stored_model->'replay'->'vocabulary')) END,
+        (pending.stored_model->'continuationCountPairs'->>(pair.ordinality::int))::numeric
+      FROM pending
+      CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(pending.stored_model->'continuationCountPairs')='array'
+        THEN pending.stored_model->'continuationCountPairs' ELSE '[]'::jsonb END) WITH ORDINALITY pair(value,ordinality)
+      WHERE pair.ordinality % 2 = 1
+    ), totals AS MATERIALIZED (
+      SELECT id,profile_id,updated_at,information_label,symbol,SUM(contexts) AS contexts
+      FROM projected GROUP BY id,profile_id,updated_at,information_label,symbol
+    ), rows AS (
+      SELECT pending.id,pending.profile_id,pending.updated_at,pending.information_label,
+        COALESCE(jsonb_object_agg(totals.symbol,to_jsonb(totals.contexts) ORDER BY totals.symbol)
+          FILTER (WHERE totals.symbol IS NOT NULL),'{}'::jsonb) AS continuation_counts
+      FROM pending LEFT JOIN totals ON totals.id=pending.id
+      GROUP BY pending.id,pending.profile_id,pending.updated_at,pending.information_label
+    )
+    INSERT INTO ${q}.${NGRAM_MODEL_CONTINUATION_RELATION}(model_id,profile_id,continuation_counts,model_updated_at,information_label)
+    SELECT id,profile_id,continuation_counts,updated_at,information_label FROM rows
+    ON CONFLICT(model_id) DO UPDATE SET profile_id=EXCLUDED.profile_id,continuation_counts=EXCLUDED.continuation_counts,
+      model_updated_at=EXCLUDED.model_updated_at,information_label=EXCLUDED.information_label
+    WHERE ${q}.${NGRAM_MODEL_CONTINUATION_RELATION}.profile_id IS DISTINCT FROM EXCLUDED.profile_id
+      OR ${q}.${NGRAM_MODEL_CONTINUATION_RELATION}.continuation_counts IS DISTINCT FROM EXCLUDED.continuation_counts
+      OR ${q}.${NGRAM_MODEL_CONTINUATION_RELATION}.model_updated_at IS DISTINCT FROM EXCLUDED.model_updated_at
+      OR ${q}.${NGRAM_MODEL_CONTINUATION_RELATION}.information_label IS DISTINCT FROM EXCLUDED.information_label`;
+}
+
+/** One membership key also serves reverse lookup; owner pagination keeps its own ordered index. */
+function graphEvidenceMembershipIndexStatement(q: string): string {
+  return `DO $scce_graph_evidence_membership_index$
+  DECLARE
+    target_table regclass := '${q}.graph_evidence_associations'::regclass;
+    primary_name text;
+    primary_attributes smallint[];
+    primary_columns text[];
+    primary_valid boolean;
+    reverse_index regclass;
+    reverse_valid boolean;
+  BEGIN
+    EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE',target_table);
+    reverse_index := to_regclass('${q}.idx_${clean(q)}_graph_evidence_reverse');
+    SELECT c.conname,c.conkey,
+      ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(attnum,ordinality)
+        JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum ORDER BY k.ordinality),
+      NOT c.condeferrable AND c.convalidated AND i.indisvalid AND i.indisready
+    INTO primary_name,primary_attributes,primary_columns,primary_valid
+    FROM pg_catalog.pg_constraint c JOIN pg_catalog.pg_index i ON i.indexrelid=c.conindid
+    WHERE c.conrelid=target_table AND c.contype='p';
+    IF primary_name IS NULL OR primary_valid IS NOT TRUE
+      OR primary_columns NOT IN (ARRAY['entity_kind','entity_id','evidence_id']::text[],ARRAY['evidence_id','entity_kind','entity_id']::text[]) THEN
+      RAISE EXCEPTION 'Unexpected graph evidence membership primary key; refusing index migration';
+    END IF;
+    IF reverse_index IS NOT NULL THEN
+      SELECT i.indrelid=target_table AND NOT i.indisunique AND NOT i.indisprimary
+        AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnatts=3
+        AND ARRAY(SELECT a.attname::text FROM unnest(i.indkey) WITH ORDINALITY k(attnum,ordinality)
+          JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum ORDER BY k.ordinality)
+          =ARRAY['evidence_id','entity_kind','entity_id']::text[]
+      INTO reverse_valid FROM pg_catalog.pg_index i WHERE i.indexrelid=reverse_index;
+      IF reverse_valid IS NOT TRUE OR EXISTS(SELECT 1 FROM pg_catalog.pg_constraint WHERE conindid=reverse_index) THEN
+        RAISE EXCEPTION 'Unexpected graph evidence reverse index; refusing index migration';
+      END IF;
+    END IF;
+    IF primary_columns=ARRAY['entity_kind','entity_id','evidence_id']::text[] THEN
+      IF EXISTS(SELECT 1 FROM pg_catalog.pg_constraint WHERE contype='f' AND confrelid=target_table
+        AND confkey @> primary_attributes AND confkey <@ primary_attributes) THEN
+        RAISE EXCEPTION 'Referenced graph evidence membership primary key; refusing index migration';
+      END IF;
+      -- The DO statement and surrounding migration are atomic. ALTER holds the
+      -- table lock throughout: no writer can observe a gap in uniqueness.
+      EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I',target_table,primary_name);
+      EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I PRIMARY KEY (evidence_id,entity_kind,entity_id)',target_table,primary_name);
+    END IF;
+    IF reverse_index IS NOT NULL THEN EXECUTE format('DROP INDEX %s',reverse_index); END IF;
+  END $scce_graph_evidence_membership_index$`;
+}
+
 function informationLabelMigrationStatements(
   q: string,
   informationAccess?: InformationAccessContext
@@ -57,7 +163,6 @@ function informationLabelMigrationStatements(
     "language_profiles",
     "ngram_observations",
     "ngram_models",
-    "language_units",
     "language_patterns",
     "semantic_frames",
     "translation_alignments"
@@ -275,13 +380,14 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.conversation_turns (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, episode_id TEXT NOT NULL, turn_index BIGINT NOT NULL, role_id TEXT NOT NULL, text TEXT NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.ingestion_checkpoints (id TEXT PRIMARY KEY, root_uri TEXT NOT NULL, item_uri TEXT NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL, offset_bytes BIGINT NOT NULL, content_hash TEXT, byte_length BIGINT, reason TEXT, metadata_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.blobs (content_hash TEXT PRIMARY KEY, media_type TEXT NOT NULL, byte_length BIGINT NOT NULL, content BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+    ...canonicalBlobSchemaStatements(q),
     `CREATE TABLE IF NOT EXISTS ${q}.sources (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, canonical_uri TEXT NOT NULL, first_seen_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.source_versions (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, byte_length BIGINT NOT NULL, trust_vector JSONB NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `ALTER TABLE ${q}.source_versions ADD COLUMN IF NOT EXISTS trust_vector JSONB NOT NULL DEFAULT '{"identity":0.5,"integrity":0.9,"parserReliability":0.5,"directness":0.4,"authority":0.4,"freshness":0.3,"independenceGroup":"legacy:migrated","accessScope":"unknown","licenseStatus":"unknown"}'::jsonb`,
     `ALTER TABLE ${q}.source_versions ALTER COLUMN trust_vector DROP DEFAULT`,
     `ALTER TABLE ${q}.source_versions DROP COLUMN IF EXISTS trust`,
-    `CREATE TABLE IF NOT EXISTS ${q}.evidence_spans (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id), chunk_id TEXT NOT NULL, content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, byte_start BIGINT NOT NULL, byte_end BIGINT NOT NULL, char_start BIGINT NOT NULL, char_end BIGINT NOT NULL, text_preview TEXT NOT NULL, text_content TEXT NOT NULL, language_hints JSONB NOT NULL, script_hints JSONB NOT NULL, trust_vector JSONB NOT NULL, provenance_json JSONB NOT NULL, features TEXT[] NOT NULL, status TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, observed_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
-    ...evidenceTextDigestSchemaStatements(q),
+    `CREATE TABLE IF NOT EXISTS ${q}.evidence_spans (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES ${q}.sources(id), source_version_id TEXT NOT NULL REFERENCES ${q}.source_versions(id), chunk_id TEXT NOT NULL, content_hash TEXT NOT NULL REFERENCES ${q}.blobs(content_hash), media_type TEXT NOT NULL, byte_start BIGINT NOT NULL, byte_end BIGINT NOT NULL, char_start BIGINT NOT NULL, char_end BIGINT NOT NULL, text_preview TEXT NOT NULL, language_hints JSONB NOT NULL, script_hints JSONB NOT NULL, trust_vector JSONB NOT NULL, provenance_json JSONB NOT NULL, features TEXT[] NOT NULL, status TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, observed_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    ...evidenceTextReferenceSchemaStatements(q),
     // Anchor features are a deterministic prefix projection of evidence_spans.features.  The former helper
     // table stored that subset a second time and maintained a second GIN over the same postings.  Existing
     // brains can discard it losslessly; all retrieval now uses the canonical evidence feature array/index.
@@ -297,8 +403,8 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.graph_nodes (id TEXT PRIMARY KEY, type_id TEXT NOT NULL, representation_json JSONB NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, features TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_edges (id TEXT PRIMARY KEY, source_node_id TEXT NOT NULL, target_node_id TEXT NOT NULL, relation_id TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, weight DOUBLE PRECISION NOT NULL, temporal_scope JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_hyperedges (id TEXT PRIMARY KEY, schema_id TEXT NOT NULL, relation_id TEXT NOT NULL, participant_ports JSONB NOT NULL, member_node_ids TEXT[] NOT NULL, qualifiers_json JSONB NOT NULL, modality_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, weight_vector JSONB NOT NULL, temporal_scope JSONB NOT NULL, provenance_refs TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS ${q}.graph_evidence_associations (association_order BIGINT GENERATED ALWAYS AS IDENTITY,entity_kind TEXT NOT NULL CHECK(entity_kind IN ('node','edge','hyperedge')),entity_id TEXT NOT NULL,evidence_id TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(entity_kind,entity_id,evidence_id),UNIQUE(association_order))`,
-    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_graph_evidence_reverse ON ${q}.graph_evidence_associations(evidence_id,entity_kind,entity_id)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.graph_evidence_associations (association_order BIGINT GENERATED ALWAYS AS IDENTITY,entity_kind TEXT NOT NULL CHECK(entity_kind IN ('node','edge','hyperedge')),entity_id TEXT NOT NULL,evidence_id TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(evidence_id,entity_kind,entity_id),UNIQUE(association_order))`,
+    graphEvidenceMembershipIndexStatement(q),
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_graph_evidence_owner_order ON ${q}.graph_evidence_associations(entity_kind,entity_id,association_order,evidence_id)`,
     `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS schema_id TEXT NOT NULL DEFAULT 'scce.hyperedge.v2'`,
     `ALTER TABLE ${q}.graph_hyperedges ADD COLUMN IF NOT EXISTS participant_ports JSONB NOT NULL DEFAULT '[]'::jsonb`,
@@ -380,6 +486,8 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.ngram_models (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, max_order INT NOT NULL, discount DOUBLE PRECISION NOT NULL, model_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     // The trainedMass DESC ranking and the profile/source-system scope filters read these instead of detoasting model_json (1.68GB of TOAST) per row.
     `ALTER TABLE ${q}.ngram_models ADD COLUMN IF NOT EXISTS profile_id TEXT GENERATED ALWAYS AS (model_json->>'profileId') STORED, ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (model_json->>'sourceSystem') STORED, ADD COLUMN IF NOT EXISTS trained_mass NUMERIC GENERATED ALWAYS AS (COALESCE((model_json->'model'->>'totalUnigramCount')::numeric, 0)) STORED`,
+    `CREATE TABLE IF NOT EXISTS ${q}.${NGRAM_MODEL_CONTINUATION_RELATION} (model_id TEXT PRIMARY KEY REFERENCES ${q}.ngram_models(id) ON DELETE CASCADE, profile_id TEXT NOT NULL, continuation_counts JSONB NOT NULL CHECK (jsonb_typeof(continuation_counts)='object'), model_updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_continuation_profile ON ${q}.${NGRAM_MODEL_CONTINUATION_RELATION}(profile_id,model_id)`,
     // Identity discovery counts documents; Kneser-Ney wants text per model. One artifact cannot serve both:
     // language_profiles holds one row per trained shard, so growing a shard to improve the model shrinks the
     // document count the closed class is measured over. Page signatures are the discovery population, written
@@ -388,6 +496,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.language_profile_signatures (id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL, scripts JSONB NOT NULL, direction TEXT NOT NULL, top_continuation JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    ...sourceTextReplayBindingSetSchemaStatements(q),
     ...canonicalCreativeEventSchemaStatements(q),
     ...constructionSourceDecisionSchemaStatements(q),
     // candidate_pool's scope filter reads this instead of detoasting pattern_json (5.4GB) per row.
@@ -397,6 +506,8 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `ALTER TABLE ${q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`,
     `CREATE TABLE IF NOT EXISTS ${q}.translation_alignments (id TEXT PRIMARY KEY, source_frame_id TEXT NOT NULL, target_frame_id TEXT NOT NULL, source_language TEXT NOT NULL, target_language TEXT NOT NULL, force TEXT NOT NULL, loss_vector JSONB NOT NULL, alignment_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     ...informationLabelMigrationStatements(q, informationAccess),
+    ngramModelContinuationBackfillStatement(q),
+    ...canonicalLanguageUnitSchemaStatements(q),
     `CREATE TABLE IF NOT EXISTS ${q}.scce2_import_ledger (id TEXT PRIMARY KEY, import_run_id TEXT NOT NULL, brain_version TEXT NOT NULL, root_path TEXT NOT NULL, section_id TEXT NOT NULL, section_kind TEXT NOT NULL, force_class TEXT NOT NULL, source_path TEXT, file_hash TEXT, shard_hash TEXT, source_version_id TEXT, evidence_ids TEXT[] NOT NULL, node_ids TEXT[] NOT NULL, row_counts_json JSONB NOT NULL, warnings TEXT[] NOT NULL, metadata_json JSONB NOT NULL, imported_at TIMESTAMPTZ NOT NULL, UNIQUE(import_run_id, section_id))`,
     `CREATE TABLE IF NOT EXISTS ${q}.brain_import_lifecycle (import_run_id TEXT PRIMARY KEY, brain_version TEXT NOT NULL, root_path TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('CREATED','IMPORTING','VALIDATING','READY','ACTIVE','STOPPED','FAILED','QUARANTINED','INCOMPATIBLE')), manifest_json JSONB NOT NULL, validation_json JSONB, reason TEXT, revision BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `WITH legacy_runs AS (
@@ -686,10 +797,10 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     segmentation_consolidation_active: ["scope_id", "run_id", "header_json", "activated_at"],
     events: ["id", "episode_id", "type_id", "payload_json", "ledger_hash"],
     conversation_turns: ["id", "session_id", "episode_id", "turn_index", "role_id", "text", "evidence_ids", "metadata_json"],
-    blobs: ["content_hash", "media_type", "byte_length", "content"],
+    blobs: ["content_hash", "media_type", "byte_length", "content", "range_parent_hash", "range_start", "range_end", "archive_reference"],
     sources: ["id", "namespace", "canonical_uri"],
     source_versions: ["id", "source_id", "content_hash", "media_type", "observed_at", "byte_length", "trust_vector", "metadata_json", "information_label"],
-    evidence_spans: ["id", "source_id", "source_version_id", "content_hash", "byte_start", "byte_end", "text_content", "text_sha256", "trust_vector", "provenance_json", "features", "status", "alpha", "information_label"],
+    evidence_spans: ["id", "source_id", "source_version_id", "content_hash", "byte_start", "byte_end", "char_start", "char_end", "text_preview", "trust_vector", "provenance_json", "features", "status", "alpha", "information_label"],
     graph_nodes: ["id", "type_id", "representation_json", "alpha", "evidence_ids", "features", "metadata_json", "information_label"],
     graph_edges: ["id", "source_node_id", "target_node_id", "relation_id", "alpha", "weight", "evidence_ids", "metadata_json", "information_label"],
     graph_hyperedges: ["id", "schema_id", "relation_id", "participant_ports", "member_node_ids", "qualifiers_json", "modality_json", "evidence_ids", "weight_vector", "provenance_refs", "information_label"],
@@ -702,7 +813,11 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     language_profile_aliases: ["alias_key", "alias_surface", "profile_id", "source_version_id", "evidence_refs", "source_version_refs", "confidence", "updated_at"],
     ngram_observations: ["id", "stream_id", "language_hint", "order_n", "history", "symbol", "count", "metadata_json", "information_label"],
     ngram_models: ["id", "stream_id", "language_hint", "max_order", "discount", "model_json", "information_label"],
-    language_units: ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json", "information_label"],
+    [NGRAM_MODEL_CONTINUATION_RELATION]: ["model_id", "profile_id", "continuation_counts", "model_updated_at", "information_label"],
+    language_units: ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "metadata_json", "evidence_set_id", "information_label_id"],
+    language_unit_evidence_sets: ["id", "evidence_ids"],
+    language_unit_information_labels: ["id", "information_label"],
+    language_unit_values: ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json", "information_label"],
     creative_event_templates: ["id", "kind", "value_json"],
     creative_event_lexemes: ["id", "kind", "value_json"],
     creative_event_lexical_pages: ["id", "kind", "member_ids", "value_json"],
@@ -710,6 +825,7 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     creative_event_witnesses: ["id", "kind", "value_json", "information_label"],
     creative_event_occurrences: ["id", "kind", "value_json", "information_label"],
     language_patterns: ["id", "profile_id", "pattern_kind", "support", "entropy", "pattern_json", "evidence_ids", "information_label", ...LANGUAGE_PATTERN_SELECTION_HEADERS],
+    [SOURCE_TEXT_REPLAY_BINDING_SET_RELATION]: ["id", "model_id", "profile_id", "manifest_pattern_id", "manifest_digest", "binding_json", "binding_digest", "information_label", "created_at"],
     semantic_frames: ["id", "frame_json", "normalized_surface_hash", "embedding", "evidence_ids", "alpha", "information_label"],
     translation_alignments: ["id", "source_frame_id", "target_frame_id", "source_language", "target_language", "force", "alignment_json", "evidence_ids", "information_label"],
     scce2_import_ledger: ["id", "import_run_id", "brain_version", "root_path", "section_id", "section_kind", "force_class", "row_counts_json", "warnings", "metadata_json"],

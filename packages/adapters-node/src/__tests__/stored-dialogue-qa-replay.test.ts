@@ -7,16 +7,26 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import * as kernelModule from "@scce/kernel";
 import { createClock, createHasher, createIdFactory, createScceKernel, toJsonValue, CONTEXTUAL_QA_CONSTRUCTION_RECIPE,
-  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type ContentHash, type EvidenceSpan, type IngestionCheckpoint,
+  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LANGUAGE_IDENTITY_DISCOVERY_RECIPE, LANGUAGE_IDENTITY_SCHEMA,
+  type ContentHash, type EvidenceSpan, type IngestionCheckpoint, type LanguageIdentityRecord,
   type SourceVersion, type TranscriptTurn } from "@scce/kernel";
 import { trainDialogueCorpus } from "../dialogue-corpus.js";
-import { trainStoredCorpusConstructions } from "../stored-corpus-construction-training.js";
+import { storedContextualQaPoolRoot, trainStoredCorpusConstructions } from "../stored-corpus-construction-training.js";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { requestSeedLanguagePattern } from "../../../kernel/src/request-language-hydration.js";
 import { jsonRecord } from "../../../kernel/src/kernel-answer-primitives.js";
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const label = { tenantId: "stored.qa", principals: ["owner"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const };
+it("preserves declared transcript cohorts while pooling ordinary dialogue shards by corpus root", () => {
+  const prefix = "file:///retained/dialogue/";
+  expect(storedContextualQaPoolRoot({ canonicalUri: `${prefix}cohort-001.json`, metadata: {
+    transcriptSchema: "scce.dialogue_transcript.v1", sourceMetadata: { layout: "leading_unicode_lexical_units.v1" }
+  } } as unknown as SourceVersion, [prefix])).toBe(`${prefix}cohort-001.json`);
+  expect(storedContextualQaPoolRoot({ canonicalUri: `${prefix}shard-001.json`, metadata: {
+    transcriptSchema: "scce.dialogue_transcript.v1", sourceMetadata: {}
+  } } as unknown as SourceVersion, [prefix])).toBe(prefix);
+});
 function humanTranscript() {
   const human = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/squad-contextual-qa-family.json", import.meta.url), "utf8")) as {
     sha256: string; records: Array<{ articleTitle: string; context: string; qa: { id: string; question: string; answers: Array<{ text: string; answer_start: number }> } }> };
@@ -40,9 +50,41 @@ async function fixture() {
   const transcript = humanTranscript(); await writeFile(path.join(root, "human.json"), JSON.stringify(transcript));
   const clock = createClock({ fixedTime: 1000, stepMs: 1 }), hasher = createHasher(), evidence: EvidenceSpan[] = [];
   const { storage } = storageFixtureForEvaluation({ evidence, clockNow: () => clock.now() });
-  const sources = new Map<string, SourceVersion>(), blobs = new Map<ContentHash, Uint8Array>(), checkpoints = new Map<string, IngestionCheckpoint>();
+  const languageIdentity: LanguageIdentityRecord = {
+    schema: LANGUAGE_IDENTITY_SCHEMA,
+    id: "language_identity.stored_qa.fixture",
+    script: "script:fixture",
+    directions: [{ direction: "unknown", count: 5 }],
+    closedClass: [],
+    families: [{ family: "dialogue", count: 5, evidence: { observedProfileCount: 5, sampleCount: 5,
+      sourceFamilyCount: 5, independentSourceFamilyCount: 5, status: "family_measured", uncertainty: [], observedSymbols: [] } }],
+    corpusRoles: [],
+    profileCount: 5,
+    evidence: { observedProfileCount: 5, sampleCount: 5, sourceFamilyCount: 5, independentSourceFamilyCount: 5,
+      status: "family_measured", uncertainty: [], observedSymbols: [] },
+    membershipCut: 0,
+    createdAt: 1,
+    informationLabel: label,
+    discoveryRecipe: LANGUAGE_IDENTITY_DISCOVERY_RECIPE
+  };
+  storage.languageIdentities = {
+    putIdentities: async () => undefined,
+    replaceIdentities: async () => undefined,
+    listIdentities: async () => [languageIdentity],
+    assignProfileLanguages: async () => undefined,
+    listProfileLanguages: async query => (query?.profileIds ?? []).map(profileId => ({ profileId, languageId: languageIdentity.id })),
+    listProfileSignatures: async () => []
+  };
+  const sources = new Map<string, SourceVersion>(), blobs = new Map<ContentHash, Uint8Array>(),
+    blobRanges = new Map<ContentHash, { parentHash: ContentHash; byteStart: number; byteEnd: number }>(), checkpoints = new Map<string, IngestionCheckpoint>();
+  const readBlob = async (key: ContentHash): Promise<Uint8Array> => { const value = blobs.get(key); if (value) return new Uint8Array(value);
+    const range = blobRanges.get(key); if (!range) throw Error("source blob unavailable");
+    return (await readBlob(range.parentHash)).slice(range.byteStart, range.byteEnd); };
   storage.blobs = { put: async bytes => { const key = `sha256_${hasher.digestHex(bytes)}` as ContentHash; blobs.set(key, new Uint8Array(bytes)); return key; },
-    get: async key => { const value = blobs.get(key); if (!value) throw Error("source blob unavailable"); return value; }, exists: async key => blobs.has(key) };
+    putRanges: async (items, parent) => { const value = blobs.get(parent.contentHash); if (!value || `sha256_${hasher.digestHex(value)}` !== parent.contentHash) throw Error("missing canonical range parent");
+      for (const item of items) { if (item.parentHash !== parent.contentHash || `sha256_${hasher.digestHex(parent.bytes.slice(item.byteStart, item.byteEnd))}` !== item.contentHash) throw Error("invalid canonical range");
+        blobRanges.set(item.contentHash, { parentHash: item.parentHash, byteStart: item.byteStart, byteEnd: item.byteEnd }); } },
+    get: readBlob, exists: async key => blobs.has(key) || blobRanges.has(key) };
   storage.evidence.putSourceVersion = async source => { sources.set(String(source.sourceVersionId), structuredClone(source)); };
   storage.evidence.sourceVersionById = async id => sources.get(String(id)) ?? null;
   storage.evidence.sourceVersionsForEvidence = async ids => [...sources.values()].filter(source => evidence.some(span => ids.includes(span.id) && span.sourceVersionId === source.sourceVersionId));
@@ -73,18 +115,22 @@ async function fixture() {
     informationAccess: { tenantId: label.tenantId, principalId: label.principals[0]!, compartments: [], maximumExportClass: "restricted" },
     files: { streamPath: async function* () {} }, buildTest: { executeProgram: async () => { throw Error("not code"); } } });
   const train = () => trainDialogueCorpus({ storage, rootPath: root, informationLabel: label, authorship: "human_authored", ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 64 });
-  const replay = () => trainStoredCorpusConstructions({ storage, sourceSystem: "dialogue", minArticleBytes: 0, maxArticleBytes: 2 * 1024 * 1024, maxTotalBytes: 2 * 1024 * 1024 });
+  const replay = (contextualQaOnly = false) => trainStoredCorpusConstructions({ storage, sourceSystem: "dialogue", minArticleBytes: 0,
+    maxArticleBytes: 2 * 1024 * 1024, maxTotalBytes: 2 * 1024 * 1024, contextualQaOnly });
   return { root, transcript, storage, sources, blobs, evidence, checkpoints, train, replay, kernel };
 }
 it("recompiles genuine human QA from canonical archives after files are removed, upgrades once and answers cold ordinary turns", async () => {
   const f = await fixture(), first = await f.train();
-  expect(first.contextualQaConstructions).toMatchObject({ qualifiedFamilies: 1, patternsPersisted: 1 });
+  expect(first.contextualQaConstructions, JSON.stringify(first.contextualQaConstructions)).toMatchObject({ qualifiedFamilies: 1, patternsPersisted: 1 });
   const source = [...f.sources.values()][0]!, original = structuredClone(source), archive = jsonRecord(jsonRecord(source.metadata).transcriptArchive);
   expect(archive).toMatchObject({ sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, authorship: "human_authored", turnCount: 10 });
   const archived = JSON.parse(Buffer.from(f.blobs.get(archive.archiveHash as ContentHash)!).toString("utf8"));
   expect(archived.turns[1].supportingSourceRanges[0].answerRange).toEqual(f.transcript.turns[1]!.supportingSourceRanges![0]!.answerRange);
   await rm(f.root, { recursive: true });
-  const warm = await f.replay(); expect(warm.contextualQa?.reports[0], JSON.stringify({ deferred: warm.contextualQa?.deferred, failed: warm.batchesFailed, skipped: warm.sourcesSkipped })).toMatchObject({ qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false });
+  const compiler = vi.spyOn(kernelModule, "compileLanguageTrainingBatch"), modelsBeforePublication = JSON.stringify(await f.storage.languageMemory.listNgramModels());
+  const warm = await f.replay(true); expect(warm.contextualQa?.reports[0], JSON.stringify({ deferred: warm.contextualQa?.deferred, failed: warm.batchesFailed, skipped: warm.sourcesSkipped })).toMatchObject({ qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false });
+  expect(warm.reports).toEqual([]); expect(compiler).not.toHaveBeenCalled();
+  expect(JSON.stringify(await f.storage.languageMemory.listNgramModels())).toBe(modelsBeforePublication);
   const checkpoint = [...f.checkpoints.values()].find(row => row.rootUri.startsWith("scce://stored-dialogue-qa/") && jsonRecord(row.metadata).schema === "scce.dialogue_contextual_qa_compilation.v1")!;
   const pattern = (await f.storage.languageMemory.listLanguagePatterns()).find(row => jsonRecord(row.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE)!;
   const owner = f.evidence.find(span => pattern.evidenceIds.includes(span.id))!;
@@ -93,15 +139,15 @@ it("recompiles genuine human QA from canonical archives after files are removed,
   const previous = (await f.storage.languageMemory.getLanguagePatternProjection!(key))!;
   await f.storage.languageMemory.replaceLanguagePatternProjection!({ patterns: [], projection: { ...previous, patternIds: [], sourceDependencies: [] } });
   checkpoint.metadata = { ...jsonRecord(checkpoint.metadata), compilerFingerprint: CONTEXTUAL_QA_CONSTRUCTION_RECIPE, projections: [] };
-  const compiler = vi.spyOn(kernelModule, "compileLanguageTrainingBatch"), write = vi.spyOn(f.storage.ingestion, "put");
+  const write = vi.spyOn(f.storage.ingestion, "put");
   const models = JSON.stringify(await f.storage.languageMemory.listNgramModels());
-  expect((await f.replay()).contextualQa?.reports[0]).toMatchObject({ qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false });
-  expect(compiler).not.toHaveBeenCalled(); expect(write).toHaveBeenCalledTimes(1);
+  expect((await f.replay(true)).contextualQa?.reports[0]).toMatchObject({ qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false });
+  expect(compiler).not.toHaveBeenCalled(); expect(write).toHaveBeenCalledTimes(2);
   expect((await f.storage.languageMemory.getLanguagePatternProjection!(key))?.patternIds).toEqual([pattern.id]);
   expect(f.sources.get(String(source.sourceVersionId))).toEqual(original);
   expect(JSON.stringify(await f.storage.languageMemory.listNgramModels())).toBe(models);
   vi.clearAllMocks();
-  expect((await f.replay()).contextualQa?.reports[0]?.unchanged).toBe(true);
+  expect((await f.replay(true)).contextualQa?.reports[0]?.unchanged).toBe(true);
   expect(compiler).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
   await f.kernel().ingest({ uri: "fixture://fresh-current-owned-fact", content: "V\u00eblora stations route glyphs for Neralis_\u6e2f\ud83e\udded.", namespace: "workspace", mediaType: "text/plain", informationLabel: label,
     sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
@@ -164,6 +210,6 @@ it("keeps projections with dependencies outside the bounded pool byte-identical 
     expect(report.contextualQa?.reports[0]).toMatchObject({ patternsPersisted: 0,
       deferredProjections: [{ sourceVersionId: String(teacher.sourceVersionId), reason: "dependencies_outside_pool" }] });
     expect(JSON.stringify(await f.storage.languageMemory.getLanguagePatternProjection!(key))).toBe(expected);
-    expect(put).not.toHaveBeenCalled();
+    expect(put).toHaveBeenCalledTimes(repeat + 1);
   }
 });

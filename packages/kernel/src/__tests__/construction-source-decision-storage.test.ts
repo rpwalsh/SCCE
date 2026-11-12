@@ -101,6 +101,17 @@ describe("source-owned construction decision pages", () => {
     expect(duplicate.patterns.map(restore)).toEqual([...patterns, patterns[0]]);
   });
 
+  it("keeps an individually oversized exact decision inline while sharing the rest of the cohort losslessly", () => {
+    const patterns = fixture(32, false, 8) as Array<Record<string, unknown>>;
+    (patterns[0]!.bundle as Record<string, unknown>).oversizedExactDecision = "x".repeat(8192);
+    const result = normalized(patterns, 4096);
+    expect(result.pages.length).toBeGreaterThan(0);
+    expect(result.pages.every(page => bytes(page) <= 4096)).toBe(true);
+    expect(constructionSourceDecisionPageId(result.patterns[0])).toBeUndefined();
+    const restore = createConstructionSourceDecisionRestorer(new Map(cold(result.pages).map(page => [page.id, page])), ownerKey, hasher, 4096);
+    expect(result.patterns.map(pattern => restore(cold(pattern)))).toEqual(patterns);
+  });
+
   it("gives identical bodies in different exact label namespaces different immutable IDs", () => {
     const patterns = fixture(16, false, 16), first = normalized(patterns, 32768);
     const other = normalizeConstructionSourceDecisions(patterns, { ownerKey, namespace: hasher.digestHex("exact.label.foreign"), evidence: sources, hasher, maxPageBytes: 32768 });
@@ -174,7 +185,7 @@ describe("source-owned construction decision pages", () => {
     }
     expect(() => validateConstructionSourceDecisionPage(page, ownerKey, hasher, 1)).toThrow(/source-owned construction/u);
     expect(() => normalized(result.patterns, 32768)).toThrow(/source-owned construction/u);
-    expect(() => normalized(fixture(1), 1)).toThrow(/page byte budget/u);
+    expect(normalized(fixture(1), 1)).toEqual({ patterns: fixture(1), pages: [] });
   });
 
   it("keeps unrelated families and unprofitable cohorts unchanged, and rejects invalid source ownership without invoking getters", () => {

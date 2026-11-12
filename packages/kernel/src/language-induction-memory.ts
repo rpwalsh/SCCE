@@ -171,7 +171,8 @@ function patternsForProfile(input: {
         counts: Object.fromEntries(topCounts(input.model.syntaxTemplates.map(template => template.shape.join(" ")), 128))
       });
   }
-  if (input.model.semanticFrames.length
+  if (input.model.semanticInductionFactors
+    || input.model.semanticFrames.length
     || input.model.graphBoundConstructions.length
     || input.model.lexicalClasses.length
     || input.model.relationHypothesisModel.observationCount > 0) {

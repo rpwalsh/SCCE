@@ -36,7 +36,9 @@ export async function auditStorageAmplification(client, schema, scope = 'Unspeci
     if (available.has('segmentation_consolidation_rows.row_json')) report.segmentation = await auditSegmentationStorage(client, schema);
     for (const [name, candidates] of Object.entries({
       language_patterns: ['pattern_json', 'evidence_ids', 'information_label'],
-      language_units: ['metadata_json', 'features', 'evidence_ids', 'competence_vector', 'information_label'],
+      language_units: ['metadata_json', 'features', 'competence_vector', 'evidence_set_id', 'information_label_id'],
+      language_unit_evidence_sets: ['evidence_ids'],
+      language_unit_information_labels: ['information_label'],
       graph_nodes: ['representation_json', 'features', 'evidence_ids', 'metadata_json', 'information_label'],
       graph_edges: ['features', 'evidence_ids', 'temporal_scope', 'metadata_json', 'information_label']
     })) {
@@ -67,6 +69,14 @@ export async function auditStorageAmplification(client, schema, scope = 'Unspeci
       count(*)::text AS rows,sum(pg_column_size(metadata_json))::text AS metadata_stored_bytes,
       sum(CASE WHEN metadata_json ? 'sourceMetadata' THEN octet_length((metadata_json->'sourceMetadata')::text) ELSE 0 END)::text AS source_metadata_rendered_bytes
       FROM ${table('language_units')} GROUP BY 1 ORDER BY sum(pg_column_size(metadata_json)) DESC`);
+    if (available.has('language_units.evidence_set_id') && available.has('language_units.information_label_id')) {
+      report.unitSharedValues = (await rows(`SELECT
+        (SELECT count(*)::text FROM ${table('language_units')}) AS unit_rows,
+        (SELECT count(*)::text FROM ${table('language_unit_evidence_sets')}) AS distinct_evidence_sets,
+        (SELECT COALESCE(sum(pg_column_size(evidence_ids)),0)::text FROM ${table('language_unit_evidence_sets')}) AS evidence_set_stored_bytes,
+        (SELECT count(*)::text FROM ${table('language_unit_information_labels')}) AS distinct_information_labels,
+        (SELECT COALESCE(sum(pg_column_size(information_label)),0)::text FROM ${table('language_unit_information_labels')}) AS information_label_stored_bytes`))[0];
+    }
     report.legacyRequestWitnesses = await rows(`SELECT key,count(*)::text AS rows,
       count(DISTINCT encode(sha256(convert_to(value::text,'UTF8')),'hex'))::text AS distinct_values,
       sum(octet_length(value::text))::text AS rendered_bytes,max(octet_length(value::text))::text AS largest_rendered_bytes

@@ -55,7 +55,7 @@ function fixture(method: Method, initial: PlannerSetting, failure?: { phase: "me
       local = params[0];
       return { rows: [] };
     }
-    if (sql.includes("count(DISTINCT source_id)::int AS sources") || method === "anchor_search" && sql.includes("WITH requested_features AS")) {
+    if (sql.includes("matching_evidence AS MATERIALIZED") || method === "anchor_search" && sql.includes("WITH requested_features AS")) {
       measurements.push({ active, setting: setting() });
       if (!active || channel !== "client" || setting() !== "off") throw new Error("spread measurement escaped its bounded planner scope");
       if (failure?.phase === "measure") fail(failure.error);

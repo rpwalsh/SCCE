@@ -3,6 +3,7 @@
 import { createHasher } from "./primitives.js";
 import type { Hasher } from "./types.js";
 import { learnedScriptIdForCharacter } from "./language.js";
+import { CANONICAL_SEGMENTER_LOCALE } from "./normalization-contract.js";
 import {
   reconstructUnicodeSurface,
   segmentUnicodeSurface,
@@ -10,6 +11,7 @@ import {
 } from "./unicode-segmentation.js";
 
 export const SEGMENTATION_SCHEMA_V2 = "scce.segmentation.v2";
+export const SEGMENTATION_LOCALE_V2 = CANONICAL_SEGMENTER_LOCALE;
 
 export type ScriptBoundarySignalKind = "space_separated" | "no_space_boundary" | "mixed" | "insufficient_evidence";
 
@@ -73,7 +75,7 @@ export interface SegmentationModel {
  * not a runtime dictionary) would be needed to close that gap for a script
  * ICU has no dictionary for at all.
  */
-const WORD_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "word" });
+const WORD_SEGMENTER = new Intl.Segmenter(SEGMENTATION_LOCALE_V2, { granularity: "word" });
 
 interface IcuWordSpan {
   start: number;

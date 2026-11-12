@@ -6,6 +6,7 @@ import {
   type SegmentationAdjacencyFactors
 } from "./segmentation-adjacency-factors.js";
 import {
+  isCapturedSegmentationScoreFactors,
   validateSegmentationScoreFactors
 } from "./segmentation-score-factors.js";
 import {
@@ -179,6 +180,11 @@ export function compileLanguageSegmentationWitness(input: {
   const hasher = input.hasher ?? createHasher();
   if (!input.populationModelId) throw new Error("segmentation witness requires a population model id");
   const documentIds = new Set<string>();
+  const inputDocumentMembershipCount = input.populations.reduce(
+    (total, population) => total + population.documents.length,
+    0
+  );
+  let coalescedDocumentMembershipCount = 0;
   // A final population refit can collapse two selected components onto the
   // same content-addressed population id.  They are then the same component,
   // not two competing populations.  Preserve every assigned source document
@@ -210,13 +216,32 @@ export function compileLanguageSegmentationWitness(input: {
       if (!Number.isFinite(population.prior) || population.prior < 0 || population.prior > 1 + 1e-9) {
         throw new Error("segmentation witness has an invalid population");
       }
-      const documents = [...population.documents]
-        .sort((left, right) => left.documentId.localeCompare(right.documentId))
-        .map(document => {
-          if (documentIds.has(document.documentId)) throw new Error(`segmentation witness repeats document ${document.documentId}`);
-          documentIds.add(document.documentId);
-          return compileSourceWitness(document, hasher);
-        });
+      const documentsById = new Map<string, SourceSegmentationWitness>();
+      for (const document of [...population.documents]
+        .sort((left, right) => left.documentId.localeCompare(right.documentId))) {
+        // Population identities are content addressed. Two fitted components
+        // can therefore converge to one population id after document routing,
+        // which presents the same membership once per pre-collapse component.
+        // Treat that membership as a set entry only when both its durable
+        // witness and producer-only replay state are exactly content-identical.
+        const compiled = compileSourceWitness(document, hasher);
+        const existing = documentsById.get(document.documentId);
+        if (existing) {
+          const existingReplay = exportSourceSegmentationReplayRecipe(existing);
+          const compiledReplay = exportSourceSegmentationReplayRecipe(compiled);
+          if (existing.id !== compiled.id || existingReplay?.digest !== compiledReplay?.digest) {
+            throw new Error(`segmentation witness repeats changed document ${document.documentId}`);
+          }
+          coalescedDocumentMembershipCount++;
+          continue;
+        }
+        // A document assigned to two genuinely distinct populations remains a
+        // contradictory routing result and must fail rather than be hidden.
+        if (documentIds.has(document.documentId)) throw new Error(`segmentation witness repeats document ${document.documentId}`);
+        documentIds.add(document.documentId);
+        documentsById.set(document.documentId, compiled);
+      }
+      const documents = [...documentsById.values()];
       return { populationId: population.populationId, prior: Math.min(1, population.prior), documents };
     });
   const canonical = {
@@ -242,6 +267,8 @@ export function compileLanguageSegmentationWitness(input: {
       populationCount: populations.length,
       inputPopulationCount: input.populations.length,
       coalescedPopulationCount: input.populations.length - populations.length,
+      inputDocumentMembershipCount,
+      coalescedDocumentMembershipCount,
       documentCount: documentIds.size,
       fullDagArcCount: populations.reduce((total, population) => total
         + population.documents.reduce((sum, document) => sum + document.fullDag.factors.arcs.length, 0), 0),
@@ -365,7 +392,10 @@ function compileSourceWitness(document: LanguageSegmentationWitnessDocument, has
   if (document.sourceVersionId && document.lattice.sourceVersionId
     && document.sourceVersionId !== document.lattice.sourceVersionId) throw new Error("segmentation witness source versions differ");
   const exported = exportSegmentationAdjacencyFactors(document.lattice.segmentationForest);
-  validateSegmentationAdjacencyFactors(exported.factors);
+  const capturedScoreFactors = exported.scoreRecipe
+    ? isCapturedSegmentationScoreFactors(exported.scoreRecipe, exported.factors)
+    : false;
+  if (!capturedScoreFactors) validateSegmentationAdjacencyFactors(exported.factors);
   const replayRecipe = exportSurfaceSegmentationReplayRecipe(document.lattice);
   if (exported.unitIds.length !== exported.factors.arcs.length) throw new Error("segmentation witness DAG unit count differs from arc count");
   const unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
@@ -379,7 +409,9 @@ function compileSourceWitness(document: LanguageSegmentationWitnessDocument, has
     if (unitIdSet.has(unitId)) throw new Error("segmentation witness DAG repeats a source unit");
     unitIdSet.add(unitId);
   });
-  if (exported.scoreRecipe) validateSegmentationScoreFactors(exported.scoreRecipe, exported.factors);
+  if (exported.scoreRecipe && !capturedScoreFactors) {
+    validateSegmentationScoreFactors(exported.scoreRecipe, exported.factors);
+  }
   const sourceWindow = document.sourceWindow ?? {
     ownerDocumentId: document.documentId,
     startUtf16: 0,

@@ -69,7 +69,7 @@ const schema = config.database.schema;
 const one = async (sql, params = []) => (await client.query(sql, params)).rows[0] ?? {};
 
 const postgresVersion = String((await one("select version() as v")).v ?? "");
-const tables = ["sources", "source_versions", "evidence_spans", "ngram_models", "ngram_observations", "language_profiles", "language_units", "language_patterns", "semantic_frames", "graph_nodes", "graph_edges"];
+const tables = ["sources", "source_versions", "evidence_spans", "ngram_models", "ngram_observations", "language_profiles", "language_units", "language_unit_evidence_sets", "language_unit_information_labels", "language_patterns", "semantic_frames", "graph_nodes", "graph_edges"];
 const tableIdentity = {};
 for (const table of tables) {
   const exists = (await one("select to_regclass($1) as r", [`${schema}.${table}`])).r;

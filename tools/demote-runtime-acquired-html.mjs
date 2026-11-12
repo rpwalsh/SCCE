@@ -9,6 +9,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 
 const pg = createRequire(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "packages", "adapters-node", "package.json"))("pg");
 
@@ -20,6 +21,7 @@ if (!url) throw new Error("SCCE_DATABASE_URL is not set");
 
 const client = new pg.Client({ connectionString: url });
 await client.connect();
+const corpus = createCanonicalCorpusReader(client, schema);
 if (process.argv.includes("--parents")) {
   try {
     const parents = (await client.query(
@@ -47,13 +49,20 @@ if (process.argv.includes("--markup")) {
   // lead of their own article once other pollution is cleared. A span that opens with a tag and is at least a
   // third markup by characters is markup, in any language; prose is near zero.
   try {
-    const rows = (await client.query(
-      `select id from ${schema}.evidence_spans
-       where status = 'promoted'
-         and ((left(ltrim(text_content), 1) = '<'
-              and length(regexp_replace(text_content, '<[^>]*>', '', 'g')) <= greatest(1, length(text_content)) * 0.67)
-              or text_content like '%data-mw=%' or text_content like '%"wt":%' or text_content like '%typeof="mw:%')`
-    )).rows;
+    const rows = [];
+    let cursor = "";
+    for (;;) {
+      const page = (await client.query(`select id,content_hash,byte_start,byte_end,char_start,char_end
+        from ${schema}.evidence_spans where status='promoted' and id>$1 order by id limit 256`, [cursor])).rows;
+      if (!page.length) break;
+      const texts = await corpus.evidenceTexts(page);
+      for (const [index, row] of page.entries()) {
+        const text = texts[index], characters = [...text].length, proseCharacters = [...text.replace(/<[^>]*>/gu, "")].length;
+        if ((text.trimStart().startsWith("<") && proseCharacters <= Math.max(1, characters) * 0.67)
+          || text.includes("data-mw=") || text.includes('"wt":') || text.includes('typeof="mw:')) rows.push(row);
+      }
+      cursor = String(page.at(-1).id);
+    }
     console.log(`${rows.length} promoted spans open with a tag and are at least a third markup`);
     if (!apply || !rows.length) {
       if (!apply && rows.length) console.log("dry run: re-run with --apply --markup to demote them");

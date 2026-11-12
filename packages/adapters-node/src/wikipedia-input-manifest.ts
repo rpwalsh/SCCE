@@ -64,6 +64,16 @@ export type WikipediaInputHasher = (filePath: string, chunkSize: number) => Prom
   readonly byteLength: number;
 }>;
 
+/**
+ * A content-verification receipt is an optimization only: a miss or an unavailable cache falls back to hashing
+ * the pinned bytes. Implementations must bind a receipt to the complete expected source identity and the current
+ * filesystem stat; this module still performs the physical-stat comparison before consulting it.
+ */
+export interface WikipediaInputVerificationCache {
+  read(source: WikipediaInputSourceFile, current: WikipediaInputFileStat): Promise<boolean>;
+  write(source: WikipediaInputSourceFile, current: WikipediaInputFileStat): Promise<void>;
+}
+
 interface CachedFileHash {
   readonly schemaVersion: typeof FILE_CACHE_SCHEMA_VERSION;
   readonly kind: "wikipedia-input-file-hash";
@@ -141,7 +151,8 @@ const pendingSourceChecks = new WeakMap<WikipediaInputSourceFile, { before: Wiki
 
 /** Unchanged metadata is fast; ctime-only drift requires a stable full-content proof against the pinned bytes. */
 export async function wikipediaInputSourcesStillMatch(manifest: WikipediaInputManifest,
-  options: { readonly chunkSize?: number; readonly hashFile?: WikipediaInputHasher } = {}): Promise<boolean> {
+  options: { readonly chunkSize?: number; readonly hashFile?: WikipediaInputHasher;
+    readonly verificationCache?: WikipediaInputVerificationCache } = {}): Promise<boolean> {
   const files = [manifest.inputs.dump, ...(manifest.inputs.index === undefined ? [] : [manifest.inputs.index])];
   for (const source of files) {
     try {
@@ -149,6 +160,15 @@ export async function wikipediaInputSourcesStillMatch(manifest: WikipediaInputMa
       const verified = verifiedSourceStats.get(source) ?? source.stat;
       if (sameStat(verified, before)) continue;
       if (!samePhysicalStat(verified, before)) return false;
+      // A ctime-only drift cannot be trusted by itself: bytes can change while size and mtime are restored. A
+      // prior full hash of this exact current stat can, however, be reused across process restarts. Without this
+      // durable receipt every first Wikipedia answer re-hashed the 25.9 GB pinned dump (42.9s on r004).
+      let receiptMatches = false;
+      try { receiptMatches = await options.verificationCache?.read(source, before) ?? false; } catch { /* cache miss */ }
+      if (receiptMatches) {
+        verifiedSourceStats.set(source, before);
+        continue;
+      }
       const pending = pendingSourceChecks.get(source);
       if (pending) {
         if (!sameStat(pending.before, before) || !await pending.result) return false;
@@ -167,7 +187,10 @@ export async function wikipediaInputSourcesStillMatch(manifest: WikipediaInputMa
         return true;
       })() };
       pendingSourceChecks.set(source, check);
-      try { if (!await check.result) return false; }
+      try {
+        if (!await check.result) return false;
+        try { await options.verificationCache?.write(source, before); } catch { /* correctness never depends on cache writes */ }
+      }
       finally { if (pendingSourceChecks.get(source) === check) pendingSourceChecks.delete(source); }
     } catch {
       return false;

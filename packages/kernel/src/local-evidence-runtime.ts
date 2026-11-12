@@ -16,7 +16,7 @@ import { anchorSymbolUnits, codeBearingLines, featureSet, mean, sourceTextSurfac
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import { hasSourceBoundSemanticRelation } from "./source-bound-semantic-fact.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
-import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceClauses, splitSurfaceSentences, surfaceContainsBoundValue, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
+import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceClauses, splitSurfaceSentences, surfaceContainsBoundValue, surfaceUnits, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
 import type {
   ConstructGraph,
   EpistemicForce,
@@ -116,12 +116,71 @@ export function evidenceBatchFromSlice(evidence: readonly EvidenceSpan[], eviden
 }
 
 
-/** Every content unit of the request's anchors inside one sentence of the span: a binding mention, not a passing one. Pure. */
-function anchorBindingSentenceAligned(span: EvidenceSpan, anchors: readonly string[]): boolean {
-  const units = uniqueKernelStrings(anchors.flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)))).filter(unit => [...unit].length >= 3);
-  if (!units.length) return false;
-  return splitSurfaceSentences(String(span.text ?? span.textPreview ?? ""))
-    .some(sentence => { const folded = normalizePriorKey(sentence); return units.every(unit => folded.includes(unit)); });
+/**
+ * At least two non-scaffolding units from one request anchor inside a bounded adjacent-sentence window: a grouped
+ * binding mention, not a passing word. Units come from the same Unicode surface rule in every script; which units
+ * are scaffolding comes from the active learned language population.
+ * Anchors remain alternatives. Flattening them made every sentence carry the union of subject and relation
+ * candidates (for example both `alice cat` and `name alice`), a condition no ordinary answer sentence meets.
+ */
+function anchorBindingUnits(anchor: string, closedClassWords?: ReadonlySet<string>): string[] {
+  const scaffolding = closedClassWords ?? corpusIdentitySignals()?.closedClass;
+  return uniqueKernelStrings(surfaceUnits(anchor))
+    .filter(unit => !scaffolding?.has(unit));
+}
+
+
+interface AnchorBindingSentenceMatch {
+  hits: number;
+  complete: boolean;
+}
+
+function anchorBindingSentenceMatch(span: EvidenceSpan, anchors: readonly string[], closedClassWords?: ReadonlySet<string>): AnchorBindingSentenceMatch {
+  const candidateGroups = anchors
+    .map(anchor => anchorBindingUnits(anchor, closedClassWords))
+    .filter(group => group.length >= 2);
+  // A shorter group that is wholly contained in another request group is only a partial mention. Letting it stand
+  // alone admitted "Armand Vega" from a differently titled apparatus article while the requested binding
+  // `armand vega known` was absent, and admitted a sentence saying it held *no* Star Trek source on `star trek`.
+  // Incomparable alternatives stay alternatives: `alice cat` remains independent of `name alice`, so the source
+  // can express the requested relation without echoing the request's relation word.
+  const groups = candidateGroups.filter((group, index) => !candidateGroups.some((other, otherIndex) =>
+    otherIndex !== index && other.length > group.length && group.every(unit => other.includes(unit))));
+  if (!groups.length) return { hits: 0, complete: false };
+  const sentences = splitSurfaceSentences(String(span.text ?? span.textPreview ?? ""));
+  const hits = groups.reduce((best, group) => {
+    // A dialogue attribution can put the named owner in the sentence immediately before the utterance that states
+    // its relation ("said Alice ..." / "our cat Dinah"). The window is derived from group arity: at most one
+    // adjacent sentence per required constituent, never an unbounded whole-span co-occurrence.
+    const width = group.length;
+    for (let start = 0; start < sentences.length; start += 1) {
+      const surface = new Set(surfaceUnits(sentences.slice(start, start + width).join(" ")));
+      const hits = group.filter(unit => surface.has(unit)).length;
+      if (hits >= 2) best = Math.max(best, hits);
+    }
+    return best;
+  }, 0);
+  // Without a unique title owner, retain the predecessor's stronger contract: the bounded window must carry the
+  // union of every maximal request group. This admits `Captain Kirk ... known` while refusing a wrong-title body
+  // that merely places `Alice` beside `cat` and never states the requested `name` relation.
+  const completeUnits = uniqueKernelStrings(groups.flat());
+  const complete = sentences.some((_, start) => {
+    const surface = new Set(surfaceUnits(sentences.slice(start, start + completeUnits.length).join(" ")));
+    return completeUnits.every(unit => surface.has(unit));
+  });
+  return { hits, complete };
+}
+
+function anchorBindingSentenceAligned(span: EvidenceSpan, anchors: readonly string[], closedClassWords?: ReadonlySet<string>): boolean {
+  return anchorBindingSentenceMatch(span, anchors, closedClassWords).hits > 0;
+}
+
+
+function anchorBindingTitleScore(span: EvidenceSpan, anchors: readonly string[], closedClassWords?: ReadonlySet<string>): number {
+  const titleUnits = new Set(anchorBindingUnits(evidenceTitle(span), closedClassWords));
+  if (!titleUnits.size) return 0;
+  return anchors.reduce((best, anchor) => Math.max(best,
+    anchorBindingUnits(anchor, closedClassWords).filter(unit => titleUnits.has(unit)).length), 0);
 }
 
 /**
@@ -205,10 +264,10 @@ export function evidenceForRequest(
       const sessionSpan = String(span.id).startsWith("evidence_session_");
       const contentOverlap = evidenceRequestContentOverlap(span, contentUnits);
       const contentAnchorAligned = anchors.some(anchor => evidenceContentAnchorFitsRequest(span, anchor, text));
-      // The same binding-sentence rule admission uses: a span whose one sentence carries every content anchor
-      // ("Sisko, played by Avery Brooks" for "Who played Sisko?") is about the subject, whatever its title says.
+      // The same grouped binding-window rule admission uses. Admission separately requires a unique title owner,
+      // so this score can rank that owner's chunks without turning an unrelated titled mention into evidence.
       // Without it the article was admitted and then dropped here on a 0.007 lexical overlap.
-      const bindingSentenceAligned = anchorBindingSentenceAligned(span, anchors);
+      const bindingSentenceAligned = anchorBindingSentenceAligned(span, anchors, closedClassWords);
       // Identity is alignment: a book, a paper or a source file is named by what it calls itself, not by a title
       // that repeats the request. Without this the 24 admitted Moby-Dick spans scored 0 here and the turn, having
       // admitted the book, proved nothing (live 2026-09-12).
@@ -758,7 +817,12 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const scaffolding = learnedRequestScaffoldingUnits(input.requestText, input.closedClassWords);
   const coverageUnits = requestContentEvidenceUnits(input.requestText)
     .filter(unit => !scaffolding.has(unit));
-  const relationRequired = Boolean(input.closedClassWords?.size);
+  // Presence is the contract: the caller selected a language scope and asks
+  // for relation-qualified answerhood. An explicitly empty learned set does
+  // not license the older one-third overlap rule; it means the scope cannot
+  // yet distinguish scaffolding from relation material, so the strict check
+  // must abstain unless a source-bound value already resolves the demand.
+  const relationRequired = input.closedClassWords !== undefined;
   const covers = (row: { sentence: string; span: EvidenceSpan; nearDuplicate: boolean }) =>
     row.nearDuplicate || input.explicitContextEvidenceIds?.has(String(row.span.id)) === true
       || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, {
@@ -2622,26 +2686,38 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
       .filter(row => row.hits >= requiredHits)
       .sort((left, right) => right.hits - left.hits);
     admitted.push(...scored.slice(0, 12).map(row => row.span));
-    // A titled article can still be the only source that binds the subject asked about: "Who played Sisko?"
-    // names a character, and the article that answers is titled Star Trek: Deep Space Nine. Title identity
-    // admits nothing, so the choice is between this article and answering nothing at all. It is admitted when
-    // every content anchor sits inside one of its sentences -- a binding mention, not a passing one -- and
-    // only when no title-identified span exists, so cross-title abstention holds whenever a title does match.
-    const bindingContentAnchors = requestContentEvidenceUnits(requestText)
-      .filter(unit => !learnedRequestScaffoldingUnits(requestText, closedClassWords).has(unit))
-      .filter(unit => corpusDocumentsAnchor(unit, requestText));
-    if (!admitted.length && bindingContentAnchors.length) {
+    // A titled source can still bind a request whose learned subject phrase differs from its title. The bounded
+    // body match may stand alone only when one complete multi-unit anchor is present. A partial grouped match is
+    // admitted only when exactly one source owner also has the strongest positive title overlap.
+    // Keep the request's alternative anchor groups intact. The asked relation need not be repeated literally in
+    // the answer sentence: "said Alice ... our cat Dinah" answers the name relation without the word "name".
+    // Requiring at least two learned non-scaffolding units rejects a passing one-word mention.
+    const bindingAnchors = admissionAnchors.filter(anchor => anchorBindingUnits(anchor, closedClassWords).length >= 2);
+    if (!admitted.length && bindingAnchors.length && endsWithUnicodeQuestionMark(requestText.trim())) {
       const titled = evidence.filter(span => evidenceTitle(span));
       const bound = titled
         .map(span => {
-          const hits = splitSurfaceSentences(String(span.text ?? span.textPreview ?? ""))
-            .map(sentence => new Set(anchorSymbolUnits(sentence)))
-            .reduce((best, sentence) => Math.max(best, bindingContentAnchors.filter(anchor => sentence.has(anchor)).length), 0);
-          return { span, hits };
+          const binding = anchorBindingSentenceMatch(span, bindingAnchors, closedClassWords);
+          return {
+            span,
+            hits: binding.hits,
+            complete: binding.complete,
+            titleHits: anchorBindingTitleScore(span, bindingAnchors, closedClassWords),
+            ownerId: String(span.sourceVersionId || span.sourceId)
+          };
         })
-        .filter(row => row.hits >= Math.max(1, bindingContentAnchors.length))
-        .sort((left, right) => right.hits - left.hits);
-      admitted.push(...bound.slice(0, 12).map(row => row.span));
+        .filter(row => row.hits > 0)
+        .sort((left, right) => right.titleHits - left.titleHits || right.hits - left.hits);
+      // When exactly one source owner has the strongest request/title binding, spans from other titled sources are
+      // wrong-topic mentions even if their bodies happen to place the same units together. Multiple chunks of that
+      // one source remain eligible. Without a unique owner, only a complete group survives. Units come from one
+      // Unicode surface rule and learned scaffolding, independent of language, casing, and script.
+      const bestTitleHits = Math.max(0, ...bound.map(row => row.titleHits));
+      const strongestOwners = new Set(bound.filter(row => row.titleHits === bestTitleHits && row.titleHits > 0).map(row => row.ownerId));
+      const ownerBound = strongestOwners.size === 1
+        ? bound.filter(row => strongestOwners.has(row.ownerId))
+        : bound.filter(row => row.complete);
+      admitted.push(...ownerBound.slice(0, 12).map(row => row.span));
     }
   }
   // A semantic-frame prior cannot exclude a source-owned body that answers the measured request relation.

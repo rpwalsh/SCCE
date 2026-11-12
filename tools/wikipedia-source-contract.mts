@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   createClock,
+  type ContentHash,
   type IngestedSourceFile,
   type IngestionCheckpoint,
   type InformationAccessContext
@@ -234,7 +235,8 @@ async function trainingState(adapter: PostgresStorageAdapter): Promise<string> {
     "language_units", "language_patterns", "semantic_frames", "events"];
   const hashes: Array<[string, string]> = [];
   for (const table of tables) {
-    const [row] = await adapter.query<{ digest: string }>(`SELECT md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, '[]')) AS digest FROM ${adapter.table(table)} t`);
+    const relation = table === "language_units" ? "language_unit_values" : table;
+    const [row] = await adapter.query<{ digest: string }>(`SELECT md5(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, '[]')) AS digest FROM ${adapter.table(relation)} t`);
     if (!row) throw new Error(`missing fixture state digest for ${table}`);
     hashes.push([table, row.digest]);
   }
@@ -287,30 +289,34 @@ async function sourceRows(adapter: PostgresStorageAdapter, uri: string): Promise
 
 async function verifyBlobs(adapter: PostgresStorageAdapter, rows: ReadonlyArray<{ contentHash: string }>): Promise<void> {
   for (const row of rows) {
-    const blobs = await adapter.query<{ content: Buffer; byte_length: string; content_hash: string }>(`SELECT content, byte_length, content_hash FROM ${adapter.table("blobs")} WHERE content_hash=$1`, [row.contentHash]);
+    const blobs = await adapter.query<{ byte_length: string; content_hash: string }>(`SELECT byte_length, content_hash FROM ${adapter.table("blobs")} WHERE content_hash=$1`, [row.contentHash]);
     const blob = blobs[0];
     if (!blob) throw new Error(`missing blob ${row.contentHash}`);
-    const digest = `sha256_${createHash("sha256").update(blob.content).digest("hex")}`;
-    check("blob.hash-and-length", blob.content_hash === digest && Number(blob.byte_length) === blob.content.byteLength, row.contentHash);
+    const bytes = Buffer.from(await adapter.blobs.get(row.contentHash as ContentHash));
+    const digest = `sha256_${createHash("sha256").update(bytes).digest("hex")}`;
+    check("blob.hash-and-length", blob.content_hash === digest && Number(blob.byte_length) === bytes.byteLength, row.contentHash);
   }
 }
 
 async function verifyEvidenceSlices(adapter: PostgresStorageAdapter, rows: ReadonlyArray<{ id: string; role: string | null }>): Promise<void> {
   const ids = rows.map(row => row.id);
-  const evidence = await adapter.query<{ source_version_id: string; byte_start: string; byte_end: string; char_start: string; char_end: string; text_content: string }>(`SELECT source_version_id, byte_start, byte_end, char_start, char_end, text_content FROM ${adapter.table("evidence_spans")} WHERE source_version_id=ANY($1::text[])`, [ids]);
-  if (!evidence.length) throw new Error("committed page has no evidence spans");
+  const evidenceHeaders = await adapter.query<{ id: string; source_version_id: string; byte_start: string; byte_end: string; char_start: string; char_end: string }>(`SELECT id, source_version_id, byte_start, byte_end, char_start, char_end FROM ${adapter.table("evidence_spans")} WHERE source_version_id=ANY($1::text[])`, [ids]);
+  if (!evidenceHeaders.length) throw new Error("committed page has no evidence spans");
+  const hydrated = await adapter.evidence.getEvidenceBatch(evidenceHeaders.map(row => row.id as never));
+  const textById = new Map(hydrated.map(span => [String(span.id), span.text]));
+  if (textById.size !== evidenceHeaders.length) throw new Error("committed page evidence is inaccessible");
   const sourceBytes = new Map<string, Buffer>();
   for (const row of rows) {
-    const blobs = await adapter.query<{ content: Buffer }>(`SELECT b.content FROM ${adapter.table("blobs")} b JOIN ${adapter.table("source_versions")} sv ON sv.content_hash=b.content_hash WHERE sv.id=$1`, [row.id]);
+    const blobs = await adapter.query<{ content_hash: string }>(`SELECT content_hash FROM ${adapter.table("source_versions")} WHERE id=$1`, [row.id]);
     if (!blobs[0]) throw new Error(`missing evidence source blob ${row.id}`);
-    sourceBytes.set(row.id, blobs[0].content);
+    sourceBytes.set(row.id, Buffer.from(await adapter.blobs.get(blobs[0].content_hash as ContentHash)));
   }
-  for (const span of evidence) {
+  for (const span of evidenceHeaders) {
     const byteStart = Number(span.byte_start);
     const byteEnd = Number(span.byte_end);
     const charStart = Number(span.char_start);
     const charEnd = Number(span.char_end);
-    const expected = span.text_content;
+    const expected = textById.get(span.id)!;
     const bytes = sourceBytes.get(span.source_version_id);
     if (!bytes) throw new Error(`unknown evidence source version ${span.source_version_id}`);
     const sourceText = bytes.toString("utf8");

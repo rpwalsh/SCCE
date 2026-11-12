@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeGraphRetrieval } from "../runtime-graph-retrieval.js";
 import { anchorFeatureSet, createClock, createHasher } from "../primitives.js";
 import { clearCorpusIdentitySignals, primeCorpusIdentitySignals } from "../corpus-identity.js";
-import type { EvidenceSearchResult, ScceKernelDeps } from "../storage.js";
+import type { EvidenceSearchResult, LanguageContinuationPopulation, ScceKernelDeps } from "../storage.js";
 import type { GraphSlice, GraphSliceQuery } from "../types.js";
 
 function retrievalFixture() {
@@ -28,9 +28,13 @@ function retrievalFixture() {
   return { runtime, kernelTrace };
 }
 
-async function anchorFeatureGroups(text: string): Promise<string[][]> {
+async function anchorFeatureGroups(
+  text: string,
+  requestScaffolding?: ReadonlySet<string>,
+  continuationPopulation?: LanguageContinuationPopulation
+): Promise<string[][]> {
   const fixture = retrievalFixture();
-  await fixture.runtime.graphForText(text, { sourceAnchoringRequired: true, residentOnly: true });
+  await fixture.runtime.graphForText(text, { sourceAnchoringRequired: true, residentOnly: true, requestScaffolding, continuationPopulation });
   const event = fixture.kernelTrace.mock.calls
     .map(call => call[0] as { stage?: string; support?: { anchorFeatureGroups?: string[][] } })
     .find(candidate => candidate.stage === "graph.resolve.anchor_evidence_search");
@@ -113,5 +117,47 @@ describe("a concentrated unit swallowed by its containing run still reaches a qu
     const groups = await anchorFeatureGroups("What is the capital of Albania?");
 
     expect(groups.find(group => group[0] === "anchor:bi:capital|albania")).toEqual(["anchor:bi:capital|albania"]);
+  });
+
+  it("does not open a standalone frontier for a corpus-wide relation unit", async () => {
+    // Live r004 measurements for this request: `name` occurs across 383 sources while the corpus-derived Otsu
+    // concentration boundary is 125. The Alice subject groups find the book; the standalone name group returned
+    // unrelated disambiguation pages and spent 32 seconds reconstructing their archive sources.
+    primeCorpusIdentitySignals({
+      closedClass: new Set(["what", "is", "the", "of"]),
+      identities: new Set<string>(),
+      spread: new Map([
+        ["alice's cat", 10],
+        ["name alice's", 26],
+        ["alice's", 32],
+        ["alice", 34],
+        ["cat", 130],
+        ["name", 383]
+      ]),
+      concentration: 125
+    });
+
+    const groups = await anchorFeatureGroups("What is the name of Alice's cat?");
+
+    expect(groups.some(group => group.length === 1 && group[0] === "anchor:sym:name")).toBe(false);
+    expect(groups.flat()).toContain("anchor:bi:name|alice");
+    expect(groups.flat()).toContain("anchor:sym:alice");
+  });
+
+  it("does not search a scaffolding phrase that only repackages an already searched subject", async () => {
+    const continuationCounts: Record<string, number> = { what: 20_000, is: 19_999 };
+    for (let index = 0; index < 160; index += 1) {
+      const first = String.fromCharCode(97 + Math.floor(index / 26));
+      const second = String.fromCharCode(97 + (index % 26));
+      continuationCounts[`fixture${first}${second}`] = 10_000 - index;
+    }
+    const groups = await anchorFeatureGroups(
+      "What is albedo?",
+      new Set(["what", "is"]),
+      { languageId: "language.fixture", modelCount: 2_000, continuationCounts }
+    );
+
+    expect(groups.some(group => group[0] === "anchor:sym:albedo")).toBe(true);
+    expect(groups.flat()).not.toContain("anchor:bi:what|albedo");
   });
 });

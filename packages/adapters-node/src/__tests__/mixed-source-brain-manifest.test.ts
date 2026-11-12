@@ -27,7 +27,8 @@ async function fixture() {
   const bookPath = path.join(books, "alice.txt"); await writeFile(bookPath, alice);
   const clock = createClock({ fixedTime: 1 }), hasher = createHasher(), evidence: EvidenceSpan[] = [];
   const { storage } = storageFixtureForEvaluation({ evidence, clockNow: () => clock.now() });
-  const versions = new Map<string, SourceVersion>(), blobs = new Map<ContentHash, Uint8Array>(), checkpoints = new Map<string, IngestionCheckpoint>();
+  const versions = new Map<string, SourceVersion>(), blobs = new Map<ContentHash, Uint8Array>(),
+    blobRanges = new Map<ContentHash, { parentHash: ContentHash; byteStart: number; byteEnd: number }>(), checkpoints = new Map<string, IngestionCheckpoint>();
   storage.evidence.putSourceVersion = async row => { versions.set(String(row.sourceVersionId), structuredClone(row)); };
   storage.evidence.sourceVersionById = async id => versions.get(String(id)) ?? null;
   storage.evidence.sourceVersionsByContentHashes = async hashes => [...versions.values()].filter(row => hashes.includes(row.contentHash));
@@ -35,8 +36,14 @@ async function fixture() {
   storage.evidence.putEvidenceSpan = async span => { const at = evidence.findIndex(row => row.id === span.id); if (at < 0) evidence.push(span); else evidence[at] = span; };
   storage.evidence.putEvidenceSpans = async rows => { for (const row of rows) await storage.evidence.putEvidenceSpan(row); };
   storage.evidence.searchEvidence = async q => evidence.filter(row => (!q.sourceVersionId || row.sourceVersionId === q.sourceVersionId) && (!q.status || q.status === "any" || row.status === q.status)).slice(0, q.limit).map(span => ({ span, score: 1, reason: "canonical owner" }));
+  const readBlob = async (hash: ContentHash): Promise<Uint8Array> => { const bytes = blobs.get(hash); if (bytes) return new Uint8Array(bytes);
+    const range = blobRanges.get(hash); if (!range) throw Error("missing canonical bytes");
+    return (await readBlob(range.parentHash)).slice(range.byteStart, range.byteEnd); };
   storage.blobs = { put: async bytes => { const hash = `sha256_${hasher.digestHex(bytes)}` as ContentHash; blobs.set(hash, new Uint8Array(bytes)); return hash; },
-    get: async hash => { const bytes = blobs.get(hash); if (!bytes) throw Error("missing canonical bytes"); return bytes; }, exists: async hash => blobs.has(hash) };
+    putRanges: async (items, parent) => { const bytes = blobs.get(parent.contentHash); if (!bytes || hasher.digestHex(bytes) !== String(parent.contentHash).slice(7)) throw Error("missing canonical range parent");
+      for (const item of items) { if (item.parentHash !== parent.contentHash || hasher.digestHex(parent.bytes.slice(item.byteStart, item.byteEnd)) !== String(item.contentHash).slice(7)) throw Error("invalid canonical range");
+        blobRanges.set(item.contentHash, { parentHash: item.parentHash, byteStart: item.byteStart, byteEnd: item.byteEnd }); } },
+    get: readBlob, exists: async hash => blobs.has(hash) || blobRanges.has(hash) };
   storage.ingestion = { get: async id => checkpoints.get(id) ?? null, put: async row => { checkpoints.set(row.id, structuredClone(row)); }, list: async () => [...checkpoints.values()] };
   storage.model.listLanguageProfileHeaders = async q => (await storage.model.listLanguageProfiles()).filter(row => q.profileIds.includes(row.id)).slice(0, q.limit).map(row => ({ id: row.id, sourceVersionId: row.sourceVersionId }));
   storage.languageMemory.listNgramModelHeaders = async q => (await storage.languageMemory.listNgramModels({ limit: q.modelIds.length })).filter(row => q.modelIds.includes(row.id))

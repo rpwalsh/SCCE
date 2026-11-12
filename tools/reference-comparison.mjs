@@ -4,6 +4,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 
 /**
  * The running system against a local language model, on the corpus the running system actually holds.
@@ -101,15 +102,16 @@ const client = new pg.Client({ connectionString: config.database.url });
 await client.connect();
 await client.query("set statement_timeout to '180s'");
 const schema = config.database.schema;
+const corpusReader = createCanonicalCorpusReader(client, schema);
 
 /** The article as the corpus holds it: what the model is given, and what ground truth is checked against. */
 const articleText = async title => {
   const rows = await client.query(
-    `select text_content from ${schema}.evidence_spans
+    `select content_hash,byte_start,byte_end,char_start,char_end from ${schema}.evidence_spans
      where provenance_json->>'title' = $1 and status = 'promoted' order by char_start limit 40`,
     [title]
   );
-  return rows.rows.map(row => String(row.text_content)).join("\n");
+  return (await corpusReader.evidenceTexts(rows.rows)).join("\n");
 };
 
 const articles = new Map();

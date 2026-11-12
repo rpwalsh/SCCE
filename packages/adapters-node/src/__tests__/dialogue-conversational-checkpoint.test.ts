@@ -169,7 +169,9 @@ it("keeps genuine sixteen-pair compiler payload hashes exact while its conversat
     expect(f.checkpoints.has(receipt.id)).toBe(true);
     induce.mockClear(); const write = vi.spyOn(f.storage.ingestion, "put");
     await trainDialogueCorpus(options);
-    expect(induce).not.toHaveBeenCalled(); expect(compiler).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
+    expect(induce).not.toHaveBeenCalled(); expect(compiler).not.toHaveBeenCalled(); expect(write).toHaveBeenCalledTimes(1);
+    expect(object(write.mock.calls[0]![0].metadata).schema).toBe("scce.dialogue_contextual_qa_compilation.v1");
+    expect(write.mock.calls[0]![0]).toMatchObject({ phase: "extracting", status: "running" });
     expect(await artifactHash()).toBe(outputHash);
   } finally { compiler.mockRestore(); induce.mockRestore(); now.mockRestore(); await rm(root, { recursive: true, force: true }); }
 });

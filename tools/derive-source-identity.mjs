@@ -18,6 +18,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { deriveSourceIdentityUnits, deriveClosedClassWords, sourceTitleFromUri } from "../packages/kernel/dist/index.js";
 import { openNgramModelReader } from "./lib/ngram-model-reader.mjs";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 // Resolved from the repository, not from one machine's checkout path (same recipe as scripts/db.mjs).
 const pg = createRequire(pathToFileURL(path.resolve("packages/adapters-node/package.json")))("pg");
 
@@ -45,6 +46,7 @@ const { url, schema } = databaseConfig();
 const client = new pg.Client({ connectionString: url });
 await client.connect();
 await client.query(`SET search_path TO "${schema}"`);
+const corpus = createCanonicalCorpusReader(client, schema);
 
 // Units the same way the kernel splits them: whitespace on a lowercased surface, four characters or more.
 const unitsOf = text => {
@@ -112,16 +114,18 @@ const documents = [];
 for (const row of titleless.rows) {
   // Spread the sample across the document: the first spans of a book are the licence header, not the book.
   const spans = await client.query(`
-    SELECT text_content FROM (
-      SELECT text_content, row_number() OVER (ORDER BY char_start) AS position, count(*) OVER () AS total
+    SELECT content_hash,byte_start,byte_end,char_start,char_end FROM (
+      SELECT content_hash,byte_start,byte_end,char_start,char_end,
+        row_number() OVER (ORDER BY char_start) AS position, count(*) OVER () AS total
       FROM evidence_spans WHERE source_version_id = $1
     ) ranked
     WHERE position % GREATEST(1, (total / 40)::int) = 0
     LIMIT 40
   `, [row.source_version_id]);
   const counts = new Map();
-  for (const span of spans.rows) {
-    for (const [unit, count] of unitsOf(span.text_content ?? "")) {
+  const spanTexts = await corpus.evidenceTexts(spans.rows);
+  for (const spanText of spanTexts) {
+    for (const [unit, count] of unitsOf(spanText)) {
       // What the corpus treats as function material identifies no document.
       if (closedClass.has(unit)) continue;
       counts.set(unit, (counts.get(unit) ?? 0) + count);
@@ -132,11 +136,12 @@ for (const row of titleless.rows) {
   // format name themselves at the start -- a title page, a paper's header, an invoice, a file's first lines --
   // so the opening's rarest units are taken alongside the body's most distinctive ones.
   const opening = await client.query(
-    "SELECT text_content FROM evidence_spans WHERE source_version_id = $1 ORDER BY char_start LIMIT 1",
+    "SELECT content_hash,byte_start,byte_end,char_start,char_end FROM evidence_spans WHERE source_version_id = $1 ORDER BY char_start LIMIT 1",
     [row.source_version_id]
   );
   const openingCounts = new Map();
-  for (const [unit, count] of unitsOf((opening.rows[0]?.text_content ?? "").slice(0, 600))) {
+  const openingText = opening.rows[0] ? await corpus.evidenceText(opening.rows[0]) : "";
+  for (const [unit, count] of unitsOf(openingText.slice(0, 600))) {
     if (closedClass.has(unit)) continue;
     openingCounts.set(unit, count);
   }

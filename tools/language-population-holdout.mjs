@@ -2,19 +2,22 @@
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import { kneserNeyPerplexity, trainKneserNey } from "../packages/kernel/dist/kneser-ney.js";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 
 const url = JSON.parse(readFileSync(new URL("../scce.config.local.json", import.meta.url), "utf8")).database.url;
 const client = new pg.Client({ connectionString: url });
 await client.connect();
+const corpus = createCanonicalCorpusReader(client, "scce3_runtime");
 
 // Document corpus: live wikipedia evidence spans.
 const { rows } = await client.query(
-  `SELECT text_content FROM scce3_runtime.evidence_spans
-   WHERE text_content IS NOT NULL AND length(text_content) > 400
+  `SELECT content_hash,byte_start,byte_end,char_start,char_end FROM scce3_runtime.evidence_spans
+   WHERE char_end-char_start > 400
    ORDER BY id LIMIT 3000`
 );
+const documentTexts = await corpus.evidenceTexts(rows);
 await client.end();
-const documentText = rows.map(r => r.text_content).join("\n");
+const documentText = documentTexts.join("\n");
 
 // Conversational corpus: the same public-domain dialogue files the dialogue population was trained from.
 const dialogueFiles = ["pg844", "pg1656", "pg1929", "pg2542", "pg3328", "pg3825", "pg7700"];

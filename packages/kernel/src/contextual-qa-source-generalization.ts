@@ -2,18 +2,20 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 
-export interface ContextualQaSourceSpan { slotIndex: number; startCodePoint: number; endCodePoint: number }
+export type ContextualQaSourceSurfaceClass = "observed" | "open";
+export interface ContextualQaSourceSpan { slotIndex: number; startCodePoint: number; endCodePoint: number; surfaceClass?: ContextualQaSourceSurfaceClass }
 export interface ContextualQaSourceWindow { id: string; surface: string; protectedSpans: readonly ContextualQaSourceSpan[] }
 export interface ContextualQaSourceGeneralization {
   parts: Array<string | { slotIndex: number }>;
-  sourceOnlyRoles: Array<{ slotIndex: number; observedValues: string[] }>;
+  sourceOnlyRoles: Array<{ slotIndex: number; surfaceClass: ContextualQaSourceSurfaceClass; observedValues: string[] }>;
   fit: Array<{ id: string; sourceOnlySpans: ContextualQaSourceSpan[] }>;
 }
 type Prepared = { input: ContextualQaSourceWindow; points: string[]; spans: ContextualQaSourceSpan[]; gaps: Array<{ surface: string; start: number }> };
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
 /** Source-only variation is a measured finite class; it never becomes an unrestricted factual modifier. */
-export function generalizeContextualQaSources(input: { fit: readonly ContextualQaSourceWindow[] }): ContextualQaSourceGeneralization | undefined {
+export function generalizeContextualQaSources(input: { fit: readonly ContextualQaSourceWindow[];
+  sourceOnlySurfaceClass?: ContextualQaSourceSurfaceClass }): ContextualQaSourceGeneralization | undefined {
   if (!input.fit.length || new Set(input.fit.map(row => row.id)).size !== input.fit.length) return undefined;
   const prepared = input.fit.map(prepare);
   if (prepared.some(row => !row)) return undefined;
@@ -65,25 +67,42 @@ export function generalizeContextualQaSources(input: { fit: readonly ContextualQ
         let prefix = 0, suffix = 0;
         while (prefix < minimum && variants.every(value => value[prefix] === variants[0]![prefix])) prefix++;
         while (suffix < minimum - prefix && variants.every(value => value[value.length - suffix - 1] === variants[0]![variants[0]!.length - suffix - 1])) suffix++;
-        const boundaries = values.map((value, index) => new Set([0, variants[index]!.length,
-          ...segmentUnicodeSurfaceV2(value).lexicalSegments.flatMap(segment => [segment.codePointStart, segment.codePointEnd])]));
+        const boundaries = values.map((value, index) => {
+          const segmentation = segmentUnicodeSurfaceV2(value);
+          return new Set([0, variants[index]!.length,
+            ...segmentation.surfaceSegments.flatMap(segment => segment.kind === "whitespace" || segment.kind === "control"
+              ? Array.from({ length: segment.codePointEnd - segment.codePointStart + 1 }, (_unused, offset) => segment.codePointStart + offset)
+              : [segment.codePointStart, segment.codePointEnd]),
+            ...segmentation.lexicalSegments.flatMap(segment => [segment.codePointStart, segment.codePointEnd])]);
+        });
         while (prefix > 0 && !boundaries.every(boundary => boundary.has(prefix))) prefix--;
         while (suffix > 0 && !boundaries.every((boundary, index) => boundary.has(variants[index]!.length - suffix))) suffix--;
         const observed = variants.map(value => value.slice(prefix, value.length - suffix).join(""));
-        if (observed.some(value => !value.trim()) || !Number.isSafeInteger(nextSlot)) return undefined;
+        // An absent modifier is measurable when the surrounding literal/protected-role geometry makes the
+        // zero-width choice unique. Preserve that absence as a class member without fabricating a zero-width
+        // construction role; the interpreter below still rejects multiple complete parses.
+        if (observed.some(value => value !== "" && !value.trim()) || !Number.isSafeInteger(nextSlot)) return undefined;
         literal(variants[0]!.slice(0, prefix).join(""));
         const slotIndex = nextSlot++;
         model.parts.push({ slotIndex });
-        model.sourceOnlyRoles.push({ slotIndex, observedValues: [...new Set(observed)].sort(compare) });
-        rows.forEach((row, index) => fitById.get(row.input.id)!.sourceOnlySpans.push({ slotIndex,
-          startCodePoint: row.gaps[gap]!.start + cursors[index]! + prefix, endCodePoint: row.gaps[gap]!.start + ends[index]! - suffix }));
+        const surfaceClass = input.sourceOnlySurfaceClass ?? "observed";
+        model.sourceOnlyRoles.push({ slotIndex, surfaceClass, observedValues: [...new Set(observed)].sort(compare) });
+        rows.forEach((row, index) => {
+          const startCodePoint = row.gaps[gap]!.start + cursors[index]! + prefix;
+          const endCodePoint = row.gaps[gap]!.start + ends[index]! - suffix;
+          if (endCodePoint > startCodePoint) fitById.get(row.input.id)!.sourceOnlySpans.push({ slotIndex, startCodePoint, endCodePoint, surfaceClass });
+        });
         literal(variants[0]!.slice(variants[0]!.length - suffix).join(""));
       }
       if (anchor) { literal(anchor[0]!.surface); anchor.forEach((token, index) => { cursors[index] = token.codePointEnd; }); }
     }
     if (gap < order.length) model.parts.push({ slotIndex: order[gap]! });
   }
-  if (!model.parts.some(part => typeof part === "string" && part.trim())) return undefined;
+  // A learned relation may be expressed by role order plus an observed separator alone (for example,
+  // an attributive value immediately before the request-bound subject).  Requiring a lexical literal
+  // discards that corpus-derived construction and is language-specific; an empty separator remains
+  // inadmissible because adjacent open roles have no measurable boundary.
+  if (!model.parts.some(part => typeof part === "string" && part.length > 0)) return undefined;
   if (!rows.every(row => interpretContextualQaSourceGeneralization({ model, surface: row.input.surface, protectedSpans: row.spans }))) return undefined;
   return model;
 }
@@ -95,9 +114,11 @@ export function interpretContextualQaSourceGeneralization(input: {
 }): { sourceOnlySpans: ContextualQaSourceSpan[] } | undefined {
   const row = prepare({ id: "interpret", surface: input.surface, protectedSpans: input.protectedSpans });
   if (!row) return undefined;
-  const classes = new Map(input.model.sourceOnlyRoles.map(role => [role.slotIndex, role.observedValues]));
+  const classes = new Map(input.model.sourceOnlyRoles.map(role => [role.slotIndex, role]));
   if (classes.size !== input.model.sourceOnlyRoles.length || [...classes].some(([slot, values]) => !Number.isSafeInteger(slot) || slot < 0
-    || !values.length || values.some(value => typeof value !== "string" || !value) || new Set(values).size !== values.length)) return undefined;
+    || !["observed", "open"].includes(values.surfaceClass) || !values.observedValues.length
+    || values.observedValues.some(value => typeof value !== "string" || value !== "" && !value.trim())
+    || new Set(values.observedValues).size !== values.observedValues.length)) return undefined;
   const gaps: Array<Array<string | { slotIndex: number }>> = [[]];
   const protectedOrder: number[] = [];
   for (const part of input.model.parts) {
@@ -109,15 +130,25 @@ export function interpretContextualQaSourceGeneralization(input: {
   const found: ContextualQaSourceSpan[] = [];
   for (let gap = 0; gap < gaps.length; gap++) {
     const current = row.gaps[gap]!;
+    const boundaries = codeUnitBoundaries(current.surface);
+    const codePointsAt = new Map<number, number>([[0, 0]]);
+    let codeUnitOffset = 0, codePointOffset = 0;
+    for (const point of current.surface) {
+      codeUnitOffset += point.length;
+      codePointsAt.set(codeUnitOffset, ++codePointOffset);
+    }
     let states = new Map<number, { ways: number; spans: ContextualQaSourceSpan[] }>([[0, { ways: 1, spans: [] }]]);
     for (const part of gaps[gap]!) {
       const next = new Map<number, { ways: number; spans: ContextualQaSourceSpan[] }>();
-      for (const [start, state] of states) for (const value of typeof part === "string" ? [part] : classes.get(part.slotIndex)!) {
+      for (const [start, state] of states) for (const value of typeof part === "string" ? [part]
+        : classes.get(part.slotIndex)!.surfaceClass === "observed" ? classes.get(part.slotIndex)!.observedValues
+          : ["", ...boundaries.filter(end => end > start).map(end => current.surface.slice(start, end)).filter(value => value.trim())]) {
         if (!current.surface.startsWith(value, start)) continue;
         const end = start + value.length, previous = next.get(end);
-        const spans = typeof part === "string" ? state.spans : [...state.spans, { slotIndex: part.slotIndex,
-          startCodePoint: current.start + [...current.surface.slice(0, start)].length,
-          endCodePoint: current.start + [...current.surface.slice(0, end)].length }];
+        const spans = typeof part === "string" || value === "" ? state.spans : [...state.spans, { slotIndex: part.slotIndex,
+          startCodePoint: current.start + (codePointsAt.get(start) ?? 0),
+          endCodePoint: current.start + (codePointsAt.get(end) ?? codePointOffset),
+          surfaceClass: classes.get(part.slotIndex)!.surfaceClass }];
         next.set(end, { ways: Math.min(2, (previous?.ways ?? 0) + state.ways), spans: previous?.spans ?? spans });
       }
       states = next;
@@ -128,6 +159,13 @@ export function interpretContextualQaSourceGeneralization(input: {
     found.push(...complete.spans);
   }
   return { sourceOnlySpans: found };
+}
+
+function codeUnitBoundaries(surface: string): number[] {
+  const boundaries: number[] = [];
+  let offset = 0;
+  for (const point of surface) { offset += point.length; boundaries.push(offset); }
+  return boundaries;
 }
 
 function prepare(input: ContextualQaSourceWindow): Prepared | undefined {

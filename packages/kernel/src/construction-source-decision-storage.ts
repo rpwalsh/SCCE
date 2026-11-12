@@ -178,7 +178,12 @@ export function normalizeConstructionSourceDecisions(values: readonly unknown[],
       const candidateCount = Math.floor((low + high) / 2), page = buildPage(ordered.slice(start, start + candidateCount), proofs, input.ownerKey, input.namespace, input.hasher);
       if (bytes(page) <= input.maxPageBytes) { best = page; count = candidateCount; low = candidateCount + 1; } else high = candidateCount - 1;
     }
-    if (!best) throw Error("construction source decisions exceed shared page byte budget");
+    // A page is an optional factored representation, not an admissibility gate.
+    // A complete source-owned decision can legitimately be larger than the page
+    // cap (for example, a large construction with many exact observations). Keep
+    // that one decision inline and continue packing the rest of the cohort. This
+    // preserves every measured choice while keeping every shared page bounded.
+    if (!best) { start++; continue; }
     pages.push(best);
     for (let ordinal = 0; ordinal < count; ordinal++) for (const position of ordered[start + ordinal]!.indexes) {
       const root = row(patterns[position]);

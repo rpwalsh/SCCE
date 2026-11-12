@@ -18,6 +18,31 @@ import {
 } from "../index.js";
 
 describe("induced language model memory projection", () => {
+  it("publishes semantic replay factors for every source-backed syntax component", () => {
+    const hasher = createHasher();
+    const clock = createClock({ fixedTime: 169_000, stepMs: 1 });
+    const idFactory = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "semantic-replay-pair" });
+    const sourceVersionId = idFactory.sourceVersionId("....");
+    const model = createLanguageInductionEngine({ hasher }).induce({
+      documents: [{ id: "doc.punctuation", sourceVersionId, evidenceIds: ["evidence.punctuation" as never], text: "...." }]
+    });
+    expect(model.semanticInductionFactors).toBeDefined();
+    expect(model.semanticFrames).toEqual([]);
+    expect(model.graphBoundConstructions).toEqual([]);
+    expect(model.lexicalClasses).toEqual([]);
+    expect(model.relationHypothesisModel.observationCount).toBe(0);
+    const profile: LanguageProfile = { id: "profile.punctuation", sourceVersionId,
+      scripts: [{ script: "script:Zyyy", mass: 1 }], symbolShapes: [], charNgrams: [], direction: "ltr", entropy: 0, createdAt: 169_000 };
+    const projection = languageMemoryPatternsFromInducedLanguageModel({ model, profiles: [profile], idFactory, updatedAt: 169_000 });
+    expect(projection.patterns.some(pattern => pattern.patternKind === "syntax")).toBe(true);
+    const semantic = projection.patterns.find(pattern =>
+      (pattern.patternJson as { schema?: string }).schema === "scce.induced_language_model.semantic_memory.v1");
+    expect(semantic?.patternJson).toMatchObject({
+      modelId: model.id,
+      semanticInductionProjection: { schema: "scce.semantic_induction_projection.v1" }
+    });
+  });
+
   it("projects persisted induction models into runtime-visible language patterns", () => {
     const hasher = createHasher();
     const clock = createClock({ fixedTime: 170_000, stepMs: 1 });

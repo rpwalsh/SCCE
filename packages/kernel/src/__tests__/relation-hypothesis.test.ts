@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   atomizeText,
   compileRelationHypothesisModel,
+  createLanguageInductionEngine,
   createHasher,
   inferRelationHypotheses
 } from "../index.js";
@@ -33,6 +34,16 @@ describe("relation hypothesis posterior", () => {
     expect(posterior.every(row => Number.isFinite(row.energy))).toBe(true);
   });
 
+  it("keeps the complete posterior finite when a new surface was absent from training", () => {
+    const model = compileRelationHypothesisModel({ observations, hasher: createHasher() });
+    const posterior = inferRelationHypotheses({ symbols: ["erin", "builds", "towers"], model });
+
+    expect(posterior[0]?.surface).toBe("builds");
+    expect(posterior).toHaveLength(3);
+    expect(posterior.every(row => Number.isFinite(row.posterior) && Number.isFinite(row.energy))).toBe(true);
+    expect(posterior.reduce((sum, row) => sum + row.posterior, 0)).toBeCloseTo(1, 9);
+  });
+
   it("is deterministic under source reduction order", () => {
     const hasher = createHasher();
     const left = compileRelationHypothesisModel({ observations, hasher });
@@ -42,6 +53,22 @@ describe("relation hypothesis posterior", () => {
     });
 
     expect(right).toEqual(left);
+  });
+
+  it("fits semantic posteriors from disjoint corpus context while retaining only current source factors", () => {
+    const current = { id: "current", sourceFamilyId: "source.current", text: "erin builds towers." };
+    const context = observations.map((row, index) => ({ id: `context.${index}`, sourceFamilyId: row.sourceId,
+      text: `${row.symbols.join(" ")}.` }));
+    const model = createLanguageInductionEngine({ hasher: createHasher() }).induce({
+      documents: [current], relationContextDocuments: context
+    });
+    const factors = model.semanticInductionFactors!;
+
+    expect(factors.documents.map(row => row.id)).toEqual(["current"]);
+    expect(factors.sentences[0]!.symbols).toEqual(["erin", "builds", "towers"]);
+    expect(factors.sentences[0]!.hypotheses[0]![0]).toBe(1);
+    expect(model.relationHypothesisModel.sourceCount).toBe(1);
+    expect((model.audit as { relationContextDocuments?: number }).relationContextDocuments).toBe(context.length);
   });
 
   it("carries competing predicate hypotheses into semantic proof atoms", () => {

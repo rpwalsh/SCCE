@@ -167,8 +167,8 @@ export function inferRelationHypotheses(input: {
       const leftShape = surfaceShape(normalize(input.symbols[index - 1] ?? "<boundary>"));
       const rightShape = surfaceShape(normalize(input.symbols[index + 1] ?? "<boundary>"));
       const localShapeSupport = (
-        Number(statistics?.leftShapes.includes(leftShape))
-        + Number(statistics?.rightShapes.includes(rightShape))
+        Number(statistics?.leftShapes.includes(leftShape) ?? false)
+        + Number(statistics?.rightShapes.includes(rightShape) ?? false)
         + 1
       ) / 3;
       const factors = {

@@ -19,6 +19,7 @@ import {
   type WikiNormalizationDiagnostics
 } from "./wikipedia-markup.js";
 import { createRemoteWikipediaReader, readRemoteWikipediaSource, type RemoteWikipediaSource } from "./wikipedia-remote-source.js";
+import { wikipediaInputSourcesStillMatch, type WikipediaInputManifest, type WikipediaInputVerificationCache } from "./wikipedia-input-manifest.js";
 
 type IngestStreamItem =
   | { type: "checkpoint"; checkpoint: IngestionCheckpoint }
@@ -110,6 +111,98 @@ export interface WikipediaLanguageSurfaceMapping {
   evidenceCodePointEnd: number;
   /** Same UTF-16 and code-point length as the excluded evidence surface. */
   replacement: string;
+}
+
+export interface WikipediaArchiveDescriptor {
+  schema: "scce.wikipedia_archive.v1";
+  manifest: WikipediaInputManifest;
+  python: string;
+  maxBlockBytes: number;
+  maxArticleChars: number;
+}
+
+export interface WikipediaArchiveReference {
+  schema: "scce.wikipedia_archive_page.v1";
+  blockOffset: number;
+  blockEnd: number;
+  pageId: string;
+  revisionId: string;
+  representation: "original" | "evidence";
+  transformId: string;
+}
+
+// One bounded block/page cache and a single decode queue; corpus size cannot increase resident cache size.
+let archiveDecodeQueue: Promise<void> = Promise.resolve();
+let archiveBlockCache: { key: string; xml: string } | undefined;
+let archivePageCache: { key: string; original: Buffer; evidence: Buffer } | undefined;
+
+/** Reuses the ingestor's parser and normalizer; it never acquires language or refits learned state. */
+export async function readWikipediaArchiveBlob(archiveValue: unknown, referenceValue: unknown,
+  options: { verificationCache?: WikipediaInputVerificationCache } = {}): Promise<Buffer> {
+  const archive = archiveValue as WikipediaArchiveDescriptor;
+  const reference = referenceValue as WikipediaArchiveReference;
+  const semanticConfig = archive?.manifest?.semantics?.config;
+  const declaredMaxArticleChars = semanticConfig && typeof semanticConfig === "object" && !Array.isArray(semanticConfig)
+    ? (semanticConfig as Record<string, unknown>).maxArticleChars : undefined;
+  if (archive?.schema !== "scce.wikipedia_archive.v1" || reference?.schema !== "scce.wikipedia_archive_page.v1"
+    || !archive.manifest?.inputs?.dump || archive.manifest.inputs.remoteDump
+    || archive.manifest.kind !== "wikipedia-input-manifest" || archive.manifest.schemaVersion !== 2
+    || !/^sha256:[0-9a-f]{64}$/u.test(archive.manifest.identity)
+    || !/^sha256:[0-9a-f]{64}$/u.test(archive.manifest.sourceSetDigest)
+    || archive.manifest.semantics?.normalizationIdentity !== WIKIPEDIA_SURFACE_TRANSFORM
+    || typeof archive.manifest.inputs.dump.path !== "string"
+    || !path.isAbsolute(archive.manifest.inputs.dump.path)
+    || !Number.isSafeInteger(archive.manifest.inputs.dump.byteLength) || archive.manifest.inputs.dump.byteLength < 1
+    || !/^sha256:[0-9a-f]{64}$/u.test(archive.manifest.inputs.dump.sha256)
+    || !Number.isSafeInteger(archive.maxBlockBytes) || archive.maxBlockBytes < 1 || archive.maxBlockBytes > 192 * 1024 * 1024
+    || !Number.isSafeInteger(archive.maxArticleChars) || archive.maxArticleChars < 1
+    || declaredMaxArticleChars !== archive.maxArticleChars
+    || typeof archive.python !== "string" || !archive.python
+    || !Number.isSafeInteger(reference.blockOffset) || !Number.isSafeInteger(reference.blockEnd)
+    || reference.blockOffset < 0 || reference.blockEnd <= reference.blockOffset
+    || reference.blockEnd > archive.manifest.inputs.dump.byteLength
+    || typeof reference.pageId !== "string" || !/^\d+$/u.test(reference.pageId)
+    || typeof reference.revisionId !== "string" || !/^\d+$/u.test(reference.revisionId)
+    || !["original", "evidence"].includes(reference.representation)
+    || reference.transformId !== `${WIKIPEDIA_SURFACE_TRANSFORM}+redact-secrets`) {
+    throw new Error("invalid retained Wikipedia archive reference");
+  }
+  let release!: () => void;
+  const previous = archiveDecodeQueue;
+  archiveDecodeQueue = new Promise<void>(resolve => { release = resolve; });
+  await previous;
+  try {
+    if (!await wikipediaInputSourcesStillMatch(archive.manifest, { verificationCache: options.verificationCache })) {
+      throw new Error("retained Wikipedia archive changed or is unavailable");
+    }
+    const blockKey = `${archive.manifest.sourceSetDigest}:${reference.blockOffset}:${reference.blockEnd}:${archive.maxBlockBytes}`;
+    const pageKey = `${blockKey}:${reference.pageId}:${reference.revisionId}:${archive.maxArticleChars}:${reference.transformId}`;
+    if (archivePageCache?.key !== pageKey) {
+      const xml = archiveBlockCache?.key === blockKey ? archiveBlockCache.xml : await readCompressedBlock(
+        archive.manifest.inputs.dump.path, reference.blockOffset, reference.blockEnd, archive.python, archive.maxBlockBytes);
+      archiveBlockCache = xml.length * 2 <= 32 * 1024 * 1024 ? { key: blockKey, xml } : undefined;
+      let selected: ParsedWikiPage | undefined;
+      for (const pageXml of drainPages(xml)) {
+        const revisionStart = pageXml.indexOf("<revision>");
+        if (tagText(revisionStart >= 0 ? pageXml.slice(0, revisionStart) : pageXml, "id") !== reference.pageId) continue;
+        const page = parseWikiPage(pageXml, archive.maxArticleChars);
+        if (!page || page.revisionId !== reference.revisionId) throw new Error("Wikipedia archive page/revision identity mismatch");
+        selected = page;
+        break;
+      }
+      if (!selected) throw new Error("Wikipedia archive page is absent from its indexed block");
+      const decoded = { key: pageKey, original: Buffer.from(selected.rawText, "utf8"),
+        evidence: Buffer.from(redactSecretsWithMap(selected.text).text, "utf8") };
+      archivePageCache = decoded.original.length + decoded.evidence.length <= 16 * 1024 * 1024 ? decoded : undefined;
+      if (!await wikipediaInputSourcesStillMatch(archive.manifest, { verificationCache: options.verificationCache })) {
+        throw new Error("retained Wikipedia archive changed during reconstruction");
+      }
+      return Buffer.from(decoded[reference.representation]);
+    }
+    return Buffer.from(archivePageCache[reference.representation]);
+  } finally {
+    release();
+  }
 }
 
 /** Declared structure the normalizer would otherwise strip: article links (label → title) and section headings. */
@@ -515,6 +608,7 @@ async function readCompressedBlock(dumpPath: string, offset: number, end: number
     "            out.append(part)",
     "        if d.eof: break",
     "if not d.eof: raise RuntimeError('truncated bzip2 stream')",
+    "if limit>0 and read-len(d.unused_data)!=limit: raise RuntimeError('indexed bzip2 block boundary mismatch')",
     "sys.stdout.buffer.write(b''.join(out))"
   ].join("\n");
   const child = spawn(python, ["-c", script, compressedBytes ? "-" : dumpPath, String(offset), String(limit), String(maxBlockBytes)], { windowsHide: true, shell: false, ...(signal ? { signal } : {}) });
@@ -633,7 +727,8 @@ function wikiPageFile(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus, pag
       pageOrdinal,
       blockOrdinal: block.blockOrdinal,
       blockOffset: block.compressedOffset,
-      ...(block.compressedSha256 ? { blockCompressedSha256: block.compressedSha256, blockCompressedEnd: block.compressedEnd ?? null } : {}),
+      blockCompressedEnd: block.compressedEnd ?? null,
+      ...(block.compressedSha256 ? { blockCompressedSha256: block.compressedSha256 } : {}),
       title: page.title,
       pageId: page.pageId,
       revisionId: page.revisionId,

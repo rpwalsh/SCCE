@@ -128,6 +128,28 @@ describe("corpus registry", () => {
     expect(queried).toHaveLength(queriesAfterWarmup);
   });
 
+  it("warms general request language instead of a larger software-document identity", async () => {
+    const queried: LanguageMemoryQuery[] = [];
+    const storage = corpusQueryStorage(queried);
+    const general = languageIdentity("language.general", [
+      { corpusRoleId: CORPUS_ROLE_IDS.dialogue, count: 18 },
+      { corpusRoleId: CORPUS_ROLE_IDS.encyclopedic, count: 12 }
+    ]);
+    const documentation = languageIdentity("language.documentation", [
+      { corpusRoleId: CORPUS_ROLE_IDS.softwareDocumentation, count: 900 }
+    ]);
+    storage.languageIdentities = identityStore([documentation, general]);
+    const kernel = createScceKernel({
+      storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async () => ({ build: commandResult(), test: commandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) }
+    });
+
+    const result = await kernel.warmup({ language: false, requestLanguage: true, graph: false, brain: false, profile: false, corrections: false });
+
+    expect(result.requestLanguage).toMatchObject({ loaded: true, languageId: general.id });
+  });
+
   it("leaves request-language warmup unresolved when natural role evidence is tied", async () => {
     const queried: LanguageMemoryQuery[] = [];
     const storage = corpusQueryStorage(queried);

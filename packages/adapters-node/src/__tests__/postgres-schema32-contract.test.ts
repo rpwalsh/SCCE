@@ -39,11 +39,12 @@ it("declares actual source storage columns, keys and foreign keys instead of gen
   }
   expect(verifyPostgresContract(contract).filter(check=>!check.passed)).toEqual([]);
 });
-it("declares the actual nonnullable body digest added by canonical schema maintenance",()=>{
+it("declares one canonical evidence reference without a duplicate body or digest",()=>{
   const statements=schemaStatements('"fixture"');
-  const declaration=statements.find(value=>value.includes('ADD COLUMN text_sha256 BYTEA'));
-  expect(declaration).toBeDefined();expect(statements.some(value=>value.includes('text_sha256 SET NOT NULL'))).toBe(true);
-  const digest=createPostgresContract().tables.find(table=>table.name==='evidence_spans')!.columns.find(column=>column.name==='text_sha256');
-  expect(digest).toMatchObject({name:'text_sha256',scalar:'BYTEA',nullable:false});
-  expect(requiredHydrationColumns().evidence_spans).toContain(digest!.name);
+  expect(statements.some(value=>value.includes('DROP COLUMN IF EXISTS text_content'))).toBe(true);
+  expect(statements.some(value=>value.includes('DROP COLUMN IF EXISTS text_sha256'))).toBe(true);
+  const names=createPostgresContract().tables.find(table=>table.name==='evidence_spans')!.columns.map(column=>column.name);
+  expect(names).not.toContain('text');expect(names).not.toContain('text_sha256');
+  expect(requiredHydrationColumns().evidence_spans).not.toContain('text_content');
+  expect(requiredHydrationColumns().evidence_spans).not.toContain('text_sha256');
 });

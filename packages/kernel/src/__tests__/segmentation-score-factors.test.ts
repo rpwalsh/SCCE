@@ -6,7 +6,7 @@ import { createIdFactory } from "../ids.js";
 import { buildSurfaceLattice, exportSurfaceSegmentationReplayRecipe, replaySurfaceSegmentationAdjacency } from "../surface-lattice.js";
 import { buildSegmentationForest, exportSegmentationAdjacencyFactors, type SegmentationForestUnit } from "../segmentation-forest.js";
 import { createSegmentationAdjacencyQuery } from "../segmentation-adjacency-factors.js";
-import { replaySegmentationScoreFactors, segmentationScoreFactorsCanonicalSafe, validateSegmentationScoreFactors, type SegmentationScoreFactors } from "../segmentation-score-factors.js";
+import { isCapturedSegmentationScoreFactors, replaySegmentationScoreFactors, segmentationScoreFactorsCanonicalSafe, validateSegmentationScoreFactors, type SegmentationScoreFactors } from "../segmentation-score-factors.js";
 import { compileLanguageSegmentationWitness, exportSourceSegmentationReplayRecipe, isLanguageSegmentationWitness } from "../source-segmentation-witness.js";
 import { constructionSourceExampleStorageJson as exactJson } from "../construction-source-example-storage.js";
 import type { BoundaryEstimatorModel } from "../boundary-estimator.js";
@@ -59,6 +59,10 @@ describe("frozen segmentation score factors", () => {
   it("defaults to no capture and preserves segmentation witness identity when redundant scorer metadata is enabled", () => {
     const plain = lattice(false), captured = lattice(true);
     expect(exportSegmentationAdjacencyFactors(plain.segmentationForest)).not.toHaveProperty("scoreRecipe");
+    const measured = exportSegmentationAdjacencyFactors(captured.segmentationForest);
+    expect(isCapturedSegmentationScoreFactors(measured.scoreRecipe!, measured.factors)).toBe(true);
+    expect(isCapturedSegmentationScoreFactors(cold(measured.scoreRecipe!), measured.factors)).toBe(false);
+    expect(isCapturedSegmentationScoreFactors(measured.scoreRecipe!, cold(measured.factors))).toBe(false);
     const compile = (value: typeof plain) => compileLanguageSegmentationWitness({ populationModelId: "population-model.fixture", hasher,
       populations: [{ populationId: "population.fixture", prior: 1,
         documents: [{ documentId: value.documentId, sourceFamilyId: "source.family", text: "🧪e\u0301 f9 東京。\n甲 f9 🦉乙。\u0000 Ω 19.", lattice: value }] }] });
@@ -82,8 +86,16 @@ describe("frozen segmentation score factors", () => {
       const engine = createLanguageInductionEngine({ hasher });
       const plain = engine.induce({ documents });
       const captured = engine.induce({ documents, captureScoreFactors: true });
+      const replayOnly = engine.induce({ documents, captureSegmentationReplay: true });
       expect(captured.id).toBe(plain.id);
       expect(captured.segmentationWitness.id).toBe(plain.segmentationWitness.id);
+      expect(replayOnly).toEqual(captured);
+      const capturedReplay = captured.segmentationWitness.populations.flatMap(population => population.documents)
+        .map(document => exportSourceSegmentationReplayRecipe(document));
+      const replayOnlyRecipes = replayOnly.segmentationWitness.populations.flatMap(population => population.documents)
+        .map(document => exportSourceSegmentationReplayRecipe(document));
+      expect(replayOnlyRecipes).toEqual(capturedReplay);
+      expect(replayOnlyRecipes.every(Boolean)).toBe(true);
       const profile: LanguageProfile = { id: "profile.direct", sourceVersionId, scripts: [], symbolShapes: [], charNgrams: [], direction: "ltr", entropy: 0, createdAt: 172_000 };
       const project = (model: typeof plain) => languageMemoryPatternsFromInducedLanguageModel({ model, profiles: [profile], idFactory, updatedAt: 172_000 });
       const baseline = project(plain), published = project(captured);

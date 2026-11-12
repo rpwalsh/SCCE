@@ -812,7 +812,15 @@ export function createRuntimeGraphRetrieval(options: {
       searchCache?.set(key, pending);
       return pending;
     };
-    const rows = usable(await search({ features: [...group], limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
+    // A phrase query is already the selective path. Mixing its component symbol into the same SQL request makes
+    // Postgres count and rank the symbol's entire posting frontier before it can return the phrase hit. On the
+    // r004 brain, five overlapping Dolly groups took 83,320ms wall this way; the same groups with their bigrams
+    // alone took 277ms and returned the identical evidence owner. The symbol lane still exists immediately below
+    // as the order-insensitive retry when the phrase finds no usable evidence, so this removes redundant work
+    // without removing the rare-identifier / reversed-word-order recovery contract.
+    const phraseFeatures = group.filter(feature => feature.startsWith("anchor:bi:"));
+    const primaryFeatures = phraseFeatures.length ? phraseFeatures : [...group];
+    const rows = usable(await search({ features: primaryFeatures, limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
     if (rows.length) return rows;
     const symbols = uniqueKernelStrings(group.flatMap(feature => feature.startsWith("anchor:bi:")
       ? feature.slice("anchor:bi:".length).split("|").filter(Boolean).map(unit => `anchor:sym:${unit}`)
@@ -907,8 +915,30 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // postings of a question word (26s of one turn, measured) for nothing the article could answer with.
     const { groups: allGroups, quotedSentence } = sourceAnchorRetrievalFeatureGroups(text, languageModels, continuationPopulation);
     const scaffoldingOnly = (group: readonly string[]) => Boolean(requestScaffolding?.size) && anchorGroupUnits(group).every(unit => requestScaffolding!.has(unit));
-    const anchorFeatureGroups = allGroups.filter(group => !scaffoldingOnly(group));
-    const droppedScaffoldingGroups = allGroups.length - anchorFeatureGroups.length;
+    const contentGroups = allGroups.filter(group => !scaffoldingOnly(group));
+    // A phrase made only from request scaffolding plus a subject already
+    // searched as its own symbol contributes no new source identity. It can
+    // still be extremely broad: live r004 `what|albedo` returned 32 rows and
+    // made the anchor stage take 4.7s after `albedo` had already returned the
+    // exact source. This boundary is learned/language-neutral: the caller
+    // supplies its request-scaffolding population, and we only remove a group
+    // when every non-scaffolding unit is present in a sibling singleton group.
+    const singletonUnits = new Set(contentGroups.flatMap(group => group[0]?.startsWith("anchor:sym:")
+      ? [normalizePriorKey(group[0].slice("anchor:sym:".length))]
+      : []));
+    const scaffoldingRepackagesSingleton = (group: readonly string[]) => Boolean(requestScaffolding?.size)
+      && group !== quotedSentence
+      && group.length > 0
+      && group.every(feature => {
+        const units = anchorGroupUnits([feature]).map(unit => normalizePriorKey(unit));
+        const contentUnits = units.filter(unit => !requestScaffolding!.has(unit));
+        return units.some(unit => requestScaffolding!.has(unit))
+          && contentUnits.length > 0
+          && contentUnits.every(unit => singletonUnits.has(unit));
+      });
+    const anchorFeatureGroups = contentGroups.filter(group => !scaffoldingRepackagesSingleton(group));
+    const droppedScaffoldingGroups = allGroups.length - contentGroups.length;
+    const droppedRedundantScaffoldingGroups = contentGroups.length - anchorFeatureGroups.length;
     const anchorFeatures = uniqueKernelStrings(anchorFeatureGroups.flat());
     // Source-bound retrieval should rank on the subject anchors themselves. Mixing
     // the full request feature field into this query makes common prompt fragments
@@ -987,6 +1017,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         anchorFeatures,
         anchorFeatureGroups,
         droppedScaffoldingGroups,
+        droppedRedundantScaffoldingGroups,
         // `gathered` is what the SEARCH produced; `afterProseFilter` is what the code-span filter below left. An
         // economics pass read the pair as the search's own before and after, found them equal in 2,248 of 2,252
         // invocations, and concluded a 3.7s search "changed nothing" while the numbers described a microsecond
@@ -1263,15 +1294,25 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // title seeding finds the article titled with it rather than only the sentences that inflect it.
     const leadingAnchorUnits = new Set(splitPriorUnits(normalizePriorKey(anchors[0] ?? "")).filter(Boolean));
     const corpusCount = (unit: string) => languageModels.reduce((sum, model) => sum + (model.unigramCounts[unit] ?? 0), 0);
+    const identitySignals = corpusIdentitySignals();
     const conceptUnits = uniqueKernelStrings(splitPriorUnits(normalizePriorKey(text))
       .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
       .filter(Boolean))
       .filter(unit => !leadingAnchorUnits.has(unit) && !genericQuestionSignal(unit) && [...unit].length >= 4)
+      // The standalone concept lane exists for a focused concept the corpus documents ("flags"), not for a
+      // relation/instruction unit used across the corpus ("name"). The current turn has already measured every
+      // content unit's distinct-source spread. Respect that language- and script-neutral boundary here: on r004
+      // `name` spans 383 sources against a learned concentration split of 125 and its irrelevant 64-row archive
+      // frontier cost 32.1s, while the two subject groups already returned the Alice evidence. An unmeasured unit
+      // is preserved; absence of a measurement is not evidence that the unit is broad.
+      .filter(unit => {
+        const spread = identitySignals?.spread.get(unit);
+        return spread === undefined || spread === 0 || spread <= identitySignals!.concentration;
+      })
       .sort((left, right) => corpusCount(left) - corpusCount(right) || [...right].length - [...left].length)
       .slice(0, 2);
     // A concentrated run swallows its own units by containment and the phrase branch below then searches only
     // pairs, so the request's rarest unit is restored to the group its phrases already form.
-    const identitySignals = corpusIdentitySignals();
     const searchedAloneUnits = new Set([
       ...candidateAnchors
         .map(anchor => normalizePriorKey(anchor))

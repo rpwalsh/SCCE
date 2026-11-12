@@ -40,6 +40,7 @@ import {
   type BrainValidationReport,
   type BrainShardProvenanceClass,
   type Clock,
+  type ContentHash,
   type EvidenceSpan,
   type GraphEdge,
   type GraphNode,
@@ -60,12 +61,14 @@ import type { SourceLanguageFamilyRange } from "@scce/kernel";
 import { effectiveNgramShardChars, type ScceRuntimeConfig } from "./config.js";
 import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, languageCorpusTrainingRecipeId, type LanguageCorpusTrainingInput } from "./language-corpus-trainer.js";
 import { blobContentHash } from "./postgres.js";
-import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, spanProvenanceMetadata, streamWikipediaMultistream, wikipediaLanguageSurface, wikipediaRootUri, type ResolvedWikipediaCorpus, type WikipediaLanguageSurface, type WikipediaLanguageSurfaceMapping } from "./wikipedia.js";
+import { corpusArchiveIdentity } from "./canonical-evidence-text.js";
+import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, spanProvenanceMetadata, streamWikipediaMultistream, wikipediaLanguageSurface, wikipediaRootUri, type ResolvedWikipediaCorpus, type WikipediaArchiveDescriptor, type WikipediaArchiveReference, type WikipediaLanguageSurface, type WikipediaLanguageSurfaceMapping } from "./wikipedia.js";
 import { createWikipediaInputManifest, wikipediaInputSourcesStillMatch, type WikipediaInputManifest } from "./wikipedia-input-manifest.js";
 import { WIKIPEDIA_LANGUAGE_SURFACE_TRANSFORM, WIKIPEDIA_SURFACE_TRANSFORM } from "./wikipedia-markup.js";
 import { ingestionCodeIdentity } from "./ingestion-code-identity.js";
 import { runSourceInductionExecution, type SourceInductionExecutionReceipt } from "./source-induction-execution.js";
 import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationLoader, type PreparedLanguageTrainingSegmentation } from "./language-training-segmentation.js";
+import { finalizeWikipediaCandidatePublication, type WikipediaPublicationEvidence } from "./wikipedia-publication-finalization.js";
 
 /** The compact Kneser-Ney summary's most-continued symbols, narrowed out of the profile's JSON shape. */
 function profileTopContinuation(kneserNey: unknown): Array<[string, number]> {
@@ -148,10 +151,34 @@ interface WikipediaLanguageShardSample {
   createdAt: number;
   languageAliases: string[];
   semanticCandidates: StructuredSemanticCandidate[];
+  sourceReference?: WikipediaLanguageSourceReference;
+}
+
+interface WikipediaLanguageSourceReference {
+  contentHash: ContentHash;
+  byteLength: number;
+  originalSourceVersionId: SourceVersionId;
+  originalContentHash: ContentHash;
+  originalByteLength: number;
+}
+
+/** Only reconstruction identities and already-derived cognitive metadata belong in the durable journal. */
+interface WikipediaLanguageShardSampleReference {
+  uri: string;
+  title?: string;
+  sourceVersionId: SourceVersionId;
+  sourceReference: WikipediaLanguageSourceReference;
+  textContentHash: ContentHash;
+  textChars: number;
+  projectionHash: ContentHash;
+  evidence: Array<Pick<EvidenceSpan, "id" | "contentHash" | "byteStart" | "byteEnd" | "charStart" | "charEnd"> & { snapshotHash: ContentHash }>;
+  createdAt: number;
+  languageAliases: string[];
+  semanticCandidates: StructuredSemanticCandidate[];
 }
 
 interface WikipediaLanguageBatchJournal {
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly state: "open" | "idle";
   readonly blockOffset: number;
   readonly blockOrdinal: number;
@@ -164,6 +191,29 @@ interface WikipediaLanguageBatchJournal {
   readonly languageTrainingDocumentCount: number;
   readonly languageSkippedDocumentCount: number;
   readonly progressCounts: WikipediaLanguageProgressCounts;
+}
+
+interface WikipediaCompilerTransitionReceipt {
+  readonly version: 1;
+  readonly boundaryKind: "complete-boundary" | "verified-midblock";
+  readonly inputManifestId: string;
+  readonly fromCompilerIdentity: string;
+  readonly toCompilerIdentity: string;
+  readonly fromJournalHash: ContentHash;
+  readonly blockOffset: number;
+  readonly blockEnd: number;
+  readonly blockOrdinal: number;
+  readonly lastProcessedPageOrdinal: number;
+  readonly processedPageCount: number;
+  readonly skippedPageCount: number;
+  readonly verifiedPrefixHash: ContentHash;
+}
+
+interface StoredWikipediaLanguageBatchJournal {
+  readonly journal: WikipediaLanguageBatchJournal;
+  readonly journalHash: ContentHash;
+  readonly compilerIdentity?: string;
+  readonly compilerTransitions: readonly WikipediaCompilerTransitionReceipt[];
 }
 
 interface WikipediaLanguageProgressCounts {
@@ -275,6 +325,11 @@ export interface WikipediaV3IngestorOptions {
   idFactory?: IdFactory;
   hasher?: Hasher;
   clock?: Clock;
+  /** Independent evaluator evidence. Absence is persisted as pending and never advances READY. */
+  publicationEvidence?: (candidate: {
+    manifest: BrainManifestContract;
+    result: WikipediaV3IngestResult;
+  }) => Promise<WikipediaPublicationEvidence | undefined> | WikipediaPublicationEvidence | undefined;
 }
 
 export function createWikipediaV3Ingestor(options: WikipediaV3IngestorOptions): WikipediaV3Ingestor {
@@ -313,6 +368,7 @@ export class WikipediaV3Ingestor {
   private readonly language;
   private readonly graphBuilder;
   private readonly typedIngest;
+  private readonly publicationEvidence?: WikipediaV3IngestorOptions["publicationEvidence"];
 
   constructor(options: WikipediaV3IngestorOptions) {
     this.storage = options.storage;
@@ -326,6 +382,7 @@ export class WikipediaV3Ingestor {
     this.language = createLanguageAcquisitionEngine({ idFactory: this.ids });
     this.graphBuilder = createSourceGraphBuilder({ idFactory: this.ids });
     this.typedIngest = createTypedIngestProjector({ idFactory: this.ids, hasher: this.hasher });
+    this.publicationEvidence = options.publicationEvidence;
   }
 
   async ingest(input: WikipediaV3IngestOptions): Promise<WikipediaV3IngestResult> {
@@ -367,6 +424,19 @@ export class WikipediaV3Ingestor {
       }
     });
     corpus.remoteSource = inputManifest.inputs.remoteDump;
+    // Wikipedia remains in its pinned multistream archive. Adapters must persist archive/range
+    // references; silently falling back to expanded article copies defeats this ingestion path.
+    if (corpus.remoteSource) throw new Error("retained Wikipedia ingestion requires a local dump; remote archive reconstruction is not implemented");
+    if (!this.storage.blobs.putArchiveReferences || !this.storage.blobs.putRanges) {
+      throw new Error("Wikipedia ingestion requires archive-reference and byte-range blob storage");
+    }
+    if (!Number.isSafeInteger(corpus.maxBlockBytes) || corpus.maxBlockBytes < 1 || corpus.maxBlockBytes > 192 * 1024 * 1024) {
+      throw new Error("retained Wikipedia archive decoding requires maxBlockBytes within 192 MiB");
+    }
+    const archive: WikipediaArchiveDescriptor = {
+      schema: "scce.wikipedia_archive.v1", manifest: inputManifest, python: corpus.python,
+      maxBlockBytes: corpus.maxBlockBytes, maxArticleChars: corpus.maxArticleChars
+    };
     const shardCharBudget = effectiveNgramShardChars(wikiConfig?.ngramShardChars);
     const assertInputUnchanged = async (): Promise<void> => {
       if (!await wikipediaInputSourcesStillMatch(inputManifest)) throw new Error("Wikipedia input changed during ingestion; no further checkpoint or activation is permitted");
@@ -376,7 +446,46 @@ export class WikipediaV3Ingestor {
     const languageBatchJournalId = wikipediaLanguageBatchJournalId(rootUri, inputManifest.identity, this.ids);
     const useStoredResume = input.startOffset === undefined && !input.fresh && input.resume !== false;
     const languageBatchJournalCheckpoint = await this.storage.ingestion.get(languageBatchJournalId) ?? null;
-    const storedLanguageBatchJournal = readWikipediaLanguageBatchJournal(languageBatchJournalCheckpoint, inputManifest.identity, shardCharBudget, inputManifest.semantics.compilerIdentity);
+    const storedLanguageBatchState = await readWikipediaLanguageBatchJournal(languageBatchJournalCheckpoint, inputManifest.identity, shardCharBudget,
+      inputManifest.semantics.compilerIdentity, this.storage);
+    const storedLanguageBatchJournal = storedLanguageBatchState?.journal;
+    const compilerTransition = storedLanguageBatchState && languageBatchJournalCheckpoint
+      ? await verifyWikipediaMidblockCompilerTransition({
+        stored: storedLanguageBatchState,
+        currentCompilerIdentity: inputManifest.semantics.compilerIdentity,
+        inputManifestId: inputManifest.identity,
+        rootUri,
+        corpus,
+        storage: this.storage
+      })
+      : undefined;
+    const compilerTransitions = [
+      ...(storedLanguageBatchState?.compilerTransitions ?? []),
+      ...(compilerTransition ? [compilerTransition] : [])
+    ];
+    // The verified transition is durable before the new executable can process a page. A crash or
+    // lost acknowledgement therefore cannot leave new-compiler page effects behind an old attestation.
+    if (compilerTransition && languageBatchJournalCheckpoint) {
+      const transitionedCheckpoint: IngestionCheckpoint = {
+        ...languageBatchJournalCheckpoint,
+        metadata: toJsonValue({
+          ...objectOrEmpty(languageBatchJournalCheckpoint.metadata),
+          compilerIdentity: inputManifest.semantics.compilerIdentity,
+          compilerTransitions
+        }) ?? {},
+        updatedAt: nowMs()
+      };
+      await this.storage.transaction(async () => {
+        await assertInputUnchanged();
+        if (await ingestionCodeIdentity() !== inputManifest.semantics.compilerIdentity) {
+          throw new Error("Wikipedia compiler changed while its midblock transition was being verified; retry with one stable executable");
+        }
+        const compareAndPut = this.storage.ingestion.compareAndPut;
+        if (!compareAndPut) throw new Error("Wikipedia compiler transition requires atomic checkpoint compare-and-put storage support");
+        const replaced = await compareAndPut.call(this.storage.ingestion, transitionedCheckpoint, languageBatchJournalCheckpoint);
+        if (!replaced) throw new Error("Wikipedia compiler transition lost a concurrent journal update; retry from the new durable cursor");
+      });
+    }
     const languageBatchJournal = storedLanguageBatchJournal?.state === "open" ? storedLanguageBatchJournal : undefined;
     if (input.finishPending && !storedLanguageBatchJournal) {
       throw new Error("Wikipedia --finish-pending requires a stored language batch journal for this verified input");
@@ -398,7 +507,8 @@ export class WikipediaV3Ingestor {
     await this.storage.events.append(this.events.create({
       episodeId,
       typeId: "OwnerAsked",
-      payload: { command: "ingest.wikipedia.v3", dumpPath: corpus.dumpPath, indexPath: corpus.indexPath ?? null, inputManifest: toJsonValue(inputManifest), resumedFromOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb, finishPending: input.finishPending === true, acquireOnly: input.acquireOnly === true }
+      payload: { command: "ingest.wikipedia.v3", dumpPath: corpus.dumpPath, indexPath: corpus.indexPath ?? null, inputManifest: toJsonValue(inputManifest), resumedFromOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb, finishPending: input.finishPending === true, acquireOnly: input.acquireOnly === true,
+        compilerTransition: toJsonValue(compilerTransition ?? null) }
     }));
 
     const result: WikipediaV3IngestResult = {
@@ -461,15 +571,21 @@ export class WikipediaV3Ingestor {
     // signature -- the cheap ~9% -- and only shard training stops.
     const languageTrainingDocumentLimit = Math.max(0, this.config.runtime.corpora?.wikipedia?.languageTrainingDocumentLimit ?? 0);
     const putLanguageBatchJournal = async (state: "open" | "idle", pendingSamples = languageShardSamples, pendingChars = languageShardChars): Promise<void> => {
-      const journal: WikipediaLanguageBatchJournal = {
-        version: 1,
+      const pendingReferences: WikipediaLanguageShardSampleReference[] = [];
+      if (state === "open") {
+        // Serialization never reads the corpus on the normal write path. Existing v1 journals gain
+        // source identities once, through the same access-controlled source-version store.
+        for (const sample of pendingSamples) pendingReferences.push(await referenceWikipediaLanguageSample(sample, this.storage));
+      }
+      const journal = {
+        version: 2,
         state,
         blockOffset: currentBlockOffset,
         blockOrdinal: currentBlockOrdinal,
         blockComplete: currentBlockComplete,
         lastProcessedPageOrdinal,
         processedPageCount,
-        pendingSamples: state === "open" ? pendingSamples : [],
+        pendingSamples: pendingReferences,
         pendingChars: state === "open" ? pendingChars : 0,
         shardUri: activeLanguageShardUri,
         languageTrainingDocumentCount: languageTrainedDocuments,
@@ -484,7 +600,7 @@ export class WikipediaV3Ingestor {
         status: "complete",
         offsetBytes: currentBlockOffset,
         updatedAt: nowMs(),
-        metadata: toJsonValue({ inputManifestId: inputManifest.identity, compilerIdentity: inputManifest.semantics.compilerIdentity, languageBatch: journal }) ?? {}
+        metadata: toJsonValue({ inputManifestId: inputManifest.identity, compilerIdentity: inputManifest.semantics.compilerIdentity, compilerTransitions, languageBatch: journal }) ?? {}
       });
     };
     const applyLanguageShardImport = (imported: WikipediaLanguageShardImport): void => {
@@ -619,7 +735,8 @@ export class WikipediaV3Ingestor {
         });
       }
       if (stream) for await (const item of stream) {
-        item.checkpoint.metadata = toJsonValue({ ...objectOrEmpty(item.checkpoint.metadata), inputManifestId: inputManifest.identity });
+        item.checkpoint.metadata = toJsonValue({ ...objectOrEmpty(item.checkpoint.metadata), inputManifestId: inputManifest.identity,
+          compilerIdentity: inputManifest.semantics.compilerIdentity });
         const blockComplete = item.type === "checkpoint" && isBlockCheckpoint(item.checkpoint) && item.checkpoint.phase === "stored" && item.checkpoint.status === "complete";
         const streamComplete = item.type === "checkpoint" && !isBlockCheckpoint(item.checkpoint) && item.checkpoint.phase === "stored" && item.checkpoint.status === "complete";
         if (blockComplete) pendingBlockCheckpoints.push(item.checkpoint);
@@ -682,7 +799,7 @@ export class WikipediaV3Ingestor {
         const pageOrdinal = Number(pageMetadata.blockPageOrdinal);
         if (!Number.isSafeInteger(pageOrdinal) || pageOrdinal < 1) throw new Error("Wikipedia page has no valid block-local cursor");
         if (pageBlockOffset === currentBlockOffset && pageOrdinal > 0 && pageOrdinal <= lastProcessedPageOrdinal) continue;
-        const imported = await this.ingestPage(item.file, item.checkpoint, episodeId);
+        const imported = await this.ingestPage(item.file, item.checkpoint, episodeId, archive);
         result.pages++;
         result.sources += imported.sources;
         result.truncatedPages += imported.truncatedPages ?? 0;
@@ -773,7 +890,7 @@ export class WikipediaV3Ingestor {
       }
     }
     result.stopReason = stopReason;
-    if (result.truncatedPages) result.warnings.push(`${result.truncatedPages} page(s) omit ${result.truncatedCharacters} normalized UTF-16 units beyond maxArticleChars; full raw source bytes remain stored`);
+    if (result.truncatedPages) result.warnings.push(`${result.truncatedPages} page(s) omit ${result.truncatedCharacters} normalized UTF-16 units beyond maxArticleChars; full raw source bytes remain in the retained archive`);
     if (languageSkippedDocuments) result.warnings.push(`${languageSkippedDocuments} page(s) were not language-trained because languageTrainingDocumentLimit was reached`);
 
     // An EOF-only resume can finish a journaled batch without importing a new page. It still
@@ -987,16 +1104,18 @@ export class WikipediaV3Ingestor {
         await this.storage.brainImports.transitionLifecycle({ importRunId, expectedState: "VALIDATING", toState: "FAILED", updatedAt: input.importedAt, reason: "Wikipedia brain validation failed", validation });
         throw new Error(`Wikipedia brain validation failed for ${importRunId}`);
       }
-      // These are import-structure checks only. Counts and a self-hash do not qualify learned speech,
-      // calibrators, replay equivalence, or runtime consumption. Keep the candidate in VALIDATING until
-      // the evaluator/publication contract supplies those independent records and pinned artifact IDs.
-      await this.storage.brainImports.putLedger({
-        ...base,
-        id: String(this.ids.semanticId("wiki_import_ledger", { importRunId, sectionId: "__structural_validation__", manifestHash })),
-        sectionId: "__structural_validation__", sectionKind: "manifest", forceClass: "learned_concept_prior",
-        fileHash: manifestHash, rowCounts: {}, warnings: ["publication qualification pending"],
-        metadata: toJsonValue({ structuralValidation: validation, publicationQualification: "pending" })
+      const evidence = await this.publicationEvidence?.({ manifest, result });
+      const publication = await finalizeWikipediaCandidatePublication({
+        storage: this.storage,
+        lifecycle,
+        ...(evidence === undefined ? {} : { evidence }),
+        validatedAt: input.importedAt,
+        hasher: this.hasher
       });
+      lifecycle = publication.lifecycle;
+      if (!publication.pending && !publication.qualification.qualified) {
+        throw new Error(`Wikipedia publication qualification failed for ${importRunId}: ${publication.qualification.rejection.checkId}`);
+      }
     }
     await this.deferWikipediaActivation(result);
   }
@@ -1066,11 +1185,11 @@ export class WikipediaV3Ingestor {
     return checkpoints[0];
   }
 
-  private async ingestPage(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
-    return this.ingestPageTraced(file, checkpoint, episodeId);
+  private async ingestPage(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>, archive: WikipediaArchiveDescriptor): Promise<WikipediaPageImport> {
+    return this.ingestPageTraced(file, checkpoint, episodeId, archive);
   }
 
-  private async ingestPageTraced(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
+  private async ingestPageTraced(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>, archive: WikipediaArchiveDescriptor): Promise<WikipediaPageImport> {
     // page.transaction measured 1.9s mean at 23% CPU with nothing inside it named, so three quarters of a page
     // was unattributed. These stages account for it.
     const pageTrace = ingestStageTracer();
@@ -1085,9 +1204,27 @@ export class WikipediaV3Ingestor {
     const truncatedPages = truncatedCharacters > 0 ? 1 : 0;
     const originalFile = file;
     const derivative = file.evidenceDerivative;
+    const archiveMetadata = objectOrEmpty(originalFile.metadata);
+    const blockOffset = archiveMetadata.blockOffset;
+    const blockEnd = archiveMetadata.blockCompressedEnd;
+    const pageId = archiveMetadata.pageId;
+    const revisionId = archiveMetadata.revisionId;
+    if (typeof blockOffset !== "number" || !Number.isSafeInteger(blockOffset) || blockOffset < 0
+      || typeof blockEnd !== "number" || !Number.isSafeInteger(blockEnd) || blockEnd <= blockOffset
+      || blockEnd > archive.manifest.inputs.dump.byteLength
+      || typeof pageId !== "string" || !/^\d+$/u.test(pageId)
+      || typeof revisionId !== "string" || !/^\d+$/u.test(revisionId)) {
+      throw new Error(`Wikipedia page has no valid retained archive location: ${file.uri}`);
+    }
+    const originalReference: WikipediaArchiveReference = {
+      schema: "scce.wikipedia_archive_page.v1", blockOffset, blockEnd, pageId, revisionId,
+      representation: "original", transformId: `${WIKIPEDIA_SURFACE_TRANSFORM}+redact-secrets`
+    };
+    const originalContentHash = blobContentHash(originalFile.bytes);
     const { sourceId, originalVersionId, evidenceVersionId: sourceVersionId } = wikipediaSourceVersionIdentities(file, this.ids);
     if (derivative) {
       if (!Buffer.from(derivative.text, "utf8").equals(Buffer.from(derivative.bytes))) throw new Error(`Wikipedia derivative bytes do not encode text: ${file.uri}`);
+      if (derivative.transformId !== originalReference.transformId) throw new Error(`Wikipedia derivative transform cannot be reconstructed from its archive: ${file.uri}`);
       file = { ...file, bytes: derivative.bytes, text: derivative.text, mediaType: "text/plain; charset=utf-8" };
     }
     const declaredLanguageSurface = objectOrEmpty(normalization.languageSurface ?? null);
@@ -1176,18 +1313,27 @@ export class WikipediaV3Ingestor {
     const transactionSpan = pageTrace.span("page.transaction");
     try {
     const sourceSpan = pageTrace.span("page.source-persist");
+    const putArchiveReferences = this.storage.blobs.putArchiveReferences;
+    if (!putArchiveReferences) throw new Error("Wikipedia archive-reference blob storage became unavailable");
+    await putArchiveReferences.call(this.storage.blobs, {
+      archiveId: corpusArchiveIdentity(archive),
+      archive: toJsonValue(archive),
+      items: [
+        { contentHash: originalContentHash, mediaType: originalFile.mediaType, byteLength: originalFile.bytes.byteLength,
+          reference: toJsonValue(originalReference) },
+        ...(derivative ? [{ contentHash, mediaType: file.mediaType, byteLength: file.bytes.byteLength,
+          reference: toJsonValue({ ...originalReference, representation: "evidence" }) }] : [])
+      ]
+    });
     if (derivative) {
-      const originalContentHash = blobContentHash(originalFile.bytes);
-      await this.storage.blobs.put(originalFile.bytes, originalFile.mediaType);
       await this.storage.evidence.putSourceVersion({ ...source, sourceVersionId: originalVersionId,
         contentHash: originalContentHash, byteLength: originalFile.bytes.byteLength, mediaType: originalFile.mediaType,
         role: "original", derivation: undefined });
     }
-    await this.storage.blobs.put(file.bytes, file.mediaType);
     await this.storage.evidence.putSourceVersion(source);
     await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace, sourceSystem: "wikipedia" } }));
     if (derivative) await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: {
-      sourceVersionId: originalVersionId, contentHash: blobContentHash(originalFile.bytes), byteLength: originalFile.bytes.byteLength, role: "original"
+      sourceVersionId: originalVersionId, contentHash: originalContentHash, byteLength: originalFile.bytes.byteLength, role: "original"
     } }));
     await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: {
       sourceVersionId, contentHash, byteLength: file.bytes.byteLength, role: source.role, derivation: toJsonValue(source.derivation ?? null)
@@ -1251,7 +1397,7 @@ export class WikipediaV3Ingestor {
           }
         };
       });
-      await putSpanBlobs(this.storage.blobs, quarantinedSpans, file.mediaType);
+      await putSpanBlobs(this.storage.blobs, quarantinedSpans, file.mediaType, { contentHash, bytes: file.bytes });
       if (this.storage.evidence.putEvidenceSpans) await this.storage.evidence.putEvidenceSpans(quarantinedSpans);
       else for (const span of quarantinedSpans) await this.storage.evidence.putEvidenceSpan(span);
       await this.storage.ingestion.put({
@@ -1271,7 +1417,7 @@ export class WikipediaV3Ingestor {
 
     if (!typedProjection || !builtGraph) throw new Error("Wikipedia promoted page is missing its derived graph");
     const evidenceSpan = pageTrace.span("page.evidence-persist");
-    await putSpanBlobs(this.storage.blobs, admittedSpans, file.mediaType);
+    await putSpanBlobs(this.storage.blobs, admittedSpans, file.mediaType, { contentHash, bytes: file.bytes });
     if (this.storage.evidence.putEvidenceSpans) await this.storage.evidence.putEvidenceSpans(admittedSpans);
     else for (const span of admittedSpans) await this.storage.evidence.putEvidenceSpan(span);
 
@@ -1368,7 +1514,9 @@ export class WikipediaV3Ingestor {
         evidence: admittedSpans,
         createdAt: now,
         languageAliases: languageAliasSurfacesFromMetadata(metadata),
-        semanticCandidates: typedProjection.semanticCandidates
+        semanticCandidates: typedProjection.semanticCandidates,
+        sourceReference: { contentHash, byteLength: file.bytes.byteLength, originalSourceVersionId: originalVersionId,
+          originalContentHash, originalByteLength: originalFile.bytes.byteLength }
       },
       warnings
     };
@@ -1644,7 +1792,7 @@ function wikipediaLanguageBatchJournalId(rootUri: string, inputManifestId: strin
   return ids.semanticId("wikipedia_language_batch_journal", { rootUri, inputManifestId });
 }
 
-function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | null, inputManifestId: string, shardCharBudget: number, compilerIdentity: string): WikipediaLanguageBatchJournal | undefined {
+async function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | null, inputManifestId: string, shardCharBudget: number, compilerIdentity: string, storage: ScceStorage): Promise<StoredWikipediaLanguageBatchJournal | undefined> {
   if (!checkpoint) return undefined;
   const metadata = objectOrEmpty(checkpoint.metadata);
   if (metadata.inputManifestId !== inputManifestId) throw new Error("Wikipedia language batch journal input identity differs or is missing");
@@ -1652,7 +1800,9 @@ function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | nul
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("Wikipedia language batch journal is malformed");
   const value = raw as Record<string, unknown>;
-  if (value.version !== 1 || (value.state !== "open" && value.state !== "idle")) throw new Error("Wikipedia language batch journal version or state is invalid");
+  // v1 contains bounded inline samples and remains readable with its original compiler attestation.
+  // Every subsequent write emits v2 identities, so an old open batch is never silently discarded.
+  if ((value.version !== 1 && value.version !== 2) || (value.state !== "open" && value.state !== "idle")) throw new Error("Wikipedia language batch journal version or state is invalid");
   const blockOffset = typeof value.blockOffset === "number" ? value.blockOffset : NaN;
   const blockOrdinal = typeof value.blockOrdinal === "number" ? value.blockOrdinal : NaN;
   const lastProcessedPageOrdinal = typeof value.lastProcessedPageOrdinal === "number" ? value.lastProcessedPageOrdinal : NaN;
@@ -1682,31 +1832,365 @@ function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | nul
     || (value.state === "idle" && (pendingChars !== 0 || value.pendingSamples.length !== 0 || value.blockComplete !== true))
     || (processedPageCount === 0) !== (lastProcessedPageOrdinal === 0)
     || languageTrainingDocumentCount < value.pendingSamples.length
-    || !value.pendingSamples.every(isWikipediaLanguageShardSample)) {
+    || !value.pendingSamples.every(value.version === 1 ? isWikipediaLanguageShardSample : isWikipediaLanguageShardSampleReference)) {
     throw new Error("Wikipedia language batch journal cursor, budget, or sample payload is invalid");
   }
-  const pendingSamples = value.pendingSamples as unknown as WikipediaLanguageShardSample[];
-  if (languageShardCharsForSamples(pendingSamples) !== pendingChars) throw new Error("Wikipedia language batch journal character count is invalid");
-  // Only a fully validated empty complete-boundary journal has no compiler-owned
-  // payload or midblock cursor left to interpret, including legacy drained OPEN rows.
-  const payloadFreeBoundary = pendingSamples.length === 0 && pendingChars === 0 && value.blockComplete === true;
-  if (value.state === "open" && !payloadFreeBoundary && metadata.compilerIdentity !== compilerIdentity) {
+  const declaredChars = value.version === 1
+    ? languageShardCharsForSamples(value.pendingSamples as WikipediaLanguageShardSample[])
+    : (value.pendingSamples as WikipediaLanguageShardSampleReference[])
+      .reduce((total, sample, index) => total + (sample.title?.length ?? 0) + 1 + sample.textChars + (index > 0 ? 2 : 0), 0);
+  if (declaredChars !== pendingChars) throw new Error("Wikipedia language batch journal character count is invalid");
+  // Pending language payload remains owned by the executable that assembled it. A drained
+  // midblock cursor can cross an executable change only after the caller replays and proves
+  // its already-committed prefix byte-for-byte; this reader deliberately cannot waive that proof.
+  const payloadFreeBoundary = value.pendingSamples.length === 0 && pendingChars === 0 && value.blockComplete === true;
+  const payloadFreeMidblock = value.pendingSamples.length === 0 && pendingChars === 0 && value.blockComplete === false;
+  if (value.state === "open" && !payloadFreeBoundary && !payloadFreeMidblock && metadata.compilerIdentity !== compilerIdentity) {
     throw new Error("Wikipedia open language batch compiler attestation differs or is missing; finish pending work with its original compiler before upgrading, or use an empty candidate schema for a fresh run");
   }
+  let pendingSamples: WikipediaLanguageShardSample[];
+  if (value.version === 1) {
+    pendingSamples = value.pendingSamples as WikipediaLanguageShardSample[];
+  } else {
+    const references = value.pendingSamples as WikipediaLanguageShardSampleReference[];
+    pendingSamples = [];
+    // One article at a time keeps cold restoration bounded by the existing pending-shard budget,
+    // plus one decoder block; no corpus-wide materialization or cognitive refitting occurs here.
+    for (const reference of references) pendingSamples.push(await hydrateWikipediaLanguageSample(reference, storage));
+  }
+  if (languageShardCharsForSamples(pendingSamples) !== pendingChars) throw new Error("Wikipedia language batch journal character count is invalid");
+  const compilerTransitions = readWikipediaCompilerTransitions(metadata.compilerTransitions);
+  if (compilerTransitions.some(receipt => receipt.inputManifestId !== inputManifestId)
+    || (compilerTransitions.length > 0 && compilerTransitions.at(-1)!.toCompilerIdentity !== metadata.compilerIdentity)) {
+    throw new Error("Wikipedia compiler transition history does not bind the active journal");
+  }
   return {
-    ...(value as unknown as WikipediaLanguageBatchJournal),
-    pendingSamples,
-    languageSkippedDocumentCount,
-    progressCounts: progressCounts as unknown as WikipediaLanguageProgressCounts
+    journal: {
+      ...(value as unknown as WikipediaLanguageBatchJournal),
+      pendingSamples,
+      languageSkippedDocumentCount,
+      progressCounts: progressCounts as unknown as WikipediaLanguageProgressCounts
+    },
+    journalHash: wikipediaJournalHash(value),
+    ...(typeof metadata.compilerIdentity === "string" ? { compilerIdentity: metadata.compilerIdentity } : {}),
+    compilerTransitions
   };
+}
+
+function readWikipediaCompilerTransitions(value: unknown): readonly WikipediaCompilerTransitionReceipt[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every(isWikipediaCompilerTransitionReceipt)) {
+    throw new Error("Wikipedia compiler transition history is malformed");
+  }
+  for (let index = 1; index < value.length; index++) {
+    if (value[index - 1]!.toCompilerIdentity !== value[index]!.fromCompilerIdentity) {
+      throw new Error("Wikipedia compiler transition history is discontinuous");
+    }
+  }
+  return value;
+}
+
+function isWikipediaCompilerTransitionReceipt(value: unknown): value is WikipediaCompilerTransitionReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return row.version === 1
+    && (row.boundaryKind === "complete-boundary" || row.boundaryKind === "verified-midblock")
+    && typeof row.inputManifestId === "string" && /^sha256:[0-9a-f]{64}$/u.test(row.inputManifestId)
+    && typeof row.fromCompilerIdentity === "string" && row.fromCompilerIdentity.length > 0
+    && typeof row.toCompilerIdentity === "string" && row.toCompilerIdentity.length > 0
+    && typeof row.fromJournalHash === "string" && /^sha256_[0-9a-f]{64}$/u.test(row.fromJournalHash)
+    && Number.isSafeInteger(row.blockOffset) && Number(row.blockOffset) >= 0
+    && Number.isSafeInteger(row.blockEnd) && Number(row.blockEnd) > Number(row.blockOffset)
+    && Number.isSafeInteger(row.blockOrdinal) && Number(row.blockOrdinal) >= 0
+    && Number.isSafeInteger(row.lastProcessedPageOrdinal) && Number(row.lastProcessedPageOrdinal) >= 0
+    && Number.isSafeInteger(row.processedPageCount) && Number(row.processedPageCount) >= 0
+    && Number.isSafeInteger(row.skippedPageCount) && Number(row.skippedPageCount) >= 0
+    && typeof row.verifiedPrefixHash === "string" && /^sha256_[0-9a-f]{64}$/u.test(row.verifiedPrefixHash);
+}
+
+async function verifyWikipediaMidblockCompilerTransition(input: {
+  stored: StoredWikipediaLanguageBatchJournal;
+  currentCompilerIdentity: string;
+  inputManifestId: string;
+  rootUri: string;
+  corpus: ResolvedWikipediaCorpus;
+  storage: ScceStorage;
+}): Promise<WikipediaCompilerTransitionReceipt | undefined> {
+  const journal = input.stored.journal;
+  if (input.stored.compilerIdentity === input.currentCompilerIdentity) return undefined;
+  if (!input.stored.compilerIdentity || journal.pendingSamples.length > 0 || journal.pendingChars > 0) {
+    throw new Error("Wikipedia open language batch compiler attestation differs or is missing; finish pending work with its original compiler before upgrading, or use an empty candidate schema for a fresh run");
+  }
+  const durableRows = await input.storage.ingestion.list({
+    rootUri: input.rootUri,
+    limit: Math.max(512, journal.lastProcessedPageOrdinal + journal.processedPageCount + 64)
+  });
+  const storedBlockCheckpoint = durableRows.find(row => row.itemUri === `${input.rootUri}/block/${journal.blockOffset}`
+    && (journal.blockComplete || row.phase === "extracting" && row.status === "running"));
+  const storedBlockMetadata = objectOrEmpty(storedBlockCheckpoint?.metadata ?? null);
+  const storedBlockEnd = Number(storedBlockMetadata.compressedEnd);
+  if (!storedBlockCheckpoint
+    || storedBlockMetadata.inputManifestId !== input.inputManifestId
+    || Number(storedBlockMetadata.blockOffset) !== journal.blockOffset
+    || Number(storedBlockMetadata.blockOrdinal) !== journal.blockOrdinal
+    || !Number.isSafeInteger(storedBlockEnd) || storedBlockEnd <= journal.blockOffset) {
+    throw new Error("Wikipedia midblock compiler transition cannot prove its durable block boundary");
+  }
+  if (journal.blockComplete) {
+    return {
+      version: 1,
+      boundaryKind: "complete-boundary",
+      inputManifestId: input.inputManifestId,
+      fromCompilerIdentity: input.stored.compilerIdentity,
+      toCompilerIdentity: input.currentCompilerIdentity,
+      fromJournalHash: input.stored.journalHash,
+      blockOffset: journal.blockOffset,
+      blockEnd: storedBlockEnd,
+      blockOrdinal: journal.blockOrdinal,
+      lastProcessedPageOrdinal: journal.lastProcessedPageOrdinal,
+      processedPageCount: journal.processedPageCount,
+      skippedPageCount: Math.max(0, journal.lastProcessedPageOrdinal - journal.processedPageCount),
+      verifiedPrefixHash: blobContentHash(Buffer.from(canonicalStringify({
+        schema: "scce.wikipedia_compiler_transition_complete_boundary.v1",
+        inputManifestId: input.inputManifestId,
+        fromJournalHash: input.stored.journalHash,
+        blockOffset: journal.blockOffset,
+        blockEnd: storedBlockEnd,
+        blockOrdinal: journal.blockOrdinal
+      }), "utf8"))
+    };
+  }
+  const skippedPageCount = journal.lastProcessedPageOrdinal - journal.processedPageCount;
+  const rootReceipt = durableRows.find(row => row.itemUri === input.corpus.dumpPath
+    && row.phase === "stored" && row.status === "complete" && row.offsetBytes === journal.blockOffset);
+  const rootMetadata = objectOrEmpty(rootReceipt?.metadata ?? null);
+  if (!rootReceipt || skippedPageCount < 0
+    || rootMetadata.inputManifestId !== input.inputManifestId
+    || Number(rootMetadata.emitted) !== journal.processedPageCount
+    || Number(rootMetadata.skipped) !== skippedPageCount
+    || Number(rootMetadata.pageOrdinal) !== journal.lastProcessedPageOrdinal
+    || rootMetadata.reachedEnd !== false || typeof rootMetadata.stoppedAt !== "string") {
+    throw new Error("Wikipedia midblock compiler transition cannot prove its exact root stream receipt");
+  }
+  const prefixRows = durableRows.filter(row => {
+    const metadata = objectOrEmpty(row.metadata);
+    const ordinal = Number(metadata.blockPageOrdinal);
+    return row.status === "complete"
+      && metadata.inputManifestId === input.inputManifestId
+      && Number(metadata.blockOffset) === journal.blockOffset
+      && Number.isSafeInteger(ordinal) && ordinal >= 1 && ordinal <= journal.lastProcessedPageOrdinal;
+  }).sort((left, right) => Number(objectOrEmpty(left.metadata).blockPageOrdinal) - Number(objectOrEmpty(right.metadata).blockPageOrdinal));
+
+  if (prefixRows.length !== journal.processedPageCount) {
+    throw new Error("Wikipedia midblock compiler transition cannot prove its durable cursor prefix; resume with the original compiler");
+  }
+  const durableByOrdinal = new Map<number, IngestionCheckpoint>();
+  for (const row of prefixRows) {
+    const ordinal = Number(objectOrEmpty(row.metadata).blockPageOrdinal);
+    if (durableByOrdinal.has(ordinal)) throw new Error("Wikipedia midblock compiler transition has duplicate durable page ordinals");
+    durableByOrdinal.set(ordinal, row);
+  }
+
+  const replayed: Array<{ ordinal: number; uri: string; pageId: string; revisionId: string; contentHash: ContentHash; byteLength: number }> = [];
+  let reachedBlockBoundary = false;
+  let replayedBlockEnd: number | undefined;
+  const replayCorpus: ResolvedWikipediaCorpus = {
+    ...input.corpus,
+    maxPagesPerRun: Number.MAX_SAFE_INTEGER,
+    maxBlocksPerRun: 1
+  };
+  for await (const item of streamWikipediaMultistream(replayCorpus, {
+    resumeOffset: journal.blockOffset,
+    resumeBlockOrdinal: journal.blockOrdinal || undefined,
+    resumeAfterBlock: false,
+    discoverIndex: false
+  })) {
+    if (item.type === "checkpoint") {
+      if (isBlockCheckpoint(item.checkpoint) && item.checkpoint.offsetBytes === journal.blockOffset) {
+        const blockMetadata = objectOrEmpty(item.checkpoint.metadata);
+        const blockEnd = Number(blockMetadata.compressedEnd);
+        if (Number(blockMetadata.blockOrdinal) !== journal.blockOrdinal || blockEnd !== storedBlockEnd) {
+          throw new Error("Wikipedia midblock compiler transition replay changed its indexed block boundary");
+        }
+        replayedBlockEnd = blockEnd;
+        if (item.checkpoint.phase === "stored" && item.checkpoint.status === "complete") reachedBlockBoundary = true;
+      }
+      continue;
+    }
+    if (item.type !== "file") continue;
+    const metadata = objectOrEmpty(item.checkpoint.metadata);
+    const ordinal = Number(metadata.blockPageOrdinal);
+    if (Number(metadata.blockOffset) !== journal.blockOffset || !Number.isSafeInteger(ordinal)
+      || ordinal < 1 || ordinal > journal.lastProcessedPageOrdinal) continue;
+    const durable = durableByOrdinal.get(ordinal);
+    if (!durable) throw new Error("Wikipedia midblock compiler transition replay emitted a page absent from the durable cursor prefix");
+    if (typeof durable.contentHash !== "string" || !/^sha256_[0-9a-f]{64}$/u.test(durable.contentHash)
+      || !Number.isSafeInteger(durable.byteLength) || Number(durable.byteLength) < 0) {
+      throw new Error("Wikipedia midblock compiler transition durable page digest is invalid");
+    }
+    const durableContentHash = durable.contentHash as ContentHash;
+    const durableByteLength = durable.byteLength as number;
+    const durableMetadata = objectOrEmpty(durable.metadata);
+    const representations = [
+      { contentHash: item.checkpoint.contentHash, byteLength: item.checkpoint.byteLength },
+      ...(item.file.evidenceDerivative ? [{
+        contentHash: blobContentHash(item.file.evidenceDerivative.bytes),
+        byteLength: item.file.evidenceDerivative.bytes.byteLength
+      }] : [])
+    ];
+    const bytesMatch = representations.some(candidate => candidate.contentHash === durable.contentHash
+      && candidate.byteLength === durable.byteLength);
+    if (!bytesMatch || durable.itemUri !== item.checkpoint.itemUri
+      || durableMetadata.pageId !== metadata.pageId || durableMetadata.revisionId !== metadata.revisionId
+      || durableMetadata.title !== metadata.title) {
+      throw new Error("Wikipedia midblock compiler transition replay differs from its durable cursor prefix");
+    }
+    replayed.push({
+      ordinal,
+      uri: durable.itemUri,
+      pageId: String(metadata.pageId),
+      revisionId: String(metadata.revisionId),
+      contentHash: durableContentHash,
+      byteLength: durableByteLength
+    });
+  }
+  if (!reachedBlockBoundary || replayedBlockEnd !== storedBlockEnd
+    || journal.lastProcessedPageOrdinal - replayed.length !== skippedPageCount
+    || replayed.length !== journal.processedPageCount
+    || replayed.some((row, index) => row.ordinal !== Number(objectOrEmpty(prefixRows[index]!.metadata).blockPageOrdinal))) {
+    throw new Error("Wikipedia midblock compiler transition replay did not reproduce its complete durable cursor prefix");
+  }
+  return {
+    version: 1,
+    boundaryKind: "verified-midblock",
+    inputManifestId: input.inputManifestId,
+    fromCompilerIdentity: input.stored.compilerIdentity,
+    toCompilerIdentity: input.currentCompilerIdentity,
+    fromJournalHash: input.stored.journalHash,
+    blockOffset: journal.blockOffset,
+    blockEnd: storedBlockEnd,
+    blockOrdinal: journal.blockOrdinal,
+    lastProcessedPageOrdinal: journal.lastProcessedPageOrdinal,
+    processedPageCount: journal.processedPageCount,
+    skippedPageCount,
+    verifiedPrefixHash: blobContentHash(Buffer.from(canonicalStringify({
+      schema: "scce.wikipedia_compiler_transition_prefix.v1",
+      inputManifestId: input.inputManifestId,
+      blockOffset: journal.blockOffset,
+      blockEnd: storedBlockEnd,
+      blockOrdinal: journal.blockOrdinal,
+      lastProcessedPageOrdinal: journal.lastProcessedPageOrdinal,
+      processedPageCount: journal.processedPageCount,
+      skippedPageCount,
+      pages: replayed
+    }), "utf8"))
+  };
+}
+
+function wikipediaJournalHash(value: unknown): ContentHash {
+  return blobContentHash(Buffer.from(canonicalStringify(value), "utf8"));
+}
+
+function wikipediaJournalEvidence(span: EvidenceSpan): EvidenceSpan {
+  // Public reads resolve this convenience field; ingestion snapshots predate that read boundary.
+  const { sourceIdentity: _sourceIdentity, ...snapshot } = span;
+  return snapshot;
+}
+
+async function wikipediaJournalSources(sourceVersionId: SourceVersionId, storage: ScceStorage): Promise<{ source: SourceVersion; original: SourceVersion; reference: WikipediaLanguageSourceReference }> {
+  const load = storage.evidence.sourceVersionById;
+  if (!load) throw new Error("Wikipedia journal restoration requires access-controlled source-version reads");
+  const source = await load.call(storage.evidence, sourceVersionId);
+  if (!source || source.sourceVersionId !== sourceVersionId) throw new Error("Wikipedia journal source version is unavailable");
+  const originalSourceVersionId = source.derivation?.derivedFromSourceVersionId ?? source.sourceVersionId;
+  const original = originalSourceVersionId === source.sourceVersionId ? source : await load.call(storage.evidence, originalSourceVersionId);
+  if (!original || original.sourceVersionId !== originalSourceVersionId || original.sourceId !== source.sourceId
+    || original.canonicalUri !== source.canonicalUri || original.derivation) throw new Error("Wikipedia journal original source identity is invalid");
+  return { source, original, reference: { contentHash: source.contentHash, byteLength: source.byteLength,
+    originalSourceVersionId, originalContentHash: original.contentHash, originalByteLength: original.byteLength } };
+}
+
+async function referenceWikipediaLanguageSample(sample: WikipediaLanguageShardSample, storage: ScceStorage): Promise<WikipediaLanguageShardSampleReference> {
+  const sourceReference = sample.sourceReference ?? (await wikipediaJournalSources(sample.sourceVersionId, storage)).reference;
+  return {
+    uri: sample.uri, ...(sample.title !== undefined ? { title: sample.title } : {}), sourceVersionId: sample.sourceVersionId,
+    sourceReference, textContentHash: blobContentHash(Buffer.from(sample.text, "utf8")), textChars: sample.text.length,
+    projectionHash: wikipediaJournalHash(sample.languageProjection ?? []),
+    evidence: sample.evidence.map(span => ({ id: span.id, contentHash: span.contentHash, byteStart: span.byteStart, byteEnd: span.byteEnd,
+      charStart: span.charStart, charEnd: span.charEnd, snapshotHash: wikipediaJournalHash(wikipediaJournalEvidence(span)) })),
+    createdAt: sample.createdAt, languageAliases: sample.languageAliases, semanticCandidates: sample.semanticCandidates
+  };
+}
+
+async function hydrateWikipediaLanguageSample(reference: WikipediaLanguageShardSampleReference, storage: ScceStorage): Promise<WikipediaLanguageShardSample> {
+  const { source, original, reference: currentSourceReference } = await wikipediaJournalSources(reference.sourceVersionId, storage);
+  if (source.canonicalUri !== reference.uri || canonicalStringify(currentSourceReference) !== canonicalStringify(reference.sourceReference)) {
+    throw new Error("Wikipedia journal source reference changed");
+  }
+  const sourceBytes = Buffer.from(await storage.blobs.get(source.contentHash));
+  if (sourceBytes.byteLength !== source.byteLength || blobContentHash(sourceBytes) !== source.contentHash) throw new Error("Wikipedia journal evidence-source bytes changed");
+  const originalBytes = original.sourceVersionId === source.sourceVersionId ? sourceBytes : Buffer.from(await storage.blobs.get(original.contentHash));
+  if (originalBytes.byteLength !== original.byteLength || blobContentHash(originalBytes) !== original.contentHash) throw new Error("Wikipedia journal original-source bytes changed");
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const projection = wikipediaLanguageSurface(decoder.decode(originalBytes), undefined, decoder.decode(sourceBytes));
+  if (projection.text.length !== reference.textChars || blobContentHash(Buffer.from(projection.text, "utf8")) !== reference.textContentHash
+    || wikipediaJournalHash(projection.mappings) !== reference.projectionHash) throw new Error("Wikipedia journal language text or projection changed");
+  const loaded = await storage.evidence.getEvidenceBatch(reference.evidence.map(span => span.id));
+  const byId = new Map(loaded.map(span => [span.id, span]));
+  if (loaded.length !== reference.evidence.length || byId.size !== reference.evidence.length) throw new Error("Wikipedia journal evidence is unavailable or duplicated");
+  const evidence = reference.evidence.map(expected => {
+    const stored = byId.get(expected.id);
+    if (!stored || stored.sourceVersionId !== source.sourceVersionId || stored.sourceId !== source.sourceId
+      || stored.contentHash !== expected.contentHash || stored.byteStart !== expected.byteStart || stored.byteEnd !== expected.byteEnd
+      || stored.charStart !== expected.charStart || stored.charEnd !== expected.charEnd
+      || stored.byteEnd > sourceBytes.byteLength || !sourceBytes.subarray(stored.byteStart, stored.byteEnd).equals(Buffer.from(stored.text, "utf8"))) {
+      throw new Error("Wikipedia journal evidence identity or byte range changed");
+    }
+    const snapshot = wikipediaJournalEvidence(stored);
+    if (wikipediaJournalHash(snapshot) !== expected.snapshotHash) throw new Error("Wikipedia journal evidence snapshot changed");
+    return snapshot;
+  });
+  return { uri: reference.uri, ...(reference.title !== undefined ? { title: reference.title } : {}), sourceVersionId: reference.sourceVersionId,
+    text: projection.text, languageProjection: projection.mappings, evidence, createdAt: reference.createdAt,
+    languageAliases: reference.languageAliases, semanticCandidates: reference.semanticCandidates, sourceReference: reference.sourceReference };
+}
+
+function isWikipediaLanguageShardSampleReference(value: unknown): value is WikipediaLanguageShardSampleReference {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const sample = value as Record<string, unknown>;
+  const source = sample.sourceReference;
+  if (!isWikipediaLanguageSampleMetadata(sample) || typeof source !== "object" || source === null || Array.isArray(source)) return false;
+  const sourceReference = source as Record<string, unknown>;
+  const isHash = (hash: unknown): boolean => typeof hash === "string" && /^sha256_[0-9a-f]{64}$/u.test(hash);
+  const isLength = (length: unknown): boolean => typeof length === "number" && Number.isSafeInteger(length) && length >= 0;
+  return isHash(sample.textContentHash) && isHash(sample.projectionHash) && isLength(sample.textChars)
+    && isHash(sourceReference.contentHash) && isHash(sourceReference.originalContentHash)
+    && isLength(sourceReference.byteLength) && isLength(sourceReference.originalByteLength)
+    && Number(sourceReference.byteLength) <= 192 * 1024 * 1024 && Number(sourceReference.originalByteLength) <= 192 * 1024 * 1024
+    && typeof sourceReference.originalSourceVersionId === "string" && sourceReference.originalSourceVersionId.length > 0
+    && Array.isArray(sample.evidence) && sample.evidence.every(value => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+      const span = value as Record<string, unknown>;
+      return typeof span.id === "string" && span.id.length > 0 && isHash(span.contentHash) && isHash(span.snapshotHash)
+        && ["byteStart", "byteEnd", "charStart", "charEnd"].every(key => isLength(span[key]))
+        && Number(span.byteEnd) > Number(span.byteStart) && Number(span.charEnd) > Number(span.charStart)
+        && Number(span.byteEnd) <= Number(sourceReference.byteLength);
+    });
+}
+
+function isWikipediaLanguageSampleMetadata(sample: Record<string, unknown>): boolean {
+  return typeof sample.uri === "string" && sample.uri.length > 0
+    && (sample.title === undefined || typeof sample.title === "string")
+    && typeof sample.sourceVersionId === "string" && sample.sourceVersionId.length > 0
+    && typeof sample.createdAt === "number" && Number.isFinite(sample.createdAt)
+    && Array.isArray(sample.languageAliases) && sample.languageAliases.every(item => typeof item === "string")
+    && Array.isArray(sample.semanticCandidates) && sample.semanticCandidates.every(item => typeof item === "object" && item !== null && !Array.isArray(item));
 }
 
 function isWikipediaLanguageShardSample(value: unknown): value is WikipediaLanguageShardSample {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const sample = value as Record<string, unknown>;
-  return typeof sample.uri === "string" && sample.uri.length > 0
-    && (sample.title === undefined || typeof sample.title === "string")
-    && typeof sample.sourceVersionId === "string" && sample.sourceVersionId.length > 0
+  return isWikipediaLanguageSampleMetadata(sample)
     && typeof sample.text === "string"
     && (sample.languageProjection === undefined || Array.isArray(sample.languageProjection) && sample.languageProjection.every(item => {
       if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
@@ -1715,10 +2199,7 @@ function isWikipediaLanguageShardSample(value: unknown): value is WikipediaLangu
         && ["sourceCharStart", "sourceCharEnd", "evidenceUtf16Start", "evidenceUtf16End", "evidenceCodePointStart", "evidenceCodePointEnd"]
           .every(key => Number.isSafeInteger(mapping[key]) && Number(mapping[key]) >= 0);
     }))
-    && Array.isArray(sample.evidence) && sample.evidence.every(item => typeof item === "object" && item !== null && !Array.isArray(item))
-    && typeof sample.createdAt === "number" && Number.isFinite(sample.createdAt)
-    && Array.isArray(sample.languageAliases) && sample.languageAliases.every(item => typeof item === "string")
-    && Array.isArray(sample.semanticCandidates) && sample.semanticCandidates.every(item => typeof item === "object" && item !== null && !Array.isArray(item));
+    && Array.isArray(sample.evidence) && sample.evidence.every(item => typeof item === "object" && item !== null && !Array.isArray(item));
 }
 
 function languageShardCharsForSamples(samples: readonly WikipediaLanguageShardSample[]): number {

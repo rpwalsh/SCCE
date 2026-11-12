@@ -13,6 +13,7 @@ interface NativeSha256Hash {
 
 interface NativeCryptoModule {
   createHash(algorithm: "sha256"): NativeSha256Hash;
+  hash?(algorithm: "sha256", data: string | Uint8Array, outputEncoding: "hex"): string;
 }
 
 interface NodeBuiltinLoader {
@@ -66,7 +67,20 @@ export function canonicalJsonValue(value: unknown): JsonValue {
       if (seen.has(input)) throw new Error("canonical JSON cannot encode cycles");
       seen.add(input);
       const out: Record<string, JsonValue> = {};
-      for (const key of Object.keys(input as Record<string, unknown>).sort()) out[key] = normalize((input as Record<string, unknown>)[key]);
+      for (const key of Object.keys(input as Record<string, unknown>).sort()) {
+        const normalized = normalize((input as Record<string, unknown>)[key]);
+        // `__proto__` is an ordinary, legal JSON member. Assignment through
+        // Object.prototype's legacy setter changes the new object's prototype
+        // instead of retaining that member, which silently changed learned
+        // sufficient statistics for source text containing this exact token.
+        if (key === "__proto__") Object.defineProperty(out, key, {
+          value: normalized,
+          enumerable: true,
+          configurable: true,
+          writable: true
+        });
+        else out[key] = normalized;
+      }
       seen.delete(input);
       return out;
     }
@@ -84,6 +98,9 @@ export function createHasher(): Hasher {
   const nativeCrypto = cachedNativeCrypto();
   if (nativeCrypto) return {
     digestHex(input) {
+      // Node's one-shot primitive avoids allocating and crossing the JS/native
+      // boundary three times for the many short identity hashes in induction.
+      if (nativeCrypto.hash) return nativeCrypto.hash("sha256", input, "hex");
       const hash = nativeCrypto.createHash("sha256");
       if (typeof input === "string") hash.update(input, "utf8");
       else hash.update(input);

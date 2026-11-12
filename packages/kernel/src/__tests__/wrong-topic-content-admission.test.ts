@@ -61,7 +61,7 @@ const albania = span({ id: "evidence.albania", title: "albania", text: ALBANIA }
 const lovelace = span({ id: "evidence.ada_lovelace", title: "ada lovelace", text: LOVELACE });
 const chapter = span({ id: "evidence.treasure_island", title: "treasure island", text: TREASURE_ISLAND });
 
-const closedClass = new Set(["the", "is", "of", "was", "a", "it", "we", "so", "about", "do", "who", "what"]);
+const closedClass = new Set(["the", "is", "of", "was", "a", "it", "we", "so", "about", "do", "who", "what", "s"]);
 
 afterEach(() => clearCorpusIdentitySignals());
 
@@ -124,6 +124,81 @@ describe("wrong-topic content admission", () => {
       closedClass
     );
     expect(ada.evidence.map(entry => String(entry.id))).toContain("evidence.ada_lovelace");
+  });
+
+  it("keeps alternative multi-unit subject anchors grouped when the answer does not repeat the relation word", () => {
+    primeCorpusIdentitySignals({
+      closedClass,
+      identities: new Set(["alice in wonderland"]),
+      spread: new Map(),
+      concentration: CONCENTRATION
+    });
+    const alice = span({
+      id: "evidence.alice_cat",
+      title: "alice in wonderland",
+      text: "Well, perhaps not, said Alice in a soothing tone. And yet I wish I could show you our cat Dinah."
+    });
+    const unrelated = span({
+      id: "evidence.unrelated_cat",
+      title: "domestic cat",
+      text: "A cat is a small domesticated carnivorous mammal."
+    });
+    const distantMention = span({
+      id: "evidence.distant_mentions",
+      title: "library visit",
+      text: "Alice visited the library. The weather changed before noon. A cat slept near the door."
+    });
+    const adjacentWrongOwner = span({
+      id: "evidence.adjacent_wrong_owner",
+      title: "museum catalogue",
+      text: "Alice catalogued a cat sculpture for the museum collection."
+    });
+
+    const admitted = sourceIdentityAdmissibleEvidenceForRequest(
+      "What is the name of Alice's cat?",
+      [unrelated, distantMention, adjacentWrongOwner, alice],
+      new Set(),
+      closedClass
+    );
+
+    expect(admitted.evidence.map(entry => String(entry.id))).toEqual(["evidence.alice_cat"]);
+
+    const wrongOwnerOnly = sourceIdentityAdmissibleEvidenceForRequest(
+      "What is the name of Alice's cat?",
+      [adjacentWrongOwner],
+      new Set(),
+      closedClass
+    );
+    expect(wrongOwnerOnly.evidence.map(entry => String(entry.id))).toEqual([]);
+  });
+
+  it("uses the same grouped admission for non-English Unicode surface units", () => {
+    const greekClosedClass = new Set(["ποιο", "είναι", "το", "της"]);
+    primeCorpusIdentitySignals({
+      closedClass: greekClosedClass,
+      identities: new Set(["νεράλις γάτα"]),
+      spread: new Map(),
+      concentration: CONCENTRATION
+    });
+    const owner = span({
+      id: "evidence.unicode_owner",
+      title: "χρονικά νεράλις",
+      text: "Η Νεράλις φροντίζει τη γάτα Ντίνα."
+    });
+    const oneWordDecoy = span({
+      id: "evidence.unicode_decoy",
+      title: "γάτα",
+      text: "Η γάτα είναι ζώο."
+    });
+
+    const admitted = sourceIdentityAdmissibleEvidenceForRequest(
+      "Ποιο είναι το όνομα της Νεράλις γάτα\u037E",
+      [oneWordDecoy, owner],
+      new Set(),
+      greekClosedClass
+    );
+
+    expect(admitted.evidence.map(entry => String(entry.id))).toEqual(["evidence.unicode_owner"]);
   });
 
   it("leaves admission unchanged where the corpus has measured nothing", () => {

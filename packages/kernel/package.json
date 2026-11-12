@@ -8,7 +8,8 @@
   "types": "dist/index.d.ts",
   "dependencies": {
     "@noble/hashes": "2.4.0",
-    "@unicode/unicode-17.0.0": "1.6.17"
+    "@unicode/unicode-17.0.0": "1.6.17",
+    "yaml": "2.9.0"
   },
   "scripts": {
     "build": "tsc -b"

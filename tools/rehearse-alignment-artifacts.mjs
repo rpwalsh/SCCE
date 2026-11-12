@@ -210,9 +210,17 @@ try {
   check("legacy.event-v1-envelope", legacyEventPayloads.length > 0
     && legacyEventPayloads.every(payload => payload.schema === "scce.sparse_alignment_candidate_blob_event.v1"), JSON.stringify({ schemas: legacyEventPayloads.map(payload => payload.schema) }));
   check("legacy.inline-format-read", canonicalStringify(legacyDecoded.diagnostics) === canonicalStringify(legacyPayload.diagnostics), JSON.stringify({ diagnostics: legacyDecoded.diagnostics }));
-  const blobRows = await storage.query(`SELECT content_hash, content FROM ${storage.table("blobs")}`);
-  const hashesValid = blobRows.length > 0 && blobRows.every(row => String(blobContentHash(row.content)) === row.content_hash && `sha256_${createHash("sha256").update(row.content).digest("hex")}` === row.content_hash);
-  check("committed.blob-hashes", hashesValid, JSON.stringify({ blobs: blobRows.length }));
+  let blobCursor = "", blobsChecked = 0, hashesValid = true;
+  for (;;) {
+    const blobRows = await storage.query(`SELECT content_hash FROM ${storage.table("blobs")} WHERE content_hash>$1 ORDER BY content_hash LIMIT 128`, [blobCursor]);
+    if (!blobRows.length) break;
+    for (const row of blobRows) {
+      const bytes = await storage.blobs.get(row.content_hash);
+      hashesValid &&= String(blobContentHash(bytes)) === row.content_hash && `sha256_${createHash("sha256").update(bytes).digest("hex")}` === row.content_hash;
+      blobsChecked++; blobCursor = row.content_hash;
+    }
+  }
+  check("committed.blob-hashes", blobsChecked > 0 && hashesValid, JSON.stringify({ blobs: blobsChecked }));
   const eventsBefore = await count("events");
   const blobsBefore = await count("blobs");
   let rolledBack = false;

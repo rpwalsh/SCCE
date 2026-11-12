@@ -84,7 +84,8 @@ export async function createBrainDatabase(options, dependencies = {}) {
     if (!verified.ok) throw refusal('Fresh database schema verification failed');
     report.verified = true;
     const tables = ['sources', 'source_versions', 'evidence_spans', 'language_profiles', 'language_profile_signatures',
-      'language_identities', 'ngram_models', 'ngram_observations', 'language_units', 'language_patterns', 'semantic_frames',
+      'language_identities', 'ngram_models', 'ngram_observations', 'language_units', 'language_unit_evidence_sets',
+      'language_unit_information_labels', 'language_patterns', 'semantic_frames',
       'induced_language_models', 'segmentation_population_models', 'segmentation_consolidation_runs', 'brain_import_lifecycle',
       'creative_event_templates', 'creative_event_lexemes', 'creative_event_witnesses', 'creative_event_occurrences',
       'model_state', 'translation_alignments', 'correction_rules', 'target_profile_patterns', 'locale_bundles',

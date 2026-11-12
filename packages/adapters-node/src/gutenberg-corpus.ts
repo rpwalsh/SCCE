@@ -19,6 +19,7 @@ export interface GutenbergCorpusTrainOptions {
   beforeSourceTraining?: (source: SourceBrainFileAdmission) => void | Promise<void>;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   sourceInductionExecution?: import("./source-induction-execution.js").SourceInductionWorkerExecution;
+  sourceInductionExecutionOwner?: Pick<import("./source-induction-execution.js").SourceInductionExecutionOwner, "execution" | "receipt">;
   storage: ScceStorage;
   rootPath: string;
   startFileIndex?: number;
@@ -139,6 +140,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     const trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
         sourceInductionExecution: input.sourceInductionExecution,
+        sourceInductionExecutionOwner: input.sourceInductionExecutionOwner,
         storage: input.storage,
         sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
         streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}:${relativePath}`,

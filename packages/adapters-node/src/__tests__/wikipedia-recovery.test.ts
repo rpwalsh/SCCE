@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -57,10 +58,35 @@ async function sameBlockFixture(repeats = 8, leadingBlock = false) {
 function mockPipeline(config: any) {
   let checkpoints = new Map<string, IngestionCheckpoint>();
   let transactionDepth = 0;
+  const blobBodies = new Map<string, Buffer>();
+  const sourceVersions = new Map<string, any>();
+  const evidenceSpans = new Map<string, any>();
   const storage = {
+    blobs: {
+      putArchiveReferences: vi.fn(async () => {}),
+      putRanges: vi.fn(async () => {}),
+      get: vi.fn(async (hash: string) => {
+        const bytes = blobBodies.get(hash);
+        if (!bytes) throw new Error(`fixture blob not found: ${hash}`);
+        return bytes;
+      })
+    },
+    evidence: {
+      sourceVersionById: vi.fn(async (id: string) => sourceVersions.get(id) ?? null),
+      getEvidenceBatch: vi.fn(async (ids: readonly string[]) => ids.flatMap(id => {
+        const span = evidenceSpans.get(id);
+        return span ? [span] : [];
+      }))
+    },
     events: { append: vi.fn(async () => {}) },
     ingestion: {
       put: vi.fn(async (row: IngestionCheckpoint) => { checkpoints.set(row.id, row); }),
+      compareAndPut: vi.fn(async (row: IngestionCheckpoint, expected: IngestionCheckpoint) => {
+        const current = checkpoints.get(expected.id);
+        if (!current || canonicalStringify(current) !== canonicalStringify(expected)) return false;
+        checkpoints.set(row.id, row);
+        return true;
+      }),
       get: vi.fn(async (id: string) => checkpoints.get(id) ?? null),
       list: vi.fn(async (query: any) => [...checkpoints.values()].filter(row => row.rootUri === query.rootUri
         && (!query.status || row.status === query.status) && (!query.phase || row.phase === query.phase)
@@ -78,10 +104,25 @@ function mockPipeline(config: any) {
   const counts = { sources: 1, evidence: 0, graphNodes: 0, graphEdges: 0, graphHyperedges: 0, languageProfiles: 0,
     ngramObservations: 0, ngramModels: 1, languageUnits: 0, languagePatterns: 0,
     semanticFrames: 0, relationCandidates: 0, promotedRelations: 0, warnings: [] };
-  const page = vi.spyOn(ingestor as any, "ingestPage").mockImplementation(async (...args: any[]) => ({ ...counts,
-      languageSample: { uri: args[0].uri, title: "source", text: args[0].text, evidence: [], sourceVersionId: "fixture", createdAt: 0,
-        languageAliases: [], semanticCandidates: [] }
-  }));
+  const rememberSample = (file: any, evidence: any[] = [], identity?: { sourceVersionId?: string; sourceId?: string; createdAt?: number }) => {
+    const bytes = Buffer.from(file.text, "utf8");
+    const contentHash = `sha256_${createHash("sha256").update(bytes).digest("hex")}`;
+    const sourceVersionId = identity?.sourceVersionId ?? `fixture:${contentHash}`;
+    const sourceId = identity?.sourceId ?? evidence[0]?.sourceId ?? `fixture-source:${contentHash}`;
+    blobBodies.set(contentHash, bytes);
+    for (const span of evidence) evidenceSpans.set(span.id, span);
+    sourceVersions.set(sourceVersionId, {
+      sourceId, sourceVersionId, namespace: "wikipedia", canonicalUri: file.uri, contentHash,
+      mediaType: "text/plain; charset=utf-8", observedAt: identity?.createdAt ?? 0, byteLength: bytes.length,
+      sourceTrust: {}, metadata: {}, role: "original"
+    });
+    return { uri: file.uri, title: "source", text: file.text, evidence, sourceVersionId, createdAt: identity?.createdAt ?? 0,
+        languageAliases: [], semanticCandidates: [], sourceReference: { contentHash, byteLength: bytes.length,
+          originalSourceVersionId: sourceVersionId, originalContentHash: contentHash, originalByteLength: bytes.length } };
+  };
+  const page = vi.spyOn(ingestor as any, "ingestPage").mockImplementation(async (...args: any[]) => {
+    return { ...counts, languageSample: rememberSample(args[0]) };
+  });
   const train = vi.spyOn(ingestor as any, "ingestLanguageShard").mockImplementation(async (...args: any[]) =>
     storage.transaction(async () => {
       trainedShards.push({ shardUri: args[1], samples: args[0].map((sample: any) => ({ title: sample.title, text: sample.text, sourceVersionId: sample.sourceVersionId })) });
@@ -89,7 +130,44 @@ function mockPipeline(config: any) {
     }));
   const activate = vi.spyOn(ingestor as any, "registerActiveWikipediaImport").mockResolvedValue(undefined);
   const trainedShards: Array<{ shardUri: string; samples: Array<{ title: string; text: string; sourceVersionId: string }> }> = [];
-  return { storage, ingestor, page, train, activate, counts, trainedShards, rows: () => [...checkpoints.values()], depth: () => transactionDepth };
+  return { storage, ingestor, page, train, activate, counts, trainedShards, rememberSample,
+    rows: () => [...checkpoints.values()], depth: () => transactionDepth };
+}
+
+async function persistMockPageCheckpoint(pipeline: ReturnType<typeof mockPipeline>, callIndex = 0, contentHash?: string): Promise<void> {
+  const [file, checkpoint] = pipeline.page.mock.calls[callIndex]! as unknown as [any, IngestionCheckpoint];
+  const bytes = file.evidenceDerivative?.bytes ?? file.bytes;
+  await pipeline.storage.ingestion.put({
+    ...checkpoint,
+    phase: "stored",
+    status: "complete",
+    contentHash: contentHash ?? `sha256_${createHash("sha256").update(bytes).digest("hex")}`,
+    byteLength: bytes.byteLength
+  });
+}
+
+async function persistMockRootReceipt(pipeline: ReturnType<typeof mockPipeline>, dumpPath: string): Promise<void> {
+  const journalRow = pipeline.rows().find(row => row.itemUri.endsWith("/language-batch"))!;
+  const metadata = journalRow.metadata as any;
+  const batch = metadata.languageBatch;
+  await pipeline.storage.ingestion.put({
+    id: `fixture-root-receipt-${batch.blockOffset}`,
+    rootUri: journalRow.rootUri,
+    itemUri: dumpPath,
+    phase: "stored",
+    status: "complete",
+    offsetBytes: batch.blockOffset,
+    updatedAt: Date.now(),
+    metadata: {
+      inputManifestId: metadata.inputManifestId,
+      emitted: batch.processedPageCount,
+      skipped: batch.lastProcessedPageOrdinal - batch.processedPageCount,
+      blockCount: 1,
+      pageOrdinal: batch.lastProcessedPageOrdinal,
+      stoppedAt: "maxPagesPerRun",
+      reachedEnd: false
+    }
+  });
 }
 
 describe("Wikipedia recovery boundaries", () => {
@@ -139,8 +217,7 @@ describe("Wikipedia recovery boundaries", () => {
           metadata: { sourceFamilyId: "wikimedia:wikipedia" }, sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1,
             freshness: 1, independenceGroup: "wikimedia:wikipedia", accessScope: "public", licenseStatus: "fixture" } }).spans
           .map(span => ({ ...span, status: "promoted" as const, provenance: { ...span.provenance as object, sourceFamilyId: "wikimedia:wikipedia" } }));
-        return { ...p.counts, languageSample: { uri: file.uri, title: "source", text: file.text, evidence, sourceVersionId, createdAt: 1,
-          languageAliases: [], semanticCandidates: [] } };
+        return { ...p.counts, languageSample: p.rememberSample(file, evidence, { sourceId, sourceVersionId, createdAt: 1 }) };
       });
       const stopFile = path.join(f.root, "owner.stop");
       const prepare = vi.spyOn(corpusTrainer, "prepareLanguageCorpusTraining").mockImplementation(async () => {
@@ -529,21 +606,85 @@ describe("Wikipedia recovery boundaries", () => {
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
 
-  it("retains the compiler fence and exact cursor for a drained midblock journal", async () => {
+  it("rebases a drained midblock cursor only after its durable prefix replays byte-identically", async () => {
     const f = await sameBlockFixture();
     try {
       const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
       const p = mockPipeline(f.config);
       await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      await persistMockPageCheckpoint(p);
+      await persistMockRootReceipt(p, f.dumpPath);
       await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
       const journal = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))!.metadata as any).languageBatch;
       expect(journal).toMatchObject({ state: "open", pendingSamples: [], pendingChars: 0, blockComplete: false, processedPageCount: 1 });
       compiler.mockResolvedValue("compiler-after");
-      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/compiler attestation differs or is missing/);
-      compiler.mockResolvedValue("compiler-before");
       const resumed = await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
       expect(resumed.pages).toBe(1); expect(p.page).toHaveBeenCalledTimes(2);
       expect(p.trainedShards.flatMap(shard => shard.samples)).toHaveLength(2);
+      const transitioned = p.rows().find(row => row.itemUri.endsWith("/language-batch"))!;
+      expect(transitioned.metadata).toMatchObject({
+        compilerIdentity: "compiler-after",
+        compilerTransitions: [{
+          version: 1,
+          fromCompilerIdentity: "compiler-before",
+          toCompilerIdentity: "compiler-after",
+          processedPageCount: 1,
+          skippedPageCount: 0,
+          lastProcessedPageOrdinal: 1
+        }]
+      });
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it("refuses a drained midblock compiler transition when the replayed page digest drifts", async () => {
+    const f = await sameBlockFixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      await persistMockPageCheckpoint(p, 0, `sha256_${"0".repeat(64)}`);
+      await persistMockRootReceipt(p, f.dumpPath);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      compiler.mockResolvedValue("compiler-after");
+      p.storage.ingestion.put.mockClear(); p.storage.events.append.mockClear(); p.page.mockClear(); p.train.mockClear();
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/replay differs from its durable cursor prefix/);
+      expect(p.storage.ingestion.put).not.toHaveBeenCalled(); expect(p.storage.events.append).not.toHaveBeenCalled();
+      expect(p.page).not.toHaveBeenCalled(); expect(p.train).not.toHaveBeenCalled();
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it("refuses page work when a concurrent journal change wins the compiler-transition CAS", async () => {
+    const f = await sameBlockFixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      await persistMockPageCheckpoint(p);
+      await persistMockRootReceipt(p, f.dumpPath);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      compiler.mockResolvedValue("compiler-after");
+      p.storage.ingestion.compareAndPut = vi.fn(async () => false);
+      p.storage.ingestion.put.mockClear(); p.storage.events.append.mockClear(); p.page.mockClear(); p.train.mockClear();
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/lost a concurrent journal update/);
+      expect(p.storage.ingestion.put).not.toHaveBeenCalled(); expect(p.storage.events.append).not.toHaveBeenCalled();
+      expect(p.page).not.toHaveBeenCalled(); expect(p.train).not.toHaveBeenCalled();
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it("refuses the transition when the executable changes between replay and CAS", async () => {
+    const f = await sameBlockFixture();
+    try {
+      const compiler = vi.spyOn(codeIdentity, "ingestionCodeIdentity").mockResolvedValue("compiler-before");
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      await persistMockPageCheckpoint(p);
+      await persistMockRootReceipt(p, f.dumpPath);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true });
+      compiler.mockResolvedValueOnce("compiler-after").mockResolvedValueOnce("compiler-drifted-during-replay");
+      p.storage.ingestion.compareAndPut.mockClear(); p.storage.events.append.mockClear(); p.page.mockClear(); p.train.mockClear();
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath })).rejects.toThrow(/changed while its midblock transition was being verified/);
+      expect(p.storage.ingestion.compareAndPut).not.toHaveBeenCalled(); expect(p.storage.events.append).not.toHaveBeenCalled();
+      expect(p.page).not.toHaveBeenCalled(); expect(p.train).not.toHaveBeenCalled();
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
 
@@ -635,6 +776,7 @@ describe("Wikipedia recovery boundaries", () => {
         row.rootUri === query.rootUri && (!query.status || row.status === query.status) && (!query.phase || row.phase === query.phase) && (!query.itemUriPrefix || row.itemUri.startsWith(query.itemUriPrefix))
       ).sort((a, b) => b.offsetBytes - a.offsetBytes).slice(0, query.limit));
       const storage = {
+        blobs: { putArchiveReferences: vi.fn(async () => {}), putRanges: vi.fn(async () => {}) },
         events: { append: vi.fn(async () => {}) },
         ingestion: {
           put: async (row: IngestionCheckpoint) => { checkpoints.set(row.id, row); },
@@ -647,12 +789,19 @@ describe("Wikipedia recovery boundaries", () => {
         }
       } as any;
       const ingestor = createWikipediaV3Ingestor({ storage, config: f.config });
-      vi.spyOn(ingestor as any, "ingestPage").mockImplementation(async (...args: any[]) => ({
+      vi.spyOn(ingestor as any, "ingestPage").mockImplementation(async (...args: any[]) => {
+        const bytes = Buffer.from(args[0].text, "utf8");
+        const contentHash = `sha256_${createHash("sha256").update(bytes).digest("hex")}`;
+        const sourceVersionId = `fixture:${contentHash}`;
+        return ({
         sources: 1, evidence: 0, graphNodes: 0, graphEdges: 0, graphHyperedges: 0, languageProfiles: 0,
         ngramObservations: 0, ngramModels: 0, languageUnits: 0, languagePatterns: 0,
         semanticFrames: 0, relationCandidates: 0, promotedRelations: 0, warnings: [],
-        languageSample: { uri: args[0].uri, title: "source", text: args[0].text, evidence: [], sourceVersionId: "fixture", createdAt: 0 }
-      }));
+        languageSample: { uri: args[0].uri, title: "source", text: args[0].text, evidence: [], sourceVersionId, createdAt: 0,
+          languageAliases: [], semanticCandidates: [], sourceReference: { contentHash, byteLength: bytes.length,
+            originalSourceVersionId: sourceVersionId, originalContentHash: contentHash, originalByteLength: bytes.length } }
+        });
+      });
       const trainedCounts = { languageProfiles: 1, ngramObservations: 0, ngramModels: 1,
         languageUnits: 0, languagePatterns: 0, semanticFrames: 0, relationCandidates: 0,
         promotedRelations: 0, graphHyperedges: 0, warnings: [] };

@@ -1,16 +1,20 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { readFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { createHasher, canonicalStringify } from "../../../kernel/src/primitives.js";
 import { compileSourceInductionWindows, compileSourceInductionWindowsAsync, compileSourceInductionWindowsFromCorpus, sourceInductionBatches } from "../../../kernel/src/source-window-induction.js";
+import { exportSourceSegmentationReplayRecipe } from "../../../kernel/src/source-segmentation-witness.js";
 import { prepareConstructionInduction, prepareConstructionInductionAsync, preparedLanguageInductionProducts } from "../../../kernel/src/graph-surface-alignment.js";
 import type { SourceInductionBatchExecution, SourceInductionBatchProduct } from "../../../kernel/src/source-induction-execution.js";
 import type { InducedLanguageMemoryModel } from "../../../kernel/src/language-induction-memory.js";
 import { createSourceInductionWorkerSession } from "../source-induction-worker-session.js";
+import { encodeSegmentationWitnessArchives } from "../segmentation-witness-archive-storage.js";
 import { rawCorpusSegmentationFixture } from "../../../kernel/src/__tests__/fixtures/raw-corpus-segmentation.js";
 const hasher = createHasher();
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
-function port(options: { reorder?: boolean; fail?: number; wrongDigest?: boolean; reversePrepare?: boolean } = {}) {
+function port(options: { reorder?: boolean; fail?: number; wrongDigest?: boolean; reversePrepare?: boolean;
+  tamperReplay?: "omit" | "duplicate" | "surplus" | "changed" } = {}) {
   let active = 0, peak = 0, closed = false, releaseFirst!: () => void;
   const secondFinished = new Promise<void>(resolve => { releaseFirst = resolve; });
   const completed: number[] = [], opened: number[] = [];
@@ -27,6 +31,12 @@ function port(options: { reorder?: boolean; fail?: number; wrongDigest?: boolean
         try {
           if (job.ordinal === options.fail) throw Error(`source batch ${job.ordinal} failed`);
           const product = structuredClone(raw.induce());
+          if (options.tamperReplay === "omit") product.segmentationReplay.pop();
+          if (options.tamperReplay === "duplicate") product.segmentationReplay.push(structuredClone(product.segmentationReplay[0]!));
+          if (options.tamperReplay === "surplus") product.segmentationReplay.push({
+            witnessId: "source_segmentation_witness.foreign", recipe: structuredClone(product.segmentationReplay[0]!.recipe)
+          });
+          if (options.tamperReplay === "changed") product.segmentationReplay[0]!.recipe.expectedArcCount++;
           if (options.reorder && job.ordinal === 0) await secondFinished;
           completed.push(job.ordinal); return product;
         } finally { if (job.ordinal === 1) releaseFirst(); }
@@ -58,6 +68,30 @@ it("preserves single-batch fullModel and suppresses it on an exact cache hit wit
   const cachedWorker = port(); const replay = await compileSourceInductionWindowsAsync({ documents: docs, hasher, execution: cachedWorker.execution, modelCache: cache });
   expect(replay.fullModel).toBeUndefined(); expect(replay.models).toEqual(actual.models); expect(cachedWorker.opened).toEqual([]);
   await worker.close(); await cachedWorker.close();
+});
+it("preserves exact replay state for a fresh ordinary corpus across structured worker transport", async () => {
+  vi.stubEnv("SCCE_INDUCTION_CHAR_BUDGET", "900"); vi.stubEnv("SCCE_INDUCTION_DOC_CHAR_CAP", "450");
+  const text = readFileSync(new URL("../../../kernel/src/__tests__/fixtures/alice-acquisition-excerpt.txt", import.meta.url), "utf8")
+    .replace(/\r\n/gu, "\n").slice(0, 1_800);
+  const ownerDocumentId = "alice.worker-replay", worker = port();
+  const products = await compileSourceInductionWindowsAsync({ documents: [{ id: ownerDocumentId, text }], hasher, execution: worker.execution });
+  const witnesses = products.models.flatMap(model => model.segmentationWitness.populations).flatMap(population => population.documents);
+  expect(products.models.length).toBeGreaterThan(1);
+  expect(witnesses.length).toBeGreaterThan(1);
+  expect(witnesses.every(witness => exportSourceSegmentationReplayRecipe(witness) !== undefined)).toBe(true);
+  const archives = await encodeSegmentationWitnessArchives(witnesses.map(value => ({ value, profileId: "profile.alice" })), {
+    getOwnerDocuments: async ownerDocumentIds => new Map(ownerDocumentIds.map(id => [id, { text, sourceVersionId: "source.alice" }]))
+  });
+  expect(archives.every(archive => archive.handled)).toBe(true);
+  await worker.close();
+});
+it("rejects incomplete, duplicate, surplus, or changed replay transport before cache publication", async () => {
+  for (const tamperReplay of ["omit", "duplicate", "surplus", "changed"] as const) {
+    const worker = port({ tamperReplay }), cache = new Map<string, InducedLanguageMemoryModel>();
+    await expect(compileSourceInductionWindowsAsync({ documents: [{ id: "replay.tamper", text: "Alice follows the white rabbit." }],
+      hasher, execution: worker.execution, modelCache: cache })).rejects.toThrow(/replay/u);
+    expect(cache.size).toBe(0);
+  }
 });
 it("singleflights repeated exact batch keys while preserving ordered duplicate products", async () => {
   vi.stubEnv("SCCE_INDUCTION_CHAR_BUDGET", "12"); vi.stubEnv("SCCE_INDUCTION_DOC_CHAR_CAP", "12");

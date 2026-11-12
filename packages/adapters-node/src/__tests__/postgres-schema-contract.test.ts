@@ -6,6 +6,7 @@ import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECI
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type InformationAccessContext } from "@scce/kernel";
 import * as postgres from "../postgres.js";
 import * as schema from "../postgres-schema.js";
+import { evidenceTextReferenceSchemaStatements } from "../evidence-text-reference-schema.js";
 
 // Captured from the canonical adapter before extraction; hashes cover every SQL byte and statement order.
 const fixtures: Array<{ q: string; access?: InformationAccessContext; statementCount: number; sha256: string }> = [
@@ -93,16 +94,58 @@ const pageHydrationColumns = {
 const associationHydrationColumns = {
   graph_evidence_associations: ["association_order", "entity_kind", "entity_id", "evidence_id"]
 };
+const replayHydrationColumns = {
+  source_text_replay_binding_sets: ["id", "model_id", "profile_id", "manifest_pattern_id", "manifest_digest", "binding_json", "binding_digest", "information_label", "created_at"]
+};
+const continuationHydrationColumns = {
+  ngram_model_continuations: ["model_id", "profile_id", "continuation_counts", "model_updated_at", "information_label"]
+};
 function associationAdditions(statements: readonly string[], q: string): string[] {
   const found = statements.filter(sql =>
     sql.startsWith(`CREATE TABLE IF NOT EXISTS ${q}.graph_evidence_associations (`)
-    || sql.startsWith(`CREATE INDEX IF NOT EXISTS idx_${q.replaceAll('"', '')}_graph_evidence_reverse `)
+    || sql.startsWith("DO $scce_graph_evidence_membership_index$")
     || sql.startsWith(`CREATE INDEX IF NOT EXISTS idx_${q.replaceAll('"', '')}_graph_evidence_owner_order `)
   );
   expect(found).toHaveLength(3);
   expect(found[0]).toContain("association_order BIGINT GENERATED ALWAYS AS IDENTITY");
-  expect(found[1]).toContain("(evidence_id,entity_kind,entity_id)");
+  expect(found[0]).toContain("PRIMARY KEY(evidence_id,entity_kind,entity_id)");
+  expect(found[1]).toContain("PRIMARY KEY (evidence_id,entity_kind,entity_id)");
   expect(found[2]).toContain("(entity_kind,entity_id,association_order,evidence_id)");
+  return found;
+}
+function sourceReferenceAdditions(statements: readonly string[], q: string): string[] {
+  const found = statements.filter(sql => sql.startsWith(`ALTER TABLE ${q}.blobs ADD COLUMN IF NOT EXISTS range_parent_hash `)
+    || sql.startsWith("DO $scce_canonical_blob_shape$"));
+  expect(found).toHaveLength(2);
+  return found;
+}
+
+function sourceReplayAdditions(statements: readonly string[], q: string): string[] {
+  const found = statements.filter(sql => sql.startsWith(`CREATE TABLE IF NOT EXISTS ${q}.source_text_replay_binding_sets (`)
+    || sql.includes(` ON ${q}.source_text_replay_binding_sets(model_id,profile_id)`));
+  expect(found).toHaveLength(2);
+  return found;
+}
+
+function continuationProjectionAdditions(statements: readonly string[], q: string): string[] {
+  const found = statements.filter(sql => sql.startsWith(`CREATE TABLE IF NOT EXISTS ${q}.ngram_model_continuations (`)
+    || sql.includes(` ON ${q}.ngram_model_continuations(profile_id,model_id)`)
+    || sql.startsWith("WITH pending AS MATERIALIZED (") && sql.includes(`${q}.ngram_model_continuations`));
+  expect(found).toHaveLength(3);
+  return found;
+}
+
+function languageUnitNormalizationAdditions(statements: readonly string[], q: string): string[] {
+  const found = statements.filter(sql =>
+    sql.startsWith(`CREATE TABLE IF NOT EXISTS ${q}.language_unit_`)
+    || sql.startsWith(`ALTER TABLE ${q}.language_units ADD COLUMN IF NOT EXISTS evidence_set_id `)
+    || sql.startsWith(`ALTER TABLE ${q}.language_units ADD COLUMN IF NOT EXISTS information_label_id `)
+    || sql.startsWith("DO $scce_language_unit_normalization$")
+    || sql.startsWith(`CREATE OR REPLACE VIEW ${q}.language_unit_values AS`)
+  );
+  expect(found).toHaveLength(6);
+  expect(found.at(-1)).toContain("evidence_set.evidence_ids");
+  expect(found.at(-1)).toContain("label.information_label");
   return found;
 }
 function pageAdditions(statements: readonly string[], q: string): string[] {
@@ -116,20 +159,12 @@ function pageAdditions(statements: readonly string[], q: string): string[] {
   return found;
 }
 function schema32Additions(statements: readonly string[], q: string): string[] {
-  const digestStatements = new Set([
-    `DROP TRIGGER IF EXISTS scce_evidence_text_sha256 ON ${q}.evidence_spans`,
-    `CREATE TRIGGER scce_evidence_text_sha256 BEFORE INSERT OR UPDATE OF text_content,text_sha256 ON ${q}.evidence_spans FOR EACH ROW EXECUTE FUNCTION ${q}.scce_sync_evidence_text_sha256()`,
-    `ALTER TABLE ${q}.evidence_spans ENABLE ALWAYS TRIGGER scce_evidence_text_sha256`,
-    `UPDATE ${q}.evidence_spans SET text_sha256=NULL WHERE text_sha256 IS NULL`,
-    `ALTER TABLE ${q}.evidence_spans ALTER COLUMN text_sha256 SET NOT NULL`
-  ]);
+  const referenceStatements = new Set(evidenceTextReferenceSchemaStatements(q));
   const additions = statements.filter(sql => Object.keys(schema32HydrationColumns).some(name => sql.startsWith(`CREATE TABLE IF NOT EXISTS ${q}.${name} (`))
-    || sql.startsWith("DO $scce_evidence_digest_column$ BEGIN\n")
-    || sql.startsWith(`CREATE OR REPLACE FUNCTION ${q}.scce_sync_evidence_text_sha256() RETURNS trigger `)
-    || digestStatements.has(sql));
-  expect(additions).toHaveLength(14);
+    || referenceStatements.has(sql));
+  expect(additions).toHaveLength(Object.keys(schema32HydrationColumns).length + referenceStatements.size);
   // Pin only schema32 additions; all prior SQL keeps its original ordered byte goldens.
-  expect(digest(additions.map(sql => sql.replaceAll(q, "SCHEMA")))).toBe("f59a433f31992cfd640e220564ba62ced6a22fb96dc13356250c70d91a91a4ae");
+  expect(digest(additions.map(sql => sql.replaceAll(q, "SCHEMA")))).toBe("41a02389b5d2e936366cee2428f81831de157d9b73d971026e3d0864e26d586a");
   return additions;
 }
 
@@ -139,6 +174,10 @@ describe("Postgres schema contract extraction", () => {
     const schema32 = schema32Additions(statements, fixture.q);
     const pages = pageAdditions(statements, fixture.q);
     const associations = associationAdditions(statements, fixture.q);
+    const sourceReferences = sourceReferenceAdditions(statements, fixture.q);
+    const sourceReplay = sourceReplayAdditions(statements, fixture.q);
+    const continuationProjection = continuationProjectionAdditions(statements, fixture.q);
+    const unitNormalization = languageUnitNormalizationAdditions(statements, fixture.q);
     const key = fixture.q.replaceAll('"', "");
     const addedColumn = `ALTER TABLE ${fixture.q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`;
     const retiredIndex = `DROP INDEX IF EXISTS ${fixture.q}.idx_${key}_semantic_frames_surface_rank`;
@@ -162,9 +201,15 @@ describe("Postgres schema contract extraction", () => {
     expect(statements).toContain(retiredAnchorTable);
     expect(statements).not.toContain(anchorTable);
     expect(statements).not.toContain(anchorIndex);
-    expect(statements).toHaveLength(fixture.statementCount + 5 + schema32.length + pages.length + associations.length);
-    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql) && !associations.includes(sql))
-      .map(sql => sql === hashIndex ? oldIndex : sql === retiredAnchorTable ? anchorTable : sql);
+    expect(statements).toHaveLength(fixture.statementCount + 5 + schema32.length + pages.length + associations.length + sourceReferences.length + sourceReplay.length + continuationProjection.length + unitNormalization.length - 2);
+    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql) && !associations.includes(sql) && !sourceReferences.includes(sql) && !sourceReplay.includes(sql) && !continuationProjection.includes(sql) && !unitNormalization.includes(sql))
+      .map(sql => sql === hashIndex ? oldIndex : sql === retiredAnchorTable ? anchorTable : sql.includes(`${fixture.q}.evidence_spans (`)
+        ? sql.replace("text_preview TEXT NOT NULL, language_hints", "text_preview TEXT NOT NULL, text_content TEXT NOT NULL, language_hints") : sql);
+    for (const operation of ["ADD COLUMN IF NOT EXISTS information_label", "ALTER COLUMN information_label DROP DEFAULT"]) {
+      const modelIndex = prior.findIndex(sql => sql.startsWith(`ALTER TABLE ${fixture.q}.ngram_models ${operation}`));
+      expect(modelIndex).toBeGreaterThan(0);
+      prior.splice(modelIndex + 1, 0, prior[modelIndex]!.replace(`${fixture.q}.ngram_models`, `${fixture.q}.language_units`));
+    }
     const nodeFeatureIndex = prior.indexOf(`CREATE INDEX IF NOT EXISTS idx_${key}_nodes_features ON ${fixture.q}.graph_nodes USING GIN(features)`);
     expect(nodeFeatureIndex).toBeGreaterThan(0);
     prior.splice(nodeFeatureIndex, 0, anchorIndex);
@@ -174,15 +219,29 @@ describe("Postgres schema contract extraction", () => {
 
   it("preserves the fresh-schema indexes and required hydration column contract", () => {
     const columns = schema.requiredHydrationColumns();
+    const sourceReferenceColumns = ["range_parent_hash", "range_start", "range_end", "archive_reference"];
+    expect(columns.blobs).toEqual(["content_hash", "media_type", "byte_length", "content", ...sourceReferenceColumns]);
     expect(columns.semantic_frames).toContain("normalized_surface_hash");
-    expect(columns.evidence_spans).toContain("text_sha256");
+    expect(columns.evidence_spans).not.toContain("text_sha256");
+    expect(columns.evidence_spans).not.toContain("text_content");
+    expect(columns.language_units).toContain("evidence_set_id");
+    expect(columns.language_units).toContain("information_label_id");
+    expect(columns.language_units).not.toContain("evidence_ids");
+    expect(columns.language_units).not.toContain("information_label");
+    expect(columns.language_unit_values).toEqual(["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json", "information_label"]);
     const priorColumns = { ...columns };
-    for (const [name, expected] of Object.entries({ ...schema32HydrationColumns, ...pageHydrationColumns, ...associationHydrationColumns })) {
+    for (const [name, expected] of Object.entries({ ...schema32HydrationColumns, ...pageHydrationColumns, ...associationHydrationColumns,
+      ...replayHydrationColumns, ...continuationHydrationColumns })) {
       expect(columns[name]).toEqual(expected);
       delete priorColumns[name];
     }
+    delete priorColumns.language_unit_evidence_sets;
+    delete priorColumns.language_unit_information_labels;
+    delete priorColumns.language_unit_values;
+    priorColumns.language_units = ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json", "information_label"];
     const headers = ["pattern_schema", "component_recipe", "source_compilation_id", "owned_source_version_id", "pattern_language", "has_source_compilation", "has_source_version", "decoded_artifact_jsonb_bytes"];
-    expect(digest({ ...priorColumns, evidence_spans: columns.evidence_spans!.filter(column => column !== "text_sha256"),
+    expect(digest({ ...priorColumns, blobs: columns.blobs!.filter(column => !sourceReferenceColumns.includes(column)),
+      evidence_spans: ["id", "source_id", "source_version_id", "content_hash", "byte_start", "byte_end", "text_content", "trust_vector", "provenance_json", "features", "status", "alpha", "information_label"],
       semantic_frames: columns.semantic_frames!.filter(column => column !== "normalized_surface_hash"),
       language_patterns: columns.language_patterns!.filter(column => !headers.includes(column)) })).toBe("6d64b59743095f63ec2a19f7a2bfe9a38558acda0e00e86e11f1d40ce682c31a");
     expect(digest(schema.freshSchemaIndexStatements("fixture"))).toBe("b9869ea350648b3a938f9f7e210ce2f01c038626a72cdf7f663dd276fb4f4ffd");

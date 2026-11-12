@@ -4,6 +4,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 
 /**
  * Scaled-up sibling of reference-comparison.mjs: same methodology (live brain vs. a model given the
@@ -222,19 +223,20 @@ const client = new pg.Client({ connectionString: config.database.url });
 await client.connect();
 await client.query("set statement_timeout to '180s'");
 const schema = config.database.schema;
+const corpusReader = createCanonicalCorpusReader(client, schema);
 
 // Resolved through the source's canonical URI (a 23k-row table, indexed) and the span's source id: the previous
 // provenance_json filter scanned the 5.4GB evidence table once per article and spent half an hour verifying.
 const articleText = async title => {
   const uriTail = `/${encodeURIComponent(title.replace(/ /gu, "_"))}`;
   const rows = await client.query(
-    `select es.text_content from ${schema}.evidence_spans es
+    `select es.content_hash,es.byte_start,es.byte_end,es.char_start,es.char_end from ${schema}.evidence_spans es
      join ${schema}.sources s on s.id = es.source_id
      where s.canonical_uri like 'wikipedia://%' and s.canonical_uri like $1 and es.status = 'promoted'
      order by es.char_start limit 40`,
     [`%${uriTail}`]
   );
-  return rows.rows.map(row => String(row.text_content)).join("\n");
+  return (await corpusReader.evidenceTexts(rows.rows)).join("\n");
 };
 
 const articles = new Map();

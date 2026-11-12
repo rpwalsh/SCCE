@@ -62,10 +62,25 @@ export async function publishCompiledLanguagePatterns(input: {
     else for (const pattern of patterns) await input.store.putLanguagePattern(pattern);
     return;
   }
+  const firstInducedProjection = input.projections.findIndex(scope =>
+    scope.componentRecipe === INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID
+      && INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS.includes(scope.patternSchema));
+  const inducedSchemas = new Set<string>(INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS);
   for (const [index, scope] of input.projections.entries()) {
+    // Syntax replay owns the segmentation-manifest reference while semantic
+    // replay owns the original document order.  A fresh store has neither
+    // sibling yet, so the first induced publication must present the complete
+    // coupled component set to the physical encoder in one batch.  Projection
+    // membership remains schema-specific below; this only establishes the
+    // immutable component rows before later projection ledgers are published.
+    const publishInducedComponentSet = index === firstInducedProjection;
+    const inducedProjection = scope.componentRecipe === INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID
+      && inducedSchemas.has(scope.patternSchema);
     await input.store.replaceLanguagePatternProjection!({
       patterns: patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === scope.patternSchema
+        || publishInducedComponentSet && inducedSchemas.has(String(jsonRecord(pattern.patternJson).schema))
         || index === 0 && !schemas.has(String(jsonRecord(pattern.patternJson).schema))),
+      ...(inducedProjection ? { reusePatternRowsFromCurrentTransaction: true } : {}),
       projection: { ...scope, profileId: input.profileId, sourceId: input.owner.sourceId, sourceVersionId: input.owner.sourceVersionId,
         sourceSystem, informationLabel: input.informationLabel,
         patternIds: patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === scope.patternSchema).map(pattern => pattern.id).sort() }

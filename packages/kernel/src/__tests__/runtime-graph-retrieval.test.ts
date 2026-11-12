@@ -300,6 +300,25 @@ describe("runtime hot graph retrieval", () => {
     expect(fixture.searchEvidence).toHaveBeenCalledTimes(8);
   });
 
+  it("keeps broad symbol postings out of a selective phrase query and uses them only for its empty-result retry", async () => {
+    const fixture = runtimeFixture(graphSlice([], [], []));
+    fixture.searchEvidence.mockResolvedValue([]);
+
+    await fixture.runtime.graphForText("What was Charles Babbage known for?", {
+      sourceAnchoringRequired: true,
+      residentOnly: true
+    });
+
+    const featureQueries: string[][] = fixture.searchEvidence.mock.calls
+      .map(call => (call as unknown as [{ features?: string[] }])[0]?.features ?? [])
+      .filter(features => features.length > 0);
+    expect(featureQueries.some(features => features.some(feature => feature.startsWith("anchor:bi:")))).toBe(true);
+    expect(featureQueries.some(features => features.every(feature => feature.startsWith("anchor:sym:")))).toBe(true);
+    for (const features of featureQueries.filter(features => features.some(feature => feature.startsWith("anchor:bi:")))) {
+      expect(features.some(feature => feature.startsWith("anchor:sym:"))).toBe(false);
+    }
+  });
+
   it("spends the quoted-sequence query only for an explicit structural gap", async () => {
     const ordinaryFixture = runtimeFixture(graphSlice([], [], []));
     ordinaryFixture.searchEvidence.mockResolvedValue([]);

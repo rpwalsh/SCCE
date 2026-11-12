@@ -161,6 +161,8 @@ export interface SourceAlignmentSurfaceLattice {
 
 export interface SurfaceLatticeBuildOptions {
   captureScoreFactors?: boolean;
+  /** Preserve exact cold-replay state without capturing the redundant score-factor proof. */
+  captureSegmentationReplay?: boolean;
   documentId: string;
   sourceFamilyId?: string;
   text: string;
@@ -455,7 +457,7 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
   if (options.boundaryFeatureContext && options.boundaryFeatureReplayFactors) {
     throw new Error("surface lattice cannot mix live and replay boundary feature state");
   }
-  const replayState = options.captureScoreFactors
+  const replayState = options.captureScoreFactors || options.captureSegmentationReplay
     ? captureSurfaceSegmentationReplayState(options, maxUnits)
     : undefined;
   if (replayState) options = {

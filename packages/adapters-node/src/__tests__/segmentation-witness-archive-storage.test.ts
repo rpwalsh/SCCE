@@ -164,10 +164,22 @@ describe("PostgreSQL segmentation witness archive storage", () => {
   it("binds blob batches as native BYTEA parameters without a JSON/base64 transport", async () => {
     const adapter = createPostgresStorageAdapter({ url: "postgres://fixture:fixture@127.0.0.1/fixture", schema: "fixture" });
     const calls: Array<{ sql: string; params: unknown[] }> = [];
-    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
-      calls.push({ sql, params });
-      return [];
+    const headers = new Map<string, Record<string, unknown>>();
+    const client = {
+      async query(sql: string, params: unknown[] = []): Promise<{ rows: unknown[] }> {
+        calls.push({ sql, params });
+        if (sql.startsWith("INSERT INTO") && sql.includes('"blobs"')) {
+          for (let offset = 0; offset < params.length; offset += 4) headers.set(String(params[offset]), {
+            content_hash: params[offset], byte_length: String(params[offset + 2]), stored_byte_length: String(params[offset + 2]),
+            range_parent_hash: null, range_start: null, range_end: null, archive_reference: null
+          });
+        }
+        return { rows: sql.startsWith("SELECT content_hash") ? (params[0] as string[]).map(id => headers.get(id)!) : [] };
+      },
+      release() {}
     };
+    (adapter.pool as unknown as { connect: () => Promise<unknown> }).connect = async () => client;
+    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => (await client.query(sql, params)).rows as T[];
     try {
       const first = Buffer.from([0, 1, 2, 255]), second = Buffer.from("same source bytes", "utf8");
       const ids = await adapter.blobs.putBatch!([
@@ -176,10 +188,12 @@ describe("PostgreSQL segmentation witness archive storage", () => {
         { content: second, mediaType: "text/plain" }
       ]);
       expect(ids).toEqual([blobContentHash(first), blobContentHash(first), blobContentHash(second)]);
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.sql).toContain("VALUES ($1,$2,$3,$4),($5,$6,$7,$8)");
-      expect(calls[0]!.sql).not.toMatch(/jsonb_to_recordset|base64|decode\(/u);
-      expect(calls[0]!.params.filter(Buffer.isBuffer)).toEqual([first, second]);
+      const inserts = calls.filter(call => call.sql.startsWith("INSERT INTO") && call.sql.includes('"blobs"'));
+      expect(inserts).toHaveLength(1);
+      expect(inserts[0]!.sql).toContain("VALUES ($1,$2,$3,$4),($5,$6,$7,$8)");
+      expect(inserts[0]!.sql).not.toMatch(/jsonb_to_recordset|base64|decode\(/u);
+      expect(inserts[0]!.params.filter(Buffer.isBuffer)).toEqual([first, second]);
+      expect(calls.some(call => call.sql === "COMMIT")).toBe(true);
     } finally {
       await adapter.close();
     }

@@ -222,7 +222,10 @@ export type CorpusInducedLanguageModel = Omit<InducedLanguageModel, "boundaryEst
 };
 export interface LanguageInductionInput {
   captureScoreFactors?: boolean;
+  captureSegmentationReplay?: boolean;
   documents: LanguageInductionDocument[];
+  /** Source-owned prior documents used only to fit corpus relation statistics. */
+  relationContextDocuments?: readonly LanguageInductionDocument[];
   order?: NgramOrder;
   maxNgrams?: number;
   maxFrames?: number;
@@ -236,6 +239,9 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
   const vocabularyLimit = Math.max(512, Math.floor(options.vocabularyLimit ?? 50000));
   function induce(input: LanguageInductionInput): InducedLanguageModel {
       const documents = input.documents.filter(doc => doc.text.trim().length > 0);
+      const documentIds = new Set(documents.map(document => document.id));
+      const relationContextDocuments = (input.relationContextDocuments ?? [])
+        .filter(document => document.text.trim().length > 0 && !documentIds.has(document.id));
       const verified = input.verifiedCorpusSegmentation;
       const corpus = verified ? validateCorpusSegmentationForDocuments(documents, verified, hasher) : undefined;
       const corpusText = documents.map(doc => doc.text).join("\n");
@@ -330,6 +336,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           boundaryEstimator: verified ? mixtures!.get(doc.id)! : boundaryMixtureForDocument(localSegmentationPopulations!, doc.id, hasher),
           boundaryFeatureContext,
           ...(input.captureScoreFactors ? { captureScoreFactors: true } : {}),
+          ...(input.captureSegmentationReplay ? { captureSegmentationReplay: true } : {}),
           hasher
         })
       }));
@@ -376,6 +383,16 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         observations: relationObservations,
         hasher
       });
+      const semanticRelationHypothesisModel = relationContextDocuments.length ? compileRelationHypothesisModel({
+        observations: [...documents, ...relationContextDocuments].flatMap(doc =>
+          sentenceSegments(doc.text, hasher).map((sentence, sentenceIndex) => ({
+            sourceId: doc.sourceFamilyId ?? doc.id,
+            symbols: lexicalSurfaceSymbols(sentence, `${doc.id}.semantic-relation.${sentenceIndex}`, hasher)
+              .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char))),
+            evidenceIds: doc.evidenceIds
+          }))),
+        hasher
+      }) : relationHypothesisModel;
       const order = clampOrder(input.order ?? 6);
       const counts = countNgrams(symbolStrings, order, vocabularyLimit);
       const ngrams = inducedNgrams(counts, order, input.maxNgrams ?? 4096);
@@ -386,7 +403,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
       const lexicalClasses = induceLexicalClasses(lexicalClassDocuments, hasher, input.maxLexicalClasses ?? 1024);
       const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
-      const semanticInductionFactors = compileSemanticInductionFactors({ documents, relationModel: relationHypothesisModel, lexicalClasses,
+      const semanticInductionFactors = compileSemanticInductionFactors({ documents, relationModel: semanticRelationHypothesisModel, lexicalClasses,
         hasher, maxFrames: input.maxFrames ?? 2048 });
       const { semanticFrames, graphBoundConstructions } = replaySemanticInductionFactors({ factors: semanticInductionFactors, hasher });
       const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
@@ -398,7 +415,8 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         boundaryEstimatorId: boundaryEstimator.id,
         segmentationPopulationModelId: segmentationPopulations.id,
         segmentationWitnessId: segmentationWitness.id,
-        relationHypothesisModelId: relationHypothesisModel.id
+        relationHypothesisModelId: relationHypothesisModel.id,
+        semanticRelationHypothesisModelId: semanticRelationHypothesisModel.id
       })).slice(0, 32)}`;
       const result = {
         id,
@@ -442,6 +460,8 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           segmentationWitnessId: segmentationWitness.id,
           segmentationWitnessPopulationIds: segmentationWitness.populations.map(population => population.populationId),
           relationHypothesisModelId: relationHypothesisModel.id,
+          semanticRelationHypothesisModelId: semanticRelationHypothesisModel.id,
+          relationContextDocuments: relationContextDocuments.length,
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText),
           ...(verified ? { corpusSegmentationSnapshotId: verified.populationInference.sourceInventory.id,
@@ -836,7 +856,7 @@ function graphemeUnits(value: string): string[] {
   return [...MORPHOLOGY_GRAPHEME_SEGMENTER.segment(value)].map(row => row.segment);
 }
 
-function induceSyntaxTemplates(documents: readonly LanguageInductionDocument[], hasher: Hasher): SyntaxTemplate[] {
+export function induceSyntaxTemplates(documents: readonly LanguageInductionDocument[], hasher: Hasher): SyntaxTemplate[] {
   const counts = new Map<string, { count: number; examples: string[]; nextShapes: Map<string, number> }>();
   for (const doc of documents) {
     for (const [sentenceIndex, sentence] of sentenceSegments(doc.text, hasher).entries()) {

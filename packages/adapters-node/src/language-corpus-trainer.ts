@@ -10,7 +10,8 @@ import { prepareLanguageTrainingSegmentationInput, languageTrainingSegmentationL
   type LanguageTrainingSegmentationDeclaration, type PreparedLanguageTrainingSegmentation as PreparedCorpusSegmentationSelection } from "./language-training-segmentation.js";
 import { prepareSourceTranscriptArchive, type SourceTranscriptArchiveDescriptor } from "./source-transcript-archive.js";
 import { SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID } from "./source-code-function-learning.js";
-import { runSourceInductionExecution, type SourceInductionWorkerExecution, type SourceInductionExecutionReceipt } from "./source-induction-execution.js";
+import { runSourceInductionExecution, type SourceInductionWorkerExecution, type SourceInductionExecutionReceipt,
+  type SourceInductionExecutionOwner } from "./source-induction-execution.js";
 import {
   createClock,
   attachPooledLanguageProfileOwnership,
@@ -106,6 +107,8 @@ import type { TranscriptTurn } from "@scce/kernel";
 export interface LanguageCorpusTrainingInput {
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   sourceInductionExecution?: SourceInductionWorkerExecution;
+  /** Caller-owned worker pool retained across corpus items; never serialized into a checkpoint binding. */
+  sourceInductionExecutionOwner?: Pick<SourceInductionExecutionOwner, "execution" | "receipt">;
   preparedCorpusSegmentation?: PreparedCorpusSegmentationSelection;
   storage: ScceStorage;
   sourceSystem: string;
@@ -324,7 +327,11 @@ const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
 }>();
 
 const CORPUS_CHECKPOINT_SCHEMA = "scce.corpusTrainingCheckpoint.v1";
-export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v4" as const;
+// The source-window compiler now fits semantic relations against the bounded,
+// source-owned construction context.  That changes learned output, so it must
+// get a new top-level recipe/checkpoint identity instead of colliding with a
+// completed v4 replay and being mistaken for the old isolated-source build.
+export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v5" as const;
 export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v6" as const;
 const LANGUAGE_CORPUS_SOURCE_EVIDENCE_RECIPE_ID = "scce.language_corpus_source_evidence.v1" as const;
 export function languageCorpusTrainingRecipeId(sourceSystem: string): string {
@@ -569,7 +576,8 @@ function checkpointBinding(input: LanguageCorpusTrainingInput, batchRecipe: stri
 
 function trainingInputBinding(input: LanguageCorpusTrainingInput, batchRecipe: string = LANGUAGE_TRAINING_BATCH_RECIPE_ID): string {
   // These service objects are used only in preparation; actual output IDs/times are captured in the payload.
-  const { storage: _storage, clock: _clock, idFactory: _ids, creativeEventCompiler: _compiler, sourceInductionExecution: _execution, ...semantic } = input;
+  const { storage: _storage, clock: _clock, idFactory: _ids, creativeEventCompiler: _compiler,
+    sourceInductionExecution: _execution, sourceInductionExecutionOwner: _executionOwner, ...semantic } = input;
   // Bind the exact raw source without copying the bytes into checkpoint metadata. The transform and digest are
   // durable semantic inputs, while the bytes themselves remain in the canonical blob store.
   if (input.originalSource) {
@@ -1081,7 +1089,12 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     hasher, prepared: input.preparedInduction };
   let preparedInduction: PreparedConstructionInduction | undefined;
   let sourceInductionExecution: SourceInductionExecutionReceipt | undefined;
-  if (naturalInduction && input.sourceInductionExecution) {
+  if (naturalInduction && input.sourceInductionExecutionOwner) {
+    preparedInduction = (await prepareLanguageTrainingInductionAsync({ ...inductionInput,
+      execution: input.sourceInductionExecutionOwner.execution,
+      ...(segmentationLoader ? { corpusLoader: segmentationLoader } : {}) })).prepared;
+    sourceInductionExecution = input.sourceInductionExecutionOwner.receipt();
+  } else if (naturalInduction && input.sourceInductionExecution) {
     const result = await runSourceInductionExecution({ policy: input.sourceInductionExecution,
       run: execution => prepareLanguageTrainingInductionAsync({ ...inductionInput, execution,
         ...(segmentationLoader ? { corpusLoader: segmentationLoader } : {}) }) });
@@ -1359,7 +1372,7 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     if (persistedHash !== prepared.source.contentHash) throw new Error("language training source blob hash mismatch");
     if (prepared.transcriptArchive && await input.storage.blobs.put(prepared.transcriptArchive.bytes, "application/json") !== prepared.transcriptArchive.descriptor.archiveHash) throw Error("transcript archive publication hash mismatch");
     await input.storage.quarantine.put(prepared.quarantine);
-    await putSpanBlobs(input.storage.blobs, prepared.evidence, prepared.mediaType);
+    await putSpanBlobs(input.storage.blobs, prepared.evidence, prepared.mediaType, { contentHash: persistedHash, bytes: prepared.bytes });
     await input.storage.evidence.putSourceVersion(prepared.source);
     if (input.storage.evidence.putEvidenceSpans) await input.storage.evidence.putEvidenceSpans(prepared.evidence);
     else for (const span of prepared.evidence) await input.storage.evidence.putEvidenceSpan(span);

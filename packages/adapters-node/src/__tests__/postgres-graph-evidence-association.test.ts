@@ -20,19 +20,19 @@ afterEach(async () => {
 });
 
 describe("Postgres graph evidence associations", () => {
-  it("publishes schema 36 with ordered owner and reverse evidence indexes", () => {
-    expect(POSTGRES_SCHEMA_VERSION).toBe(36);
+  it("publishes schema 37 with one reverse membership key and ordered owner index", () => {
+    expect(POSTGRES_SCHEMA_VERSION).toBe(37);
     expect(POSTGRES_REQUIRED_TABLES).toContain("graph_evidence_associations");
     expect(requiredHydrationColumns().graph_evidence_associations).toEqual([
       "association_order", "entity_kind", "entity_id", "evidence_id"
     ]);
     const statements = schemaStatements("fixture");
     const table = statements.find(sql => sql.includes(".graph_evidence_associations (") && sql.startsWith("CREATE TABLE"));
-    const reverse = statements.find(sql => sql.includes("graph_evidence_reverse"));
+    const membershipMigration = statements.find(sql => sql.startsWith("DO $scce_graph_evidence_membership_index$"));
     const ownerOrder = statements.find(sql => sql.includes("graph_evidence_owner_order"));
     expect(table).toContain("association_order BIGINT GENERATED ALWAYS AS IDENTITY");
-    expect(table).toContain("PRIMARY KEY(entity_kind,entity_id,evidence_id)");
-    expect(reverse).toContain("(evidence_id,entity_kind,entity_id)");
+    expect(table).toContain("PRIMARY KEY(evidence_id,entity_kind,entity_id)");
+    expect(membershipMigration).toContain("Referenced graph evidence membership primary key; refusing index migration");
     expect(ownerOrder).toContain("(entity_kind,entity_id,association_order,evidence_id)");
     expect(statements.some(sql => sql.startsWith("DO $scce_graph_evidence_associations$"))).toBe(false);
   });
@@ -147,7 +147,7 @@ describe("Postgres graph evidence associations", () => {
     expect(new Set(parentCalls.map(call => call.sql)).size).toBe(1);
     expect(associationCalls.every(call => call.sql.includes("ON CONFLICT(entity_kind,entity_id,evidence_id) DO NOTHING"))).toBe(true);
     expect(schemaStatements("fixture").find(sql => sql.includes(".graph_evidence_associations (") && sql.startsWith("CREATE TABLE")))
-      .toContain("PRIMARY KEY(entity_kind,entity_id,evidence_id)");
+      .toContain("PRIMARY KEY(evidence_id,entity_kind,entity_id)");
     const contributorPayloads = parentCalls.slice(2).map(call => JSON.parse(String(call.params[0])) as Array<{ evidence_ids_json: string[] }>);
     expect(contributorPayloads.every(payload => payload.length === 1 && payload[0]!.evidence_ids_json.length === 1)).toBe(true);
     expect(parentCalls.every(call => !call.sql.includes("evidence_ids ||"))).toBe(true);

@@ -67,9 +67,15 @@ function fixture() {
         && (!sql.includes("evidence.status='promoted'") || state.promoted) && informationLabelAllowsRead(state.sourceLabel, access));
       return { rows: selected.map(() => ({ profile_id: state.source.profileId, source_id: state.source.sourceId, source_version_id: state.source.sourceVersionId, source_content_hash: state.source.sourceContentHash,
         evidence_id: state.source.evidenceId, evidence_content_hash: state.source.evidenceContentHash, char_start: state.source.evidenceCharStart,
-        char_end: state.source.evidenceCharEnd, byte_start: evidence.byteStart, byte_end: evidence.byteEnd, evidence_text: state.source.evidenceText,
+        char_end: state.source.evidenceCharEnd, byte_start: evidence.byteStart, byte_end: evidence.byteEnd,
         profile_source_version_id: state.source.sourceVersionId, has_pooled_binding: false, pooled_profile: null,
         profile_label: state.sourceLabel, source_label: state.sourceLabel, evidence_label: state.sourceLabel })) };
+    }
+    if (sql.includes('"blobs" blob')) {
+      if (params[0] !== state.source.evidenceContentHash) return { rows: [] };
+      const content = Buffer.from(String(state.source.evidenceText), "utf8");
+      return { rows: [{ content, byte_length: String(content.byteLength), range_parent_hash: null, range_start: null,
+        range_end: null, archive_reference: null, archive: null }] };
     }
     const table = CREATIVE_EVENT_NORMALIZATION_TABLES.find(table => sql.includes(`"${table}"`));
     if (table) {

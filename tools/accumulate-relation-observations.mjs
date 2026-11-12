@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(path.join(here, "..", "packages", "adapters-node", "package.json"));
@@ -55,6 +56,7 @@ const projector = kernel.createTypedIngestProjector({ idFactory, hasher });
 
 const client = new pg.Client({ connectionString: url });
 await client.connect();
+const corpus = createCanonicalCorpusReader(client, schema);
 const started = Date.now();
 let cursor = flag("after") ?? (resume ? readState()?.cursor ?? "" : "");
 const totals = { versionsSeen: 0, versionsProjected: 0, versionsSkipped: 0, observations: 0, inserted: 0, oversizeSignatures: 0, byChannel: {}, oversizeSamples: [] };
@@ -70,7 +72,7 @@ try {
     if (totals.versionsSeen >= limit) break;
     const take = Math.min(batchVersions, limit - totals.versionsSeen);
     const versions = (await client.query(
-      `select v.id, v.source_id, v.media_type, v.metadata_json, v.observed_at, v.byte_length, b.content
+      `select v.id, v.source_id, v.content_hash, v.media_type, v.metadata_json, v.observed_at, v.byte_length
        from ${schema}.source_versions v join ${schema}.blobs b on b.content_hash = v.content_hash
        where v.id > $1 order by v.id limit $2`,
       [cursor, take]
@@ -81,7 +83,7 @@ try {
     const spansByVersion = new Map();
     for (const span of (await client.query(
       `select id, source_id, source_version_id, content_hash, media_type, byte_start, byte_end, char_start, char_end,
-              text_preview, text_content, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at
+              text_preview, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at
        from ${schema}.evidence_spans where source_version_id = any($1::text[]) and status = 'promoted'`,
       [versions.map(version => version.id)]
     )).rows) {
@@ -96,8 +98,9 @@ try {
       totals.versionsSeen++;
       const spans = spansByVersion.get(version.id);
       if (!spans?.length) { totals.versionsSkipped++; continue; }
-      const text = Buffer.isBuffer(version.content) ? version.content.toString("utf8") : String(version.content ?? "");
+      const text = (await corpus.bytes(version.content_hash)).toString("utf8");
       if (!text) { totals.versionsSkipped++; continue; }
+      const spanTexts = await corpus.evidenceTexts(spans);
       batchBytesSeen += text.length;
       const metadata = version.metadata_json ?? {};
       try {
@@ -108,7 +111,7 @@ try {
           mediaType: version.media_type,
           text,
           metadata,
-          evidence: spans.map(span => ({
+          evidence: spans.map((span, spanIndex) => ({
             id: span.id,
             sourceId: span.source_id,
             sourceVersionId: span.source_version_id,
@@ -119,7 +122,7 @@ try {
             charStart: span.char_start,
             charEnd: span.char_end,
             textPreview: span.text_preview ?? "",
-            text: span.text_content ?? span.text_preview ?? "",
+            text: spanTexts[spanIndex],
             languageHints: span.language_hints ?? [],
             scriptHints: span.script_hints ?? [],
             trustVector: span.trust_vector ?? {},

@@ -61,7 +61,7 @@ export function compileSemanticInductionFactors(input: { documents: readonly Lan
   return snapshot({ ...material, digest: input.hasher.digestHex(exactJson(material)) });
 }
 
-function validatedFactors(value: unknown, hasher: Hasher): SemanticInductionFactors {
+export function validateSemanticInductionFactors(value: unknown, hasher: Hasher): SemanticInductionFactors {
   const factors = snapshot(value);
   if (!isRecord(factors) || Object.keys(factors).sort().join(",") !== "digest,documents,lexicalClasses,maxFrames,schema,sentences,trackSourceWindows"
     || factors.schema !== SEMANTIC_INDUCTION_FACTORS_SCHEMA || typeof factors.maxFrames !== "number" || !Number.isFinite(factors.maxFrames)
@@ -109,7 +109,7 @@ function validatedFactors(value: unknown, hasher: Hasher): SemanticInductionFact
 
 /** The same ordered reducer used during induction. No pair cache or alternative matrix is persisted. */
 export function replaySemanticInductionFactors(input: { factors: unknown; hasher: Hasher }): ReplayedSemanticInduction {
-  const factors = validatedFactors(input.factors, input.hasher);
+  const factors = validateSemanticInductionFactors(input.factors, input.hasher);
   const observed = factors.trackSourceWindows ? new Map<string, Set<number>>() : undefined;
   const semanticFrames = induceSemanticFrames(factors, input.hasher, factors.maxFrames, observed);
   const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, factors.lexicalClasses, input.hasher).slice(0, 2048).map(construction => {

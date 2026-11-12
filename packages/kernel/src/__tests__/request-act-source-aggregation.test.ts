@@ -29,7 +29,7 @@ it("retains earlier English neutral counts through Russian and Catalan publicati
   expect(requestCommunicativeActModelFromPatterns([...ru, ...ca, ...en])).toEqual(model);
 });
 
-it("sums each current owner once, ignores legacy global counts, and preserves genuine neutral contrast", () => {
+it("sums each current owner once, ignores legacy global counts, and admits a source-owned neutral-only factual population", () => {
   const en = owner("en", 1, ["kapa dun"], true), ru = owner("ru", 2, ["запомни идею"], false);
   const legacy = requestCommunicativeActPatterns(compileRequestCommunicativeActModel([
     { requestText: "legacy", accepted: true, responseEvidenceCount: 20 }
@@ -39,7 +39,11 @@ it("sums each current owner once, ignores legacy global counts, and preserves ge
   expect(Object.values(model.classCounts).reduce((sum, count) => sum + count, 0)).toBe(2);
   expect([...model.features.values()].some(row => row.surface === "legacy")).toBe(false);
   expect(requestCommunicativeActModelFromPatterns(ru)).toBeUndefined();
-  expect(requestCommunicativeActModelFromPatterns(en)).toBeUndefined();
+  const factualOnly = requestCommunicativeActModelFromPatterns(en)!;
+  expect(factualOnly).toBeDefined();
+  expect(classifyRequestCommunicativeAct("kapa dun", factualOnly)).toMatchObject({
+    status: "active", actId: DIALOGUE_ACT_IDS.neutral
+  });
   expect(requestCommunicativeActModelFromPatterns([...en, ...ru, { ...ru[0]!, id: "duplicate" }])?.classCounts).toEqual(model.classCounts);
 });
 
@@ -55,5 +59,5 @@ it("fails closed on conflicting generations and damaged owner or sufficient-stat
   const current = requestCommunicativeActModelFromPatterns([...en, ...changed])!;
   expect(current).toBeDefined();
   expect(Object.values(current.classCounts).reduce((sum, count) => sum + count, 0)).toBe(3);
-  expect(requestCommunicativeActModelFromPatterns(en)).toBeUndefined();
+  expect(requestCommunicativeActModelFromPatterns(en)).toBeDefined();
 });

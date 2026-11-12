@@ -828,15 +828,37 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   return kernel;
 }
 function primaryRequestLanguageIdentity(identities: readonly LanguageIdentityRecord[]): LanguageIdentityRecord | undefined {
+  // Warm the language a general request is most likely to use. Repository documentation is natural text and
+  // remains eligible at turn time, but letting its file count dominate startup selected the software-document
+  // identity over the independently learned dialogue/encyclopedia/prose identity (673 profiles versus 293 on
+  // r004). The first ordinary question then paid a different cold hydration. This is corpus-role selection, not
+  // a script or vocabulary heuristic, so it applies unchanged to every learned language.
+  const generalRequestRoles = new Set<string>([
+    CORPUS_ROLE_IDS.importedPrior,
+    CORPUS_ROLE_IDS.interactionCorrection,
+    CORPUS_ROLE_IDS.dialogue,
+    CORPUS_ROLE_IDS.encyclopedic,
+    CORPUS_ROLE_IDS.publicDomainProse,
+    CORPUS_ROLE_IDS.custom
+  ]);
   const candidates = identities.map(identity => ({
     identity,
+    generalRequestRoleCount: identity.corpusRoles
+      .filter(role => generalRequestRoles.has(role.corpusRoleId))
+      .reduce((sum, role) => sum + role.count, 0),
     naturalRoleCount: identity.corpusRoles
       .filter(role => role.corpusRoleId !== CORPUS_ROLE_IDS.softwareSymbolic)
       .reduce((sum, role) => sum + role.count, 0)
-  })).filter(candidate => candidate.naturalRoleCount > 0)
-    .sort((left, right) => right.naturalRoleCount - left.naturalRoleCount);
-  if (!candidates.length || candidates[1]?.naturalRoleCount === candidates[0]!.naturalRoleCount) return undefined;
-  return candidates[0]!.identity;
+  })).filter(candidate => candidate.naturalRoleCount > 0);
+  const general = candidates.filter(candidate => candidate.generalRequestRoleCount > 0);
+  const ranked = (general.length ? general : candidates).sort((left, right) => general.length
+    ? right.generalRequestRoleCount - left.generalRequestRoleCount
+    : right.naturalRoleCount - left.naturalRoleCount);
+  const score = (candidate: typeof ranked[number]) => general.length
+    ? candidate.generalRequestRoleCount
+    : candidate.naturalRoleCount;
+  if (!ranked.length || ranked[1] && score(ranked[1]) === score(ranked[0]!)) return undefined;
+  return ranked[0]!.identity;
 }
 
 /** The turn's own score and every input to it, read back from the events it wrote. */

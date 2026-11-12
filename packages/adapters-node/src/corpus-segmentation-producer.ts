@@ -14,9 +14,10 @@ import { prepareCorpusMembershipCounts, readCorpusMembershipCounts, writeCorpusM
 import { readCorpusStatisticsPages, writeCorpusStatisticsPages } from "./corpus-segmentation-statistics-pages.js";
 import { withPackedBoundaryMerges } from "./corpus-segmentation-merge-scratch.js";
 import { createPopulationCandidateExecution, validatePopulationWorkerExecution } from "./population-candidate-execution.js";
+import { readCanonicalBlob } from "./canonical-evidence-text.js";
 
 interface Owner {
-  evidenceId: string; sourceId: string; sourceVersionId: string; textSha256: string; codePoints: number;
+  evidenceId: string; sourceId: string; sourceVersionId: string; codePoints: number;
   sourceFamilyId: string; evidenceContentHash:string; byteStart: number; byteEnd: number; charStart: number; charEnd: number;
 }
 interface Window { documentId: string; sourceVersionId: string; ordinal: number; windowOrdinal: number; startUtf16: number; endUtf16: number; ownedStartUtf16: number; text: string }
@@ -29,26 +30,35 @@ export function corpusSegmentationInputRecipe(windowUtf16: number): string {
 function owner(value: JsonValue): Owner {
   const row = value as unknown as Owner;
   if (!row || !row.evidenceId || !row.sourceId || !row.sourceVersionId || !row.sourceFamilyId
-    || row.evidenceContentHash!==`sha256_${row.textSha256}` || !/^[a-f0-9]{64}$/u.test(row.textSha256) || !Number.isSafeInteger(row.codePoints) || row.codePoints < 0
+    || !/^sha256_[a-f0-9]{64}$/u.test(row.evidenceContentHash) || !Number.isSafeInteger(row.codePoints) || row.codePoints < 0
     || [row.byteStart,row.byteEnd,row.charStart,row.charEnd].some(value => !Number.isSafeInteger(value) || value < 0)
     || row.byteEnd < row.byteStart || row.charEnd < row.charStart) throw new Error("Malformed corpus segmentation source ownership");
   return row;
 }
 async function* textChunks(storage: PostgresStorageAdapter, run: PostgresCorpusSegmentationRun, source: Owner, chunkCodePoints: number): AsyncGenerator<string> {
-  const digest = createHash("sha256"); let offset = 0;
-  while (offset < source.codePoints) {
-    const evidenceAccess = storage.informationAccessPredicate("e", 5);
-    const sourceAccess = storage.informationAccessPredicate("sv", 5 + evidenceAccess.params.length);
-    const rows = await storage.query<{text: string}>(`SELECT substring(e.text_content FROM $3::integer FOR $4::integer) AS text
-      FROM ${storage.table("evidence_spans")} e JOIN ${storage.table("source_versions")} sv ON sv.id=e.source_version_id
-      WHERE e.id=$1 AND sv.id=$2 AND e.status='promoted' AND ${evidenceAccess.sql} AND ${sourceAccess.sql}`,
-      [source.evidenceId, source.sourceVersionId, offset + 1, chunkCodePoints, ...evidenceAccess.params, ...sourceAccess.params]);
-    if (rows.length !== 1 || !rows[0]!.text) throw new Error("Owned corpus segmentation text changed or became inaccessible");
-    const text = rows[0]!.text; offset += [...text].length;
-    if (offset > source.codePoints) throw new Error("Corpus segmentation text length differs from its snapshot");
-    digest.update(text, "utf8"); yield text;
+  void run;
+  const evidenceAccess = storage.informationAccessPredicate("e", 3);
+  const sourceAccess = storage.informationAccessPredicate("sv", 3 + evidenceAccess.params.length);
+  const rows = await storage.query<{ content_hash: string }>(`SELECT e.content_hash
+    FROM ${storage.table("evidence_spans")} e JOIN ${storage.table("source_versions")} sv ON sv.id=e.source_version_id
+    WHERE e.id=$1 AND sv.id=$2 AND e.status='promoted' AND ${evidenceAccess.sql} AND ${sourceAccess.sql}`,
+    [source.evidenceId, source.sourceVersionId, ...evidenceAccess.params, ...sourceAccess.params]);
+  const row = rows[0];
+  if (rows.length !== 1 || !row || row.content_hash !== source.evidenceContentHash) {
+    throw new Error("Owned corpus segmentation text changed or became inaccessible");
   }
-  if (digest.digest("hex") !== source.textSha256) throw new Error("Corpus segmentation text hash differs from its owned snapshot");
+  const bytes = await readCanonicalBlob(storage, row.content_hash);
+  if (bytes.byteLength !== source.byteEnd - source.byteStart) throw new Error("Corpus segmentation byte length differs from its snapshot");
+  const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  if ([...text].length !== source.codePoints || `sha256_${createHash("sha256").update(bytes).digest("hex")}` !== source.evidenceContentHash) {
+    throw new Error("Corpus segmentation text hash or length differs from its owned snapshot");
+  }
+  let chunk = "", count = 0;
+  for (const symbol of text) {
+    chunk += symbol; count++;
+    if (count === chunkCodePoints) { yield chunk; chunk = ""; count = 0; }
+  }
+  if (chunk) yield chunk;
 }
 function windowValue(value: JsonValue): Window { return value as unknown as Window; }
 function measured(window: Window) {
@@ -73,7 +83,7 @@ export async function prepareCorpusSegmentationInput(input: { storage: PostgresS
     const source = owner(row.value), ordinal = ++documentCount, docKey = segmentationOrdinalKey(ordinal);
     const previous=await cached("input/owners",docKey) as (Owner&{completeUnicodeCoverage?:boolean;windowCount:number;utf16Length:number})|null;
     if(previous){
-      if(previous.evidenceId!==source.evidenceId||previous.sourceVersionId!==source.sourceVersionId||previous.textSha256!==source.textSha256
+      if(previous.evidenceId!==source.evidenceId||previous.sourceVersionId!==source.sourceVersionId||previous.evidenceContentHash!==source.evidenceContentHash
         ||previous.completeUnicodeCoverage!==true||!Number.isSafeInteger(previous.windowCount)||previous.windowCount<0
         ||!Number.isSafeInteger(previous.utf16Length)||previous.utf16Length<0)throw new Error("Invalid completed corpus segmentation owner cursor");
       windowCount+=previous.windowCount;coveredUtf16+=previous.utf16Length;

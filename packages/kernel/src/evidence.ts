@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { EvidenceSpan, JsonValue, LanguageProfile, SourceId, SourceTrust, SourceVersionDerivation, SourceVersionId } from "./types.js";
+import type { ContentHash, EvidenceSpan, JsonValue, LanguageProfile, SourceId, SourceTrust, SourceVersionDerivation, SourceVersionId } from "./types.js";
+import type { BlobStore } from "./storage.js";
 import type { IdFactory } from "./ids.js";
 import type { Hasher } from "./types.js";
 import { anchorFeatureSet, clamp01, entropy, featureSet, symbolizeData, toJsonValue } from "./primitives.js";
@@ -422,25 +423,25 @@ export function evidenceAuditRecord(span: EvidenceSpan): JsonValue {
   });
 }
 
-/**
- * One blob per evidence span, in one statement where the store offers it.
- *
- * Every ingest path wrote these in a loop, which is one database round trip per span on the hot path: measured,
- * page.transaction spends 77% of its wall time not on CPU. Blobs are content addressed and the single-row write
- * already resolves conflicts by doing nothing, so batching is the same operation with the waiting removed, and
- * it stays idempotent for the same reason -- which the crash-consistency tests depend on.
- *
- * An adapter without putBatch keeps the loop, so no caller has to know which it has.
- */
+/** Publish evidence only as verified byte ranges of its one canonical source body. */
 export async function putSpanBlobs(
-  blobs: { put(content: Uint8Array, mediaType: string): Promise<unknown>; putBatch?(items: readonly { content: Uint8Array; mediaType: string }[]): Promise<unknown> },
-  spans: readonly { text: string }[],
-  mediaType: string
+  blobs: Pick<BlobStore, "putRanges">,
+  spans: readonly { text: string; contentHash?: ContentHash; byteStart?: number; byteEnd?: number }[],
+  mediaType: string,
+  canonical: { contentHash: ContentHash; bytes: Uint8Array }
 ): Promise<void> {
   if (!spans.length) return;
-  if (blobs.putBatch) {
-    await blobs.putBatch(spans.map(span => ({ content: Buffer.from(span.text, "utf8"), mediaType })));
-    return;
+  const bytes = Buffer.from(canonical.bytes.buffer, canonical.bytes.byteOffset, canonical.bytes.byteLength);
+  const ranges: Parameters<BlobStore["putRanges"]>[0][number][] = [];
+  for (const span of spans) {
+    const start = span.byteStart, end = span.byteEnd;
+    if (!span.contentHash || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+      || start! < 0 || end! < start! || end! > bytes.length
+      || !bytes.subarray(start!, end!).equals(Buffer.from(span.text, "utf8"))) {
+      throw new Error("evidence chunk is not an exact range of its canonical source");
+    }
+    ranges.push({ contentHash: span.contentHash, parentHash: canonical.contentHash,
+      byteStart: start!, byteEnd: end!, mediaType });
   }
-  for (const span of spans) await blobs.put(Buffer.from(span.text, "utf8"), mediaType);
+  await blobs.putRanges(ranges, canonical);
 }

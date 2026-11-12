@@ -141,15 +141,28 @@ describe("surface language resident-only cache", () => {
     const population = { languageId: "language.fixture", modelCount: compiled.models.length, continuationCounts };
     let historyReads = 0;
     let populationReads = 0;
+    const patternQueries: NonNullable<Parameters<typeof fixture.storage.languageMemory.listLanguagePatterns>[0]>[] = [];
     fixture.storage.languageMemory.continuationPopulation = async () => { populationReads++; return population; };
     fixture.storage.languageMemory.listNgramModels = async () => { historyReads++; return compiled.models; };
-    fixture.storage.languageMemory.listLanguagePatterns = async () => compiled.patterns;
+    fixture.storage.languageMemory.listLanguagePatterns = async query => {
+      if (!query?.patternSchemas) patternQueries.push(query ?? {});
+      return compiled.patterns;
+    };
     clearNgramModelCompilationMemo();
     const seed = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: population.languageId, purpose: "request_seed" });
     expect(historyReads).toBe(0);
     expect(ngramModelCompilationCount()).toBe(0);
     expect(seed.state.continuationPopulation).toBe(population);
     expect(seed.state.importedPatterns.map(row => row.id)).toEqual(expect.arrayContaining(compiled.patterns.map(row => row.id)));
+    expect(patternQueries).toHaveLength(1);
+    expect(patternQueries[0]).toMatchObject({
+      view: "request_seed",
+      languageId: population.languageId,
+      limit: 768,
+      maxTotalJsonBytes: 32 * 1024 * 1024
+    });
+    expect(patternQueries[0]!.sourceSystem).toBeUndefined();
+    expect(patternQueries[0]!.sourceSystems).toEqual(expect.arrayContaining(["dialogue", "wikipedia", "gutenberg", "oss_docs"]));
     expect(deriveClosedClassWords({ continuationPopulation: seed.state.continuationPopulation })).toEqual(deriveClosedClassWords({ models: fullState.models, continuationPopulation: population }));
     const resident = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: population.languageId, purpose: "request_seed", residentOnly: true });
     expect(resident).toBe(seed);

@@ -61,6 +61,19 @@ describe("PostgreSQL Kneser-Ney training replay storage", () => {
     expect(decodeNgramModelTrainingReplay(JSON.parse(JSON.stringify(physical)))).toEqual(logical);
   });
 
+  it("round-trips an exact source token named __proto__ without changing its sufficient statistics", () => {
+    const hasher = createHasher();
+    const symbols = ["alpha", "__proto__", "beta", "alpha", "__proto__", "gamma"];
+    const model = trainKneserNey(symbols, { order: 4, vocabularyLimit: 16 });
+    const logical = toJsonValue({ model: persistedKneserNey(model) }) as Record<string, any>;
+    expect(Object.hasOwn(logical.model.counts, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(logical.model.counts)).toBe(Object.prototype);
+    const recipe = captureKneserNeyTrainingReplay({ symbols, model, vocabularyLimit: 16, hasher });
+    const physical = encodeNgramModelTrainingReplay(logical, recipe);
+    expect(decodeNgramModelTrainingReplay(JSON.parse(JSON.stringify(physical)))).toEqual(logical);
+    expect(({} as Record<string, unknown>).alpha).toBeUndefined();
+  });
+
   it("rejects a vocabulary partition that changes replay normalization", () => {
     const hasher = createHasher();
     const symbols = ["a", "b", "c", "a", "b", "d"];

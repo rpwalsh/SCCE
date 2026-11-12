@@ -43,6 +43,7 @@ describe("owner-reviewed knowledge activation", () => {
     const hasher = createHasher();
     storage.blobs = {
       put: async bytes => { const hash = `sha256_${hasher.digestHex(bytes)}` as ContentHash; blobs.set(hash, bytes); return hash; },
+      putRanges: async (items, parent) => { for (const item of items) blobs.set(item.contentHash, parent.bytes.slice(item.byteStart, item.byteEnd)); },
       get: async hash => { const bytes = blobs.get(hash); if (!bytes) throw new Error("missing source bytes"); return bytes; },
       exists: async hash => blobs.has(hash)
     };

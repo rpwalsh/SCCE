@@ -74,7 +74,8 @@ async function inspectDatabase(adapter, status) {
     ORDER BY table_name`, [adapter.schema]);
   const requiredTables = [
     "sources", "source_versions", "blobs", "evidence_spans", "ingestion_checkpoints",
-    "language_profiles", "ngram_observations", "ngram_models", "language_units", "language_patterns",
+    "language_profiles", "ngram_observations", "ngram_models", "language_units",
+    "language_unit_evidence_sets", "language_unit_information_labels", "language_patterns",
     "semantic_frames", "translation_alignments", "relation_observations", "brain_import_lifecycle",
     "calibration_observations"
   ];
@@ -271,17 +272,19 @@ async function verifyEvidence(adapter, scope) {
   for (;;) {
     const batchParams = [...params, lastId, BATCH_SIZE];
     const rows = await queryRows(adapter, `
-      SELECT e.id, e.byte_start, e.byte_end, e.char_start, e.char_end, e.text_content,
-        sv.content_hash AS source_blob_hash, source_blob.byte_length AS source_byte_length, source_blob.content
+      SELECT e.id, e.byte_start, e.byte_end, e.char_start, e.char_end,
+        sv.content_hash AS source_blob_hash, source_blob.byte_length AS source_byte_length
       FROM ${adapter.table("evidence_spans")} e
       JOIN ${adapter.table("source_versions")} sv ON ${where.join(" AND ")}
       JOIN ${adapter.table("blobs")} source_blob ON source_blob.content_hash=sv.content_hash
       WHERE e.id>$${params.length + 1}
       ORDER BY e.id ASC LIMIT $${params.length + 2}`, batchParams);
     if (!rows.length) break;
+    const hydrated = await adapter.evidence.getEvidenceBatch(rows.map(row => row.id));
+    const textById = new Map(hydrated.map(span => [String(span.id), span.text]));
     for (const row of rows) {
       spans += 1;
-      const bytes = Buffer.isBuffer(row.content) ? row.content : Buffer.from(row.content ?? []);
+      const bytes = Buffer.from(await adapter.blobs.get(row.source_blob_hash));
       const digest = `sha256_${createHash("sha256").update(bytes).digest("hex")}`;
       const text = bytes.toString("utf8");
       const byteStart = Number(row.byte_start);
@@ -290,13 +293,14 @@ async function verifyEvidence(adapter, scope) {
       const charEnd = Number(row.char_end);
       const byteSurface = byteStart >= 0 && byteEnd >= byteStart && byteEnd <= bytes.length ? bytes.subarray(byteStart, byteEnd).toString("utf8") : null;
       const codepointSurface = charStart >= 0 && charEnd >= charStart ? [...text].slice(charStart, charEnd).join("") : null;
+      const expected = textById.get(row.id);
       const checks = [
         digest === row.source_blob_hash,
         Number(row.source_byte_length) === bytes.length,
         Number.isInteger(byteStart) && Number.isInteger(byteEnd) && byteStart >= 0 && byteEnd >= byteStart && byteEnd <= bytes.length,
         Number.isInteger(charStart) && Number.isInteger(charEnd) && charStart >= 0 && charEnd >= charStart && charEnd <= [...text].length,
-        byteSurface === row.text_content,
-        codepointSurface === row.text_content
+        typeof expected === "string" && byteSurface === expected,
+        typeof expected === "string" && codepointSurface === expected
       ];
       blobs += 1;
       if (checks.some(value => !value)) {

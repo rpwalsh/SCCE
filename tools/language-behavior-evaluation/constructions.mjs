@@ -2,10 +2,11 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {hydrateLanguageConstructionPatterns,realizeLearnedSurface,createHasher} from '../../packages/kernel/dist/index.js';
+import {createCanonicalCorpusReader} from '../lib/canonical-corpus-read.mjs';
 
 export async function constructionDiagnostic(client,schema){
  if(!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(schema))throw new Error('Invalid schema');
- const q='"'+schema+'"',hasher=createHasher();
+ const q='"'+schema+'"',hasher=createHasher(),corpus=createCanonicalCorpusReader(client,schema);
  const result={schema:'scce.stored_construction_diagnostic.v1',startedAt:new Date().toISOString(),readOnlyApplicationData:true,
   selection:'First 12 Wikipedia source-example patterns ordered by support descending then id; no new training',replays:[],recombinations:[]};
  await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -14,9 +15,10 @@ export async function constructionDiagnostic(client,schema){
   const patterns=rows.map(r=>({id:r.id,profileId:r.profile_id,patternKind:r.pattern_kind,support:r.support,entropy:r.entropy,patternJson:r.pattern_json,evidenceIds:r.evidence_ids,updatedAt:new Date(r.updated_at).getTime()}));
   const ids=[...new Set(patterns.flatMap(p=>[...p.evidenceIds,...(p.patternJson.bundle?.evidenceIds??[])]))];
   const erows=ids.length?(await client.query(`SELECT * FROM ${q}.evidence_spans WHERE id=ANY($1::text[])`,[ids])).rows:[];
-  const evidence=erows.map(r=>({id:r.id,sourceId:r.source_id,sourceVersionId:r.source_version_id,chunkId:r.chunk_id,contentHash:r.content_hash,
+  const etexts=await corpus.evidenceTexts(erows);
+  const evidence=erows.map((r,index)=>({id:r.id,sourceId:r.source_id,sourceVersionId:r.source_version_id,chunkId:r.chunk_id,contentHash:r.content_hash,
    mediaType:r.media_type,byteStart:Number(r.byte_start),byteEnd:Number(r.byte_end),charStart:Number(r.char_start),charEnd:Number(r.char_end),
-   text:r.text_content,textPreview:r.text_preview,languageHints:r.language_hints,scriptHints:r.script_hints,trustVector:r.trust_vector,
+   text:etexts[index],textPreview:r.text_preview,languageHints:r.language_hints,scriptHints:r.script_hints,trustVector:r.trust_vector,
    provenance:r.provenance_json,features:r.features,status:r.status,alpha:r.alpha,observedAt:new Date(r.observed_at).getTime(),informationLabel:r.information_label}));
   const hydrated=hydrateLanguageConstructionPatterns({patterns,evidence,hasher});
   result.selectedPatterns=patterns.length;result.hydratedBundles=hydrated.bundles.length;result.rejected=hydrated.rejected;

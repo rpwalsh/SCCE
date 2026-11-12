@@ -51,23 +51,37 @@ it("never uses held-out text to extend a learned modifier class", () => {
   expect(reordered.sourceOnlyRoles).toEqual(model.sourceOnlyRoles);
 });
 
+it("can represent a uniquely bounded open role for independent held-out qualification", () => {
+  const fit = [window("a", "A", "north", "701"), window("b", "B", "south", "912")];
+  const model = generalizeContextualQaSources({ fit, sourceOnlySurfaceClass: "open" })!;
+  expect(model.sourceOnlyRoles).toMatchObject([{ surfaceClass: "open" }]);
+  expect(interpretContextualQaSourceGeneralization({ model, ...window("new", "C", "east", "1307") })).toBeDefined();
+  expect(interpretContextualQaSourceGeneralization({ model, ...{ ...window("wrong", "C", "east", "1307"), surface: "C outside east 1307." } })).toBeUndefined();
+});
+
 it("preserves observed symbolic relation literals without a language-specific alphabet", () => {
   const fit = [window("a", "港🧭", "öpa", "701"), window("b", "星", "nüva", "912")]
     .map(row => ({ ...row, surface: row.surface.replace("zôr", "⟿⟿⟿").replace("vö", "⊚⊚") }));
   expect(generalizeContextualQaSources({ fit })).toBeDefined();
 });
 
-it("rejects non-identifiable optional spans, overlapping ownership and a missing stable relation", () => {
+it("represents uniquely bounded optional spans while rejecting overlapping ownership and a missing measurable boundary", () => {
   const a = window("a", "A", "north", "701"), b = window("b", "B", "", "912");
-  expect(generalizeContextualQaSources({ fit: [a, b] })).toBeUndefined();
+  const optional = generalizeContextualQaSources({ fit: [a, b] });
+  expect(optional).toBeDefined();
+  expect(optional!.sourceOnlyRoles).toMatchObject([{ observedValues: ["", "north"] }]);
+  expect(optional!.fit.find(row => row.id === "b")!.sourceOnlySpans).toEqual([]);
+  expect(interpretContextualQaSourceGeneralization({ model: optional!, ...a })).toBeDefined();
+  expect(interpretContextualQaSourceGeneralization({ model: optional!, ...b })).toBeDefined();
   expect(generalizeContextualQaSources({ fit: [a, { ...a }] })).toBeUndefined();
   expect(generalizeContextualQaSources({ fit: [{ ...a, protectedSpans: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: 9 }, { slotIndex: 1, startCodePoint: 1, endCodePoint: 3 }] }] })).toBeUndefined();
-  expect(generalizeContextualQaSources({ fit: [{ id: "empty-relation", surface: "A 701", protectedSpans: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: 1 }, { slotIndex: 1, startCodePoint: 2, endCodePoint: 5 }] }] })).toBeUndefined();
+  expect(generalizeContextualQaSources({ fit: [{ id: "empty-relation", surface: "A701", protectedSpans: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: 1 }, { slotIndex: 1, startCodePoint: 1, endCodePoint: 4 }] }] })).toBeUndefined();
 });
 
 it("rejects two complete finite parses rather than selecting a convenient role boundary", () => {
   const row = { id: "a", surface: "A xab Y", protectedSpans: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: 1 }, { slotIndex: 1, startCodePoint: 6, endCodePoint: 7 }] };
   const model = { parts: [{ slotIndex: 0 }, " ", { slotIndex: 2 }, { slotIndex: 3 }, " ", { slotIndex: 1 }],
-    sourceOnlyRoles: [{ slotIndex: 2, observedValues: ["x", "xa"] }, { slotIndex: 3, observedValues: ["ab", "b"] }] };
+    sourceOnlyRoles: [{ slotIndex: 2, surfaceClass: "observed" as const, observedValues: ["x", "xa"] },
+      { slotIndex: 3, surfaceClass: "observed" as const, observedValues: ["ab", "b"] }] };
   expect(interpretContextualQaSourceGeneralization({ model, ...row })).toBeUndefined();
 });

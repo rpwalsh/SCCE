@@ -34,7 +34,8 @@ function fixture(){
   const adapter=createPostgresStorageAdapter({url:"postgres://fixture-only@127.0.0.1/not-connected",schema:"metadata_fixture",informationAccess:{tenantId:label.tenantId,principalId:"operator",compartments:[],maximumExportClass:"restricted",explicitMergeAuthority:false}});adapters.push(adapter);
   adapter.transaction=async work=>work();
   adapter.mutateLanguageMemory=async(sql,params=[])=>{
-    calls.push({sql,params});const name=/INSERT INTO "metadata_fixture"\."([^"]+)"/u.exec(sql)?.[1];if(!name)throw Error("unexpected mutation");
+    calls.push({sql,params});const normalizedUnit=sql.includes('INSERT INTO "metadata_fixture"."language_units" AS unit(');
+    const name=normalizedUnit?"language_units":/INSERT INTO "metadata_fixture"\."([^"]+)"/u.exec(sql)?.[1];if(!name)throw Error("unexpected mutation");
     for(const row of JSON.parse(String(params[0])) as Row[]){const prior=table(name).get(String(row.id)),next=cold(row);
       const column=name==="ngram_models"?"model_json":name==="language_units"?"metadata_json":undefined;
       if(prior&&column){const before=object(prior[column]),after=object(next[column]);
@@ -49,6 +50,11 @@ function fixture(){
     calls.push({sql,params});
     if(sql.includes("pg_advisory_xact_lock"))return [];
     if(sql.includes("receipt.id=ANY"))return (visible?mapped("language_patterns").filter(row=>(params[0] as string[]).includes(String(row.id))):[]) as T[];
+    if(sql.includes('FROM "metadata_fixture"."language_units" unit')&&sql.includes("label.information_label")&&sql.includes("FOR UPDATE OF unit")){
+      const rows=mapped("language_units").filter(row=>(params[0] as string[]).includes(String(row.id)));
+      if(sql.includes("unit.metadata_json AS value"))return rows.map(row=>({id:row.id,value:row.metadata_json,source_version_id:row.source_version_id,information_label:label})) as T[];
+      return rows.map(row=>({id:row.id,information_label:label})) as T[];
+    }
     if(sql.includes(" AS value,information_label")&&sql.includes("FOR UPDATE")){
       const name=sql.includes('"language_units"')?"language_units":"ngram_models",column=name==="language_units"?"metadata_json":"model_json";
       return mapped(name).filter(row=>(params[0] as string[]).includes(String(row.id))&&(!sql.includes(`? '${SOURCE_ARTIFACT_METADATA_KEY}'`)||Object.hasOwn(object(row[column]),SOURCE_ARTIFACT_METADATA_KEY)))
@@ -70,7 +76,7 @@ function fixture(){
         if(rows.reduce((sum,row)=>sum+(logical?bytes(row.pattern_json):Buffer.byteLength(JSON.stringify(row.pattern_json))),0)>budget)rows=[];}
       return rows as T[];
     }
-    if(sql.includes('FROM "metadata_fixture"."language_units" unit'))return mapped("language_units") as T[];
+    if(sql.includes('FROM "metadata_fixture"."language_units" unit')||sql.includes('FROM "metadata_fixture"."language_unit_values" unit'))return mapped("language_units") as T[];
     if(sql.includes('FROM "metadata_fixture"."semantic_frames" frame'))return mapped("semantic_frames") as T[];
     throw Error(`unhandled metadata integration SQL: ${sql.slice(0,110)}`);
   };

@@ -502,6 +502,11 @@ export function closedClassForFamilies(identity: LanguageIdentityRecord, familie
 
 /**
  * Route by measured closed class, then observed profile symbols; an unresolved tie stays unresolved.
+ *
+ * Membership alone is not enough: independently learned identities can carry the same form word. The measured
+ * document share is the evidence that distinguishes a word used throughout one population from an incidental word
+ * in a much larger population. Profile count is deliberately not a tie-breaker; corpus volume is not language
+ * evidence, and letting it decide made a large code/documentation population capture ordinary dialogue.
  */
 export function selectLanguageIdentityForSurface(
   identities: readonly LanguageIdentityRecord[],
@@ -522,13 +527,24 @@ export function selectLanguageIdentityForSurface(
   if (!eligible.length) return undefined;
   const candidates = eligible.filter(identity => !script || identity.script === script);
   const pool = candidates.length ? candidates : eligible;
-  let best: { identity: LanguageIdentityRecord; coverage: number } | undefined;
+  let best: { identity: LanguageIdentityRecord; coverage: number; strength: number } | undefined;
+  let tiedBest = false;
   let bestObserved: { identity: LanguageIdentityRecord; coverage: number } | undefined;
   let tiedObserved = false;
-  for (const identity of [...pool].sort((a, b) => b.profileCount - a.profileCount || (a.id < b.id ? -1 : 1))) {
-    const closed = new Set(identity.closedClass.map(row => row.word));
-    const coverage = words.length ? words.filter(word => closed.has(word)).length / words.length : 0;
-    if (!best || coverage > best.coverage) best = { identity, coverage };
+  for (const identity of [...pool].sort((a, b) => a.id.localeCompare(b.id))) {
+    const closed = new Map(identity.closedClass.map(row => [row.word, row.documentShare]));
+    const matchedShares = words.flatMap(word => {
+      const share = closed.get(word);
+      return share === undefined || !Number.isFinite(share) ? [] : [Math.max(0, Math.min(1, share))];
+    });
+    const coverage = words.length ? matchedShares.length / words.length : 0;
+    const strength = words.length ? matchedShares.reduce((sum, share) => sum + share, 0) / words.length : 0;
+    if (!best || coverage > best.coverage || (coverage === best.coverage && strength > best.strength)) {
+      best = { identity, coverage, strength };
+      tiedBest = false;
+    } else if (coverage === best.coverage && strength === best.strength) {
+      tiedBest = true;
+    }
     if (!closed.size) {
       const observed = new Set(identity.evidence?.observedSymbols.map(row => row.symbol) ?? []);
       const observedCoverage = words.length ? words.filter(word => observed.has(word)).length / words.length : 0;
@@ -540,9 +556,9 @@ export function selectLanguageIdentityForSurface(
       }
     }
   }
-  if (best && best.coverage > 0) return best;
+  if (best && best.coverage > 0 && !tiedBest) return { identity: best.identity, coverage: best.coverage };
   if (bestObserved && bestObserved.coverage > 0 && !tiedObserved) return bestObserved;
-  return pool.length === 1 ? best : undefined;
+  return pool.length === 1 && best ? { identity: best.identity, coverage: best.coverage } : undefined;
 }
 
 /** The script most of a surface's letters belong to, named the way profiles name scripts, or undefined when it has none. */

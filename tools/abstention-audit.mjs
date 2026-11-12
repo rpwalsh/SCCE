@@ -3,6 +3,7 @@
 // corpus states scores SCCE as fabricating when it answers correctly, and rewards it for refusing a fact it has.
 import { readFileSync } from "node:fs";
 import pg from "./../packages/adapters-node/node_modules/pg/lib/index.js";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 
 // subject article -> the string a real answer would contain. Checked as a literal, case-sensitive substring.
 const PROBES = [
@@ -25,20 +26,19 @@ const client = new pg.Client({ connectionString: cfg.database?.url ?? cfg.databa
 await client.connect();
 await client.query("SET search_path TO scce3_runtime, public");
 await client.query("SET statement_timeout TO '120s'");
+const corpus = createCanonicalCorpusReader(client, "scce3_runtime");
 
 console.log("subject article                  present  answer-string found   question");
 console.log("-".repeat(104));
 for (const [title, needles, question] of PROBES) {
-  const { rows: [{ n }] } = await client.query(
-    "SELECT count(*)::int AS n FROM evidence_spans WHERE source_title = $1 AND media_type = 'text/x-wiki'", [title]);
+  const { rows } = await client.query(
+    "SELECT content_hash,byte_start,byte_end,char_start,char_end FROM evidence_spans WHERE source_title = $1 AND media_type = 'text/x-wiki' ORDER BY char_start",
+    [title]);
+  const n = rows.length;
   let found = "no";
   if (n > 0) {
-    for (const needle of needles) {
-      const { rows } = await client.query(
-        "SELECT 1 FROM evidence_spans WHERE source_title = $1 AND media_type = 'text/x-wiki' AND position($2 in text_content) > 0 LIMIT 1",
-        [title, needle]);
-      if (rows.length) { found = needle; break; }
-    }
+    const texts = await corpus.evidenceTexts(rows);
+    for (const needle of needles) if (texts.some(text => text.includes(needle))) { found = needle; break; }
   }
   const flag = n > 0 && found !== "no" ? "  <-- ANSWERABLE" : "";
   console.log(`${title.padEnd(32)} ${String(n).padStart(5)}  ${found.padEnd(20)} ${question}${flag}`);

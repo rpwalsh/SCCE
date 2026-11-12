@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { createScceKernel, createClock, createHasher, createIdFactory, contextualQaRequestMatches, verifyContextualQaConstruction, toJsonValue,
-  CONTEXTUAL_QA_CONSTRUCTION_RECIPE, type EvidenceSpan, type IngestionCheckpoint, type LanguagePatternRecord, type TranscriptTurn,
+  CONTEXTUAL_QA_CONSTRUCTION_RECIPE, LANGUAGE_IDENTITY_DISCOVERY_RECIPE, LANGUAGE_IDENTITY_SCHEMA,
+  type EvidenceSpan, type IngestionCheckpoint, type LanguageIdentityRecord, type LanguagePatternRecord, type TranscriptTurn,
   type ContextualQaRequestForm } from "@scce/kernel";
 import { trainDialogueCorpus } from "../dialogue-corpus.js";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
@@ -44,6 +45,31 @@ async function fixture(source = corpus()) {
   const clock = createClock({ fixedTime: 1000, stepMs: 1 }), hasher = createHasher(), evidence: EvidenceSpan[] = [];
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "qa.fixture" });
   const { storage } = storageFixtureForEvaluation({ evidence, clockNow: () => clock.now() });
+  const languageIdentity: LanguageIdentityRecord = {
+    schema: LANGUAGE_IDENTITY_SCHEMA,
+    id: "language_identity.contextual_qa.fixture",
+    script: "script:fixture",
+    directions: [{ direction: "unknown", count: 4 }],
+    closedClass: [],
+    families: [{ family: "dialogue", count: 4, evidence: { observedProfileCount: 4, sampleCount: 4,
+      sourceFamilyCount: 4, independentSourceFamilyCount: 4, status: "family_measured", uncertainty: [], observedSymbols: [] } }],
+    corpusRoles: [],
+    profileCount: 4,
+    evidence: { observedProfileCount: 4, sampleCount: 4, sourceFamilyCount: 4, independentSourceFamilyCount: 4,
+      status: "family_measured", uncertainty: [], observedSymbols: [] },
+    membershipCut: 0,
+    createdAt: 1,
+    informationLabel: label,
+    discoveryRecipe: LANGUAGE_IDENTITY_DISCOVERY_RECIPE
+  };
+  storage.languageIdentities = {
+    putIdentities: async () => undefined,
+    replaceIdentities: async () => undefined,
+    listIdentities: async () => [languageIdentity],
+    assignProfileLanguages: async () => undefined,
+    listProfileLanguages: async query => (query?.profileIds ?? []).map(profileId => ({ profileId, languageId: languageIdentity.id })),
+    listProfileSignatures: async () => []
+  };
   storage.userModelClaims = { putClaim: async () => undefined, listClaims: async () => [] };
   storage.taskResumption = { putSnapshot: async () => undefined, getLatestSnapshot: async () => null };
   const checkpoints = new Map<string, IngestionCheckpoint>();
@@ -134,8 +160,8 @@ it("learns a genuine human extractive form across original articles and answers 
   expect(new Set(turns.map(turn => turn.sourceFamilyId)).size).toBe(4);
   const f = await fixture({ schema: "scce.dialogue_transcript.v1", text, turns });
   const trained = await f.train();
-  expect(trained.contextualQaConstructions).toMatchObject({ pairs: 5, qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false,
-    familyApplicability: [{ fitBindings: 2, heldOutBindings: 1, outOfApplicability: 2 }] });
+  expect(trained.contextualQaConstructions, JSON.stringify(trained.contextualQaConstructions)).toMatchObject({ pairs: 5, qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false,
+    familyApplicability: [{ fitBindings: 3, heldOutBindings: 2, outOfApplicability: 0 }] });
   const qa = (await f.storage.languageMemory.listLanguagePatterns()).filter(pattern => jsonRecord(pattern.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE);
   expect(qa).toHaveLength(1);
   const verifiedHuman = verifyContextualQaConstruction({ pattern: qa[0]!, evidence: f.evidence, hasher });
@@ -177,8 +203,16 @@ it("learns a genuine human extractive form across original articles and answers 
   expect(currentFactRead.mock.calls.filter(([query]) => !query.sourceVersionId).length).toBeGreaterThan(0);
   expect((await cold.turn({ text: requestText })).answer).toBe("V\u00eblora");
   expect((await cold.turn({ text: requestText, requestedAuthority: "factual" })).answer).toBe("V\u00eblora");
-  expect((await cold.turn({ text: "What type of stations route glyphs for Foreign_\u661f?", requestedAuthority: "factual" })).answer).toBe("");
-  expect((await cold.turn({ text: "What place receives glyphs from Neralis_\u6e2f\ud83e\udded?", requestedAuthority: "factual" })).answer).toBe("");
+  const foreignRequest = "What type of stations route glyphs for Foreign_\u661f?";
+  expect(await contextualQaConstructionsForRequest({ storage: f.storage, hasher, requestText: foreignRequest })).toBeDefined();
+  expect(await contextualQaForRequest({ storage: f.storage, hasher,
+    requestText: foreignRequest, evidence: f.evidence })).toBeUndefined();
+  const foreignTurn = await cold.turn({ text: foreignRequest, requestedAuthority: "factual" });
+  expect(await contextualQaForRequest({ storage: f.storage, hasher,
+    requestText: foreignRequest, evidence: foreignTurn.evidence })).toBeUndefined();
+  expect(foreignTurn.answer).toBe("");
+  const relationMismatch = await cold.turn({ text: "What place receives glyphs from Neralis_\u6e2f\ud83e\udded?", requestedAuthority: "factual" });
+  expect(relationMismatch.answer).toBe("");
   await cold.ingest({ uri: "fixture://same-title-owned-relation", content: current,
     mediaType: "text/plain", namespace: "workspace", informationLabel: label, metadata: { title: "Neralis field record" },
     sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
@@ -198,7 +232,7 @@ it("learns a genuine human extractive form across original articles and answers 
   expect(await contextualQaForRequest({ storage: f.storage, hasher, requestText, evidence: f.evidence, generation: 0, authorityContext })).toBeUndefined();
 });
 
-it("records unqualified contextual input once and skips unrelated dialogue components", async () => {
+it("does not freeze an unqualified contextual input as a complete publication", async () => {
   const f = await fixture(), raw = corpus();
   for (const turn of raw.turns) turn.sourceFamilyId = "same.original.context";
   await writeFile(path.join(f.root, "human.json"), JSON.stringify(raw));
@@ -207,13 +241,19 @@ it("records unqualified contextual input once and skips unrelated dialogue compo
   expect(first.contextualQaConstructions?.rejected.some(row => row.reason === "independent_role_contrast_missing")).toBe(true);
   const receipt = [...f.checkpoints.values()].filter(row => jsonRecord(row.metadata).schema === "scce.dialogue_contextual_qa_compilation.v1");
   expect(receipt).toHaveLength(1);
-  expect(jsonRecord(receipt[0]!.metadata)).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT, projections: [] });
+  expect(receipt[0]).toMatchObject({ phase: "extracting", status: "running" });
+  expect(jsonRecord(receipt[0]!.metadata)).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
+    projections: [], preparation: "running" });
   const put = vi.spyOn(f.storage.ingestion, "put"), search = vi.spyOn(f.storage.evidence, "searchEvidence");
-  expect((await f.train()).contextualQaConstructions?.unchanged).toBe(true);
-  expect(put).not.toHaveBeenCalled(); expect(search).not.toHaveBeenCalled();
+  expect((await f.train()).contextualQaConstructions).toMatchObject({ qualifiedFamilies: 0, patternsPersisted: 0, unchanged: false });
+  expect(put).toHaveBeenCalledTimes(1); expect(search).toHaveBeenCalled();
 });
 
-it.each([CONTEXTUAL_QA_CONSTRUCTION_RECIPE, "kernel.dialogue_contextual_qa.compiler.v2"])("upgrades an already-complete empty %s QA checkpoint once without recompiling source models or changing source identity", async compilerFingerprint => {
+it.each([CONTEXTUAL_QA_CONSTRUCTION_RECIPE, "kernel.dialogue_contextual_qa.compiler.v2", "kernel.dialogue_contextual_qa.compiler.v3",
+  "kernel.dialogue_contextual_qa.compiler.v4", "kernel.dialogue_contextual_qa.compiler.v5", "kernel.dialogue_contextual_qa.compiler.v6",
+  "kernel.dialogue_contextual_qa.compiler.v7", "kernel.dialogue_contextual_qa.compiler.v8", "kernel.dialogue_contextual_qa.compiler.v9",
+  "kernel.dialogue_contextual_qa.compiler.v10",
+  "kernel.dialogue_contextual_qa.compiler.v11"])("upgrades an already-complete empty %s QA checkpoint once without recompiling source models or changing source identity", async compilerFingerprint => {
   const f = await fixture(); await f.train();
   const all = await f.storage.languageMemory.listLanguagePatterns();
   const qa = all.find(row => jsonRecord(row.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE)!;
@@ -235,9 +275,9 @@ it.each([CONTEXTUAL_QA_CONSTRUCTION_RECIPE, "kernel.dialogue_contextual_qa.compi
   expect(upgraded.contextualQaConstructions).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
     pairs: 4, qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false });
   expect(CONTEXTUAL_QA_CONSTRUCTION_RECIPE).toBe("kernel.dialogue_contextual_qa.v1");
-  expect(CONTEXTUAL_QA_COMPILER_FINGERPRINT).toBe("kernel.dialogue_contextual_qa.compiler.v3");
+  expect(CONTEXTUAL_QA_COMPILER_FINGERPRINT).toBe("kernel.dialogue_contextual_qa.compiler.v12");
   expect(trainBody).not.toHaveBeenCalled(); expect(acquire).toHaveBeenCalledTimes(1);
-  expect(publish).toHaveBeenCalledTimes(1); expect(put).toHaveBeenCalledTimes(1); expect(f.checkpoints.size).toBe(checkpointCount);
+  expect(publish).toHaveBeenCalledTimes(1); expect(put).toHaveBeenCalledTimes(2); expect(f.checkpoints.size).toBe(checkpointCount);
   expect(jsonRecord(f.checkpoints.get(receipt.id)!.metadata).compilerFingerprint).toBe(CONTEXTUAL_QA_COMPILER_FINGERPRINT);
   expect(f.evidence.map(span => [span.id, span.sourceId, span.sourceVersionId, span.contentHash, span.text])).toEqual(originalSources);
   expect(JSON.stringify((await f.storage.languageMemory.listLanguagePatterns()).filter(row => row.id !== qa.id))).toBe(nonQa);

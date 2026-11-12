@@ -25,7 +25,7 @@ export const REQUEST_UNIT_RESPONSE_COPY_RECIPE_ID = "scce.request_unit_response_
  * so a recompile cannot leave an earlier semantic shape active.
  */
 export const REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT =
-  "scce.request_requirement_pattern.source_background.v5";
+  "scce.request_requirement_pattern.source_background.v6";
 
 export interface RequestRequirementCorpusExample {
   text: string;
@@ -290,9 +290,9 @@ export function compileRequestRequirementCorpus(
       anchor: counts.observation.anchor,
       matchMode: "unicode_token_ngram",
       semanticRoleId: "role.request.requirement.v1",
-      ...(responseMatchCut !== undefined && responseMatchCut > 0 && pairedExamples === counts.byAuthority[winner.authority]
+      ...(responseMatchCut !== undefined && pairedExamples === counts.byAuthority[winner.authority]
         && counts.responseMixed[winner.authority] === 0 ? {
-        requestSpanRole: responseMatchRate < responseMatchCut ? "control" : "content",
+        requestSpanRole: responseMatchCut === 0 ? "control" : responseMatchRate < responseMatchCut ? "control" : "content",
         responseMatchRate,
         responseMatchCut,
         pairedExamples

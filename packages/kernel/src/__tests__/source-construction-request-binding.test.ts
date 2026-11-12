@@ -11,7 +11,7 @@ import { semanticAnswerConstructFacts } from "../semantic-answer-construct.js";
 import { semanticAnswerConstructState } from "../mouth-source-facts.js";
 import { attachSourceBoundAnswerConstruct } from "../local-evidence-runtime.js";
 import { resolveRequestValueBinding } from "../semantic-answer-construct.js";
-import { sourceConstructionRequestValueResolver } from "../source-construction-request-binding.js";
+import { inspectLearnedRequestOmittedSlot, sourceConstructionRequestValueResolver } from "../source-construction-request-binding.js";
 import { decodeConstructionSourceExamples, encodeConstructionSourceExamples } from "../construction-source-example-storage.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
 import { CORPUS_ROLE_IDS } from "../corpus-registry.js";
@@ -101,10 +101,66 @@ function teach(input: { subjects: [string, string, string]; marker: string; valu
     requestText: request, evidence: spans,
     resolvers: [sourceConstructionRequestValueResolver({ bundles: restarted.importedConstructionBundles, graph: candidateGraph })]
   });
-  return { resolve, graph, evidence, profile, requestText, value: input.value, patterns: trained.constructionPatterns };
+  return { resolve, graph, evidence, profile, requestText, value: input.value, patterns: trained.constructionPatterns,
+    bundles: restarted.importedConstructionBundles };
 }
 
 describe("acquired typed request construction transfer", () => {
+  it("exposes a unique request-only typed omitted slot and keeps a closed construction non-value-bearing", () => {
+    const lesson = teach({ subjects: ["Aster build", "Beryl build", "Walkdir pinned build"], marker: "", value: "1.60.0",
+      valueKind: "opaque.version", question: subject => `Which Rust version does ${subject} use?` });
+    const value = inspectLearnedRequestOmittedSlot({ bundles: lesson.bundles }, lesson.requestText);
+    expect(value).toMatchObject({
+      status: "value_demand",
+      demand: { relationId: "relation.opaque", requestedRoleId: "role.answer", valueKind: "opaque.version" }
+    });
+    expect(value.demand?.matchedSurfaces.join(" ")).toContain("Rust version");
+    expect(value.demand?.matchedLiteralSurfaces.join(" ")).toContain("Rust version");
+    expect(value.demand?.matchedRoleSurfaces).toEqual(expect.arrayContaining([
+      expect.objectContaining({ surface: "Walkdir pinned build", graphBinding: expect.objectContaining({ roleId: "role.anchor" }) })
+    ]));
+    expect(value.demand?.constructionIds.length).toBeGreaterThan(0);
+
+    const closed = lesson.bundles.map(bundle => ({ ...bundle,
+      sourceExamples: bundle.sourceExamples.map(example => ({ ...example, nullRoles: [] })) }));
+    expect(inspectLearnedRequestOmittedSlot({ bundles: closed }, lesson.requestText)).toMatchObject({ status: "closed_proposition" });
+    expect(inspectLearnedRequestOmittedSlot({ bundles: lesson.bundles }, "Does the pinned build use Rust?").status).not.toBe("value_demand");
+    expect(inspectLearnedRequestOmittedSlot({ bundles: lesson.bundles }, "Is the pinned build's Rust stable?").status).not.toBe("value_demand");
+  });
+
+  it("abstains when one typed binding has distinct complete role placements", () => {
+    const lesson = teach({ subjects: ["Aster build", "Beryl build", "Walkdir pinned build"], marker: "", value: "1.60.0",
+      valueKind: "opaque.version", question: subject => `Which Rust version does ${subject} use?` });
+    const source = lesson.bundles.find(bundle => bundle.constructions.some(construction => construction.sequence.some(part => part.kind === "slot")))!;
+    const construction = source.constructions.find(row => row.sequence.some(part => part.kind === "slot"))!;
+    const firstSlot = construction.sequence.find(part => part.kind === "slot");
+    const literal = construction.sequence.find(part => part.kind === "literal");
+    if (!firstSlot || firstSlot.kind !== "slot" || !literal || literal.kind !== "literal") throw Error("typed request fixture needs a slot and literal");
+    const secondSlot = { ...firstSlot, roleId: `${firstSlot.roleId}.second`, occurrenceId: `${firstSlot.occurrenceId}.second` };
+    const sourceExamples = source.sourceExamples.filter(example => construction.sourceExampleIds.includes(example.id)).map(example => {
+      const declaration = example.roles.find(role => role.occurrenceId === firstSlot.occurrenceId);
+      if (!declaration) throw Error("typed request fixture needs an owned role declaration");
+      return { ...example, roles: [declaration, { ...declaration, roleId: secondSlot.roleId, occurrenceId: secondSlot.occurrenceId }] };
+    });
+    const ambiguous = { ...source, sourceExamples, constructions: [{ ...construction,
+      sequence: [firstSlot, { ...literal, surface: "\u25c7" }, secondSlot], sourceExampleIds: sourceExamples.map(example => example.id) }] };
+    expect(inspectLearnedRequestOmittedSlot({ bundles: [ambiguous] }, "alpha\u25c7beta\u25c7gamma")).toMatchObject({ status: "ambiguous" });
+  });
+
+  it("keeps request-only omitted-slot interpretation Unicode-exact and abstains on competing typed roles", () => {
+    const lesson = teach({ subjects: ["\u0905\u0932\u094d\u092b\u093e", "\u092c\u0940\u091f\u093e", "\u0935\u0949\u0915\u0921\u093f\u0930"], marker: "", value: "\u0967.\u096c\u0966.\u0966",
+      valueKind: "opaque.version", question: subject => `\u0915\u094c\u0928 \u0938\u093e \u0938\u0902\u0938\u094d\u0915\u0930\u0923 ${subject} \u0909\u092a\u092f\u094b\u0917 \u0915\u0930\u0924\u093e \u0939\u0948?` });
+    expect(inspectLearnedRequestOmittedSlot({ bundles: lesson.bundles }, lesson.requestText)).toMatchObject({
+      status: "value_demand", demand: { valueKind: "opaque.version" }
+    });
+    const competing = [...lesson.bundles, ...lesson.bundles.map(bundle => ({ ...bundle, id: `${bundle.id}.other`, bindingId: `${bundle.bindingId}.other`,
+      sourceExamples: bundle.sourceExamples.map(example => ({ ...example, id: `${example.id}.other`, bindingId: `${example.bindingId}.other`,
+        nullRoles: example.nullRoles.map(role => ({ ...role, graphBinding: role.graphBinding ? { ...role.graphBinding, roleId: "role.other" } : undefined })) })),
+      constructions: bundle.constructions.map(construction => ({ ...construction, id: `${construction.id}.other`,
+        sourceExampleIds: construction.sourceExampleIds.map(id => `${id}.other`) })) }))];
+    expect(inspectLearnedRequestOmittedSlot({ bundles: competing }, lesson.requestText).status).toBe("ambiguous");
+  });
+
   it("projects a date only through its acquired source-owned request role", () => {
     const lesson = teach({ subjects: ["Άλφα", "Бета", "Neralis observatory"], marker: "⏱", value: "31 August 2000", valueKind: "opaque.date" });
     const binding = lesson.resolve();
@@ -277,6 +333,12 @@ describe("acquired typed request construction transfer", () => {
     { subjects: ["Luma", "Vela", "Zora"], values: ["3-bit", "5-bit", "9-bit"], valueKind: "opaque.width",
       source: (subject: string, value: string) => `${subject} encodes each code-point as a ${value} integer.`,
       request: (subject: string) => `How many bits does ${subject} use to encode each code point?` },
+    { subjects: ["Alpha Book", "Beta Book", "Delta Book"], values: ["Ada", "Bob", "Dan"], valueKind: "opaque.author",
+      source: (subject: string, value: string) => `${value}${value ? " " : ""}wrote ${subject}.`,
+      request: (subject: string) => `Who wrote ${subject}?` },
+    { subjects: ["Alpha Book", "Beta Book", "Delta Book"], values: ["Ada", "Bob", "Dan"], valueKind: "opaque.possessive_author",
+      source: (subject: string, value: string) => `${value}'s ${subject}.`,
+      request: (subject: string) => `Who wrote ${subject}?` },
     { subjects: ["甲", "乙", "丙"], values: ["０から１", "２から３", "４から８"], valueKind: "opaque.scale",
       source: (subject: string, value: string) => `${subject} の尺度は ${value} です。`,
       request: (subject: string) => `${subject} の尺度を示して？` }

@@ -8,7 +8,7 @@ import type { LanguageMemoryStore, LanguagePatternRecord } from "../storage.js";
 import type { InformationLabel } from "../types.js";
 
 describe("compiled language-pattern publication ownership", () => {
-  it("writes each induced component once while publishing every scope including empty families", async () => {
+  it("co-publishes coupled induced components before publishing every schema-specific scope", async () => {
     const changes: Parameters<NonNullable<LanguageMemoryStore["replaceLanguagePatternProjection"]>>[0][] = [];
     const informationLabel: InformationLabel = { tenantId: "tenant.fixture", principals: [], compartments: [], exportClass: "public", mergePolicy: "isolated" };
     const patterns = INDUCED_LANGUAGE_MEMORY_PUBLICATIONS.slice(0, 2).map((scope, index): LanguagePatternRecord => ({
@@ -19,7 +19,11 @@ describe("compiled language-pattern publication ownership", () => {
       owner: { sourceId: "source.owned" as never, sourceVersionId: "version.owned" as never, contentHash: "sha256_owned" as never },
       profileId: "profile.owned", sourceSystem: "gutenberg", informationLabel, patterns, projections: INDUCED_LANGUAGE_MEMORY_PUBLICATIONS });
     expect(changes.map(change => change.projection.patternIds)).toEqual([["induced.0"], ["induced.1"], [], []]);
-    expect(changes.flatMap(change => change.patterns.map(pattern => pattern.id))).toEqual(patterns.map(pattern => pattern.id));
+    expect(changes[0]!.patterns.map(pattern => pattern.id)).toEqual(patterns.map(pattern => pattern.id));
+    expect(changes[1]!.patterns.map(pattern => pattern.id)).toEqual(["induced.1"]);
+    expect(changes[1]!.patterns[0]).toBe(changes[0]!.patterns[1]);
+    expect(changes.every(change => change.reusePatternRowsFromCurrentTransaction === true)).toBe(true);
+    expect(changes.slice(2).every(change => change.patterns.length === 0)).toBe(true);
   });
   it("requires atomic projection storage even when the replacement induced set is empty", async () => {
     const putLanguagePatterns = vi.fn(async () => undefined);
@@ -54,7 +58,9 @@ describe("compiled language-pattern publication ownership", () => {
   });
   it("retains an adapter-owned auxiliary profile while enforcing the active construction profile", async () => {
     const informationLabel: InformationLabel = { tenantId: "tenant.fixture", principals: [], compartments: [], exportClass: "public", mergePolicy: "isolated" };
-    const replaceLanguagePatternProjection = vi.fn(async () => undefined);
+    const replaceLanguagePatternProjection = vi.fn(async (
+      _change: Parameters<NonNullable<LanguageMemoryStore["replaceLanguagePatternProjection"]>>[0]
+    ) => undefined);
     const store = { replaceLanguagePatternProjection } as unknown as LanguageMemoryStore;
     const pattern: LanguagePatternRecord = { id: "adapter.auxiliary", profileId: "adapter.profile", patternKind: "semantic_role", support: 1, entropy: 0,
       patternJson: { schema: "adapter.auxiliary.v1", payload: { original: true } }, evidenceIds: [], updatedAt: 1, informationLabel };
@@ -63,6 +69,7 @@ describe("compiled language-pattern publication ownership", () => {
     await publishCompiledLanguagePatterns(input);
     expect(replaceLanguagePatternProjection).toHaveBeenCalledWith(expect.objectContaining({ patterns: [pattern],
       projection: expect.objectContaining({ profileId: input.profileId, patternIds: [] }) }));
+    expect(replaceLanguagePatternProjection.mock.calls[0]![0].reusePatternRowsFromCurrentTransaction).toBeUndefined();
     replaceLanguagePatternProjection.mockClear();
     await expect(publishCompiledLanguagePatterns({ ...input, patterns: [{ ...pattern,
       patternJson: { schema: LANGUAGE_CONSTRUCTION_PUBLICATION.patternSchema } }] })).rejects.toThrow("conflicting source scope");

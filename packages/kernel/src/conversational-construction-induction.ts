@@ -13,6 +13,18 @@ import type { EvidenceSpan, Hasher } from "./types.js";
 export interface ConversationalConstructionDocument {
   sourceVersionId: string;
   profileId: string;
+  /**
+   * Exact persisted language-identity assignment for this profile.  Cross-document
+   * acquisition may group profiles only when this verified owner is present and
+   * equal; script similarity or a caller-provided language name is not authority.
+   */
+  languageIdentityId?: string;
+  /**
+   * Digest of the persisted identity record together with this exact
+   * profile-to-identity assignment.  It lets a derived construction retain the
+   * evidence for grouping without copying the identity payload into every row.
+   */
+  languageIdentityDigest?: string;
   spans: readonly EvidenceSpan[];
   /** Optional exact turn coordinates in the source document. */
   transcriptTurns?: readonly TranscriptTurn[];

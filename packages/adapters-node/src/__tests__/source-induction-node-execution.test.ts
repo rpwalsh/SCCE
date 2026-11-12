@@ -44,13 +44,23 @@ function job(): SourceInductionBatchJob {
   const body = { ordinal: 0, batch, retainFullModel: true, batchBudgetUtf16: inductionCharBudget(), windowCapUtf16: inductionDocumentCharCap() };
   return { ...body, jobDigest: sourceInductionBatchJobDigest(body, hasher) };
 }
-it("uses the shared lifecycle for exact source products and drains both workers before returning a receipt", async () => {
+it("reuses one explicitly owned worker pool across source items and drains it once", async () => {
   vi.stubEnv("SCCE_INDUCTION_CHAR_BUDGET", "64"); vi.stubEnv("SCCE_INDUCTION_DOC_CHAR_CAP", "32");
   const f = fixture(), expected = compileSourceInductionWindows({ documents, hasher });
-  const actual = await compileSourceInductionWindowsAsync({ documents, hasher, execution: f.owner.execution });
-  expect(canonicalStringify(actual)).toBe(canonicalStringify(expected)); await f.owner.close();
+  const first = await compileSourceInductionWindowsAsync({ documents, hasher, execution: f.owner.execution });
+  expect(canonicalStringify(first)).toBe(canonicalStringify(expected));
+  expect(f.workers).toHaveLength(2);
+  expect(f.workers.every(worker => !worker.done && worker.state === undefined)).toBe(true);
+  expect(f.owner.receipt()).toMatchObject({ workersStarted: 2, preparedBatches: first.models.length,
+    inducedBatches: first.models.length, peakNodeRssBytes: 123456 });
+
+  const second = await compileSourceInductionWindowsAsync({ documents, hasher, execution: f.owner.execution });
+  expect(canonicalStringify(second)).toBe(canonicalStringify(expected));
+  expect(f.workers).toHaveLength(2);
+  await f.owner.close();
   expect(f.workers).toHaveLength(2); expect(f.workers.every(worker => worker.done)).toBe(true);
-  expect(f.owner.receipt()).toMatchObject({ workersStarted: 2, preparedBatches: actual.models.length, inducedBatches: actual.models.length, peakNodeRssBytes: 123456 });
+  expect(f.owner.receipt()).toMatchObject({ workersStarted: 2, preparedBatches: first.models.length + second.models.length,
+    inducedBatches: first.models.length + second.models.length, peakNodeRssBytes: 123456 });
   await f.owner.close();
 });
 it("cancels an in-flight synchronous job through the shared grace/terminate/drain path", async () => {

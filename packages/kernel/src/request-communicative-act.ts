@@ -126,7 +126,12 @@ export function requestCommunicativeActPatterns(
     }));
 }
 
-/** A promoted artifact needs a contrast: at least two observed classes, one of them neutral. */
+/**
+ * A source-owned factual population can legitimately contain only the neutral,
+ * evidence-bearing act.  That observation is enough to recognize the same
+ * learned request features as factual lookups; contrast is required only to
+ * promote a non-neutral act over the neutral baseline.
+ */
 export function requestCommunicativeActModelFromPatterns(patterns: readonly LanguagePatternRecord[]): RequestCommunicativeActModel | undefined {
   const rows = patterns.filter(pattern => record(pattern.patternJson).schema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA);
   const owned = rows.filter(pattern => record(pattern.patternJson).componentRecipe === REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE);
@@ -148,17 +153,24 @@ export function requestCommunicativeActModelFromPatterns(patterns: readonly Lang
 function aggregateOwnedActModels(patterns: readonly LanguagePatternRecord[]): RequestCommunicativeActModel | undefined {
   const owners = new Map<string, { digest: string; counts: Record<string, number>; features: RequestCommunicativeActModel["features"] }>();
   const invalid = new Set<string>();
+  let damagedArtifact = false;
   const hasher = createHasher();
   for (const pattern of [...patterns].sort((left, right) => left.id.localeCompare(right.id))) {
     const json = record(pattern.patternJson);
     if (pattern.patternKind !== "discourse" || json.profileId !== pattern.profileId || !pattern.evidenceIds.length
       || typeof json.sourceId !== "string" || !json.sourceId || typeof json.sourceVersionId !== "string" || !json.sourceVersionId
-      || json.sourceSystem !== REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM || !Array.isArray(json.featureCounts)) continue;
+      || json.sourceSystem !== REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM || !Array.isArray(json.featureCounts)) {
+      damagedArtifact = true; continue;
+    }
     const { modelDigest, ...material } = json;
-    if (typeof modelDigest !== "string" || hasher.digestHex(canonicalStringify(material)) !== modelDigest) continue;
+    if (typeof modelDigest !== "string" || hasher.digestHex(canonicalStringify(material)) !== modelDigest) {
+      damagedArtifact = true; continue;
+    }
     const counts = countRecord(json.classCounts);
     if (!Object.keys(counts).length || Object.keys(counts).length !== Object.keys(record(json.classCounts)).length
-      || Object.values(counts).some(count => !Number.isSafeInteger(count))) continue;
+      || Object.values(counts).some(count => !Number.isSafeInteger(count))) {
+      damagedArtifact = true; continue;
+    }
     const features: RequestCommunicativeActModel["features"] = new Map();
     let valid = true;
     for (const value of json.featureCounts) {
@@ -168,12 +180,13 @@ function aggregateOwnedActModels(patterns: readonly LanguagePatternRecord[]): Re
         || Object.entries(values).some(([act, count]) => !Number.isSafeInteger(count) || count > (counts[act] ?? 0))) { valid = false; break; }
       features.set(row.key, { surface: row.surface, anchor: row.anchor, counts: values });
     }
-    if (!valid || !features.size) continue;
+    if (!valid || !features.size) { damagedArtifact = true; continue; }
     const key = canonicalStringify([json.sourceSystem, json.sourceId]);
     const previous = owners.get(key);
     if (previous && previous.digest !== modelDigest) { invalid.add(key); owners.delete(key); continue; }
     if (!invalid.has(key)) owners.set(key, { digest: modelDigest, counts, features });
   }
+  if (damagedArtifact || invalid.size) return undefined;
   const classCounts: Record<DialogueActId, number> = {}, features: RequestCommunicativeActModel["features"] = new Map();
   for (const [, owner] of [...owners].sort(([left], [right]) => left.localeCompare(right))) {
     for (const [act, count] of Object.entries(owner.counts)) classCounts[act] = (classCounts[act] ?? 0) + count;
@@ -183,7 +196,7 @@ function aggregateOwnedActModels(patterns: readonly LanguagePatternRecord[]): Re
       features.set(key, combined);
     }
   }
-  return Object.keys(classCounts).length >= 2 && classCounts[DIALOGUE_ACT_IDS.neutral]
+  return classCounts[DIALOGUE_ACT_IDS.neutral] && features.size
     ? { schema: "scce.request_communicative_act_model.v1", classCounts, features } : undefined;
 }
 

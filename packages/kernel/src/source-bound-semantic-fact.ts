@@ -1,8 +1,77 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceSpan } from "./types.js";
-import type { RequestValueBinding, SemanticAnswerConstructFact, SemanticRealizationContract } from "./semantic-answer-construct.js";
-import { surfaceContainsBoundValue } from "./surface-linguistics.js";
+import type { RequestValueBinding, RequestValueResolver, SemanticAnswerConstructFact, SemanticRealizationContract } from "./semantic-answer-construct.js";
+import { splitSurfaceSentences, surfaceContainsBoundValue, surfaceWords } from "./surface-linguistics.js";
+
+export interface SourceOwnedValueResolverInput {
+  id: string;
+  relationId: string;
+  requestedRoleId: string;
+  resolveValue(requestText: string, evidence: readonly EvidenceSpan[]): string | undefined;
+}
+
+function longestSharedSurfaceRun(requestText: string, sourceSentence: string): { text: string; requestStart: number; length: number } | undefined {
+  const requestWords = surfaceWords(requestText);
+  const sourceWords = surfaceWords(sourceSentence);
+  const requestKeys = requestWords.map(word => word.toLocaleLowerCase());
+  const sourceKeys = sourceWords.map(word => word.toLocaleLowerCase());
+  let best: { sourceStart: number; requestStart: number; length: number } | undefined;
+  for (let requestStart = 0; requestStart < requestKeys.length; requestStart++) {
+    for (let sourceStart = 0; sourceStart < sourceKeys.length; sourceStart++) {
+      let length = 0;
+      while (requestKeys[requestStart + length] !== undefined
+        && requestKeys[requestStart + length] === sourceKeys[sourceStart + length]) length += 1;
+      if (!length) continue;
+      if (!best || length > best.length
+        || (length === best.length && requestStart < best.requestStart)
+        || (length === best.length && requestStart === best.requestStart && sourceStart < best.sourceStart)) {
+        best = { sourceStart, requestStart, length };
+      }
+    }
+  }
+  if (!best || (best.length === 1 && best.requestStart > 0)) return undefined;
+  return {
+    text: sourceWords.slice(best.sourceStart, best.sourceStart + best.length).join(" "),
+    requestStart: best.requestStart,
+    length: best.length
+  };
+}
+
+/**
+ * Gives an evidence value extractor an explicit semantic role without trusting a bare value.
+ * The value and a request-owned subject must occur in the same source sentence. The subject is
+ * discovered as a contiguous Unicode surface run shared by the request and that sentence; no
+ * language vocabulary or word-order table is embedded here.
+ */
+export function sourceOwnedValueResolver(input: SourceOwnedValueResolverInput): RequestValueResolver {
+  return {
+    id: input.id,
+    resolve(requestText, evidence) {
+      const value = input.resolveValue(requestText, evidence);
+      if (!value) return undefined;
+      for (const span of evidence) {
+        if (span.status !== "promoted") continue;
+        const sourceText = String(span.text || span.textPreview || "");
+        const answeringSentences = splitSurfaceSentences(sourceText)
+          .filter(sentence => surfaceContainsBoundValue(sentence, value));
+        for (const sentence of answeringSentences) {
+          const subject = longestSharedSurfaceRun(requestText, sentence);
+          if (!subject?.text) continue;
+          return {
+            value,
+            subject: subject.text,
+            relation: "",
+            relationId: input.relationId,
+            requestedRoleId: input.requestedRoleId,
+            evidenceIds: [String(span.id)]
+          };
+        }
+      }
+      return undefined;
+    }
+  };
+}
 
 /** A typed source relation needs no invented spoken predicate. */
 export function hasSourceBoundSemanticRelation(fact: {

@@ -235,16 +235,18 @@ async function verifyEvidence(storage, state, manifest) {
   const mismatchExamples = [];
   for (;;) {
     const rows = await storage.query(`
-      SELECT e.id, e.byte_start, e.byte_end, e.char_start, e.char_end, e.text_content,
-        sv.content_hash AS source_blob_hash, source_blob.byte_length AS source_byte_length, source_blob.content
+      SELECT e.id, e.byte_start, e.byte_end, e.char_start, e.char_end,
+        sv.content_hash AS source_blob_hash, source_blob.byte_length AS source_byte_length
       FROM ${storage.table("evidence_spans")} e
       JOIN ${storage.table("source_versions")} sv ON e.source_version_id=sv.id
       JOIN ${storage.table("blobs")} source_blob ON source_blob.content_hash=sv.content_hash
       WHERE sv.metadata_json->>'sourceSystem'='wikipedia' AND sv.metadata_json->>'dumpPath'=$1 AND e.id>$2
       ORDER BY e.id ASC LIMIT 64`, [dumpPath, lastId]);
     if (rows.length === 0) break;
+    const hydrated = await storage.evidence.getEvidenceBatch(rows.map(row => row.id));
+    const textById = new Map(hydrated.map(span => [String(span.id), span.text]));
     for (const row of rows) {
-      const bytes = Buffer.isBuffer(row.content) ? row.content : Buffer.from(row.content ?? []);
+      const bytes = Buffer.from(await storage.blobs.get(row.source_blob_hash));
       const text = bytes.toString("utf8");
       const byteStart = Number(row.byte_start);
       const byteEnd = Number(row.byte_end);
@@ -252,13 +254,14 @@ async function verifyEvidence(storage, state, manifest) {
       const charEnd = Number(row.char_end);
       const byteSurface = byteStart >= 0 && byteEnd >= byteStart && byteEnd <= bytes.length ? bytes.subarray(byteStart, byteEnd).toString("utf8") : null;
       const codepointSurface = charStart >= 0 && charEnd >= charStart ? [...text].slice(charStart, charEnd).join("") : null;
+      const expected = textById.get(row.id);
       const checks = [
         `sha256_${createHash("sha256").update(bytes).digest("hex")}` === row.source_blob_hash,
         Number(row.source_byte_length) === bytes.length,
         Number.isInteger(byteStart) && Number.isInteger(byteEnd) && byteStart >= 0 && byteEnd >= byteStart && byteEnd <= bytes.length,
         Number.isInteger(charStart) && Number.isInteger(charEnd) && charStart >= 0 && charEnd >= charStart && charEnd <= [...text].length,
-        byteSurface === row.text_content,
-        codepointSurface === row.text_content
+        typeof expected === "string" && byteSurface === expected,
+        typeof expected === "string" && codepointSurface === expected
       ];
       spansChecked += 1;
       if (checks.some(value => !value)) {

@@ -11,6 +11,7 @@ import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodeDu
   decodedJsonByteLengths, encodeDurableArtifact, verifyDurableArtifactByteLedger } from "./durable-artifact-storage.js";
 import { createCreativeLexemePageStore, creativeLexicalPageSchemaStatements, creativeLexemePageReferences,
   CREATIVE_LEXEME_PAGE_REFS_SCHEMA, type CreativeLexemeLocation } from "./creative-lexeme-page-storage.js";
+import { createCanonicalBlobReader } from "./canonical-evidence-text.js";
 
 export interface CreativeEventStorageHost {
   table(name: string): string;
@@ -23,7 +24,7 @@ export interface CreativeEventStorageHost {
 interface DomainRow { id: string; kind: string; value_json: Record<string, unknown>; information_label?: InformationLabel }
 interface OwnerRow {
   profile_id: string; source_id: string; source_version_id: string; source_content_hash: string; evidence_id: string; evidence_content_hash: string;
-  char_start: number; char_end: number; byte_start: number; byte_end: number; evidence_text: string;
+  char_start: number; char_end: number; byte_start: number; byte_end: number;
   profile_source_version_id: string; has_pooled_binding: boolean; pooled_profile: LanguageProfile | null;
   profile_label: InformationLabel; source_label: InformationLabel; evidence_label: InformationLabel;
 }
@@ -47,6 +48,7 @@ export function canonicalCreativeEventSchemaStatements(q: string): string[] {
 /** These records are immutable representations, never a second evidence or inference store. */
 export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost) {
   const lexicalPages = createCreativeLexemePageStore(host);
+  const readBlob = createCanonicalBlobReader(host);
   const mergeOptions = { explicitMergeAuthority: host.informationAccess?.explicitMergeAuthority === true };
   const join = (labels: InformationLabel[]): InformationLabel => host.requireWritableInformationLabel(joinInformationLabels(labels, mergeOptions));
   const ownersFor = async (bundles: readonly Record<string, unknown>[], requirePromoted = true): Promise<Map<string, CreativeEventOwner>> => {
@@ -82,7 +84,6 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
             THEN profile.pooled_binding->'evidence' ELSE '[]'::jsonb END) member(value)
         ) SELECT profile.id AS profile_id,version.source_id,version.id AS source_version_id,version.content_hash AS source_content_hash,
         evidence.id AS evidence_id,evidence.content_hash AS evidence_content_hash,evidence.char_start,evidence.char_end,evidence.byte_start,evidence.byte_end,
-        evidence.text_content AS evidence_text,
         profile.source_version_id AS profile_source_version_id,profile.pooled_binding IS NOT NULL AS has_pooled_binding,
         CASE WHEN profile.pooled_binding IS NOT NULL AND ROW_NUMBER() OVER (PARTITION BY profile.id ORDER BY evidence.id)=1 THEN profile.pooled_profile ELSE NULL END AS pooled_profile,
         profile.information_label AS profile_label,version.information_label AS source_label,evidence.information_label AS evidence_label
@@ -114,9 +115,13 @@ export function createCanonicalCreativeEventCodec(host: CreativeEventStorageHost
             && span.byteStart === Number(row.byte_start) && span.byteEnd === Number(row.byte_end)
             && span.charStart === Number(row.char_start) && span.charEnd === Number(row.char_end)).length !== 1) return fail("pooled evidence is outside the verified receipt");
         } else if (row.has_pooled_binding !== false || row.profile_source_version_id !== row.source_version_id) return fail("invalid direct source profile binding");
+        const evidenceBytes = await readBlob(row.evidence_content_hash);
+        const evidenceText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(evidenceBytes);
+        if (evidenceBytes.byteLength !== Number(row.byte_end) - Number(row.byte_start)
+          || [...evidenceText].length !== Number(row.char_end) - Number(row.char_start)) return fail("canonical evidence coordinates differ");
         owners.set(key, { profileId: row.profile_id, sourceId: row.source_id, sourceVersionId: row.source_version_id, sourceContentHash: row.source_content_hash,
           evidenceId: row.evidence_id, evidenceContentHash: row.evidence_content_hash, evidenceCharStart: Number(row.char_start), evidenceCharEnd: Number(row.char_end),
-          evidenceText: row.evidence_text,
+          evidenceText,
           informationLabel: join([row.profile_label, row.source_label, row.evidence_label]) });
       }
     }

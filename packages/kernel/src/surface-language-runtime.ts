@@ -627,6 +627,28 @@ export function createSurfaceLanguageRuntime(options: {
       ? [{ profileIds, limits: exactProfileHydrationLimits }]
       : corpusQueries;
     hydrateHeapTrace("language.hydrate.start", { queries: hydrationQueries.length, boundedLimit, limit, obsLimit: hydrationQueries[0]?.limits.ngramObservations ?? -1, unitLimit: hydrationQueries[0]?.limits.languageUnits ?? -1, patternLimit: hydrationQueries[0]?.limits.languagePatterns ?? -1, profiles: hydrationQueries[0]?.profileIds?.length ?? -1, corpora: corpusRegistry.length });
+    // General request hydration consumes one globally bounded pattern population. Issuing the same global cap
+    // independently for every corpus fetched thousands of rows and then discarded the tail after decoding it;
+    // source-replay patterns made that discarded work especially expensive. The storage query accepts the exact
+    // registered source set and applies ownership, language, category, row and byte bounds once to the population
+    // that the runtime will actually retain. Exact-profile reads remain exact-profile reads.
+    const patternHydration = hydrationQueries.length > 1
+      && hydrationQueries.every(item => item.sourceSystem !== undefined && item.profileIds === undefined)
+      ? deps.storage.languageMemory.listLanguagePatterns({
+          ...(purpose ? { view: purpose } : {}),
+          sourceSystems: [...new Set(hydrationQueries.map(item => item.sourceSystem!))],
+          languageId,
+          limit: hydrationLimits.languagePatterns,
+          maxTotalJsonBytes: hydrationByteBudgets.languagePatternJsonBytes
+        }).then(rows => [rows])
+      : Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({
+          ...(purpose ? { view: purpose } : {}),
+          profileIds: item.profileIds,
+          sourceSystem: item.sourceSystem,
+          languageId: item.profileIds ? undefined : languageId,
+          limit: item.limits.languagePatterns,
+          maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languagePatternJsonBytes, hydrationQueries.length)
+        })));
     const [
       modelsBySource,
       unitsBySource,
@@ -637,7 +659,7 @@ export function createSurfaceLanguageRuntime(options: {
     ] = await Promise.all([
       (populationSeed ? Promise.resolve([]) : Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ ...(purpose === "prediction_scoring" ? { view: purpose } : {}), sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels), maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.ngramModelJsonBytes, hydrationQueries.length) })))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listNgramModels", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ ...(purpose === "prediction_scoring" ? { view: purpose } : {}), profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languageUnitJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguageUnits", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ ...(purpose ? { view: purpose } : {}), profileIds: item.profileIds, sourceSystem: item.sourceSystem, languageId: item.profileIds ? undefined : languageId, limit: item.limits.languagePatterns, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languagePatternJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguagePatterns", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      patternHydration.then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguagePatterns", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ ...(purpose ? { view: purpose } : {}), profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames, ...(hydrationByteBudgets.semanticFrameJsonBytes ? { maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.semanticFrameJsonBytes, hydrationQueries.length) } : {}) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listSemanticFrames", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       preferredCorpusRoleId
         ? surfaceProfileCache

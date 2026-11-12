@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-// Re-chunks oversized evidence spans in place, from text already in the
-// database. No re-fetch, no re-parse, no graph rebuild, no retraining.
+// Re-chunks oversized evidence spans in place from canonical blob ranges.
+// No re-fetch, no re-parse, no graph rebuild, no retraining, and no copied bodies.
 //
 // Why this exists: maxChunkBytes was 131072, so segmentByParagraphs merged
 // whole articles into a single evidence span (1.04 spans per document, up to
@@ -12,9 +12,8 @@
 // article were searchable and everything after "l" was not. The 2026-08-18
 // sealed run scored 0/160 on cloze because of it.
 //
-// Every span satisfies octet_length(text_content) = byte_end - byte_start, so
-// a child's global offset is parent.byte_start + its local offset and every
-// citation byte range stays exact.
+// Every canonical span body has byte_length = byte_end - byte_start, so a child's
+// global offset is parent.byte_start + its local offset and every citation stays exact.
 //
 // Parents are NOT deleted: 579275 graph nodes reference their evidence ids.
 // They stay promoted and are outranked by their own children, because
@@ -27,6 +26,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -55,24 +55,26 @@ const extractor = createEvidenceExtractor({ idFactory: ids, hasher });
 
 const client = new Client({ connectionString: url });
 await client.connect();
+const corpus = createCanonicalCorpusReader(client, SCHEMA);
 
 const t = name => `"${SCHEMA}"."${name}"`;
 const totals = { parents: 0, children: 0, inserted: 0, skipped: 0, failed: 0 };
 const started = Date.now();
 
 const { rows: [{ n: pending }] } = await client.query(
-  `SELECT count(*)::int AS n FROM ${t("evidence_spans")} WHERE status='promoted' AND octet_length(text_content) > $1`, [CHUNK_BYTES]
+  `SELECT count(*)::int AS n FROM ${t("evidence_spans")} WHERE status='promoted' AND byte_end-byte_start > $1`, [CHUNK_BYTES]
 );
 console.error(`oversized parents to process: ${pending} (chunk-bytes=${CHUNK_BYTES}${DRY_RUN ? ", DRY RUN" : ""})`);
 
 let lastId = "";
 while (totals.parents < LIMIT) {
   const { rows } = await client.query(
-    `SELECT id, source_id, source_version_id, content_hash, media_type, byte_start, char_start,
-            text_content, trust_vector, provenance_json, information_label, observed_at, status, alpha
-       FROM ${t("evidence_spans")}
-      WHERE status='promoted' AND octet_length(text_content) > $1 AND id > $2
-      ORDER BY id ASC LIMIT $3`,
+    `SELECT e.id, e.source_id, e.source_version_id, e.content_hash, e.media_type, e.byte_start, e.byte_end, e.char_start, e.char_end,
+            e.trust_vector, e.provenance_json, e.information_label, e.observed_at, e.status, e.alpha,
+            sv.content_hash AS source_content_hash
+       FROM ${t("evidence_spans")} e JOIN ${t("source_versions")} sv ON sv.id=e.source_version_id
+      WHERE e.status='promoted' AND e.byte_end-e.byte_start > $1 AND e.id > $2
+      ORDER BY e.id ASC LIMIT $3`,
     [CHUNK_BYTES, lastId, Math.min(BATCH, LIMIT - totals.parents)]
   );
   if (rows.length === 0) break;
@@ -82,13 +84,14 @@ while (totals.parents < LIMIT) {
     totals.parents++;
     let children;
     try {
-      const profile = language.acquire({ sourceVersionId: parent.source_version_id, text: parent.text_content.slice(0, 40000), createdAt: 1 });
+      const parentText = await corpus.evidenceText(parent);
+      const profile = language.acquire({ sourceVersionId: parent.source_version_id, text: parentText.slice(0, 40000), createdAt: 1 });
       const extracted = extractor.extract({
         sourceId: parent.source_id,
         sourceVersionId: parent.source_version_id,
         contentHash: parent.content_hash,
         mediaType: parent.media_type ?? "text/plain",
-        text: parent.text_content,
+        text: parentText,
         maxChunkBytes: CHUNK_BYTES,
         observedAt: parent.observed_at instanceof Date ? parent.observed_at.getTime() : Number(parent.observed_at) || Date.now(),
         sourceTrust: (parent.trust_vector && parent.trust_vector.sourceTrust) || parent.trust_vector || {},
@@ -143,22 +146,23 @@ while (totals.parents < LIMIT) {
         // before the span referencing them can.
         const childBytes = Buffer.from(child.text, "utf8");
         await client.query(
-          `INSERT INTO ${t("blobs")} (content_hash, media_type, byte_length, content, created_at)
-           VALUES ($1,$2,$3,$4,now()) ON CONFLICT (content_hash) DO NOTHING`,
-          [String(child.contentHash), parent.media_type ?? "text/plain", childBytes.byteLength, childBytes]
+          `INSERT INTO ${t("blobs")} (content_hash, media_type, byte_length, content, range_parent_hash, range_start, range_end, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT (content_hash) DO NOTHING`,
+          [String(child.contentHash), parent.media_type ?? "text/plain", childBytes.byteLength, Buffer.alloc(0),
+            parent.source_content_hash, byteStart, byteEnd]
         );
         const res = await client.query(
           `INSERT INTO ${t("evidence_spans")}
              (id, source_id, source_version_id, chunk_id, content_hash, media_type,
-              byte_start, byte_end, char_start, char_end, text_preview, text_content,
+              byte_start, byte_end, char_start, char_end, text_preview,
               language_hints, script_hints, trust_vector, provenance_json, features,
               status, alpha, observed_at, information_label)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
            ON CONFLICT (id) DO NOTHING`,
           [
             String(child.id), parent.source_id, parent.source_version_id, String(child.chunkId),
             String(child.contentHash), parent.media_type, byteStart, byteEnd, charStart, charEnd,
-            String(child.textPreview ?? child.text).slice(0, 2000), child.text,
+            String(child.textPreview ?? child.text).slice(0, 700),
             child.languageHints ?? {}, child.scriptHints ?? {},
             childTrustVector, parent.provenance_json ?? {},
             child.features, parent.status, childAlpha, parent.observed_at,

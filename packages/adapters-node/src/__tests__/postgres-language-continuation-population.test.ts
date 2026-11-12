@@ -43,10 +43,13 @@ describe("language continuation population projection", () => {
     expect(sql).toContain("lp.language_id=$1");
     expect(sql).toContain("lp.information_label->>'tenantId' = $2");
     expect(sql).toContain("model.information_label->>'tenantId' = $6");
+    expect(sql).toContain("projection.information_label->>'tenantId'");
     expect(params[0]).toBe("language.fixture");
     expect(params[1]).toBe("tenant.fixture");
     expect(params[5]).toBe("tenant.fixture");
-    expect(sql).toContain("jsonb_each_text");
+    expect(sql).toContain("ngram_model_continuations");
+    expect(sql).toContain("jsonb_each_text(population.continuation_counts)");
+    expect(sql).not.toContain("continuationCountPairs");
     expect(sql).not.toMatch(/\bLIMIT\b/iu);
     expect(sql).not.toContain("SELECT model.*");
   });

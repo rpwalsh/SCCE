@@ -15,7 +15,7 @@ import { assistantForceClass, assistantForceDecision, unresolvedObligationCount 
 import { assistantForceProposalFromCandidateClaimBasis, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
-import { requestValueBindingConstructFact } from "./source-bound-semantic-fact.js";
+import { requestValueBindingConstructFact, sourceOwnedValueResolver } from "./source-bound-semantic-fact.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, resolveRequestValueBinding, semanticAnswerConstructFacts } from "./semantic-answer-construct.js";
 import { sourceConstructionRequestValueResolver } from "./source-construction-request-binding.js";
 import { learnedEntitySurfacesFromLanguageMemory, namedSubjectAnchors } from "./kernel-answer-primitives.js";
@@ -1566,6 +1566,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         selectedAuthority: requestedAuthority,
         activeOperatorIds,
         evidenceAccessPolicy,
+        contextualQaMatchedPatternIds: contextualQaConstructions?.patternIds ?? [],
+        contextualQaBound: Boolean(currentContextualQa),
         operationalAuthorityRevision: operationalAuthority !== authorityProjection.requestedAuthority
       });
       const calibrationTaskClass = calibrationTaskClassForRequirements(requirementField, requestedAuthority);
@@ -2063,6 +2065,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           : await contextualQaForRequest({ storage: deps.storage, hasher, requestText: input.text, evidence,
             constructions: contextualQaConstructions, generation: contextualQaGeneration, sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist });
       for (const id of contextualQa?.binding.evidenceIds ?? []) semanticFrameBoundEvidenceIds.add(id);
+      // A matched contextual construction is a typed value demand. If its
+      // source-bound resolver cannot bind the request's observed roles, the
+      // same evidence must not be reinterpreted by a less specific resolver
+      // or excerpt proposer. That would discard the learned role mismatch
+      // and turn a nearby sentence about another subject into an answer.
+      const contextualQaValueDemandUnbound = Boolean(contextualQaConstructions && !contextualQa);
       const calibrationModels = await calibrationModelsCached();
       // Only measured form is excluded; an unmeasured language class cannot erase the current turn's content.
       const carriedRequestUnits = discourseEvidenceBound
@@ -2424,7 +2432,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const acquiredConversationalConstructionBundles = deps.evaluationCondition?.flags.disableLanguageMemory || requestAct.status !== "active"
         ? [] : await conversationalConstructionBundles(authorityLanguage.patterns, authorityLanguage.state.scope, requestAct.actId);
       const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
-      const requestValueBinding = resolveRequestValueBinding({
+      const requestValueBinding = contextualQaValueDemandUnbound ? undefined : resolveRequestValueBinding({
         requestText: input.text,
         evidence: admissibleEvidence,
         resolvers: [
@@ -2432,7 +2440,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             ...authorityLanguage.state.importedConstructionBundles, ...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles,
             ...(contextualQa?.bundles ?? [])
           ], 1024), graph }),
-          { id: "resolver.evidence_temporal", resolve: extractTemporalAnswerFromEvidence }
+          sourceOwnedValueResolver({
+            id: "resolver.evidence_temporal",
+            relationId: "relation.temporal.event_time",
+            requestedRoleId: "role.temporal.value",
+            resolveValue: extractTemporalAnswerFromEvidence
+          })
         ]
       });
       const requestBoundValueEvidenceIds = new Set(requestValueBinding?.evidenceIds ?? []);
@@ -2482,7 +2495,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // source expresses only as instances ("list the main characters"
       // vs. a lead that names them without ever saying "characters").
       const responseFormSentences = requirementField.responseForm?.surfaceLayout?.sentencesPerBlock;
-      let answerProposal = proposeSourceExactEvidenceAnswer({
+      let answerProposal = contextualQaValueDemandUnbound ? undefined : proposeSourceExactEvidenceAnswer({
         requestText: input.text,
         selectedEvidence: supportCandidates,
         semanticFrameBoundEvidenceIds,
@@ -2960,7 +2973,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // pre-empt a real compound answer by default.
       // A source conflict is reported even when the proof attached no evidence of its own: the spans that disagree
       // are named by the counterexamples, and the reader is owed what each of them says rather than silence.
-      const richLocalEvidenceAnswer = localEvidenceAnswerSurface({
+      const richLocalEvidenceAnswer = contextualQaValueDemandUnbound ? undefined : localEvidenceAnswerSurface({
             requestText: input.text,
             selectedEvidence,
             boundValues: requestBoundValues,
@@ -3129,9 +3142,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           "evidence-source-cluster-selected",
           undefined,
           "",
-          // This is optional output-language enrichment. It may improve a
-          // later realization but cannot delay the current answer path.
-          { residentOnly: false, deferDurable: candidateHydrateResidentOnly }
+          // This is optional output-language enrichment. Under a bounded
+          // response budget a miss must remain a read-only resident miss.
+          // Scheduling a durable "background" hydrate here still competes
+          // with this turn for the event loop and database pool (measured on
+          // r004: 4.6s of planning latency), so it is not off-path work.
+          candidateHydrateResidentOnly ? { residentOnly: true } : { residentOnly: false }
         ).catch(error => {
           if (candidateHydrateResidentOnly && isResidentRuntimeNotWarmError(error)) return undefined;
           throw error;
@@ -3145,10 +3161,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // language-memory:creative-output-language-unresolved was not
       // warmed") -- verified live. The first creative turn pays the durable
       // hydration once; the cache holds it for every later one.
-      // A factual turn never hydrates durably on its own critical path: a role miss measured 40s of a 52s turn
-      // while the cognition itself took under a second. The miss is served from the resident language this turn
-      // already has, and the durable hydration runs off the path so the next turn finds it resident. The creative
-      // lane keeps paying durably, for the reason stated above.
+      // A factual turn never hydrates durably here: a role miss measured 40s of a 52s turn while the cognition
+      // itself took under a second. The miss is served from the resident language this turn already has. The
+      // creative lane keeps paying durably, for the reason stated above.
       // A program uses its symbolic role's population, independent of the natural-language request identity.
       const roleLanguageCluster = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.softwareSymbolic
         ? undefined
@@ -3168,20 +3183,31 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           roleHydrationOptions
         ).catch(error => {
           if (roleHydrationOptions.residentOnly !== true || !isResidentRuntimeNotWarmError(error)) throw error;
-          warmSurfaceLanguageMemory(
-            12,
-            roleLanguageCluster,
-            "role-output-language-unresolved",
-            preferredSurfaceCorpusRole,
-            input.text,
-            { residentOnly: false, languageId: requestLanguageId }
-          );
-          kernelTrace({
-            stage: "runtime.candidates.language_role.deferred",
-            label: "kernel.turn",
-            durationMs: 0,
-            support: { role: preferredSurfaceCorpusRole ?? null, cluster: selectedSurfaceCluster?.id ?? null }
-          });
+          // Factual encyclopedic realization already has the request/authority
+          // language resident and deliberately falls back to it below. Warming
+          // that optional role population during the same turn is not
+          // background work: on r004 it overlapped validation for 14.3s and
+          // made the emission write take 5s. Keep conversational displacement
+          // warming intact, but leave this factual evidence miss side-effect
+          // free.
+          const optionalEncyclopedicMiss = requestedAuthority === "factual"
+            && preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.encyclopedic;
+          if (!optionalEncyclopedicMiss) {
+            warmSurfaceLanguageMemory(
+              12,
+              roleLanguageCluster,
+              "role-output-language-unresolved",
+              preferredSurfaceCorpusRole,
+              input.text,
+              { residentOnly: false, languageId: requestLanguageId }
+            );
+            kernelTrace({
+              stage: "runtime.candidates.language_role.deferred",
+              label: "kernel.turn",
+              durationMs: 0,
+              support: { role: preferredSurfaceCorpusRole ?? null, cluster: selectedSurfaceCluster?.id ?? null }
+            });
+          }
           return undefined;
         })
         : undefined;
@@ -3421,7 +3447,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           payload: toJsonValue({ conflicts: correctionConflicts })
         })));
       }
-      const answerSurface = longPathBasisAnswer
+      const answerSurface = contextualQaValueDemandUnbound
+        ? {
+          answer: "",
+          audit: toJsonValue({
+            source: "kernel.turn.contextual_qa_unbound",
+            matchedPatternIds: contextualQaConstructions?.patternIds ?? [],
+            fakeEvidenceForbidden: true
+          })
+        }
+        : longPathBasisAnswer
         ? {
           answer: longPathBasisAnswer.answer || localEvidenceAnswerClaimSurface(longPathBasisAnswer),
           audit: toJsonValue({
@@ -4112,7 +4147,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ],
         actionPlans: candidateActionPlans.map(plan => toJsonValue(plan)),
         entailment: answerEntailmentSeed,
-        evidence: selectedEvidence,
+        evidence: contextualQaValueDemandUnbound ? [] : selectedEvidence,
         field,
         ccr: ccrResult,
         proofAnswer,
@@ -5775,9 +5810,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const spokenArtifact = String(spoken.realizationTrace.selected.surfaceRealizationId ?? spoken.realizationTrace.selected.id).startsWith("candidate:generated:code:")
         && rawEmission.answer.trim().length > 0;
       const artifactCompilerVerified = spokenArtifact && workspacePlanContext.plans.length > 0;
+      const factualContradictionWithheld = (requestedAuthority === "factual" || requestedAuthority === "reasoned")
+        && !candidateUsesNonFactualPlanSemantics(judged.selected)
+        && !semanticProof.mutualSourceContradiction
+        && !(realizationContract && candidateIsVerifiedBoundValue(rawEmission.answer, realizationContract))
+        && spokenAnswerContradiction >= 0.5;
+      if (factualContradictionWithheld && rawEmission.answer.trim()) kernelTrace({
+        stage: "turn.output.contradicted_surface_refused",
+        label: "kernel.turn",
+        counts: { answerChars: rawEmission.answer.length },
+        support: { selectedCandidateId: judged.selected.id, contradiction: spokenAnswerContradiction }
+      });
       const emission = {
         ...rawEmission,
-        assistantForce: spoken.realizationAvailability.status === "realization_unavailable"
+        answer: factualContradictionWithheld ? "" : rawEmission.answer,
+        assistantForce: factualContradictionWithheld
+          ? "insufficient_support" as const
+          : spoken.realizationAvailability.status === "realization_unavailable"
           ? "realization_unavailable" as const
           : spoken.realizationAvailability.status === "insufficient_support"
             ? "insufficient_support" as const

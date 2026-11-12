@@ -14,6 +14,18 @@ export interface SourceInductionExecutionReceipt {
   schema: "scce.source_induction_execution.v1"; declaration: SourceInductionWorkerExecution; bundleDigest: string;
   workersStarted: number; preparedBatches: number; inducedBatches: number; peakNodeRssBytes: number; rssSamplingIntervalMs: 100;
 }
+/**
+ * Explicit resource owner for a source-induction worker pool.  Callers that
+ * process more than one corpus item may retain this owner across items; each
+ * successful item releases its worker sessions while the owner continues to
+ * enforce the declared process RSS ceiling.
+ */
+export interface SourceInductionExecutionOwner {
+  execution: SourceInductionBatchExecution;
+  close(reason?: unknown): Promise<void>;
+  /** Cumulative, auditable work completed by this owner so far. */
+  receipt(): SourceInductionExecutionReceipt | undefined;
+}
 export function validateSourceInductionWorkerExecution(value: SourceInductionWorkerExecution): SourceInductionWorkerExecution {
   const keys = ["backend", "workers", "workerHeapMb", "maxNodeRssBytes", "abortGraceMs"];
   if (!value || value.backend !== "node_workers.v1" || Object.keys(value).some(key => !keys.includes(key))) throw Error("Invalid source induction execution declaration");
@@ -30,13 +42,22 @@ type Pending = { type: string; jobDigest: string; resolve(value: Response): void
 type SourceWorkerRecord = WorkerExecutionRecord & { ready: boolean; leased: boolean; pending?: Pending; readyResolve(): void; readyReject(error: unknown): void };
 
 /** The existing population-worker lifecycle owns reservation, RSS, cancellation, termination and draining. This adapter owns source messages only. */
-export function createSourceInductionExecution(input: { policy: SourceInductionWorkerExecution; signal?: AbortSignal }, dependencies: Dependencies = {}): {
-  execution: SourceInductionBatchExecution; close(reason?: unknown): Promise<void>; receipt(): SourceInductionExecutionReceipt | undefined;
-} {
+export function createSourceInductionExecution(
+  input: { policy: SourceInductionWorkerExecution; signal?: AbortSignal },
+  dependencies: Dependencies = {}
+): SourceInductionExecutionOwner {
   const coordinatorHeapLimitBytes = dependencies.coordinatorHeapLimitBytes ?? getHeapStatistics().heap_size_limit;
   const policy = validateWorkerExecutionResources(validateSourceInductionWorkerExecution(input.policy), coordinatorHeapLimitBytes), records: SourceWorkerRecord[] = [];
   let lifecycle: ReturnType<typeof createWorkerExecutionLifecycle> | undefined, startup: Promise<void> | undefined, closing: Promise<void> | undefined;
   let closed = false, readyComplete = false, bundleDigest = "", preparedBatches = 0, inducedBatches = 0, receipt: SourceInductionExecutionReceipt | undefined;
+  const currentReceipt = (): SourceInductionExecutionReceipt | undefined => {
+    if (receipt) return receipt;
+    if (!lifecycle || !readyComplete || !bundleDigest) return undefined;
+    lifecycle.sample();
+    if (lifecycle.failed) throw lifecycle.error;
+    return { schema: "scce.source_induction_execution.v1", declaration: policy, bundleDigest, workersStarted: records.length,
+      preparedBatches, inducedBatches, peakNodeRssBytes: lifecycle.peakRss, rssSamplingIntervalMs: 100 };
+  };
   const failure = (error: unknown) => { for (const record of records) { record.readyReject(error); record.pending?.reject(error); record.pending = undefined; } };
   const wireError = (value: Response["error"]): Error => {
     const error = Error(value?.message ?? "source induction worker failed"); error.name = value?.name ?? "Error";
@@ -139,7 +160,7 @@ export function createSourceInductionExecution(input: { policy: SourceInductionW
           } };
       } catch (error) { try { await releaseSession(); } catch (cleanup) { if (cleanup !== error) throw new AggregateError([error, cleanup], "source induction opening and cleanup failed"); } throw error; }
     } };
-  return { execution, close, receipt: () => receipt };
+  return { execution, close, receipt: currentReceipt };
 }
 
 /** One resource owner shared by trainer and Wiki prewarm; cleanup never masks a distinct primary failure. */

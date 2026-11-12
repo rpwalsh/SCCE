@@ -7,13 +7,18 @@ import {
   canonicalJsonByteLength,
   createCanonicalLeafTokenCache
 } from "../canonical-json-digest.js";
-import { canonicalStringify, createHasher } from "../primitives.js";
+import { canonicalStringify, createHasher, toJsonValue } from "../primitives.js";
 
 describe("incremental canonical JSON digests", () => {
   it("preserves the existing canonical bytes for normalization and shared-record edge cases", () => {
     const sparse = new Array<unknown>(4);
     sparse[2] = "astral \u{1f600}, lone \ud800, null \u0000";
     const specialKeys = JSON.parse('{"__proto__":{"x":1},"10":"ten","2":"two","a":null}');
+    const normalizedSpecialKeys = toJsonValue(specialKeys) as Record<string, unknown>;
+    expect(Object.hasOwn(normalizedSpecialKeys, "__proto__")).toBe(true);
+    expect(normalizedSpecialKeys.__proto__).toEqual({ x: 1 });
+    expect(Object.getPrototypeOf(normalizedSpecialKeys)).toBe(Object.prototype);
+    expect(JSON.parse(canonicalStringify(specialKeys))).toEqual(specialKeys);
     const shared = Object.freeze({ target: "port", mass: 0, residual: 0.25 });
     const cases = [
       undefined, null, -0, NaN, Infinity, 12345678901234567890n,

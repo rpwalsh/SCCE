@@ -1089,6 +1089,7 @@ class MemoryScceStorage implements ScceStorage {
 
 class MemoryBlobStore implements BlobStore {
   private readonly rows = new Map<string, Uint8Array>();
+  private readonly ranges = new Map<string, { parentHash: ContentHash; byteStart: number; byteEnd: number }>();
 
   constructor(private readonly digest: (input: string | Uint8Array) => string) {}
 
@@ -1099,12 +1100,27 @@ class MemoryBlobStore implements BlobStore {
     return hash;
   }
 
+  async putRanges(items: Parameters<BlobStore["putRanges"]>[0], parent: Parameters<BlobStore["putRanges"]>[1]): Promise<void> {
+    const stored = this.rows.get(parent.contentHash);
+    if (!stored || `sha256_${this.digest(stored)}` !== parent.contentHash) throw new Error("missing canonical range parent");
+    for (const item of items) {
+      if (item.parentHash !== parent.contentHash || `sha256_${this.digest(parent.bytes.slice(item.byteStart, item.byteEnd))}` !== item.contentHash) {
+        throw new Error("invalid canonical range");
+      }
+      this.ranges.set(item.contentHash, { parentHash: item.parentHash, byteStart: item.byteStart, byteEnd: item.byteEnd });
+    }
+  }
+
   async get(hash: ContentHash): Promise<Uint8Array> {
-    return this.rows.get(hash) ?? new Uint8Array();
+    const value = this.rows.get(hash);
+    if (value) return value;
+    const range = this.ranges.get(hash);
+    if (!range) return new Uint8Array();
+    return (await this.get(range.parentHash)).slice(range.byteStart, range.byteEnd);
   }
 
   async exists(hash: ContentHash): Promise<boolean> {
-    return this.rows.has(hash);
+    return this.rows.has(hash) || this.ranges.has(hash);
   }
 }
 

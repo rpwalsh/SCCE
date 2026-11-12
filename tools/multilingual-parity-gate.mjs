@@ -235,7 +235,7 @@ async function sectionGroundTruth(client) {
            count(es.id)::int AS spans,
            count(DISTINCT es.source_id)::int AS sources,
            count(DISTINCT NULLIF(es.source_title,''))::int AS titles,
-           COALESCE(sum(length(es.text_content)),0)::bigint AS chars,
+           COALESCE(sum(es.char_end-es.char_start),0)::bigint AS chars,
            COALESCE(li.identity_json->'closedClass','[]'::jsonb) AS closed
     FROM language_identities li
     LEFT JOIN language_profiles lp ON lp.language_id = li.id

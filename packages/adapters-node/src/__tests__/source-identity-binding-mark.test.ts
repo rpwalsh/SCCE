@@ -48,14 +48,17 @@ describe("a binding mark is orthography, not identity", () => {
       if (/current_setting/u.test(sql)) return [{ enabled: "off" }];
       if (sql === "SET LOCAL enable_seqscan = off" || /set_config/u.test(sql)) return [];
       expect(sql).toContain("evidence_spans");
-      expect(sql).toContain("evidence.features @> candidate.features");
+      expect(sql).toContain("evidence.features && $2::text[]");
+      expect(sql).toContain("JOIN wanted ON wanted.feature=observed.feature");
+      expect(sql).toContain("HAVING count(DISTINCT observed.feature)=wanted.required");
       expect(sql).toContain("evidence.status='promoted'");
       expect(sql).toContain("evidence.information_label");
-      expect(params?.slice(1).length).toBeGreaterThan(0);
+      expect(params?.slice(2).length).toBeGreaterThan(0);
       const requests = JSON.parse(String(params?.[0])) as Array<{ run: string; features: string[] }>;
       expect(requests[0]?.features).toEqual(anchorFeatureSet(subject).filter(feature => feature.startsWith("anchor:sym:")));
       expect(requests[0]?.features.length).toBeGreaterThan(0);
       expect(requests[0]?.features.every(feature => indexed.has(feature))).toBe(true);
+      expect(params?.[1]).toEqual([...new Set(requests.flatMap(request => request.features))]);
       measured = true;
       return requests.map(request => ({ run: request.run, sources: request.features.every(feature => indexed.has(feature)) ? 1 : 0 }));
     }});
@@ -91,10 +94,12 @@ describe("a binding mark is orthography, not identity", () => {
         { run: "quiet", features: ["anchor:sym:quiet"] }
       ]);
       expect(sql).toContain("evidence_spans");
-      expect(sql).toContain("evidence.features @> candidate.features");
+      expect(sql).toContain("evidence.features && $2::text[]");
+      expect(sql).toContain("JOIN wanted ON wanted.feature=observed.feature");
       expect(sql).toContain("evidence.status='promoted'");
       expect(sql).toContain("evidence.information_label");
-      expect(params?.slice(1).length).toBeGreaterThan(0);
+      expect(params?.[1]).toEqual(["anchor:sym:alpha", "anchor:sym:beta", "anchor:sym:quiet"]);
+      expect(params?.slice(2).length).toBeGreaterThan(0);
       measured = true;
       return [{ run: "alpha beta", sources: 3 }, { run: "quiet", sources: 0 }];
     }});
@@ -172,11 +177,13 @@ describe("a binding mark is orthography, not identity", () => {
       { run: "quiet", features: ["anchor:sym:quiet"] }
     ]);
     expect(reads[3]?.seqscan).toBe("off");
-    expect(reads[3]?.sql).toContain("evidence.features @> candidate.features");
+    expect(reads[3]?.sql).toContain("evidence.features && $2::text[]");
+    expect(reads[3]?.sql).toContain("JOIN wanted ON wanted.feature=observed.feature");
     expect(reads[3]?.sql).not.toContain("evidence_anchor_index");
     expect(reads[3]?.sql.match(/evidence.status='promoted'/gu)).toHaveLength(1);
     expect(reads[3]?.sql).toContain("evidence.information_label");
-    expect(reads[3]?.sql).toContain("count(DISTINCT source_id)::int AS sources");
+    expect(reads[3]?.sql).toContain("count(DISTINCT complete.source_id)");
+    expect(reads[3]?.sql).toContain("1500)::int AS sources");
     expect(reads[4]?.sql).toMatch(/set_config\('enable_seqscan'/u);
     expect(reads[4]?.params).toEqual(["on"]);
     expect(transactionActive).toBe(false);
@@ -210,7 +217,8 @@ describe("a binding mark is orthography, not identity", () => {
     expect(reads[1]).toEqual(reads[2]);
     expect(reads[0]?.sql).toBe(reads[1]?.sql);
     expect(reads[1]?.sql).not.toContain("UNION ALL");
-    expect(reads[1]?.sql).toContain("evidence.features @> candidate.features");
-    expect(reads[1]?.sql).toContain("LIMIT 1500");
+    expect(reads[1]?.sql).toContain("evidence.features && $2::text[]");
+    expect(reads[1]?.sql).toContain("JOIN wanted ON wanted.feature=observed.feature");
+    expect(reads[1]?.sql).toContain("1500)::int AS sources");
   });
 });

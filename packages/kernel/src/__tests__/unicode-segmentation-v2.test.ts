@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SEGMENTATION_SCHEMA_V2,
+  SEGMENTATION_LOCALE_V2,
   dominantScriptId,
   joinLexicalSurfaces,
   reconstructFromSegmentationModel,
@@ -12,6 +13,9 @@ import {
 import { segmentUnicodeSurface } from "../unicode-segmentation.js";
 
 describe("segmentation v2 -- Latin regression (must be byte-identical to v1)", () => {
+  it("pins word segmentation to the locale-independent replay locale", () => {
+    expect(SEGMENTATION_LOCALE_V2).toBe("und");
+  });
   const samples = [
     "The quick brown fox jumps over 12 lazy dogs.",
     "don't stop believin', it's a small_world after-all",

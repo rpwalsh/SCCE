@@ -20,6 +20,7 @@ import { dirname } from "node:path";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { openNgramModelReader } from "./lib/ngram-model-reader.mjs";
+import { createCanonicalCorpusReader } from "./lib/canonical-corpus-read.mjs";
 const pg = createRequire(pathToFileURL(path.resolve("packages/adapters-node/package.json")))("pg");
 
 const flag = (name, fallback) => (process.argv.find(a => a.startsWith(`--${name}=`)) ?? `--${name}=${fallback}`).split("=").slice(1).join("=");
@@ -39,8 +40,10 @@ let local = {};
 try { local = JSON.parse(readFileSync("scce.config.local.json", "utf8")); } catch { /* optional */ }
 const client = new pg.Client({ connectionString: process.env.SCCE_DATABASE_URL ?? local?.database?.url ?? base?.database?.url });
 await client.connect();
-await client.query(`SET search_path TO "${local?.database?.schema ?? base?.database?.schema ?? "scce3_runtime"}"`);
+const schemaName = local?.database?.schema ?? base?.database?.schema ?? "scce3_runtime";
+await client.query(`SET search_path TO "${schemaName}"`);
 await client.query("SET statement_timeout='300s'");
+const corpus = createCanonicalCorpusReader(client, schemaName);
 
 // The two families, told apart by the stream each model was trained from -- not by any label a tool wrote later.
 // Replay-backed models are hydrated in decoded-byte-bounded pages; only the aggregate maps survive each page.
@@ -92,14 +95,29 @@ async function turn(text) {
 /** The longest run of consecutive units the passage shares with any span of the corpus it could have drawn from. */
 async function longestCopiedRun(passage) {
   const tokens = units(passage);
-  for (let length = Math.min(12, tokens.length); length >= 4; length--) {
-    for (let start = 0; start + length <= tokens.length; start++) {
-      const phrase = tokens.slice(start, start + length).join(" ");
-      const hit = await client.query("SELECT 1 FROM evidence_spans WHERE text_content ILIKE $1 LIMIT 1", [`%${phrase}%`]);
-      if (hit.rowCount) return { length, phrase };
-    }
+  const candidates = new Map();
+  for (let length = 4; length <= Math.min(12, tokens.length); length++) {
+    for (let start = 0; start + length <= tokens.length; start++) candidates.set(tokens.slice(start, start + length).join(" "), length);
   }
-  return { length: 0, phrase: "" };
+  let cursor = "", best = { length: 0, phrase: "" };
+  for (;;) {
+    const page = await client.query(`SELECT id,content_hash,byte_start,byte_end,char_start,char_end
+      FROM evidence_spans WHERE status='promoted' AND id>$1 ORDER BY id LIMIT 256`, [cursor]);
+    if (!page.rows.length) break;
+    const texts = await corpus.evidenceTexts(page.rows);
+    for (const text of texts) {
+      const source = units(text);
+      for (let length = Math.min(12, source.length, tokens.length); length > Math.max(3, best.length); length--) {
+        for (let start = 0; start + length <= source.length; start++) {
+          const phrase = source.slice(start, start + length).join(" ");
+          if (candidates.get(phrase) === length) { best = { length, phrase }; break; }
+        }
+        if (best.length === length) break;
+      }
+    }
+    cursor = String(page.rows.at(-1).id);
+  }
+  return best;
 }
 
 const rows = [];

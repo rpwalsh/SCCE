@@ -103,7 +103,7 @@ export async function verifySourceArtifactMetadata(options) {
   let sourcePhysical, fixturePhysical, initial, sourceOpen = false, fixtureOpen = false, sequence = 0;
   const originals = [], hasher = createHasher();
   const check = (name, operation) => { operation(); report.checks.push({ name, passed: true }); };
-  const tables = POSTGRES_REQUIRED_TABLES.filter(name => name !== 'storage_meta');
+  const tables = POSTGRES_REQUIRED_TABLES.filter(name => name !== 'storage_meta' && name !== 'language_unit_values');
   const snapshot = async () => ({ revision: await fixture.languageMemory.readRevision(), active: await fixture.brainImports.active(),
     counts: Object.fromEntries((await fixture.query(tables.map(name => `SELECT '${name}' AS name,count(*)::text AS count FROM ${fixture.table(name)}`).join(' UNION ALL '))).map(row => [row.name, row.count])) });
   const bind = (adapter, physical, readOnly) => {
@@ -144,7 +144,10 @@ export async function verifySourceArtifactMetadata(options) {
       for (const span of spans) { await copyOwner(span.sourceVersionId); const bytes = await source.blobs.get(span.contentHash); assert.equal(await fixture.blobs.put(bytes, span.mediaType), span.contentHash); }
       await fixture.evidence.putEvidenceSpans(spans);
     }
-    for (const name of ['language_units', 'language_patterns', 'semantic_frames', 'ngram_models']) await fixture.query(`CREATE TEMP TABLE metadata_baseline_${name} (LIKE ${fixture.table(name)} INCLUDING ALL) ON COMMIT DROP`);
+    for (const name of ['language_units', 'language_patterns', 'semantic_frames', 'ngram_models']) {
+      const relation = name === 'language_units' ? 'language_unit_values' : name;
+      await fixture.query(`CREATE TEMP TABLE metadata_baseline_${name} (LIKE ${fixture.table(relation)} INCLUDING ALL) ON COMMIT DROP`);
+    }
     let negative;
     report.currentStage = 'owner-artifact-roundtrip';
     for (const sourceVersionId of ownerIds) {
@@ -220,22 +223,26 @@ export async function verifySourceArtifactMetadata(options) {
     report.currentStage = 'same-wire-physical-baseline';
     const codec = createSourceArtifactMetadataCodec(fixture);
     for (const [table, json, profile] of [['language_units', 'metadata_json', 'profile_id'], ['language_patterns', 'pattern_json', 'profile_id'], ['semantic_frames', 'frame_json', null], ['ngram_models', 'model_json', null]]) {
+      const relation = table === 'language_units' ? 'language_unit_values' : table;
       let after = '', copiedRows = 0;
       while (true) {
-        const page = await fixture.query(`SELECT to_jsonb(record) AS value FROM ${fixture.table(table)} record WHERE id>$1 ORDER BY id COLLATE "C" LIMIT 64`, [after]);
+        const page = await fixture.query(`SELECT to_jsonb(record) AS value FROM ${fixture.table(relation)} record WHERE id>$1 ORDER BY id COLLATE "C" LIMIT 64`, [after]);
         if (!page.length) break;
         const values = page.map(row => row.value), decoded = await codec.decodeMany(values.map(value => ({ value: value[json],
           profileId: profile ? value[profile] : record(value[json]).profileId, informationLabel: value.information_label,
           ...(value.source_version_id ? { sourceVersionId: value.source_version_id } : {}) })));
-        const columns = (await fixture.query(`SELECT attname FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 AND NOT attisdropped AND attgenerated='' ORDER BY attnum`, [fixture.table(table)])).map(row => row.attname);
+        const columns = (await fixture.query(`SELECT attname FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 AND NOT attisdropped AND attgenerated='' ORDER BY attnum`, [fixture.table(relation)])).map(row => row.attname);
         const names = columns.map(name => '"' + name.replaceAll('"', '""') + '"').join(',');
-        for (let index = 0; index < values.length; index++) await fixture.query(`INSERT INTO metadata_baseline_${table}(${names}) SELECT ${names} FROM jsonb_populate_record(NULL::${fixture.table(table)},$1::jsonb)`, [JSON.stringify({ ...values[index], [json]: decoded[index] })]);
+        for (let index = 0; index < values.length; index++) await fixture.query(`INSERT INTO metadata_baseline_${table}(${names}) SELECT ${names} FROM jsonb_populate_record(NULL::${fixture.table(relation)},$1::jsonb)`, [JSON.stringify({ ...values[index], [json]: decoded[index] })]);
         after = values.at(-1).id; copiedRows += values.length;
       }
-      const [measurement] = await fixture.query(`SELECT pg_total_relation_size($1::regclass)::text AS normalized_bytes,pg_total_relation_size($2::regclass)::text AS baseline_bytes`, [fixture.table(table), `metadata_baseline_${table}`]);
+      const [measurement] = table === 'language_units'
+        ? await fixture.query(`SELECT (pg_total_relation_size($1::regclass)+pg_total_relation_size($2::regclass)+pg_total_relation_size($3::regclass))::text AS normalized_bytes,pg_total_relation_size($4::regclass)::text AS baseline_bytes`,
+          [fixture.table('language_units'), fixture.table('language_unit_evidence_sets'), fixture.table('language_unit_information_labels'), `metadata_baseline_${table}`])
+        : await fixture.query(`SELECT pg_total_relation_size($1::regclass)::text AS normalized_bytes,pg_total_relation_size($2::regclass)::text AS baseline_bytes`, [fixture.table(table), `metadata_baseline_${table}`]);
       report.physical[table] = { rows: copiedRows, ...measurement };
     }
-    const measuredTables = new Set(['language_units', 'language_patterns', 'semantic_frames', 'ngram_models']);
+    const measuredTables = new Set(['language_units', 'language_unit_evidence_sets', 'language_unit_information_labels', 'language_patterns', 'semantic_frames', 'ngram_models']);
     let commonBytes = 0n, baselineBytes = 0n, normalizedBytes = 0n;
     for (const name of tables.filter(name => !measuredTables.has(name))) {
       const [row] = await fixture.query('SELECT pg_total_relation_size($1::regclass)::text AS bytes', [fixture.table(name)]); commonBytes += BigInt(row.bytes);

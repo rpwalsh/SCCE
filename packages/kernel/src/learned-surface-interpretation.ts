@@ -18,6 +18,7 @@ export interface LearnedSurfaceInterpreter {
 
 export interface SurfaceEnumerationOptions {
   maxTransitions: number;
+  matchMode?: "full" | "substring";
   consumeTransition?: () => boolean;
   knownSurfaces?: ReadonlyMap<string, string>;
   acceptRole?: (role: InterpretedSurfaceRole) => boolean;
@@ -73,7 +74,8 @@ function enumerateProjectedConstruction(construction: Pick<LearnedConstruction, 
   type Prefix = { role: InterpretedSurfaceRole; previous?: Prefix };
   type State = { kind: "state"; index: number; cursor: number; prefix?: Prefix };
   type Boundary = { kind: "boundary"; index: number; cursor: number; prefix?: Prefix; end: number; mode: "known" | "literal" | "final" | "adjacent"; offsetIndex: number };
-  const stack: Array<State | Boundary> = [{ kind: "state", index: 0, cursor: 0 }];
+  const starts = options.matchMode === "substring" ? substringStarts(sequence, projection, options.knownSurfaces) : [0];
+  const stack: Array<State | Boundary> = starts.map(cursor => ({ kind: "state", index: 0, cursor }));
   while (stack.length) {
     if (result.visited === options.maxTransitions) { result.complete = false; result.truncated = true; break; }
     if (options.consumeTransition && !options.consumeTransition()) { result.complete = false; result.truncated = true; break; }
@@ -82,7 +84,7 @@ function enumerateProjectedConstruction(construction: Pick<LearnedConstruction, 
     if (frame.kind === "state") {
       const { index, cursor, prefix } = frame;
       if (index === sequence.length) {
-        if (cursor !== comparable.length) continue;
+        if (options.matchMode !== "substring" && cursor !== comparable.length) continue;
         const roles: InterpretedSurfaceRole[] = [];
         for (let node = prefix; node; node = node.previous) roles.push(node.role);
         roles.reverse();
@@ -115,9 +117,20 @@ function enumerateProjectedConstruction(construction: Pick<LearnedConstruction, 
           end: boundaryOffsets[offsetIndex]!, mode: "adjacent", offsetIndex });
       } else {
         const next = literals[index + 1];
-        const end = next === undefined ? comparable.length : comparable.indexOf(next, cursor + 1);
-        if (end > cursor) stack.push({ kind: "boundary", index, cursor, prefix, end,
-          mode: next === undefined ? "final" : "literal", offsetIndex: 0 });
+        if (next === undefined && options.matchMode === "substring") {
+          let offsetIndex = 0, high = boundaryOffsets.length;
+          while (offsetIndex < high) {
+            const middle = Math.floor((offsetIndex + high) / 2);
+            if (boundaryOffsets[middle]! <= cursor) offsetIndex = middle + 1;
+            else high = middle;
+          }
+          if (offsetIndex < boundaryOffsets.length) stack.push({ kind: "boundary", index, cursor, prefix,
+            end: boundaryOffsets[offsetIndex]!, mode: "adjacent", offsetIndex });
+        } else {
+          const end = next === undefined ? comparable.length : comparable.indexOf(next, cursor + 1);
+          if (end > cursor) stack.push({ kind: "boundary", index, cursor, prefix, end,
+            mode: next === undefined ? "final" : "literal", offsetIndex: 0 });
+        }
       }
       continue;
     }
@@ -139,6 +152,22 @@ function enumerateProjectedConstruction(construction: Pick<LearnedConstruction, 
     stack.push({ kind: "state", index: index + 1, cursor: end, prefix: { role, previous: prefix } });
   }
   return result;
+}
+
+function substringStarts(sequence: Pick<LearnedConstruction, "sequence">["sequence"], projection: SurfaceProjection,
+  knownSurfaces: ReadonlyMap<string, string> | undefined): number[] {
+  const first = sequence[0];
+  if (!first) return [];
+  const needle = first.kind === "literal" ? projection.normalize(first.surface)
+    : knownSurfaces?.has(first.occurrenceId) ? projection.normalize(knownSurfaces.get(first.occurrenceId)!) : undefined;
+  if (!needle) return projection.boundaryOffsets.slice(0, -1);
+  const starts: number[] = [];
+  let offset = projection.comparable.indexOf(needle);
+  while (offset >= 0) {
+    if (projection.boundaries.has(offset)) starts.push(offset);
+    offset = projection.comparable.indexOf(needle, offset + 1);
+  }
+  return starts;
 }
 
 function interpretProjectedConstruction(construction: Pick<LearnedConstruction, "sequence">, projection: {

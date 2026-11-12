@@ -421,7 +421,7 @@ export function createIngestionRuntime(options: {
             trustVector: { ...(span.trustVector as Record<string, JsonValue>), admission: decision.audit, action: action?.action ?? "quarantine" }
           };
         });
-        await putSpanBlobs(deps.storage.blobs, admittedSpans, source.mediaType);
+        await putSpanBlobs(deps.storage.blobs, admittedSpans, source.mediaType, { contentHash, bytes: sourceBytes });
         if (deps.storage.evidence.putEvidenceSpans) await deps.storage.evidence.putEvidenceSpans(admittedSpans);
         else for (const span of admittedSpans) await deps.storage.evidence.putEvidenceSpan(span);
         // Visual attributes (Phase 3) ride on the first admitted span of the document; provenance stays on the node.

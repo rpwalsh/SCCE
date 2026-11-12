@@ -11,6 +11,8 @@ export * from "./spreadsheet.js";
 export * from "./wikipedia.js";
 export * from "./wikipedia-remote-source.js";
 export * from "./wikipedia-v3-ingestor.js";
+export * from "./wikipedia-publication-finalization.js";
+export * from "./source-text-replay-binding-set-store.js";
 export * from "./alignment-event-artifacts.js";
 export * from "./language-corpus-trainer.js";
 export * from "./dialogue-corpus.js";
@@ -72,4 +74,7 @@ export * from "./corpus-segmentation-producer.js";
 export * from "./corpus-segmentation-lease.js";
 export { validatePopulationWorkerExecution } from "./population-candidate-execution.js";
 
-export { createSourceInductionExecution, runSourceInductionExecution, validateSourceInductionWorkerExecution, type SourceInductionWorkerExecution, type SourceInductionExecutionReceipt } from "./source-induction-execution.js";
+export { createSourceInductionExecution, runSourceInductionExecution, validateSourceInductionWorkerExecution,
+  type SourceInductionWorkerExecution, type SourceInductionExecutionReceipt, type SourceInductionExecutionOwner } from "./source-induction-execution.js";
+export { runContextualQaAcquisition, validateContextualQaWorkerExecution,
+  type ContextualQaWorkerExecution, type ContextualQaExecutionReceipt } from "./contextual-qa-execution.js";

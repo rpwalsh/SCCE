@@ -64,18 +64,20 @@ try {
   const derivativeRow = sourceRows.find(row => row.role === "evidence-derivative");
   const expectedRaw = await readFile(path.join(root, "book.txt"));
   const expectedDerivative = Buffer.from("A small public corpus document repeats enough words for a stable language model.", "utf8");
-  const blobFor = async row => (await storage.query(`SELECT content FROM ${storage.table("blobs")} WHERE content_hash=$1`, [row.contentHash]))[0]?.content;
+  const blobFor = async row => Buffer.from(await storage.blobs.get(row.contentHash));
   const originalBlob = originalRow ? await blobFor(originalRow) : undefined;
   const derivativeBlob = derivativeRow ? await blobFor(derivativeRow) : undefined;
   const derivedEvidence = derivativeRow
-    ? await storage.query(`SELECT source_version_id, content_hash, byte_start, byte_end, char_start, char_end, text_content FROM ${storage.table("evidence_spans")} WHERE source_version_id=$1`, [derivativeRow.id])
+    ? await storage.query(`SELECT id, source_version_id, content_hash, byte_start, byte_end, char_start, char_end FROM ${storage.table("evidence_spans")} WHERE source_version_id=$1`, [derivativeRow.id])
     : [];
+  const derivedTexts = new Map((await storage.evidence.getEvidenceBatch(derivedEvidence.map(span => span.id))).map(span => [String(span.id), span.text]));
   const evidenceSlicesValid = derivedEvidence.length > 0 && derivedEvidence.every(span => {
     const byteStart = Number(span.byte_start);
     const byteEnd = Number(span.byte_end);
     const charStart = Number(span.char_start);
     const charEnd = Number(span.char_end);
-    const text = String(span.text_content);
+    const text = derivedTexts.get(span.id);
+    if (typeof text !== "string") return false;
     if (!derivativeBlob || derivativeBlob.subarray(byteStart, byteEnd).toString("utf8") !== text) return false;
     if ([...derivativeBlob.toString("utf8")].slice(charStart, charEnd).join("") !== text) return false;
     const expectedHash = `sha256_${createHash("sha256").update(derivativeBlob.subarray(byteStart, byteEnd)).digest("hex")}`;
@@ -115,8 +117,9 @@ try {
   const expectedOssRaw = await readFile(path.join(root, "src", "pump.ts"));
   const ossBlobs = await Promise.all(ossSourceRows.map(row => blobFor(row)));
   const ossEvidence = ossDerivatives.length
-    ? await storage.query(`SELECT source_version_id, content_hash, byte_start, byte_end, char_start, char_end, text_content FROM ${storage.table("evidence_spans")} WHERE source_version_id=ANY($1::text[])`, [ossDerivatives.map(row => row.id)])
+    ? await storage.query(`SELECT id, source_version_id, content_hash, byte_start, byte_end, char_start, char_end FROM ${storage.table("evidence_spans")} WHERE source_version_id=ANY($1::text[])`, [ossDerivatives.map(row => row.id)])
     : [];
+  const ossTexts = new Map((await storage.evidence.getEvidenceBatch(ossEvidence.map(span => span.id))).map(span => [String(span.id), span.text]));
   const ossEvidenceSlicesValid = ossEvidence.length > 0 && ossEvidence.every(span => {
     const sourceIndex = ossDerivatives.findIndex(row => row.id === span.source_version_id);
     const bytes = sourceIndex >= 0 ? ossBlobs[ossSourceRows.indexOf(ossDerivatives[sourceIndex])] : undefined;
@@ -125,7 +128,8 @@ try {
     const byteEnd = Number(span.byte_end);
     const charStart = Number(span.char_start);
     const charEnd = Number(span.char_end);
-    const text = String(span.text_content);
+    const text = ossTexts.get(span.id);
+    if (typeof text !== "string") return false;
     return bytes.subarray(byteStart, byteEnd).toString("utf8") === text
       && [...bytes.toString("utf8")].slice(charStart, charEnd).join("") === text
       && `sha256_${createHash("sha256").update(bytes.subarray(byteStart, byteEnd)).digest("hex")}` === span.content_hash;

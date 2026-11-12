@@ -153,7 +153,8 @@ export function prepareConstructionInduction(input: {
   for (const documents of [input.documents, ...(input.additionalDocumentSets ?? [])]) {
     const key = sourceInductionInputDigest(documents, input.hasher);
     if (!views.has(key)) {
-      const products = compileSourceInductionWindows({ documents, hasher: input.hasher, modelCache });
+      const products = compileSourceInductionWindows({ documents, hasher: input.hasher, modelCache,
+        ...(input.contextDocuments?.length ? { relationContextDocuments: input.contextDocuments } : {}) });
       views.set(key, key === sourceDigest ? products : Object.freeze({ models: products.models, coverage: products.coverage }));
     }
   }
@@ -222,10 +223,12 @@ async function prepareConstructionInductionAsynchronously(input: AsyncConstructi
   for (const documents of [input.documents, ...(input.additionalDocumentSets ?? [])]) {
     const key = sourceInductionInputDigest(documents, input.hasher, corpusIdentity);
     if (!views.has(key)) {
+      const relationContext = input.contextDocuments?.length ? { relationContextDocuments: input.contextDocuments } : {};
       const products = input.execution ? await compileSourceInductionWindowsAsync({ documents, hasher: input.hasher, modelCache, execution: input.execution,
+        ...relationContext,
         ...(corpusLoader ? { corpusLoader } : {}), ...(input.signal ? { signal: input.signal } : {}) })
-        : corpusLoader ? await compileSourceInductionWindowsFromCorpus({ documents, hasher: input.hasher, corpusLoader, modelCache })
-          : compileSourceInductionWindows({ documents, hasher: input.hasher, modelCache });
+        : corpusLoader ? await compileSourceInductionWindowsFromCorpus({ documents, hasher: input.hasher, corpusLoader, modelCache, ...relationContext })
+          : compileSourceInductionWindows({ documents, hasher: input.hasher, modelCache, ...relationContext });
       views.set(key, key === sourceDigest ? products : Object.freeze({ models: products.models, coverage: products.coverage }));
     }
   }

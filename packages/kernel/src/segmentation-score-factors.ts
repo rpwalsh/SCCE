@@ -43,6 +43,13 @@ const MAX_GRAPH_BYTES = 64 * 1024 * 1024;
 const fail = (): never => { throw Error("invalid segmentation score factors"); };
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const natural = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+/**
+ * Producer-local proof that a frozen recipe was replayed against this exact
+ * frozen graph during capture. This intentionally does not survive cloning or
+ * serialization: durable and externally supplied values must take the full
+ * validation path.
+ */
+const CAPTURED_SCORE_GRAPHS = new WeakMap<SegmentationScoreFactors, SegmentationAdjacencyFactors>();
 const clone = <T>(value: T): T => { try { return JSON.parse(exactJson(value)) as T; } catch { return fail(); } };
 const record = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 function intern<T>(values: T[]) {
@@ -112,7 +119,25 @@ export function captureSegmentationScoreFactors(input: { graph: SegmentationAdja
   const recipe: SegmentationScoreFactors = { ...material, digest: hasher.digestHex(exactJson(material)) };
   const decoded = replaySegmentationScoreFactors(recipe, input.graph.arcs.map(([start, end]) => [start, end]), hasher);
   if (decoded.arcs.some((arc, i) => !Object.is(arc[2], input.graph.arcs[i]![2]))) return fail();
-  return freeze(recipe);
+  const frozen = freeze(recipe);
+  // Forest construction freezes the graph, arc vector, and every arc before
+  // capture. Only that immutable shape is safe to recognize by identity later.
+  if (Object.isFrozen(input.graph) && Object.isFrozen(input.graph.arcs)
+    && input.graph.arcs.every(arc => Object.isFrozen(arc))) {
+    CAPTURED_SCORE_GRAPHS.set(frozen, input.graph);
+  }
+  return frozen;
+}
+
+/**
+ * True only for the exact immutable recipe/graph pair already replay-checked
+ * by captureSegmentationScoreFactors in this process.
+ */
+export function isCapturedSegmentationScoreFactors(
+  value: SegmentationScoreFactors,
+  graph: SegmentationAdjacencyFactors
+): boolean {
+  return CAPTURED_SCORE_GRAPHS.get(value) === graph;
 }
 
 function validated(value: unknown, topology: ReadonlyArray<readonly [number, number]>, hasher: Hasher): SegmentationScoreFactors {

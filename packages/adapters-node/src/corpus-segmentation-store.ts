@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { canonicalStringify, validatePagedSegmentationInference, type SegmentationPopulationInferenceModel, type InformationLabel, type JsonValue } from "@scce/kernel";
 import type { CorpusSegmentationScratch, CorpusSegmentationScratchRow } from "@scce/kernel";
-import { assertEvidenceTextDigestMaintenance } from "./evidence-text-digest.js";
+import { assertEvidenceTextReferenceMaintenance } from "./evidence-text-reference-schema.js";
 import { currentCorpusSegmentationDerivations } from "./corpus-segmentation-owner.js";
 import type { PostgresStorageAdapter } from "./postgres.js";
 
@@ -176,7 +176,7 @@ function inventorySql(storage: PostgresStorageAdapter, scope: CorpusSegmentation
   const sourceAccess = storage.informationAccessPredicate("sv", firstParameter + params.length); params.push(...sourceAccess.params); where.push(sourceAccess.sql);
   return { params, sql: `SELECT e.id AS evidence_id, jsonb_build_object(
     'evidenceId',e.id,'sourceId',e.source_id,'sourceVersionId',sv.id,'sourceContentHash',sv.content_hash,
-    'evidenceContentHash',e.content_hash,'textSha256',encode(e.text_sha256,'hex'),
+    'evidenceContentHash',e.content_hash,
     'byteStart',e.byte_start,'byteEnd',e.byte_end,'charStart',e.char_start,'charEnd',e.char_end,
     'codePoints',e.char_end-e.char_start,'informationLabel',e.information_label,'sourceInformationLabel',sv.information_label,
     'sourceFamilyId',e.source_id,'parentSourceVersionId',sv.metadata_json#>'{_scceSourceVersion,derivation,derivedFromSourceVersionId}') AS row_json
@@ -186,7 +186,7 @@ function inventorySql(storage: PostgresStorageAdapter, scope: CorpusSegmentation
 
 export async function createCorpusSegmentationRun(storage: PostgresStorageAdapter, input: CorpusSegmentationRun, bounds: SegmentationPageBounds): Promise<PostgresCorpusSegmentationRun> {
   storage.requireWritableInformationLabel(input.scope.informationLabel);
-  await assertEvidenceTextDigestMaintenance(storage);
+  await assertEvidenceTextReferenceMaintenance(storage);
   for (const ids of [input.scope.sourceVersionIds,input.scope.sourceSystems]) if (ids !== undefined
     && (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== "string" || !id.trim()))) throw new Error("Invalid corpus segmentation source scope");
   if(input.scope.ownerFamilyBindings){if(!Array.isArray(input.scope.ownerFamilyBindings))throw new Error("Invalid corpus segmentation family bindings");const seen=new Set<string>();for(const binding of input.scope.ownerFamilyBindings){
@@ -218,7 +218,7 @@ export async function createCorpusSegmentationRun(storage: PostgresStorageAdapte
 
 /** Rehash the exact current membership without hydrating corpus text or aggregating arrays. */
 export async function currentCorpusSegmentationDependency(storage: PostgresStorageAdapter, run: PostgresCorpusSegmentationRun): Promise<{id: string; count: number}> {
-  await assertEvidenceTextDigestMaintenance(storage);
+  await assertEvidenceTextReferenceMaintenance(storage);
   const hash = createHash("sha256"); let count = 0, after = "";
   let inventory: {id:string;count:number};
   for (;;) {

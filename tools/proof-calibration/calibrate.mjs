@@ -22,6 +22,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createHasher, createSemanticProofSystem, hasPredicateSubstance, PROOF_CONTRADICTION_THRESHOLD } from "../../packages/kernel/dist/index.js";
+import { createCanonicalCorpusReader } from "../lib/canonical-corpus-read.mjs";
 
 const require_ = createRequire(pathToFileURL(path.resolve("packages/adapters-node/package.json")));
 
@@ -122,20 +123,26 @@ async function corpusNegatives(limitDocuments, pairsPerDocument, seed) {
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   await client.query(`SET search_path TO "${schema}"`);
+  const corpus = createCanonicalCorpusReader(client, schema);
   const { rows } = await client.query(
-    `SELECT source_version_id, string_agg(text_content, ' ' ORDER BY char_start) AS body
-     FROM evidence_spans
-     GROUP BY source_version_id
-     HAVING SUM(LENGTH(text_content)) BETWEEN 2000 AND 60000
-     ORDER BY source_version_id ASC
-     LIMIT $1`,
+    `WITH selected AS MATERIALIZED (
+       SELECT source_version_id FROM evidence_spans GROUP BY source_version_id
+       HAVING SUM(char_end-char_start) BETWEEN 2000 AND 60000 ORDER BY source_version_id ASC LIMIT $1
+     ) SELECT e.source_version_id,e.content_hash,e.byte_start,e.byte_end,e.char_start,e.char_end
+       FROM evidence_spans e JOIN selected s USING(source_version_id) ORDER BY e.source_version_id,e.char_start`,
     [limitDocuments]
   );
+  const texts = await corpus.evidenceTexts(rows);
   await client.end();
+  const documents = new Map();
+  for (const [index, row] of rows.entries()) {
+    const parts = documents.get(row.source_version_id) ?? [];
+    parts.push(texts[index]); documents.set(row.source_version_id, parts);
+  }
   const random = seededRandom(seed);
   const negatives = [];
-  for (const row of rows) {
-    const sentences = splitSentences(row.body);
+  for (const parts of documents.values()) {
+    const sentences = splitSentences(parts.join(" "));
     if (sentences.length < 4) continue;
     for (let n = 0; n < pairsPerDocument; n++) {
       const i = Math.floor(random() * sentences.length);

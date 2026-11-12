@@ -6,7 +6,7 @@ import { attachSourceBoundAnswerConstruct } from "../local-evidence-runtime.js";
 import { compileRealizationContract, semanticAnswerConstructFacts, candidateIsVerifiedBoundValue, resolveRequestValueBinding, type RequestValueBinding } from "../semantic-answer-construct.js";
 import { extractTemporalAnswerFromEvidence } from "../semantic-obligations.js";
 import { semanticAnswerConstructState } from "../mouth-source-facts.js";
-import { currentSourceBoundRoleValueFact, requestValueBindingConstructFact } from "../source-bound-semantic-fact.js";
+import { currentSourceBoundRoleValueFact, requestValueBindingConstructFact, sourceOwnedValueResolver } from "../source-bound-semantic-fact.js";
 import type { ConstructGraph, EvidenceSpan } from "../types.js";
 
 const source = { id: "evidence.notes", sourceVersionId: "source.notes", status: "promoted", text: "Mira Venn directs Neralis observatory. Neralis observatory is located on Pelora island." } as EvidenceSpan;
@@ -64,4 +64,57 @@ it("does not turn an untyped transcript date into a source-owned founding fact",
   expect(raw).toMatchObject({ value: "31 August 2000", resolverId: "resolver.evidence_temporal", evidenceIds: [String(transcript.id)] });
   expect(raw?.relation).not.toBe("is");
   expect(requestValueBindingConstructFact(raw, [transcript])).toBeUndefined();
+});
+
+it("types an extracted value only when its source sentence also owns a request subject", () => {
+  const transcript = { ...source, text: "When did Virgin Australia start operating?\nVirgin Australia commenced services on 31 August 2000 as Virgin Blue." };
+  const resolver = sourceOwnedValueResolver({
+    id: "resolver.evidence_temporal",
+    relationId: "relation.temporal.event_time",
+    requestedRoleId: "role.temporal.value",
+    resolveValue: extractTemporalAnswerFromEvidence
+  });
+  const resolved = resolveRequestValueBinding({
+    requestText: "When did Virgin Australia start operating?",
+    evidence: [transcript],
+    resolvers: [resolver]
+  });
+  expect(resolved).toMatchObject({
+    subject: "Virgin Australia",
+    relationId: "relation.temporal.event_time",
+    requestedRoleId: "role.temporal.value",
+    value: "31 August 2000",
+    evidenceIds: [String(transcript.id)]
+  });
+  expect(requestValueBindingConstructFact(resolved, [transcript])).toMatchObject({
+    subject: "Virgin Australia",
+    predicate: "",
+    object: "31 August 2000",
+    relationId: "relation.temporal.event_time",
+    relationRoleId: "role.temporal.value"
+  });
+
+  const unrelated = resolveRequestValueBinding({
+    requestText: "When was Neralis observatory founded?",
+    evidence: [transcript],
+    resolvers: [resolver]
+  });
+  expect(unrelated).toBeUndefined();
+});
+
+it("projects source-owned roles without an English vocabulary", () => {
+  const evidence = { ...source, text: "Neralis observatorio inició operaciones el día doce." };
+  const resolver = sourceOwnedValueResolver({
+    id: "resolver.fixture",
+    relationId: "relation.fixture.event_time",
+    requestedRoleId: "role.fixture.value",
+    resolveValue: () => "día doce"
+  });
+  const resolved = resolveRequestValueBinding({
+    requestText: "¿Cuándo inició Neralis observatorio?",
+    evidence: [evidence],
+    resolvers: [resolver]
+  });
+  expect(resolved).toMatchObject({ subject: "Neralis observatorio", value: "día doce" });
+  expect(requestValueBindingConstructFact(resolved, [evidence])).toBeDefined();
 });

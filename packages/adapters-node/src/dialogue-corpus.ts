@@ -61,6 +61,7 @@ export interface DialogueCorpusTrainOptions {
   beforeSourceTraining?: (source: SourceBrainFileAdmission) => void | Promise<void>;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   sourceInductionExecution?: import("./source-induction-execution.js").SourceInductionWorkerExecution;
+  sourceInductionExecutionOwner?: Pick<import("./source-induction-execution.js").SourceInductionExecutionOwner, "execution" | "receipt">;
   storage: ScceStorage;
   rootPath: string;
   /** Dialogue is owner-private. The trainer refuses a public label so a transcript cannot be exported as corpus. */
@@ -225,6 +226,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       const trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
         sourceInductionExecution: input.sourceInductionExecution,
+        sourceInductionExecutionOwner: input.sourceInductionExecutionOwner,
         storage: input.storage,
         sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue,
         streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.dialogue}:${normalizeRelative(file.relativePath)}`,
@@ -266,6 +268,21 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       });
     }
   }
+  // Contextual constructions may span multiple source-owned profiles, but only
+  // a persisted language-identity assignment can prove that those profiles
+  // belong to the same learned language.  Finalize that index before compiling
+  // the derived dialogue components; doing it afterwards made the compiler
+  // either mix arbitrary profiles or depend on a second ingestion pass.
+  if (input.storage.languageIdentities) {
+    const profileIds = reports.map(report => report.artifacts.languageProfileId);
+    if (!profileIds.length && read.length) {
+      const versions = read.map(file => corpusSourceVersionIdFor(file));
+      const profiles = await input.storage.model.listLanguageProfiles({ sourceVersionIds: versions, limit: versions.length });
+      profileIds.push(...profiles.filter(profile => versions.includes(profile.sourceVersionId)).map(profile => profile.id));
+    }
+    const identities = createLanguageIdentityRuntime({ store: input.storage.languageIdentities, hasher: createHasher(), now: Date.now, informationLabel: input.informationLabel });
+    await input.storage.transaction(() => identities.ensure({ requiredProfileIds: profileIds, initializeIfMissing: true }));
+  }
   const result: DialogueCorpusTrainReport = {
     schema: "scce.dialogueCorpusTrainReport.v1",
     rootPath: root,
@@ -292,16 +309,6 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
   };
   result.selection = { selectedSourceUris: files.map(file => pathToFileURL(file.absolutePath).href), completedSourceUris,
     languageTrainingComplete: files.length > 0 && !input.actsOnly && !stoppedByHeapSafetyBound && skipped.length === 0 && completedSourceUris.length === files.length };
-  if (input.storage.languageIdentities) {
-    const profileIds = reports.map(report => report.artifacts.languageProfileId);
-    if (!profileIds.length && read.length) {
-      const versions = read.map(file => corpusSourceVersionIdFor(file));
-      const profiles = await input.storage.model.listLanguageProfiles({ sourceVersionIds: versions, limit: versions.length });
-      profileIds.push(...profiles.filter(profile => versions.includes(profile.sourceVersionId)).map(profile => profile.id));
-    }
-    const identities = createLanguageIdentityRuntime({ store: input.storage.languageIdentities, hasher: createHasher(), now: Date.now, informationLabel: input.informationLabel });
-    await input.storage.transaction(() => identities.ensure({ requiredProfileIds: profileIds, initializeIfMissing: true }));
-  }
   const sourceBrainBuild = result.selection?.languageTrainingComplete ? await input.onSourceBrainTrainingComplete?.(result) : undefined;
   if (sourceBrainBuild) result.sourceBrainBuild = "lifecycle" in sourceBrainBuild ? sourceBrainBuildReceipt(sourceBrainBuild) : sourceBrainBuild;
   return result;

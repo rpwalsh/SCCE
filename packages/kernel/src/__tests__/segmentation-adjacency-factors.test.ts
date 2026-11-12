@@ -60,4 +60,18 @@ describe("portable segmentation adjacency factors", () => {
     expect(factors.arcs).toHaveLength(blocks * 3);
     expect(factors.nodeCount).toBe(blocks * 2 + 1);
   });
+
+  it("keeps reconstructed adjacency posterior mass inside the probability domain", () => {
+    const nodeCount = 14;
+    const arcs = Array.from({ length: nodeCount - 1 }, (_, index) => [index, index + 1, 0.1] as const);
+    const query = createSegmentationAdjacencyQuery({
+      schema: "scce.segmentation_adjacency_factors.v1",
+      nodeCount,
+      arcs
+    }, new Set(arcs.map((_, index) => index)));
+
+    const pairs = [...query.pairs()];
+    expect(pairs).toHaveLength(nodeCount - 2);
+    expect(pairs.every(pair => pair.posterior === 1)).toBe(true);
+  });
 });

@@ -23,6 +23,8 @@ function fixture() {
     informationLabel: label, metadata: { authorship: "human_authored", sourceMetadata: { dataset: "human fixture" }, sourceMetadataBinding: { valueHash: "unchanged" } } };
   const blobs = new Map<ContentHash, Uint8Array>();
   const storage: Pick<ScceStorage, "blobs"> = { blobs: { put: async bytes => { const key = hash(bytes); blobs.set(key, bytes); return key; },
+    putRanges: async (items, parent) => { const bytes = blobs.get(parent.contentHash); if (!bytes || hash(bytes) !== parent.contentHash) throw Error("missing canonical range parent");
+      for (const item of items) if (item.parentHash !== parent.contentHash || hash(parent.bytes.slice(item.byteStart, item.byteEnd)) !== item.contentHash) throw Error("invalid canonical range"); },
     get: async key => { const bytes = blobs.get(key); if (!bytes) throw Error("missing archive blob"); return bytes; }, exists: async key => blobs.has(key) } };
   return { source, text, turns, storage, blobs, hash, ids };
 }

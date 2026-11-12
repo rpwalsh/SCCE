@@ -1,6 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
+import { CORPUS_ARCHIVE_KEY_PREFIX, corpusArchiveIdentity, createCanonicalBlobReader, readCanonicalBlob, type CanonicalBlobHost } from "./canonical-evidence-text.js";
+import { encodeCanonicalEvidenceSpanText, hydrateCanonicalEvidenceSpanText, type CanonicalEvidenceSpanSource, type CanonicalEvidenceSpanTextRecord } from "./canonical-evidence-span-text.js";
+import { ExactTransactionWriteCache } from "./exact-transaction-write-cache.js";
+import { readWikipediaArchiveBlob } from "./wikipedia.js";
 import { isSourceOwnedProjectProjection, SOURCE_OWNED_PROJECT_PROJECTION_PREFIX, projectContractDependencyEligibilitySql } from "./source-owned-project-projection.js";
 import { consolidateCorpusSegmentation, loadCorpusSegmentationContextSlice } from "./corpus-segmentation-producer.js";
 import { createCorpusSegmentationRun, openCorpusSegmentationRun, activateCorpusSegmentationRun, readActiveCorpusSegmentationRun } from "./corpus-segmentation-store.js";
@@ -9,6 +13,14 @@ import { languageUnitMetadataMergeSql, SOURCE_METADATA_BINDING_SCHEMA } from "./
 import { sourceTranscriptArchiveAppendSql } from "./source-transcript-archive.js";
 import { createCanonicalCreativeEventCodec, type CreativeEventStorageHost } from "./canonical-creative-event-store.js";
 import { createConstructionSourceDecisionStore } from "./construction-source-decision-store.js";
+import { createSourceTextReplayStore, type SourceReplayScope } from "./source-text-replay-store.js";
+import { SOURCE_TEXT_REPLAY_BINDING_SET_RELATION, decodeSourceTextReplayBindingSetRow,
+  encodeSourceTextReplayBindingSetRow, type SourceTextReplayBindingSetPhysicalRow } from "./source-text-replay-binding-set-store.js";
+import {
+  LANGUAGE_UNIT_EVIDENCE_SET_RELATION,
+  LANGUAGE_UNIT_INFORMATION_LABEL_RELATION,
+  LANGUAGE_UNIT_VALUES_RELATION
+} from "./canonical-language-unit-store.js";
 import { createSourceArtifactMetadataCodec } from "./source-artifact-metadata.js";
 import { LEGACY_SEMANTIC_PROJECTION_STORAGE_SCHEMA, SEMANTIC_PROJECTION_STORAGE_KEY,
   SEMANTIC_PROJECTION_STORAGE_SCHEMA, decodeSemanticProjectionStorageV2ForMigration } from "./semantic-projection-storage.js";
@@ -35,6 +47,7 @@ import {
   assertCanonicalHyperedge,
   createAlphaLayer,
   canonicalStringify,
+  materializeKneserNey,
   codeLanguageForModelRecord,
   createHasher,
   bindNgramModelTrainingReplay,
@@ -60,12 +73,16 @@ import {
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
   INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS,
   INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
+  LANGUAGE_SEGMENTATION_WITNESS_REFERENCE_SCHEMA,
   LANGUAGE_SEGMENTATION_WITNESS_SCHEMA,
   LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA,
   SOURCE_SEGMENTATION_WITNESS_SCHEMA,
   hydrateLanguageSegmentationWitness,
   isLanguageSegmentationWitness,
   isLanguageSegmentationWitnessReference,
+  createSourceTextReplayBindingSet,
+  sourceTextReplayBindingSetReference,
+  validateSourceTextReplayBindingSetReference,
   CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
   CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
   REQUEST_SEED_PATTERN_JSON_FIELDS,
@@ -173,6 +190,9 @@ import {
   type InducedLanguageModelRecord,
   type InducedLanguageModelStore,
   type LanguageSegmentationWitnessReference,
+  type SourceTextReplayBinding,
+  type SourceTextReplayBindingSet,
+  type SourceTextReplayBindingSetReference,
   type SegmentationPopulationModel,
   type SegmentationPopulationModelRecord,
   type SegmentationPopulationModelStore,
@@ -235,6 +255,7 @@ import {
   isDuplicateExtensionError,
   freshSchemaIndexStatements,
   requiredHydrationColumns,
+  NGRAM_MODEL_CONTINUATION_RELATION,
   type InformationLabeledTable
 } from "./postgres-schema.js";
 export {
@@ -340,6 +361,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly languageIdentities: LanguageIdentityStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
   private readonly languageRevisionDirty = new WeakSet<PoolClient>();
+  private readonly languagePatternWrites = new WeakMap<PoolClient, ExactTransactionWriteCache<LanguagePatternRecord>>();
 
   constructor(options: PostgresStorageOptions) {
     if (!/^postgres(?:ql)?:\/\//i.test(options.url)) throw new Error("SCCE v3 requires PostgreSQL; storage adapter received a non-Postgres URL.");
@@ -697,8 +719,27 @@ export class PostgresStorageAdapter implements ScceStorage {
     return result.rows as T[];
   }
 
+  /** Read helpers called by a codec share its already-owned transaction client. */
+  async withQueryClient<T>(client: PoolClient | undefined, operation: () => Promise<T>): Promise<T> {
+    if (!client) return operation();
+    const active = this.transactionContext.getStore();
+    if (active && active !== client) throw new Error("codec query client differs from its active transaction");
+    return this.transactionContext.run(client, operation);
+  }
+
   requireActiveTransaction(operation: string): void {
     if (!this.transactionContext.getStore()) throw new Error(`${operation} requires an active transaction`);
+  }
+
+  activeLanguagePatternWrites(): ExactTransactionWriteCache<LanguagePatternRecord> {
+    this.requireActiveTransaction("language-pattern transaction write reuse");
+    const client = this.transactionContext.getStore()!;
+    let writes = this.languagePatternWrites.get(client);
+    if (!writes) {
+      writes = new ExactTransactionWriteCache<LanguagePatternRecord>();
+      this.languagePatternWrites.set(client, writes);
+    }
+    return writes;
   }
 
   async transaction<T>(operation: () => Promise<T>): Promise<T> {
@@ -709,7 +750,10 @@ export class PostgresStorageAdapter implements ScceStorage {
         const result = await this.transactionContext.run(client, operation);
         if (this.languageRevisionDirty.has(client)) await client.query(languageMemoryRevisionIncrementSql(this));
         return result;
-      } finally { this.languageRevisionDirty.delete(client); }
+      } finally {
+        this.languageRevisionDirty.delete(client);
+        this.languagePatternWrites.delete(client);
+      }
     });
   }
 
@@ -828,13 +872,22 @@ export async function joinDurableRecordLabels(
      ) buckets`,
     [ids, storage.table(table)]
   );
-  const existing = await storage.query<{ id: string; information_label: InformationLabel }>(
-    `SELECT id, information_label
-     FROM ${storage.table(table)}
-     WHERE id=ANY($1)
-     FOR UPDATE`,
-    [ids]
-  );
+  const existing = table === "language_units"
+    ? await storage.query<{ id: string; information_label: InformationLabel }>(
+      `SELECT unit.id,label.information_label
+       FROM ${storage.table("language_units")} unit
+       JOIN ${storage.table(LANGUAGE_UNIT_INFORMATION_LABEL_RELATION)} label ON label.id=unit.information_label_id
+       WHERE unit.id=ANY($1)
+       FOR UPDATE OF unit`,
+      [ids]
+    )
+    : await storage.query<{ id: string; information_label: InformationLabel }>(
+      `SELECT id, information_label
+       FROM ${storage.table(table)}
+       WHERE id=ANY($1)
+       FOR UPDATE`,
+      [ids]
+    );
   for (const row of existing) {
     labelsById.set(row.id, [normalizeInformationLabel(row.information_label), ...(labelsById.get(row.id) ?? [])]);
   }
@@ -1081,16 +1134,119 @@ function canonicalCodecHost(storage: PostgresStorageAdapter, client?: PoolClient
   };
 }
 
-function canonicalCreativeCodec(storage: PostgresStorageAdapter, client?: PoolClient) {
+interface SourceReplayBindingSetDatabaseRow {
+  id: string; model_id: string; profile_id: string; manifest_pattern_id: string; manifest_digest: string;
+  binding_json: SourceTextReplayBindingSetPhysicalRow["bindingJson"]; binding_digest: string;
+  information_label: InformationLabel; created_at: Date;
+}
+
+function sourceReplayBindingSetPhysical(row: SourceReplayBindingSetDatabaseRow): SourceTextReplayBindingSetPhysicalRow {
+  if (!(row.created_at instanceof Date) || !Number.isFinite(row.created_at.getTime())) throw new Error("invalid source replay binding-set timestamp");
+  return { id: row.id, modelId: row.model_id, profileId: row.profile_id, manifestPatternId: row.manifest_pattern_id,
+    manifestDigest: row.manifest_digest, bindingJson: row.binding_json, bindingDigest: row.binding_digest,
+    informationLabel: normalizeInformationLabel(row.information_label), createdAt: row.created_at.getTime() };
+}
+
+function canonicalCreativeCodec(storage: PostgresStorageAdapter, client?: PoolClient,
+  pendingArchives: ReadonlyMap<string, LanguagePatternRecord> = new Map()) {
   const host = canonicalCodecHost(storage, client);
   const base = createCanonicalCreativeEventCodec(host);
+  const replayHasher = createHasher();
+  const manifestFor = (scope: SourceReplayScope, reference?: unknown): Promise<{
+    reference: LanguageSegmentationWitnessReference; manifest: LanguagePatternRecord;
+  }> => storage.withQueryClient(client, async () => {
+    const selected = reference ?? inducedModelObject(await sourceReplayComponent(storage, host, scope,
+      INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, "syntax")).segmentationWitness;
+    if (!isLanguageSegmentationWitnessReference(selected)) throw new Error("source replay segmentation witness reference is unavailable");
+    const manifest = pendingArchives.get(selected.manifestPatternId) ?? await inducedLanguageWitnessManifest(storage, selected);
+    if (scope.profileId !== undefined && manifest.profileId !== scope.profileId) throw new Error("source replay manifest profile changed");
+    validateInducedLanguageWitnessManifestIdentity(selected, manifest);
+    return { reference: selected, manifest };
+  });
+  const sourceReplay = createSourceTextReplayStore({
+    ...segmentationArchiveStorageAccess(storage, client),
+    loadWitness: (scope, reference) => storage.withQueryClient(client, async () => {
+      const { reference: selected, manifest } = await manifestFor(scope, reference);
+      // A first publication writes its manifest and source archives in this same
+      // atomic batch. Those logical rows have already passed archive validation;
+      // resolve them before INSERT without producing extra versions or text copies.
+      const patternIds = inducedLanguageManifestSourcePatternIds(manifest);
+      const missing = patternIds.filter(id => !pendingArchives.has(id));
+      const published = missing.length ? await storage.languageMemory.listLanguagePatterns({ patternIds: missing,
+        limit: missing.length, maxTotalJsonBytes: 64 * 1024 * 1024, requireComplete: true }) : [];
+      const byId = new Map(published.map(row => [row.id, row]));
+      const sourceWitnesses = patternIds.map(id => pendingArchives.get(id) ?? byId.get(id));
+      if (sourceWitnesses.some(row => !row)) throw new Error("source replay source witness is unavailable");
+      return hydrateLanguageSegmentationWitness({ reference: selected, manifest, sourceWitnesses: sourceWitnesses as LanguagePatternRecord[] });
+    }),
+    loadSemanticFactors: (scope) => storage.withQueryClient(client, async () => {
+      const body = inducedModelObject(await sourceReplayComponent(storage, host, scope, "scce.induced_language_model.semantic_memory.v1", "semantic_role"));
+      const projection = inducedModelObject(body.semanticInductionProjection);
+      if (projection.schema === "scce.semantic_induction_projection.v1") return projection.factors;
+      if (projection.schema !== "scce.semantic_projection.json.v1" || typeof projection.text !== "string"
+        || projection.text.length > 64 * 1024 * 1024 || createHasher().digestHex(projection.text) !== projection.digest) {
+        throw new Error("source replay semantic source metadata is unavailable");
+      }
+      return inducedModelObject(JSON.parse(projection.text)).factors;
+    }),
+    publishBindingSet: input => storage.withQueryClient(client, async () => {
+      const { reference: witnessReference, manifest } = await manifestFor(input.scope, input.witnessReference);
+      const bindingSet = createSourceTextReplayBindingSet({ modelId: input.scope.modelId,
+        profileId: manifest.profileId, manifestPatternId: witnessReference.manifestPatternId,
+        manifestDigest: replayHasher.digestHex(canonicalStringify(manifest.patternJson)), bindings: input.bindings }, replayHasher);
+      const row = encodeSourceTextReplayBindingSetRow({ bindingSet,
+        informationLabel: storage.requireWritableInformationLabel(manifest.informationLabel),
+        createdAt: manifest.updatedAt, hasher: replayHasher });
+      await host.transaction(async () => {
+        await host.query(`INSERT INTO ${host.table(SOURCE_TEXT_REPLAY_BINDING_SET_RELATION)}(
+          id,model_id,profile_id,manifest_pattern_id,manifest_digest,binding_json,binding_digest,information_label,created_at)
+          VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8::jsonb,TO_TIMESTAMP($9/1000.0)) ON CONFLICT(id) DO NOTHING`,
+        [row.id,row.modelId,row.profileId,row.manifestPatternId,row.manifestDigest,JSON.stringify(row.bindingJson),
+          row.bindingDigest,JSON.stringify(row.informationLabel),row.createdAt]);
+        const stored = await host.query<SourceReplayBindingSetDatabaseRow>(
+          `SELECT * FROM ${host.table(SOURCE_TEXT_REPLAY_BINDING_SET_RELATION)} WHERE id=$1`, [row.id]);
+        if (stored.length !== 1 || canonicalStringify(sourceReplayBindingSetPhysical(stored[0]!)) !== canonicalStringify(row)) {
+          throw new Error("source replay binding-set publication changed its immutable row");
+        }
+      });
+      return sourceTextReplayBindingSetReference(bindingSet, replayHasher);
+    }),
+    loadBindingSet: (scope, reference) => storage.withQueryClient(client, async () => {
+      const normalized = validateSourceTextReplayBindingSetReference(reference);
+      const params: unknown[] = [normalized.id, scope.modelId];
+      const where = ["binding.id=$1", "binding.model_id=$2",
+        "binding.information_label=manifest.information_label", "manifest.profile_id=binding.profile_id"];
+      if (scope.profileId !== undefined) { params.push(scope.profileId); where.push(`binding.profile_id=$${params.length}`); }
+      const bindingAccess = host.informationAccessPredicate("binding", params.length + 1); params.push(...bindingAccess.params); where.push(bindingAccess.sql);
+      const manifestAccess = host.informationAccessPredicate("manifest", params.length + 1); params.push(...manifestAccess.params); where.push(manifestAccess.sql);
+      const profileAccess = host.informationAccessPredicate("profile", params.length + 1); params.push(...profileAccess.params); where.push(profileAccess.sql);
+      where.push(profileSourceOwnershipSql(storage, params, "profile"));
+      const rows = await host.query<SourceReplayBindingSetDatabaseRow>(`SELECT binding.*
+        FROM ${host.table(SOURCE_TEXT_REPLAY_BINDING_SET_RELATION)} binding
+        JOIN ${host.table("language_patterns")} manifest ON manifest.id=binding.manifest_pattern_id
+        JOIN ${host.table("language_profiles")} profile ON profile.id=binding.profile_id
+        WHERE ${where.join(" AND ")}`, params);
+      if (rows.length !== 1) throw new Error("source replay binding-set row is missing or inaccessible");
+      const physical = sourceReplayBindingSetPhysical(rows[0]!);
+      const bindingSet = decodeSourceTextReplayBindingSetRow(physical, replayHasher);
+      const { manifest } = await manifestFor(scope, { schema: LANGUAGE_SEGMENTATION_WITNESS_REFERENCE_SCHEMA,
+        manifestPatternId: bindingSet.manifestPatternId });
+      if (!manifest.informationLabel) throw new Error("source replay binding-set manifest has no information label");
+      if (replayHasher.digestHex(canonicalStringify(manifest.patternJson)) !== bindingSet.manifestDigest
+        || canonicalStringify(normalizeInformationLabel(manifest.informationLabel)) !== canonicalStringify(physical.informationLabel)) {
+        throw new Error("source replay binding-set manifest identity or information label changed");
+      }
+      return bindingSet;
+    })
+  });
   const decisions = createConstructionSourceDecisionStore({
     ...host,
     evidence: ids => readEvidenceBatch(host, ids)
   });
   const encodeMany = async (inputs: readonly { value: unknown; informationLabel?: InformationLabel }[]): Promise<unknown[]> => {
     const encoded = await base.encodeMany(inputs);
-    return decisions.encodeMany(encoded.map((value, index) => ({
+    const replayed = await sourceReplay.encodeMany(encoded.map((value, index) => ({ value, logicalValue: inputs[index]!.value })));
+    return decisions.encodeMany(replayed.map((value, index) => ({
       value, informationLabel: inputs[index]!.informationLabel, logicalValue: inputs[index]!.value
     })));
   };
@@ -1098,16 +1254,75 @@ function canonicalCreativeCodec(storage: PostgresStorageAdapter, client?: PoolCl
     encode: async (value: unknown, informationLabel?: InformationLabel) => (await encodeMany([{ value, informationLabel }]))[0],
     encodeMany,
     async decodeMany(values: readonly unknown[]): Promise<unknown[]> {
-      return base.decodeMany(await decisions.decodeMany(values));
+      return base.decodeMany(await sourceReplay.decodeMany(await decisions.decodeMany(values)));
     }
   };
+}
+
+/** Read only the required component body, with the same source/profile/record access predicates. */
+async function sourceReplayComponent(storage: PostgresStorageAdapter, host: CreativeEventStorageHost,
+  scope: SourceReplayScope, schema: string, kind: string): Promise<unknown> {
+  if (!scope.profileId) throw new Error("source replay component requires its owned profile");
+  const id = `induced_language_memory_pattern_${createHasher().digestHex(canonicalStringify({
+    modelId: scope.modelId, profileId: scope.profileId, patternKind: kind, schema
+  }))}`;
+  const params: unknown[] = [id, scope.profileId, scope.modelId, schema, kind];
+  const where = ["pattern.id=$1", "pattern.profile_id=$2", "pattern.pattern_json->>'modelId'=$3", "pattern.pattern_schema=$4", "pattern.pattern_kind=$5"];
+  if (scope.sourceCompilationId) { params.push(scope.sourceCompilationId); where.push(`pattern.source_compilation_id=$${params.length}`); }
+  const access = host.informationAccessPredicate("pattern", params.length + 1); params.push(...access.params); where.push(access.sql);
+  const profileAccess = host.informationAccessPredicate("profile", params.length + 1); params.push(...profileAccess.params); where.push(profileAccess.sql);
+  where.push(profileSourceOwnershipSql(storage, params, "profile"));
+  const rows = await host.query<{ pattern_json: unknown }>(`SELECT pattern.pattern_json FROM ${host.table("language_patterns")} pattern
+    JOIN ${host.table("language_profiles")} profile ON profile.id=pattern.profile_id WHERE ${where.join(" AND ")}`, params);
+  if (rows.length !== 1) throw new Error("source replay owned component is missing or inaccessible");
+  return rows[0]!.pattern_json;
 }
 
 async function readEvidenceBatch(host: Pick<CreativeEventStorageHost, "table" | "query" | "informationAccessPredicate">, ids: readonly string[]): Promise<EvidenceSpan[]> {
   if (!ids.length) return [];
   const access = host.informationAccessPredicate("evidence", 2);
   const rows = await host.query<EvidenceRow>(`SELECT * FROM ${host.table("evidence_spans")} evidence WHERE id=ANY($1) AND ${access.sql}`, [ids, ...access.params]);
-  return rows.map(rowToEvidence);
+  return (await hydrateEvidenceRows(host, rows)).map(value => value.span);
+}
+
+/** Authorize source headers before any bytes are read; retain one bounded source body per group and restore input order. */
+async function hydrateEvidenceRows<T extends EvidenceRow>(
+  host: Pick<CreativeEventStorageHost, "table" | "query" | "informationAccessPredicate">,
+  rows: readonly T[]
+): Promise<Array<{ row: T; span: EvidenceSpan }>> {
+  if (!rows.length) return [];
+  const ids = [...new Set(rows.map(row => row.source_version_id))], sources = new Map<string, CanonicalEvidenceSpanSource>();
+  for (let offset = 0; offset < ids.length; offset += 4096) {
+    const access = host.informationAccessPredicate("sv", 2);
+    const owners = await host.query<{ id: string; source_id: string; content_hash: string; byte_length: string }>(
+      `SELECT sv.id,sv.source_id,sv.content_hash,sv.byte_length FROM ${host.table("source_versions")} sv
+       WHERE sv.id=ANY($1::text[]) AND ${access.sql}`, [ids.slice(offset, offset + 4096), ...access.params]);
+    for (const owner of owners) {
+      if (sources.has(owner.id)) throw new Error("canonical evidence source query returned duplicate owners");
+      sources.set(owner.id, { sourceId: owner.source_id as SourceId, sourceVersionId: owner.id as SourceVersionId,
+        contentHash: owner.content_hash as ContentHash, byteLength: Number(owner.byte_length) });
+    }
+  }
+  const groups = new Map<string, Array<{ row: T; index: number }>>();
+  for (const [index, row] of rows.entries()) {
+    const owner = sources.get(row.source_version_id);
+    if (!owner) continue; // An inaccessible source cannot grant access through an otherwise readable evidence row.
+    if (owner.sourceId !== row.source_id) throw new Error("canonical evidence source identity mismatch");
+    const group = groups.get(row.source_version_id) ?? [];
+    group.push({ row, index }); groups.set(row.source_version_id, group);
+  }
+  const read = createCanonicalBlobReader(host), restored = new Map<number, { row: T; span: EvidenceSpan }>();
+  for (const [sourceVersionId, group] of groups) {
+    const owner = sources.get(sourceVersionId)!;
+    let body: Promise<Uint8Array> | undefined;
+    const readSource = (hash: string): Promise<Uint8Array> => {
+      if (hash !== owner.contentHash) throw new Error("canonical evidence requested another source body");
+      return body ??= read(hash);
+    };
+    for (const { row, index } of group) restored.set(index, { row,
+      span: await hydrateCanonicalEvidenceSpanText(rowToCanonicalEvidence(row), owner, readSource) });
+  }
+  return rows.flatMap((_row, index) => restored.has(index) ? [restored.get(index)!] : []);
 }
 
 function sourceArtifactMetadataCodec(storage: PostgresStorageAdapter, client?: PoolClient) {
@@ -1236,8 +1451,18 @@ function isSourceCompilationMetadataHolder(value: unknown): boolean {
 }
 
 async function mergedSourceArtifactValues(storage: PostgresStorageAdapter, table: "ngram_models" | "language_units", column: "model_json" | "metadata_json", inputs: readonly { id: string; value: JsonValue; sourceVersionId?: string; informationLabel?: InformationLabel }[]): Promise<JsonValue[]> {
-  const rows = await storage.query<{ id: string; value: JsonValue; source_version_id?: string; information_label: InformationLabel }>(
-    `SELECT id,${column} AS value,information_label${table === "language_units" ? ",source_version_id" : ""} FROM ${storage.table(table)} WHERE id=ANY($1::text[]) FOR UPDATE`, [inputs.map(input => input.id)]);
+  const rows = table === "language_units"
+    ? await storage.query<{ id: string; value: JsonValue; source_version_id?: string; information_label: InformationLabel }>(
+      `SELECT unit.id,unit.metadata_json AS value,unit.source_version_id,label.information_label
+       FROM ${storage.table("language_units")} unit
+       JOIN ${storage.table(LANGUAGE_UNIT_INFORMATION_LABEL_RELATION)} label ON label.id=unit.information_label_id
+       WHERE unit.id=ANY($1::text[]) FOR UPDATE OF unit`,
+      [inputs.map(input => input.id)]
+    )
+    : await storage.query<{ id: string; value: JsonValue; source_version_id?: string; information_label: InformationLabel }>(
+      `SELECT id,${column} AS value,information_label FROM ${storage.table(table)} WHERE id=ANY($1::text[]) FOR UPDATE`,
+      [inputs.map(input => input.id)]
+    );
   if (!rows.length) return inputs.map(input => input.value);
   const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({
     value: table === "ngram_models" ? decodeNgramModelTrainingReplay(row.value) : row.value,
@@ -1422,6 +1647,23 @@ function createIngestionCheckpointStore(storage: PostgresStorageAdapter): Ingest
         [checkpoint.id, checkpoint.rootUri, checkpoint.itemUri, checkpoint.phase, checkpoint.status, checkpoint.offsetBytes, checkpoint.contentHash ?? null, checkpoint.byteLength ?? null, checkpoint.reason ?? null, JSON.stringify(checkpoint.metadata), checkpoint.updatedAt]
       );
     },
+    async compareAndPut(checkpoint, expected) {
+      if (checkpoint.id !== expected.id) throw new Error("Ingestion checkpoint compare-and-put identity differs");
+      const rows = await storage.query<{ id: string }>(
+        `UPDATE ${storage.table("ingestion_checkpoints")}
+         SET root_uri=$2,item_uri=$3,phase=$4,status=$5,offset_bytes=$6,content_hash=$7,byte_length=$8,reason=$9,metadata_json=$10::jsonb,updated_at=TO_TIMESTAMP($11/1000.0)
+         WHERE id=$1 AND (root_uri,item_uri,phase,status,offset_bytes,content_hash,byte_length,reason,metadata_json,updated_at)
+           IS NOT DISTINCT FROM ($12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,TO_TIMESTAMP($21/1000.0))
+         RETURNING id`,
+        [checkpoint.id, checkpoint.rootUri, checkpoint.itemUri, checkpoint.phase, checkpoint.status,
+          checkpoint.offsetBytes, checkpoint.contentHash ?? null, checkpoint.byteLength ?? null,
+          checkpoint.reason ?? null, JSON.stringify(checkpoint.metadata), checkpoint.updatedAt,
+          expected.rootUri, expected.itemUri, expected.phase, expected.status, expected.offsetBytes,
+          expected.contentHash ?? null, expected.byteLength ?? null, expected.reason ?? null,
+          JSON.stringify(expected.metadata), expected.updatedAt]
+      );
+      return rows.length === 1;
+    },
     async get(id) {
       const rows = await storage.query<IngestionCheckpointRow>(`SELECT * FROM ${storage.table("ingestion_checkpoints")} WHERE id=$1`, [id]);
       return rows[0] ? rowToIngestionCheckpoint(rows[0]) : null;
@@ -1458,7 +1700,7 @@ function createIngestionCheckpointStore(storage: PostgresStorageAdapter): Ingest
  * it writes anything, and a source version needs its content hash while still in that pure phase.
  */
 export function blobContentHash(content: Uint8Array | Buffer): ContentHash {
-  return `sha256_${sha256(Buffer.from(content))}` as ContentHash;
+  return `sha256_${sha256(content)}` as ContentHash;
 }
 
 const BLOB_INSERT_ROWS_PER_STATEMENT = Math.floor(POSTGRES_BIND_PARAMETER_LIMIT / 4);
@@ -1490,12 +1732,30 @@ async function putBlobBatch(
     const params = rows.flatMap(row => [row.hash, row.mediaType, row.content.length, Buffer.from(row.content)]);
     // Bind BYTEA as BYTEA. The former jsonb_to_recordset path expanded every
     // binary body into base64 and then made PostgreSQL decode it again.
+    // An explicit material write also makes identical external bytes local.
+    // The verified hash stays unchanged; independent workspace/OCR sources
+    // must not inherit the retained archive's availability requirement.
     await query(
-      `INSERT INTO ${storage.table("blobs")}(content_hash,media_type,byte_length,content)
+      `INSERT INTO ${storage.table("blobs")} AS stored(content_hash,media_type,byte_length,content)
        VALUES ${values.join(",")}
-       ON CONFLICT(content_hash) DO NOTHING`,
+        ON CONFLICT(content_hash) DO UPDATE SET
+          content=EXCLUDED.content,range_parent_hash=NULL,range_start=NULL,range_end=NULL,archive_reference=NULL
+        WHERE stored.byte_length=EXCLUDED.byte_length
+          AND (stored.range_parent_hash IS NOT NULL OR stored.archive_reference IS NOT NULL)`,
       params
     );
+    const host: CanonicalBlobHost = {
+      table: name => storage.table(name),
+      query: async <T>(sql: string, values: unknown[] = []): Promise<T[]> => client
+        ? (await client.query(sql, values)).rows as T[] : storage.query<T>(sql, values)
+    };
+    const stored = await canonicalBlobHeaders(host, rows.map(row => row.hash), true);
+    for (const row of rows) {
+      const header = stored.get(row.hash);
+      if (!header || canonicalBlobHeaderLength(header) !== row.content.byteLength) {
+        throw new Error("material blob content identity conflicts with an existing canonical blob");
+      }
+    }
   }
   return order;
 }
@@ -1510,17 +1770,18 @@ function segmentationArchiveStorageAccess(storage: PostgresStorageAdapter, clien
       const result = new Map<string, { text: string; sourceVersionId: string }>();
       for (let offset = 0; offset < unique.length; offset += 4096) {
         const access = storage.informationAccessPredicate("owner", 2);
-        const rows = await query<{ id: string; source_version_id: string; text_content: string }>(
-          `SELECT owner.id,owner.source_version_id,owner.text_content
+        const rows = await query<EvidenceRow>(
+          `SELECT owner.*
            FROM ${storage.table("evidence_spans")} owner
            WHERE owner.id=ANY($1::text[]) AND ${access.sql}`,
           [unique.slice(offset, offset + 4096), ...access.params]
         );
-        for (const row of rows) {
-          if (result.has(row.id) || typeof row.text_content !== "string" || typeof row.source_version_id !== "string") {
+        const hydrated = await hydrateEvidenceRows(canonicalCodecHost(storage, client), rows);
+        for (const { row, span } of hydrated) {
+          if (result.has(row.id) || typeof row.source_version_id !== "string") {
             throw new Error("invalid segmentation witness evidence owner row");
           }
-          result.set(row.id, { text: row.text_content, sourceVersionId: row.source_version_id });
+          result.set(row.id, { text: span.text, sourceVersionId: row.source_version_id });
         }
       }
       return result;
@@ -1528,20 +1789,152 @@ function segmentationArchiveStorageAccess(storage: PostgresStorageAdapter, clien
   };
 }
 
+interface CanonicalBlobHeader {
+  content_hash: string;
+  byte_length: string;
+  stored_byte_length: string;
+  range_parent_hash: string | null;
+  range_start: string | null;
+  range_end: string | null;
+  archive_reference: { archiveId: string; page: unknown } | null;
+}
+
+function canonicalBlobHeaderLength(row: CanonicalBlobHeader): number {
+  const length = Number(row.byte_length), storedLength = Number(row.stored_byte_length);
+  if (!Number.isSafeInteger(length) || length < 0 || !Number.isSafeInteger(storedLength) || storedLength < 0) {
+    throw new Error("invalid canonical blob header length");
+  }
+  if (row.range_parent_hash !== null) {
+    const start = Number(row.range_start), end = Number(row.range_end);
+    if (!/^sha256_[a-f0-9]{64}$/u.test(row.range_parent_hash) || row.range_parent_hash === row.content_hash
+      || row.archive_reference !== null || row.range_start === null || row.range_end === null
+      || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start
+      || end - start !== length || storedLength !== 0) throw new Error("invalid canonical blob range header");
+  } else if (row.range_start !== null || row.range_end !== null) {
+    throw new Error("orphan canonical blob range header");
+  } else if (row.archive_reference !== null) {
+    if (typeof row.archive_reference.archiveId !== "string" || !row.archive_reference.archiveId
+      || !Object.hasOwn(row.archive_reference, "page") || storedLength !== 0) throw new Error("invalid canonical archive blob header");
+  } else if (storedLength !== length) throw new Error("canonical material blob length mismatch");
+  return length;
+}
+
+async function canonicalBlobHeaders(host: CanonicalBlobHost, hashes: readonly string[], lock = false): Promise<Map<string, CanonicalBlobHeader>> {
+  const result = new Map<string, CanonicalBlobHeader>();
+  for (let offset = 0; offset < hashes.length; offset += 4096) {
+    const rows = await host.query<CanonicalBlobHeader>(`SELECT content_hash,byte_length,
+      octet_length(content)::text AS stored_byte_length,range_parent_hash,range_start,range_end,archive_reference
+      FROM ${host.table("blobs")} WHERE content_hash=ANY($1::text[])${lock ? " FOR SHARE" : ""}`, [hashes.slice(offset, offset + 4096)]);
+    for (const row of rows) { canonicalBlobHeaderLength(row); result.set(row.content_hash, row); }
+  }
+  return result;
+}
+
 function createBlobStore(storage: PostgresStorageAdapter): BlobStore {
   return {
     async put(content, mediaType) {
-      const hash = blobContentHash(content);
-      await storage.query(`INSERT INTO ${storage.table("blobs")}(content_hash, media_type, byte_length, content) VALUES($1,$2,$3,$4) ON CONFLICT(content_hash) DO NOTHING`, [hash, mediaType, content.length, Buffer.from(content)]);
-      return hash;
+      return storage.transaction(async () => (await putBlobBatch(storage, [{ content, mediaType }]))[0]!);
     },
     async putBatch(items) {
-      return putBlobBatch(storage, items);
+      return storage.transaction(() => putBlobBatch(storage, items));
+    },
+    async putRanges(items, parent) {
+      if (!items.length) return;
+      if (blobContentHash(parent.bytes) !== parent.contentHash) throw new Error("canonical range parent bytes failed hash verification");
+      const unique = [...new Map(items.map(item => [item.contentHash, item])).values()];
+      for (const item of items) {
+        if (!/^sha256_[a-f0-9]{64}$/u.test(item.contentHash) || !/^sha256_[a-f0-9]{64}$/u.test(item.parentHash)
+          || item.parentHash !== parent.contentHash
+          || !Number.isSafeInteger(item.byteStart) || !Number.isSafeInteger(item.byteEnd)
+          || item.byteStart < 0 || item.byteEnd < item.byteStart || item.byteEnd > parent.bytes.byteLength
+          || blobContentHash(parent.bytes.subarray(item.byteStart, item.byteEnd)) !== item.contentHash) {
+          throw new Error("invalid canonical evidence blob range");
+        }
+      }
+      await storage.transaction(async () => {
+        const parentHeader = (await canonicalBlobHeaders(storage, [parent.contentHash], true)).get(parent.contentHash);
+        if (!parentHeader || canonicalBlobHeaderLength(parentHeader) !== parent.bytes.byteLength) {
+          throw new Error("canonical evidence range parent is missing or changed");
+        }
+        // A complete later source can equal an earlier chunk. Flatten its range
+        // rather than materializing bytes or introducing recursive range chains.
+        let baseHash = parent.contentHash as string, baseStart = 0;
+        if (parentHeader.range_parent_hash !== null) {
+          const base = (await canonicalBlobHeaders(storage, [parentHeader.range_parent_hash], true)).get(parentHeader.range_parent_hash);
+          if (!base || base.range_parent_hash !== null || Number(parentHeader.range_end) > canonicalBlobHeaderLength(base)) {
+            throw new Error("invalid canonical range parent ancestry");
+          }
+          baseHash = base.content_hash;
+          baseStart = Number(parentHeader.range_start);
+        }
+        for (let offset = 0; offset < unique.length; offset += 1024) {
+          const batch = unique.slice(offset, offset + 1024).filter(item => item.contentHash !== parent.contentHash)
+            .map(item => ({ ...item, parentHash: baseHash, byteStart: baseStart + item.byteStart, byteEnd: baseStart + item.byteEnd }));
+          if (!batch.length) continue;
+          if (batch.some(item => item.contentHash === baseHash || !Number.isSafeInteger(item.byteEnd))) {
+            throw new Error("cyclic or unsafe canonical range mapping");
+          }
+          await storage.query(`WITH requested AS (
+            SELECT * FROM jsonb_to_recordset($1::jsonb) AS r("contentHash" text,"parentHash" text,"byteStart" bigint,"byteEnd" bigint,"mediaType" text)
+          )
+            INSERT INTO ${storage.table("blobs")}(content_hash,media_type,byte_length,content,range_parent_hash,range_start,range_end)
+            SELECT "contentHash","mediaType","byteEnd"-"byteStart",''::bytea,"parentHash","byteStart","byteEnd"
+            FROM requested WHERE TRUE ON CONFLICT(content_hash) DO NOTHING`, [JSON.stringify(batch)]);
+          const stored = await canonicalBlobHeaders(storage, batch.map(item => item.contentHash), true);
+          for (const item of batch) {
+            const row = stored.get(item.contentHash);
+            if (!row || canonicalBlobHeaderLength(row) !== item.byteEnd - item.byteStart) {
+              throw new Error("canonical range content identity conflicts with an existing blob");
+            }
+          }
+        }
+      });
+    },
+    async putArchiveReferences(input) {
+      if (!input.items.length) return;
+      const archive = input.archive as unknown as { schema?: unknown };
+      if (archive?.schema !== "scce.wikipedia_archive.v1" || corpusArchiveIdentity(input.archive) !== input.archiveId) {
+        throw new Error("invalid canonical corpus archive descriptor identity");
+      }
+      // Replay and verify each selected source before any descriptor/blob is
+      // published. The archive reader bounds decompression and caches one block.
+      for (const item of input.items) {
+        if (!Number.isSafeInteger(item.byteLength) || item.byteLength < 0 || !/^sha256_[a-f0-9]{64}$/u.test(item.contentHash)) {
+          throw new Error("invalid canonical archive blob identity");
+        }
+        const bytes = await readWikipediaArchiveBlob(input.archive, item.reference);
+        if (bytes.byteLength !== item.byteLength || blobContentHash(bytes) !== item.contentHash) {
+          throw new Error("canonical archive blob failed source/hash verification");
+        }
+      }
+      await storage.transaction(async () => {
+        const key = CORPUS_ARCHIVE_KEY_PREFIX + input.archiveId;
+        await storage.query(`INSERT INTO ${storage.table("storage_meta")}(key,value_json) VALUES($1,$2::jsonb)
+          ON CONFLICT(key) DO NOTHING`, [key, canonicalStringify(input.archive)]);
+        const registered = await storage.query<{ value_json: JsonValue }>(`SELECT value_json FROM ${storage.table("storage_meta")} WHERE key=$1 FOR SHARE`, [key]);
+        if (!registered[0] || canonicalStringify(registered[0].value_json) !== canonicalStringify(input.archive)) {
+          throw new Error("canonical corpus archive descriptor is immutable and conflicts with an existing identity");
+        }
+        const unique = [...new Map(input.items.map(item => [item.contentHash, item])).values()];
+        for (let offset = 0; offset < unique.length; offset += 1024) {
+          const batch = unique.slice(offset, offset + 1024);
+          await storage.query(`INSERT INTO ${storage.table("blobs")}(content_hash,media_type,byte_length,content,archive_reference)
+            SELECT r."contentHash",r."mediaType",r."byteLength",''::bytea,
+              jsonb_build_object('archiveId',$2::text,'page',r.reference)
+            FROM jsonb_to_recordset($1::jsonb) AS r("contentHash" text,"mediaType" text,"byteLength" bigint,reference jsonb)
+            WHERE TRUE ON CONFLICT(content_hash) DO NOTHING`, [JSON.stringify(batch), input.archiveId]);
+          const stored = await canonicalBlobHeaders(storage, batch.map(item => item.contentHash), true);
+          for (const item of batch) {
+            const row = stored.get(item.contentHash);
+            if (!row || canonicalBlobHeaderLength(row) !== item.byteLength) {
+              throw new Error("canonical archive content identity conflicts with an existing blob");
+            }
+          }
+        }
+      });
     },
     async get(hash) {
-      const rows = await storage.query<{ content: Buffer }>(`SELECT content FROM ${storage.table("blobs")} WHERE content_hash=$1`, [hash]);
-      if (!rows[0]) throw new Error(`blob not found: ${hash}`);
-      return rows[0].content;
+      return readCanonicalBlob(storage, hash);
     },
     async exists(hash) {
       const rows = await storage.query<{ ok: number }>(`SELECT 1 AS ok FROM ${storage.table("blobs")} WHERE content_hash=$1`, [hash]);
@@ -1613,8 +2006,8 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
          LIMIT ${params.length}`,
         params
       );
-      return rows.map(row => ({
-        span: rowToEvidence(row),
+      return (await hydrateEvidenceRows(storage, rows)).map(({ row, span }) => ({
+        span,
         score: Number(row.visual_score),
         regions: Array.isArray(row.visual_regions) ? (row.visual_regions as number[][]) : []
       }));
@@ -1640,7 +2033,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     async getEvidence(id) {
       const access = storage.informationAccessPredicate("evidence", 2);
       const rows = await storage.query<EvidenceRow>(`SELECT * FROM ${storage.table("evidence_spans")} evidence WHERE id=$1 AND ${access.sql}`, [id, ...access.params]);
-      return rows[0] ? rowToEvidence(rows[0]) : null;
+      return (await hydrateEvidenceRows(storage, rows))[0]?.span ?? null;
     },
     async getEvidenceSourceVersions(ids: readonly string[]) {
       if (!ids.length) return [];
@@ -1662,7 +2055,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
          ORDER BY alpha DESC, observed_at DESC`,
         [sourceVersionIds, ...access.params]
       );
-      return rows.map(rowToEvidence);
+      return (await hydrateEvidenceRows(storage, rows)).map(value => value.span);
     },
     async sourceIdentityArbitration(input) {
       // Which of the corpus's own titles appear in this request. Asked in this direction it is one query whatever
@@ -1896,7 +2289,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            })}`,
           [features, query.limit ?? 80, ...access.params, query.deprioritizeSourceKinds ?? [], query.titleUnits ?? [], query.excludeForceClasses ?? []]
         );
-        return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
+        return (await hydrateEvidenceRows(storage, rows)).map(({ row, span }) => ({ span, score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
       }
       if (features.length && !query.sourceId && !query.sourceVersionId) {
         // Same posting cap as the BM25 branch: an uncapped common feature
@@ -1929,7 +2322,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            LIMIT $${limitIndex}`,
           [...features, query.limit ?? 80, ...access.params, query.deprioritizeSourceKinds ?? []]
         );
-        return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres GIN feature-hit evidence search" }));
+        return (await hydrateEvidenceRows(storage, rows)).map(({ row, span }) => ({ span, score: Number(row.alpha), reason: "postgres GIN feature-hit evidence search" }));
       }
       const params: unknown[] = [];
       const where: string[] = [];
@@ -1961,7 +2354,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         ? `(SELECT COUNT(*) FROM unnest(ev.features) AS f(feature) WHERE f.feature = ANY($${featureParamIndex}::text[]))`
         : "0::int";
       const rows = await storage.query<EvidenceRow>(`SELECT ev.* FROM ${storage.table("evidence_spans")} ev WHERE ${where.join(" AND ")} ORDER BY ${sampleOrder ?? `${sourceKindRank} ASC, ${overlap} DESC, CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC, ev.alpha DESC, ev.observed_at DESC`} LIMIT $${params.length}`, params);
-      return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres feature/source bounded evidence search" }));
+      return (await hydrateEvidenceRows(storage, rows)).map(({ row, span }) => ({ span, score: Number(row.alpha), reason: "postgres feature/source bounded evidence search" }));
     },
     async sourceVersionsForEvidence(ids) {
       if (ids.length === 0) return [];
@@ -2091,9 +2484,10 @@ function evidenceBackedSourcePredicates(storage: PostgresStorageAdapter, query: 
 
 async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: readonly EvidenceSpan[]): Promise<void> {
   if (!spans.length) return;
+  const encoded = spans.map(span => encodeCanonicalEvidenceSpanText(span));
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "evidence_spans", spans.map(span => ({ id: span.id, informationLabel: span.informationLabel })));
-    const payload = spans.map(span => ({
+    const payload = encoded.map(span => ({
     id: span.id,
     source_id: span.sourceId,
     source_version_id: span.sourceVersionId,
@@ -2105,7 +2499,6 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
     char_start: span.charStart,
     char_end: span.charEnd,
     text_preview: span.textPreview,
-    text_content: span.text,
     language_hints: span.languageHints,
     script_hints: span.scriptHints,
     trust_vector: span.trustVector,
@@ -2124,7 +2517,7 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        FROM ${storage.table("evidence_spans")}
        WHERE id IN (SELECT value->>'id' FROM jsonb_array_elements($1::jsonb) AS input(value))
      ), upserted AS (
-       INSERT INTO ${storage.table("evidence_spans")} AS ev(id, source_id, source_version_id, chunk_id, content_hash, media_type, byte_start, byte_end, char_start, char_end, text_preview, text_content, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at, information_label)
+       INSERT INTO ${storage.table("evidence_spans")} AS ev(id, source_id, source_version_id, chunk_id, content_hash, media_type, byte_start, byte_end, char_start, char_end, text_preview, language_hints, script_hints, trust_vector, provenance_json, features, status, alpha, observed_at, information_label)
      SELECT
        r.id,
        r.source_id,
@@ -2137,7 +2530,6 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        r.char_start,
        r.char_end,
        r.text_preview,
-       r.text_content,
        r.language_hints,
        r.script_hints,
        r.trust_vector,
@@ -2159,7 +2551,6 @@ async function putEvidenceSpansBatch(storage: PostgresStorageAdapter, spans: rea
        char_start bigint,
        char_end bigint,
        text_preview text,
-       text_content text,
        language_hints jsonb,
        script_hints jsonb,
        trust_vector jsonb,
@@ -3016,28 +3407,58 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
 
 /** Evidence ids per graph lookup: small enough that the planner keeps using the GIN index. */
 /**
- * Cost bound on a spread measurement, not a modeling parameter: it is the same for a request's runs and for the
- * sampled distribution the threshold is derived from, so both sides of the comparison are measured on one scale.
- * A unit the whole corpus uses saturates it, and saturation is the answer for such a unit.
+ * Saturation bound on a spread measurement, not a modeling parameter: it is the same for a request's runs and for
+ * the sampled distribution the threshold is derived from, so both sides of the comparison are measured on one
+ * scale. A unit the whole corpus uses saturates it, and saturation is the answer for such a unit.
  */
 const SPREAD_SCAN_CAP = 1500;
 
-/** Canonical evidence postings lead; accessibility is checked before the shared sampling bound. */
+/**
+ * Measure all requested runs in one pass over the union of their canonical postings.
+ *
+ * The previous correlated lateral query rescanned every promoted evidence feature array once per candidate. A cold
+ * threshold sample contains 400 candidates, so a 2 GB brain spent 156 seconds repeatedly detoasting the same rows.
+ * The overlap predicate below gives PostgreSQL one constant GIN key set, then a hash join matches the unnested
+ * postings to every candidate. Multi-unit runs still require every learned unit; only the physical traversal is
+ * shared. Distinct-source counts are exact until the common saturation bound.
+ */
 async function measureCanonicalSourceSpreads(storage: PostgresStorageAdapter, runs: readonly string[]): Promise<Array<{ run: string; sources: number }>> {
   if (!runs.length) return [];
-  const access = storage.informationAccessPredicate("evidence", 2);
+  const candidates = runs.map(run => ({
+    run,
+    features: uniquePostgresStrings(anchorSymbolUnits(run).map(unit => `anchor:sym:${unit}`))
+  }));
+  const requestedFeatures = uniquePostgresStrings(candidates.flatMap(candidate => candidate.features));
+  if (!requestedFeatures.length) return candidates.map(candidate => ({ run: candidate.run, sources: 0 }));
+  const access = storage.informationAccessPredicate("evidence", 3);
   return queryIndexedEvidence<{ run: string; sources: number }>(storage,
-    `SELECT candidate.run AS run, measured.sources AS sources
-     FROM jsonb_to_recordset($1::jsonb) AS candidate(run text, features text[])
-     CROSS JOIN LATERAL (
-       SELECT count(DISTINCT source_id)::int AS sources FROM (
-          SELECT evidence.source_id FROM ${storage.table("evidence_spans")} evidence
-          WHERE cardinality(candidate.features)>0 AND evidence.features @> candidate.features
-            AND evidence.status='promoted' AND ${access.sql}
-         LIMIT ${SPREAD_SCAN_CAP}
-       ) sampled
-     ) measured`,
-    [JSON.stringify(runs.map(run => ({ run, features: uniquePostgresStrings(anchorSymbolUnits(run).map(unit => `anchor:sym:${unit}`)) }))), ...access.params]
+    `WITH candidate AS MATERIALIZED (
+       SELECT item->>'run' AS run,
+              ARRAY(SELECT jsonb_array_elements_text(item->'features')) AS features,
+              ordinal
+       FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS input(item, ordinal)
+     ), wanted AS MATERIALIZED (
+       SELECT candidate.run, feature.value AS feature, cardinality(candidate.features)::int AS required
+       FROM candidate CROSS JOIN LATERAL unnest(candidate.features) AS feature(value)
+     ), matching_evidence AS MATERIALIZED (
+       SELECT evidence.id, evidence.source_id, evidence.features
+       FROM ${storage.table("evidence_spans")} evidence
+       WHERE evidence.features && $2::text[]
+         AND evidence.status='promoted' AND ${access.sql}
+     ), complete AS MATERIALIZED (
+       SELECT wanted.run, evidence.id, evidence.source_id
+       FROM matching_evidence evidence
+       CROSS JOIN LATERAL unnest(evidence.features) AS observed(feature)
+       JOIN wanted ON wanted.feature=observed.feature
+       GROUP BY wanted.run, wanted.required, evidence.id, evidence.source_id
+       HAVING count(DISTINCT observed.feature)=wanted.required
+     )
+     SELECT candidate.run AS run,
+            LEAST(count(DISTINCT complete.source_id), ${SPREAD_SCAN_CAP})::int AS sources
+     FROM candidate LEFT JOIN complete ON complete.run=candidate.run
+     GROUP BY candidate.run, candidate.ordinal
+     ORDER BY candidate.ordinal`,
+    [JSON.stringify(candidates), requestedFeatures, ...access.params]
   );
 }
 
@@ -4790,7 +5211,7 @@ function ngramObservationBatchRow(observation: NgramObservation): NgramObservati
 const JSON_ROW_BATCH_TARGET_BYTES = 64 * 1024 * 1024;
 const JSON_ROW_HARD_LIMIT_BYTES = 200 * 1024 * 1024;
 
-function* serializedJsonRowBatches(rows: readonly unknown[], rowLabel: (row: unknown) => string): Generator<string> {
+function* serializedJsonRowBatches<T>(rows: readonly T[], rowLabel: (row: T) => string): Generator<string> {
   let current: string[] = [];
   let bytes = 2;
   for (const row of rows) {
@@ -4850,6 +5271,56 @@ interface CurrentCompilationHeaderRow {
 
 interface LanguagePatternOwner { profileId: string; sourceSystem: string | null }
 
+interface RequestSeedSemanticPatternCache {
+  values: Map<string, { pattern: LanguagePatternRecord; bytes: number }>;
+  bytes: number;
+}
+
+const REQUEST_SEED_SEMANTIC_PATTERN_CACHE_MAX_ENTRIES = 256;
+const REQUEST_SEED_SEMANTIC_PATTERN_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const requestSeedSemanticPatternCaches = new WeakMap<PostgresStorageAdapter, RequestSeedSemanticPatternCache>();
+const requestSeedSemanticPatternCacheHasher = createHasher();
+
+function requestSeedSemanticPatternCacheKey(row: LanguagePatternRow): string | undefined {
+  const json = row.pattern_json;
+  if (!json || typeof json !== "object" || Array.isArray(json)
+    || !Object.hasOwn(json, SEMANTIC_PROJECTION_STORAGE_KEY)) return undefined;
+  return requestSeedSemanticPatternCacheHasher.digestHex(canonicalStringify([
+    row.id, row.profile_id, row.pattern_kind, row.support, row.entropy, json,
+    row.evidence_ids, row.updated_at.getTime(), row.information_label
+  ]));
+}
+
+function cachedRequestSeedSemanticPattern(storage: PostgresStorageAdapter, key: string): LanguagePatternRecord | undefined {
+  const cache = requestSeedSemanticPatternCaches.get(storage), entry = cache?.values.get(key);
+  if (!cache || !entry) return undefined;
+  cache.values.delete(key);
+  cache.values.set(key, entry);
+  return structuredClone(entry.pattern);
+}
+
+function cacheRequestSeedSemanticPattern(storage: PostgresStorageAdapter, key: string, pattern: LanguagePatternRecord): void {
+  let cache = requestSeedSemanticPatternCaches.get(storage);
+  if (!cache) {
+    cache = { values: new Map(), bytes: 0 };
+    requestSeedSemanticPatternCaches.set(storage, cache);
+  }
+  const bytes = Buffer.byteLength(JSON.stringify(pattern), "utf8");
+  if (bytes > REQUEST_SEED_SEMANTIC_PATTERN_CACHE_MAX_BYTES) return;
+  const previous = cache.values.get(key);
+  if (previous) cache.bytes -= previous.bytes;
+  cache.values.delete(key);
+  cache.values.set(key, { pattern: structuredClone(pattern), bytes });
+  cache.bytes += bytes;
+  while (cache.values.size > REQUEST_SEED_SEMANTIC_PATTERN_CACHE_MAX_ENTRIES
+    || cache.bytes > REQUEST_SEED_SEMANTIC_PATTERN_CACHE_MAX_BYTES) {
+    const oldest = cache.values.entries().next().value as [string, { bytes: number }] | undefined;
+    if (!oldest) break;
+    cache.values.delete(oldest[0]);
+    cache.bytes -= oldest[1].bytes;
+  }
+}
+
 async function currentLanguagePatternCompilations(storage: PostgresStorageAdapter, query: Parameters<LanguageMemoryStore["listLanguagePatterns"]>[0], requestedOwners?: readonly LanguagePatternOwner[]) {
   if (requestedOwners && !requestedOwners.length) return [];
   const params: unknown[] = [];
@@ -4870,6 +5341,7 @@ async function currentLanguagePatternCompilations(storage: PostgresStorageAdapte
   const profileIds = query?.profileIds ?? (query?.profileId ? [query.profileId] : undefined);
   if (profileIds) { params.push([...profileIds]); where.push(`model.profile_id=ANY($${params.length}::text[])`); }
   if (query?.sourceSystem) { params.push(query.sourceSystem); where.push(`model.source_system=$${params.length}`); }
+  if (query?.sourceSystems) { params.push([...new Set(query.sourceSystems)]); where.push(`model.source_system=ANY($${params.length}::text[])`); }
   if (query?.languageId) { params.push(query.languageId); where.push(`(profile.language_id=$${params.length} OR profile.language_id IS NULL)`); }
   for (const alias of ["model", "profile", "version"]) appendInformationAccess(storage, alias, params, where);
   const receiptAccess = storage.informationAccessPredicate("receipt", params.length + 1);
@@ -4935,6 +5407,12 @@ function jsonbFieldsSql(value: string, fields: readonly string[]): string {
     CROSS JOIN LATERAL (SELECT seed_key.key AS key,seed_selected.value->seed_key.key AS value) seed_field)`;
 }
 
+// Source-replay decoding needs the learned model identity while the physical
+// request-seed projection is being reconstructed.  requestSeedLanguagePattern
+// applies the public allowlist after decoding, so this storage-only scope key
+// never escapes in the returned request seed.
+const REQUEST_SEED_STORAGE_PATTERN_JSON_FIELDS = [...REQUEST_SEED_PATTERN_JSON_FIELDS, "modelId"] as const;
+
 function requestSeedPatternJsonSql(value: string, schema: string): string {
   const declared = (roles: string, flag: string) => `(${value}->'${flag}'='true'::jsonb OR EXISTS (
     SELECT 1 FROM jsonb_array_elements(${jsonbArraySql(`${value}#>'{bundle,sourceExamples}'`)}) seed_example(value)
@@ -4968,7 +5446,7 @@ function requestSeedPatternJsonSql(value: string, schema: string): string {
       '${SEMANTIC_PROJECTION_STORAGE_KEY}',${value}->'${SEMANTIC_PROJECTION_STORAGE_KEY}')
     ELSE ${entities} END)`;
   return `(CASE WHEN ${schema}='scce.request_requirement_pattern.v1' THEN ${value}
-    ELSE ${jsonbFieldsSql(value, REQUEST_SEED_PATTERN_JSON_FIELDS)} || CASE
+    ELSE ${jsonbFieldsSql(value, REQUEST_SEED_STORAGE_PATTERN_JSON_FIELDS)} || CASE
       WHEN ${schema}='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}' OR left(${schema},length('scce.creative_event_construction_pattern.'))='scce.creative_event_construction_pattern.'
         THEN jsonb_build_object('requestConstructionCandidate',CASE WHEN ${schema}='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}'
           THEN COALESCE(${declared("nullRoles", "requestConstructionCandidate")},FALSE) ELSE FALSE END,
@@ -5199,6 +5677,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ...(projectContract ? {sourceContractRoot: value.sourceContractRoot as unknown as LanguagePatternProjection["sourceContractRoot"]} : {}) };
     },
     async replaceLanguagePatternProjection(input) {
+      if (input.reusePatternRowsFromCurrentTransaction) {
+        storage.requireActiveTransaction("coupled language-pattern publication");
+      }
       const projection = input.projection;
       const patternIds = [...new Set(projection.patternIds)].sort();
       if (!projection.profileId.trim() || !projection.sourceId || !projection.sourceVersionId || !projection.sourceSystem.trim()
@@ -5301,7 +5782,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           const valid = await storage.query<{project_contract_scope_valid:boolean}>(`SELECT TRUE AS project_contract_scope_valid FROM (SELECT $1::jsonb AS value_json) active_projection WHERE ${guard}`, dependencyParams);
           if (!valid[0]?.project_contract_scope_valid) throw new Error("owned project contract dependency/root is stale, revoked or foreign");
         }
-        await putLanguagePatternsBatch(storage, input.patterns);
+        await putLanguagePatternsBatch(storage, input.patterns, input.reusePatternRowsFromCurrentTransaction === true);
         await storage.mutateLanguageMemory(
           `INSERT INTO ${storage.table("storage_meta")} AS metadata(key,value_json,updated_at)
            VALUES($1,$2::jsonb,NOW())
@@ -5349,37 +5830,27 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       appendInformationAccess(storage, "lp", params, profileWhere);
       const modelAccess: string[] = [];
       appendInformationAccess(storage, "model", params, modelAccess);
+      const projectionAccess: string[] = [];
+      appendInformationAccess(storage, "projection", params, projectionAccess);
       profileWhere.push(profileSourceOwnershipSql(storage, params, "lp"));
-      const modelWhere = [
-        `model.profile_id=ANY(ARRAY(
-           SELECT lp.id FROM ${storage.table("language_profiles")} lp WHERE ${profileWhere.join(" AND ")}
-         ))`, ...modelAccess
-      ];
-      // Expanded legacy models expose continuationCounts; replay-backed models
-      // expose the same exact counts as continuationCountPairs plus their symbol
-      // tables. Aggregate both in SQL so a corpus-sized population never expands
-      // every training tape in Node.
+      const modelWhere = [...modelAccess, ...projectionAccess,
+        "projection.profile_id=lp.id", "projection.profile_id=model.profile_id",
+        "projection.model_updated_at=model.updated_at", "projection.information_label=model.information_label"];
+      // The exact continuation projection is populated in the same transaction
+      // as every model write.  Aggregating it preserves the complete accessible
+      // population without replaying every source-training tape at process boot.
       const rows = await storage.query<{ symbol: string | null; contexts: string | null; model_count: number }>(
         `WITH population AS MATERIALIZED (
-           SELECT model.id, model.model_json->'model' AS stored_model
-           FROM ${storage.table("ngram_models")} model
-           WHERE ${modelWhere.join(" AND ")}
+           SELECT model.id,projection.continuation_counts
+           FROM ${storage.table(NGRAM_MODEL_CONTINUATION_RELATION)} projection
+           JOIN ${storage.table("ngram_models")} model ON model.id=projection.model_id
+           JOIN ${storage.table("language_profiles")} lp ON lp.id=model.profile_id
+           WHERE ${profileWhere.join(" AND ")} AND ${modelWhere.join(" AND ")}
          ), projected AS (
            SELECT item.key AS symbol, SUM(item.value::numeric) AS contexts
            FROM population
-           CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(population.stored_model->'continuationCounts')='object'
-             THEN population.stored_model->'continuationCounts' ELSE '{}'::jsonb END) item
+           CROSS JOIN LATERAL jsonb_each_text(population.continuation_counts) item
            GROUP BY item.key
-           UNION ALL
-           SELECT CASE WHEN pair.value::int<jsonb_array_length(population.stored_model->'replay'->'vocabulary')
-                  THEN population.stored_model->'replay'->'vocabulary'->>pair.value::int
-                  ELSE population.stored_model->'projectionSymbols'->>(pair.value::int-jsonb_array_length(population.stored_model->'replay'->'vocabulary')) END AS symbol,
-                  SUM((population.stored_model->'continuationCountPairs'->>(pair.ordinality::int))::numeric) AS contexts
-           FROM population
-           CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(population.stored_model->'continuationCountPairs')='array'
-             THEN population.stored_model->'continuationCountPairs' ELSE '[]'::jsonb END) WITH ORDINALITY pair(value,ordinality)
-           WHERE pair.ordinality % 2 = 1
-           GROUP BY 1
          ), totals AS (
            SELECT symbol,SUM(contexts) AS contexts FROM projected GROUP BY symbol
          )
@@ -5400,7 +5871,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       return { languageId: query.languageId, modelCount, continuationCounts };
     },
     async listSourceCompilationArtifactIds(query) {
-      const family = query.family === "units" ? { table: "language_units", json: "metadata_json", profile: "artifact.profile_id" }
+      const family = query.family === "units" ? { table: LANGUAGE_UNIT_VALUES_RELATION, json: "metadata_json", profile: "artifact.profile_id" }
         : query.family === "patterns" ? { table: "language_patterns", json: "pattern_json", profile: "artifact.profile_id" }
         : { table: "semantic_frames", json: "frame_json", profile: "artifact.frame_json->>'profileId'" };
       const params: unknown[] = [query.compilationId, query.profileId];
@@ -5661,12 +6132,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const rows = await storage.query<{ id: string; decoded_bytes: string | number; running_decoded_bytes: string | number; unit_json: LanguageUnitRow | null }>(
         `WITH candidates AS MATERIALIZED (
            SELECT unit.id
-           FROM ${storage.table("language_units")} unit
+           FROM ${storage.table("language_units")} unit_record
+           JOIN ${storage.table(LANGUAGE_UNIT_VALUES_RELATION)} unit ON unit.id=unit_record.id
            WHERE unit.id>$1 AND unit.metadata_json ? 'sourceMetadata' AND ${access.sql}
-           ORDER BY unit.id LIMIT $2 FOR UPDATE
+           ORDER BY unit.id LIMIT $2 FOR UPDATE OF unit_record
          ), sized AS MATERIALIZED (
            SELECT unit.id, octet_length(to_jsonb(unit)::text)::bigint AS decoded_bytes
-           FROM candidates JOIN ${storage.table("language_units")} unit ON unit.id=candidates.id
+           FROM candidates JOIN ${storage.table(LANGUAGE_UNIT_VALUES_RELATION)} unit ON unit.id=candidates.id
          ), ranked AS (
            SELECT sized.*, SUM(CASE WHEN decoded_bytes<=$3 THEN decoded_bytes ELSE 0 END)
              OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS running_decoded_bytes
@@ -5674,7 +6146,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
          )
          SELECT ranked.id, ranked.decoded_bytes, ranked.running_decoded_bytes,
            CASE WHEN ranked.decoded_bytes<=$3 AND ranked.running_decoded_bytes<=$3 THEN to_jsonb(unit) ELSE NULL END AS unit_json
-         FROM ranked JOIN ${storage.table("language_units")} unit ON unit.id=ranked.id ORDER BY ranked.id`,
+         FROM ranked JOIN ${storage.table(LANGUAGE_UNIT_VALUES_RELATION)} unit ON unit.id=ranked.id ORDER BY ranked.id`,
         [query.afterId ?? "", query.limit, query.maxTotalJsonBytes, ...access.params]);
       const units: LanguageUnitRecord[] = [], oversized: Array<{ id: string; byteLength: number }> = [];
       let nextAfterId = query.afterId, processed = 0, decodedBytes = 0;
@@ -5715,7 +6187,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                ARRAY[]::text[] AS features,ARRAY[]::double precision[] AS competence_vector,unit.alpha,unit.evidence_ids,
                ${jsonbFieldsSql("unit.metadata_json", PREDICTION_SCORING_UNIT_METADATA_FIELDS)} AS metadata_json,
                unit.information_label
-             FROM ${storage.table("language_units")} unit
+             FROM ${storage.table(LANGUAGE_UNIT_VALUES_RELATION)} unit
              WHERE ${where.join(" AND ")}
              ORDER BY unit.alpha DESC,unit.id ASC
              LIMIT $${unitLimitParam}
@@ -5748,7 +6220,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                SUM((${sourceArtifactJsonBytesSql("unit.metadata_json")}) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
                ROW_NUMBER() OVER (ORDER BY unit.alpha DESC, unit.id ASC) AS relevance_rank
              FROM (
-               SELECT * FROM ${storage.table("language_units")} unit
+               SELECT * FROM ${storage.table(LANGUAGE_UNIT_VALUES_RELATION)} unit
                WHERE ${where.join(" AND ")}
                ORDER BY unit.alpha DESC, unit.id ASC
                LIMIT $${unitLimitParam}
@@ -5761,7 +6233,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.metadata_json, profileId: row.profile_id, sourceVersionId: row.source_version_id, informationLabel: row.information_label })));
         return rows.map((row, index) => rowToLanguageUnit({ ...row, metadata_json: decoded[index] as JsonValue }));
       }
-      const rows = await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table("language_units")} unit WHERE ${where.join(" AND ")} ORDER BY alpha DESC, id ASC LIMIT $${unitLimitParam}`, params);
+      const rows = await storage.query<LanguageUnitRow>(`SELECT * FROM ${storage.table(LANGUAGE_UNIT_VALUES_RELATION)} unit WHERE ${where.join(" AND ")} ORDER BY alpha DESC, id ASC LIMIT $${unitLimitParam}`, params);
       const decoded = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.metadata_json, profileId: row.profile_id, sourceVersionId: row.source_version_id, informationLabel: row.information_label })));
       return rows.map((row, index) => rowToLanguageUnit({ ...row, metadata_json: decoded[index] as JsonValue }));
     },
@@ -5773,6 +6245,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         throw new Error("prediction-scoring pattern reads require a positive finite decoded byte bound");
       }
       const requestedPatternIds = query.patternIds ? [...new Set(query.patternIds)] : undefined;
+      if (query.sourceSystem !== undefined && query.sourceSystems !== undefined) {
+        throw new Error("language-pattern read accepts sourceSystem or sourceSystems, not both");
+      }
+      if (query.sourceSystems !== undefined && !query.sourceSystems.length) return [];
       const projectedView = query.view === "request_seed" || query.view === "prediction_scoring";
       const params: unknown[] = [];
       const projectionSets: string[] = [];
@@ -5829,6 +6305,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.sourceSystem) {
         params.push(query.sourceSystem); scopeWhere.push(`${languagePatternSourceSystemExpression("pattern")}=$${params.length}`);
         projectionScope.push(`active_projection.value_json->>'sourceSystem'=$${params.length}`);
+      }
+      if (query.sourceSystems) {
+        params.push([...new Set(query.sourceSystems)]); scopeWhere.push(`${languagePatternSourceSystemExpression("pattern")}=ANY($${params.length}::text[])`);
+        projectionScope.push(`active_projection.value_json->>'sourceSystem'=ANY($${params.length}::text[])`);
       }
       if (query.patternSchemas) {
         if (!query.patternSchemas.length) return [];
@@ -6177,19 +6657,38 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.view === "prediction_scoring") {
         return rows.map(row => predictionScoringLanguagePattern(rowToLanguagePattern(row)));
       }
-      const metadata = await sourceArtifactMetadataCodec(storage).decodeMany(rows.map(row => ({ value: row.pattern_json, profileId: row.profile_id, informationLabel: row.information_label })));
+      // Source replay is exact but expensive: a semantic projection can authorize and reconstruct several source
+      // witness pages before producing its small request-seed view. Pattern IDs are immutable and the bounded SQL
+      // above rechecks current compilation, active projection, language, label and owner on every read. Cache only
+      // that already-authorized immutable request-seed projection, keyed by the complete selected physical row.
+      const cacheKeys = query.view === "request_seed" ? rows.map(requestSeedSemanticPatternCacheKey) : rows.map(() => undefined);
+      const result = new Array<LanguagePatternRecord>(rows.length);
+      const missingIndices: number[] = [];
+      for (const [index, key] of cacheKeys.entries()) {
+        const cached = key ? cachedRequestSeedSemanticPattern(storage, key) : undefined;
+        if (cached) result[index] = cached;
+        else missingIndices.push(index);
+      }
+      if (!missingIndices.length) return result;
+      const missingRows = missingIndices.map(index => rows[index]!);
+      const metadata = await sourceArtifactMetadataCodec(storage).decodeMany(missingRows.map(row => ({ value: row.pattern_json, profileId: row.profile_id, informationLabel: row.information_label })));
       const archives = await decodeSegmentationWitnessArchives(
-        metadata.map((value, index) => ({ value, profileId: rows[index]!.profile_id })),
+        metadata.map((value, index) => ({ value, profileId: missingRows[index]!.profile_id })),
         segmentationArchiveStorageAccess(storage)
       );
       const patterns = archives.map(result => result.value);
       const indices = patterns.flatMap((value, index) => archives[index]!.handled || isSourceCompilationMetadataHolder(value) ? [] : [index]);
       const decoded = await canonicalCreativeCodec(storage).decodeMany(indices.map(index => patterns[index]));
       indices.forEach((index, position) => { patterns[index] = decoded[position]; });
-      return rows.map((row, index) => {
-        const pattern = rowToLanguagePattern({ ...row, pattern_json: patterns[index] as JsonValue });
-        return query.view === "request_seed" ? requestSeedLanguagePattern(pattern) : pattern;
+      missingRows.forEach((row, missingIndex) => {
+        const pattern = rowToLanguagePattern({ ...row, pattern_json: patterns[missingIndex] as JsonValue });
+        const value = query.view === "request_seed" ? requestSeedLanguagePattern(pattern) : pattern;
+        const resultIndex = missingIndices[missingIndex]!;
+        result[resultIndex] = value;
+        const key = cacheKeys[resultIndex];
+        if (key) cacheRequestSeedSemanticPattern(storage, key, value);
       });
+      return result;
     },
     async listSemanticFrames(query = {}) {
       if (query.view === "prediction_scoring"
@@ -6315,6 +6814,15 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
       value as JsonValue,
       exportNgramModelTrainingReplay(models[index]!)
     ));
+    const continuationCounts = models.map(model => {
+      const root = objectRecord(model.modelJson);
+      const learned = materializeKneserNey(root?.model as JsonValue | undefined);
+      if (!learned) throw new Error(`ngram model ${model.id} has no materializable continuation population`);
+      for (const [symbol, count] of Object.entries(learned.continuationCounts)) {
+        if (!symbol || !Number.isSafeInteger(count) || count < 0) throw new Error(`ngram model ${model.id} has an invalid continuation count`);
+      }
+      return learned.continuationCounts;
+    });
     const payload = models.map((model, index) => ({
       id: model.id,
       stream_id: model.streamId,
@@ -6345,6 +6853,28 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
         [payloadChunk]
       );
     }
+    const projectionPayload = models.map((model, index) => ({
+      model_id: model.id,
+      profile_id: String(objectRecord(model.modelJson)?.profileId ?? ""),
+      continuation_counts: continuationCounts[index],
+      updated_at_ms: model.updatedAt,
+      information_label: labels.get(model.id)!
+    }));
+    if (projectionPayload.some(row => !row.profile_id)) throw new Error("ngram continuation projection requires an owned profile");
+    for (const payloadChunk of serializedJsonRowBatches(projectionPayload, row => row.model_id)) {
+      await storage.mutateLanguageMemory(
+        `INSERT INTO ${storage.table(NGRAM_MODEL_CONTINUATION_RELATION)} AS projection(model_id,profile_id,continuation_counts,model_updated_at,information_label)
+         SELECT row.model_id,row.profile_id,row.continuation_counts,TO_TIMESTAMP(row.updated_at_ms/1000.0),row.information_label
+         FROM jsonb_to_recordset($1::jsonb) AS row(model_id text,profile_id text,continuation_counts jsonb,updated_at_ms double precision,information_label jsonb)
+         ON CONFLICT(model_id) DO UPDATE SET profile_id=EXCLUDED.profile_id,continuation_counts=EXCLUDED.continuation_counts,
+           model_updated_at=EXCLUDED.model_updated_at,information_label=EXCLUDED.information_label
+         WHERE projection.profile_id IS DISTINCT FROM EXCLUDED.profile_id
+           OR projection.continuation_counts IS DISTINCT FROM EXCLUDED.continuation_counts
+           OR projection.model_updated_at IS DISTINCT FROM EXCLUDED.model_updated_at
+           OR projection.information_label IS DISTINCT FROM EXCLUDED.information_label`,
+        [payloadChunk]
+      );
+    }
   });
 }
 
@@ -6355,73 +6885,121 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
     const merged = await mergedSourceArtifactValues(storage, "language_units", "metadata_json", units.map(unit => ({ id: unit.id, value: unit.metadata, sourceVersionId: unit.sourceVersionId, informationLabel: labels.get(unit.id)! })));
     const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(units.map((unit, index) => ({ artifactFamily: "language_unit" as const, value: merged[index], profileId: unit.profileId, sourceVersionId: unit.sourceVersionId, informationLabel: labels.get(unit.id)! })));
     const payload = units.map((unit, index) => ({
-    id: unit.id,
-    profile_id: unit.profileId,
-    source_version_id: unit.sourceVersionId,
-    script: unit.script,
-    unit_kind: unit.unitKind,
-    unit_text: unit.text,
-    features_json: unit.features,
-    competence_vector_json: unit.competenceVector,
-    alpha: unit.alpha,
-    evidence_ids_json: unit.evidenceIds,
+      id: unit.id,
+      profile_id: unit.profileId,
+      source_version_id: unit.sourceVersionId,
+      script: unit.script,
+      unit_kind: unit.unitKind,
+      unit_text: unit.text,
+      features_json: unit.features,
+      competence_vector_json: unit.competenceVector,
+      alpha: unit.alpha,
+      evidence_ids_json: unit.evidenceIds,
       metadata_json: encoded[index],
       information_label: labels.get(unit.id)!
     }));
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
       await storage.mutateLanguageMemory(
-        `INSERT INTO ${storage.table("language_units")} AS lu(id,profile_id,source_version_id,script,unit_kind,unit_text,features,competence_vector,alpha,evidence_ids,metadata_json,information_label)
-     SELECT
-       r.id,
-       r.profile_id,
-       r.source_version_id,
-       r.script,
-       r.unit_kind,
-       r.unit_text,
-       (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.features_json) AS v(value)),
-       (SELECT COALESCE(array_agg((v.value)::double precision), ARRAY[]::double precision[]) FROM jsonb_array_elements_text(r.competence_vector_json) AS v(value)),
-       r.alpha,
-       (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
-       r.metadata_json,
-       r.information_label
-     FROM jsonb_to_recordset($1::jsonb) AS r(
-       id text,
-       profile_id text,
-       source_version_id text,
-       script text,
-       unit_kind text,
-       unit_text text,
-       features_json jsonb,
-       competence_vector_json jsonb,
-       alpha double precision,
-       evidence_ids_json jsonb,
-       metadata_json jsonb,
-       information_label jsonb
+        `WITH input AS MATERIALIZED (
+       SELECT r.id,r.profile_id,r.source_version_id,r.script,r.unit_kind,r.unit_text,
+         (SELECT COALESCE(array_agg(v.value ORDER BY v.ordinality),ARRAY[]::text[]) FROM jsonb_array_elements_text(r.features_json) WITH ORDINALITY AS v(value,ordinality)) AS features,
+         (SELECT COALESCE(array_agg((v.value)::double precision ORDER BY v.ordinality),ARRAY[]::double precision[]) FROM jsonb_array_elements_text(r.competence_vector_json) WITH ORDINALITY AS v(value,ordinality)) AS competence_vector,
+         r.alpha,
+         (SELECT COALESCE(array_agg(v.value ORDER BY v.ordinality),ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) WITH ORDINALITY AS v(value,ordinality)) AS incoming_evidence_ids,
+         r.metadata_json,r.information_label
+       FROM jsonb_to_recordset($1::jsonb) AS r(
+         id text,profile_id text,source_version_id text,script text,unit_kind text,unit_text text,
+         features_json jsonb,competence_vector_json jsonb,alpha double precision,evidence_ids_json jsonb,
+         metadata_json jsonb,information_label jsonb
+       )
+     ), resolved AS MATERIALIZED (
+       SELECT input.*,
+         CASE WHEN unit.id IS NULL THEN input.incoming_evidence_ids
+           ELSE (SELECT ARRAY(SELECT DISTINCT unnest(evidence_set.evidence_ids || input.incoming_evidence_ids)))
+         END AS evidence_ids
+       FROM input
+       LEFT JOIN ${storage.table("language_units")} unit ON unit.id=input.id
+       LEFT JOIN ${storage.table(LANGUAGE_UNIT_EVIDENCE_SET_RELATION)} evidence_set ON evidence_set.id=unit.evidence_set_id
+     ), inserted_evidence_sets AS (
+       INSERT INTO ${storage.table(LANGUAGE_UNIT_EVIDENCE_SET_RELATION)}(evidence_ids)
+       SELECT DISTINCT evidence_ids FROM resolved
+       ON CONFLICT(evidence_ids) DO NOTHING
+       RETURNING id,evidence_ids
+     ), inserted_labels AS (
+       INSERT INTO ${storage.table(LANGUAGE_UNIT_INFORMATION_LABEL_RELATION)}(information_label)
+       SELECT DISTINCT information_label FROM resolved
+       ON CONFLICT(information_label) DO NOTHING
+       RETURNING id,information_label
+     ), evidence_sets AS (
+       SELECT id,evidence_ids FROM inserted_evidence_sets
+       UNION ALL
+       SELECT stored.id,stored.evidence_ids
+       FROM ${storage.table(LANGUAGE_UNIT_EVIDENCE_SET_RELATION)} stored
+       JOIN (SELECT DISTINCT evidence_ids FROM resolved) requested ON requested.evidence_ids=stored.evidence_ids
+       WHERE NOT EXISTS(SELECT 1 FROM inserted_evidence_sets inserted WHERE inserted.id=stored.id)
+     ), labels AS (
+       SELECT id,information_label FROM inserted_labels
+       UNION ALL
+       SELECT stored.id,stored.information_label
+       FROM ${storage.table(LANGUAGE_UNIT_INFORMATION_LABEL_RELATION)} stored
+       JOIN (SELECT DISTINCT information_label FROM resolved) requested ON requested.information_label=stored.information_label
+       WHERE NOT EXISTS(SELECT 1 FROM inserted_labels inserted WHERE inserted.id=stored.id)
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=EXCLUDED.metadata_json, information_label=EXCLUDED.information_label
-     WHERE lu.alpha IS DISTINCT FROM GREATEST(lu.alpha,EXCLUDED.alpha) OR NOT (lu.evidence_ids @> EXCLUDED.evidence_ids)
-       OR lu.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json OR lu.information_label IS DISTINCT FROM EXCLUDED.information_label`,
+     INSERT INTO ${storage.table("language_units")} AS unit(
+       id,profile_id,source_version_id,script,unit_kind,unit_text,features,competence_vector,alpha,
+       metadata_json,evidence_set_id,information_label_id)
+     SELECT resolved.id,resolved.profile_id,resolved.source_version_id,resolved.script,resolved.unit_kind,resolved.unit_text,
+       resolved.features,resolved.competence_vector,resolved.alpha,resolved.metadata_json,evidence_sets.id,labels.id
+     FROM resolved
+     JOIN evidence_sets ON evidence_sets.evidence_ids=resolved.evidence_ids
+     JOIN labels ON labels.information_label=resolved.information_label
+     ON CONFLICT(id) DO UPDATE SET
+       alpha=GREATEST(unit.alpha,EXCLUDED.alpha),
+       evidence_set_id=EXCLUDED.evidence_set_id,
+       metadata_json=EXCLUDED.metadata_json,
+       information_label_id=EXCLUDED.information_label_id
+     WHERE unit.alpha IS DISTINCT FROM GREATEST(unit.alpha,EXCLUDED.alpha)
+       OR unit.evidence_set_id IS DISTINCT FROM EXCLUDED.evidence_set_id
+       OR unit.metadata_json IS DISTINCT FROM EXCLUDED.metadata_json
+       OR unit.information_label_id IS DISTINCT FROM EXCLUDED.information_label_id`,
         [payloadChunk]
       );
     }
   });
 }
 
-async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, patterns: readonly LanguagePatternRecord[]): Promise<void> {
+async function putLanguagePatternsBatch(
+  storage: PostgresStorageAdapter,
+  patterns: readonly LanguagePatternRecord[],
+  reusePatternRowsFromCurrentTransaction = false
+): Promise<void> {
   if (!patterns.length) return;
   await storage.transaction(async () => {
-    const labels = await joinDurableRecordLabels(storage, "language_patterns", patterns.map(pattern => ({ id: pattern.id, informationLabel: pattern.informationLabel })));
-    const codec = canonicalCreativeCodec(storage), payload = [];
+    // Coupled induced-language publication presents every component on its first
+    // projection, then publishes one schema-specific ledger at a time with the
+    // same immutable record instances.  Re-encoding those instances repeats all
+    // archive/source-replay codecs without adding a row.  Reuse is deliberately
+    // scoped to object identity and this active transaction: clones, mutations
+    // represented by replacement objects, and every later transaction still use
+    // the complete validation/encoding/upsert path.
+    const writes = reusePatternRowsFromCurrentTransaction ? storage.activeLanguagePatternWrites() : undefined;
+    const pending = writes?.pending(patterns) ?? [...patterns];
+    if (!pending.length) return;
+    const labels = await joinDurableRecordLabels(storage, "language_patterns", pending.map(pattern => ({ id: pattern.id, informationLabel: pattern.informationLabel })));
+    const payload = [];
     const archives = await encodeSegmentationWitnessArchives(
-      patterns.map(pattern => ({ value: pattern.patternJson, profileId: pattern.profileId })),
+      pending.map(pattern => ({ value: pattern.patternJson, profileId: pattern.profileId })),
       segmentationArchiveStorageAccess(storage)
     );
     const values: unknown[] = archives.map(result => result.value);
+    const pendingArchives = new Map(pending.flatMap((pattern, index) => archives[index]!.handled
+      ? [[pattern.id, { ...pattern, informationLabel: labels.get(pattern.id)! }] as const] : []));
+    const codec = canonicalCreativeCodec(storage, undefined, pendingArchives);
     const indices = values.flatMap((value, index) => archives[index]!.handled || isSourceCompilationMetadataHolder(value) ? [] : [index]);
-    const creative = await codec.encodeMany(indices.map(index => ({ value: values[index], informationLabel: labels.get(patterns[index]!.id)! })));
+    const creative = await codec.encodeMany(indices.map(index => ({ value: values[index], informationLabel: labels.get(pending[index]!.id)! })));
     indices.forEach((index, position) => { values[index] = creative[position]; });
-    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(patterns.map((pattern, index) => ({ artifactFamily: "language_pattern" as const, value: values[index], logicalValue: pattern.patternJson, profileId: pattern.profileId, informationLabel: labels.get(pattern.id)! })));
-    for (const [index, pattern] of patterns.entries()) payload.push({
+    const encoded = await sourceArtifactMetadataCodec(storage).encodeMany(pending.map((pattern, index) => ({ artifactFamily: "language_pattern" as const, value: values[index], logicalValue: pattern.patternJson, profileId: pattern.profileId, informationLabel: labels.get(pattern.id)! })));
+    for (const [index, pattern] of pending.entries()) payload.push({
     id: pattern.id,
     profile_id: pattern.profileId,
     pattern_kind: pattern.patternKind,
@@ -6463,6 +7041,9 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
         [payloadChunk]
       );
     }
+    // Mark only after every codec and SQL batch completed. An exception leaves
+    // the rows pending, while an outer rollback discards this client-scoped cache.
+    writes?.commit(pending);
   });
 }
 
@@ -7557,7 +8138,7 @@ async function latestLedgerHash(client: PoolClient, eventsTable: string): Promis
   return result.rows[0]?.ledger_hash ?? "";
 }
 
-function sha256(input: string | Buffer): string {
+function sha256(input: string | Uint8Array): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
@@ -7854,8 +8435,8 @@ function rowToConversationTurn(row: ConversationTurnRow): ConversationTurnRecord
 interface IngestionCheckpointRow { id: string; root_uri: string; item_uri: string; phase: IngestionCheckpoint["phase"]; status: IngestionCheckpoint["status"]; offset_bytes: string; content_hash: string | null; byte_length: string | null; reason: string | null; metadata_json: JsonValue; updated_at: Date }
 function rowToIngestionCheckpoint(row: IngestionCheckpointRow): IngestionCheckpoint { return { id: row.id, rootUri: row.root_uri, itemUri: row.item_uri, phase: row.phase, status: row.status, offsetBytes: Number(row.offset_bytes), contentHash: row.content_hash ? row.content_hash as ContentHash : undefined, byteLength: row.byte_length ? Number(row.byte_length) : undefined, reason: row.reason ?? undefined, updatedAt: row.updated_at.getTime(), metadata: row.metadata_json }; }
 
-interface EvidenceRow { id: string; source_id: string; source_version_id: string; chunk_id: string; content_hash: string; media_type: string; byte_start: string; byte_end: string; char_start: string; char_end: string; text_preview: string; text_content: string; language_hints: JsonValue; script_hints: JsonValue; trust_vector: JsonValue; provenance_json: JsonValue; features: string[]; status: "quarantined" | "promoted"; alpha: string; observed_at: Date; information_label: JsonValue }
-function rowToEvidence(row: EvidenceRow): EvidenceSpan { return { id: row.id as EvidenceId, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, chunkId: row.chunk_id as never, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end), charStart: Number(row.char_start), charEnd: Number(row.char_end), textPreview: row.text_preview, text: row.text_content, languageHints: row.language_hints, scriptHints: row.script_hints, trustVector: row.trust_vector, provenance: row.provenance_json, features: row.features, status: row.status, alpha: Number(row.alpha), observedAt: row.observed_at.getTime(),
+interface EvidenceRow { id: string; source_id: string; source_version_id: string; chunk_id: string; content_hash: string; media_type: string; byte_start: string; byte_end: string; char_start: string; char_end: string; text_preview: string; language_hints: JsonValue; script_hints: JsonValue; trust_vector: JsonValue; provenance_json: JsonValue; features: string[]; status: "quarantined" | "promoted"; alpha: string; observed_at: Date; information_label: JsonValue }
+function rowToCanonicalEvidence(row: EvidenceRow): CanonicalEvidenceSpanTextRecord { return { id: row.id as EvidenceId, sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId, chunkId: row.chunk_id as never, contentHash: row.content_hash as ContentHash, mediaType: row.media_type, byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end), charStart: Number(row.char_start), charEnd: Number(row.char_end), textPreview: row.text_preview, languageHints: row.language_hints, scriptHints: row.script_hints, trustVector: row.trust_vector, provenance: row.provenance_json, features: row.features, status: row.status, alpha: Number(row.alpha), observedAt: row.observed_at.getTime(),
   // The tenancy/compartment label is a security artifact stored NOT NULL on
   // every row; dropping it on read made every hydrated span unlabeled, so
   // any consumer that (correctly) refuses unlabeled evidence -- the

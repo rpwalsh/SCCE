@@ -515,6 +515,7 @@ export async function inspectV2Topic(storage: ScceStorage, topic: string, option
     return emptyTopicInspection(topic, ["topic inspection requires PostgreSQL adapter"]);
   }
   const query = `%${topic}%`;
+  const topicFeature = topic.normalize("NFKC").toLocaleLowerCase().trim();
   const nodeRows = await pg.query<{ id: string; representation_json: unknown; alpha: number; metadata_json: unknown }>(
     `SELECT id, representation_json, alpha, metadata_json FROM ${pg.table("graph_nodes")} WHERE representation_json::text ILIKE $1 OR metadata_json::text ILIKE $1 ORDER BY alpha DESC LIMIT 64`,
     [query]
@@ -530,22 +531,22 @@ export async function inspectV2Topic(storage: ScceStorage, topic: string, option
     return [];
   });
   const evidenceRows = await pg.query<{ count: string }>(
-    `SELECT COUNT(*)::text AS count FROM ${pg.table("evidence_spans")} WHERE text_content ILIKE $1 OR text_preview ILIKE $1`,
-    [query]
+    `SELECT COUNT(*)::text AS count FROM ${pg.table("evidence_spans")} WHERE text_preview ILIKE $1 OR $2=ANY(features)`,
+    [query, topicFeature]
   ).catch(error => {
     warnings.push(`evidence topic lookup failed: ${messageOf(error)}`);
     return [];
   });
   const directEvidenceRows = await pg.query<{ count: string }>(
-    `SELECT COUNT(*)::text AS count FROM ${pg.table("evidence_spans")} WHERE (text_content ILIKE $1 OR text_preview ILIKE $1) AND provenance_json::text ILIKE '%direct_evidence%'`,
-    [query]
+    `SELECT COUNT(*)::text AS count FROM ${pg.table("evidence_spans")} WHERE (text_preview ILIKE $1 OR $2=ANY(features)) AND provenance_json::text ILIKE '%direct_evidence%'`,
+    [query, topicFeature]
   ).catch(error => {
     warnings.push(`direct evidence topic lookup failed: ${messageOf(error)}`);
     return [];
   });
   const profileEvidenceRows = await pg.query<{ count: string }>(
-    `SELECT COUNT(*)::text AS count FROM ${pg.table("evidence_spans")} WHERE (text_content ILIKE $1 OR text_preview ILIKE $1) AND provenance_json::text ILIKE '%profile_excerpt_evidence%'`,
-    [query]
+    `SELECT COUNT(*)::text AS count FROM ${pg.table("evidence_spans")} WHERE (text_preview ILIKE $1 OR $2=ANY(features)) AND provenance_json::text ILIKE '%profile_excerpt_evidence%'`,
+    [query, topicFeature]
   ).catch(error => {
     warnings.push(`profile excerpt topic lookup failed: ${messageOf(error)}`);
     return [];

@@ -11,6 +11,7 @@ import type { ScceStorage } from "./storage.js";
 import type { EvidenceSpan, Hasher } from "./types.js";
 import { SOURCE_CONSTRUCTION_READ_BUDGET } from "./request-language-hydration.js";
 import { canonicalJsonByteLength } from "./canonical-json-digest.js";
+import { evidenceProofBoundary } from "./proof-boundary.js";
 
 export interface VerifiedContextualQaConstructions {
   readonly requestDigest: string;
@@ -28,7 +29,13 @@ function freezeQaValue<T>(value: T): T {
 }
 function directEvidence(span: EvidenceSpan): boolean {
   const admission = jsonRecord(jsonRecord(span.trustVector).admission);
-  return span.status === "promoted" && admission.disposition === "promote" && jsonRecord(admission.context).intendedUse === "direct_evidence";
+  // The proof boundary is the repository-wide authority for whether a
+  // promoted, exact source span can certify a factual claim.  Dialogue
+  // corpora are admitted for language learning but stamp their retained
+  // source spans as direct evidence; requiring the corpus-wide intended-use
+  // label here contradicted that authoritative per-span classification and
+  // made source-observed QA unusable after a cold restart.
+  return admission.disposition === "promote" && evidenceProofBoundary(span).certifiesFactualProof;
 }
 function sourceReceipts(evidence: readonly EvidenceSpan[], hasher: Hasher): string {
   return canonicalStringify(evidence.map(span => [String(span.id), String(span.sourceId), String(span.sourceVersionId), String(span.contentHash),

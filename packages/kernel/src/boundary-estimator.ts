@@ -261,8 +261,21 @@ export function mergeBoundaryStatistics(
     throw new Error("boundary statistics merge requires one schema and population");
   }
   const rows = new Map<string, BoundaryStatisticsRow>();
+  let canonicalRows = true;
   for (const statistic of [...statistics].sort((left, right) => left.id.localeCompare(right.id))) {
+    let previousKey: string | undefined;
     for (const row of statistic.rows) {
+      const fixed = row.featuresFixed;
+      canonicalRows = canonicalRows
+        && fixed.length === FEATURE_ORDER.length
+        && fixed.every(value => Number.isSafeInteger(value) && value >= 0 && value <= FIXED_SCALE)
+        && row.key === fixed.join(":")
+        && (previousKey === undefined || previousKey.localeCompare(row.key) < 0)
+        && [row.anchoredPositiveMass, row.anchoredNegativeMass, row.latentPositiveMass, row.latentNegativeMass,
+          row.positiveMass, row.negativeMass].every(value => Number.isSafeInteger(value) && value >= 0)
+        && row.positiveMass === row.anchoredPositiveMass + row.latentPositiveMass
+        && row.negativeMass === row.anchoredNegativeMass + row.latentNegativeMass;
+      previousKey = row.key;
       const current = rows.get(row.key) ?? emptyStatisticsRow(row.key, [...row.featuresFixed]);
       current.anchoredPositiveMass = safeAdd(current.anchoredPositiveMass, row.anchoredPositiveMass);
       current.anchoredNegativeMass = safeAdd(current.anchoredNegativeMass, row.anchoredNegativeMass);
@@ -278,6 +291,28 @@ export function mergeBoundaryStatistics(
   const sourceDocumentIds = statistics.flatMap(item => item.sourceDocumentIds);
   const sourceDocumentId = sourceDocumentIds[0] ?? "document.merged";
   let signalCount = 0;
+  if (canonicalRows) {
+    for (const row of rows.values()) {
+      if (row.anchoredPositiveMass + row.anchoredNegativeMass > 0) {
+        validateObservationIdentity(sourceDocumentId, `merged.anchor.${row.key}`);
+        signalKinds.add("external_anchor");
+        signalCount++;
+      }
+      if (row.latentPositiveMass + row.latentNegativeMass > 0) {
+        validateObservationIdentity(sourceDocumentId, `merged.latent.${row.key}`);
+        signalKinds.add("packed_forest_marginal");
+        signalCount++;
+      }
+    }
+    return finalizeBoundaryStatistics({
+      populationId: targetPopulationId ?? populationId,
+      rows: rows.values(),
+      sourceDocumentIds,
+      normalizationContractId: statistics[0]!.normalizationContractId ?? canonicalNormalizationContract(hasher).id,
+      signalKinds,
+      signalCount
+    }, hasher);
+  }
   for (const row of [...rows.values()].sort((left, right) => left.key.localeCompare(right.key))) {
     const featuresFixed = FEATURE_ORDER.map((_, index) =>
       Math.round(clamp01((row.featuresFixed[index] ?? 0) / FIXED_SCALE) * FIXED_SCALE));
@@ -358,7 +393,7 @@ function fitBoundaryEstimatorInternal(input: BoundaryEstimatorFitInput, numerica
   const learningRate = Math.max(1e-5, Math.min(1, input.learningRate ?? 0.18));
   const l2 = Math.max(0, Math.min(10, input.l2 ?? 0.02));
   const settings = { iterations, learningRate, l2 };
-  const key = numericalFits ? numericalFitKey(input, settings, hasher) : undefined;
+  const key = numericalFits ? numericalFitKey(input, settings) : undefined;
   let numerical = key === undefined ? undefined : numericalFits?.get(key);
   if (!numerical) {
     numerical = computeBoundaryFitNumerics(input, settings);
@@ -405,7 +440,7 @@ function fitBoundaryEstimatorInternal(input: BoundaryEstimatorFitInput, numerica
   };
 }
 
-function numericalFitKey(input: BoundaryEstimatorFitInput, settings: BoundaryFitSettings, hasher: Hasher): string | undefined {
+function numericalFitKey(input: BoundaryEstimatorFitInput, settings: BoundaryFitSettings): string | undefined {
   const material = (statistics: BoundarySufficientStatistics | undefined) => {
     if (!statistics) return undefined;
     const { id: _id, populationId: _population, audit: _audit, ...values } = statistics;
@@ -417,7 +452,10 @@ function numericalFitKey(input: BoundaryEstimatorFitInput, settings: BoundaryFit
     if (typeof value === "number" && (!Number.isFinite(value) || Object.is(value, -0))) finite = false;
     return value;
   });
-  return finite ? hasher.digestHex(key) : undefined;
+  // This value is only a lookup key in one short-lived fitter. The canonical
+  // material itself has exactly the same equality semantics as its SHA-256,
+  // without paying to hash a potentially large statistics payload each time.
+  return finite ? key : undefined;
 }
 
 function computeBoundaryFitNumerics(input: BoundaryEstimatorFitInput, settings: BoundaryFitSettings): BoundaryFitNumerics {

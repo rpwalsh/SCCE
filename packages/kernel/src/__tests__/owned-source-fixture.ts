@@ -3,6 +3,7 @@
 import { canonicalCorpusSourceSystemId } from "../corpus-registry.js";
 import { jsonRecord, kernelString } from "../kernel-answer-primitives.js";
 import { createHasher } from "../primitives.js";
+import type { BlobStore } from "../storage.js";
 import type { ContentHash, EvidenceId, EvidenceSpan, SourceVersion } from "../types.js";
 
 export function ownedSourceFixture(evidence: EvidenceSpan[]) {
@@ -34,6 +35,17 @@ export function ownedSourceFixture(evidence: EvidenceSpan[]) {
   return {
     sourcesForEvidence: async (ids: EvidenceId[]) => sources().filter(source => evidence.some(span => ids.includes(span.id) && span.sourceVersionId === source.sourceVersionId)),
     blobs: { put: async (bytes: Uint8Array) => { const hash = `sha256_${hasher.digestHex(bytes)}` as ContentHash; blobs.set(hash, new Uint8Array(bytes)); return hash; },
+      putRanges: async (items: Parameters<BlobStore["putRanges"]>[0], parent: Parameters<BlobStore["putRanges"]>[1]) => {
+        if (`sha256_${hasher.digestHex(parent.bytes)}` !== parent.contentHash) throw new Error("owned fixture range parent changed");
+        for (const item of items) {
+          if (item.parentHash !== parent.contentHash || item.byteStart < 0 || item.byteEnd <= item.byteStart || item.byteEnd > parent.bytes.byteLength) {
+            throw new Error("owned fixture blob range is invalid");
+          }
+          const bytes = parent.bytes.slice(item.byteStart, item.byteEnd);
+          if (`sha256_${hasher.digestHex(bytes)}` !== item.contentHash) throw new Error("owned fixture blob range hash mismatch");
+          blobs.set(item.contentHash, bytes);
+        }
+      },
       get: async (hash: ContentHash) => { sources(); const bytes = blobs.get(hash); if (!bytes) throw new Error(`owned fixture source blob missing: ${hash}`); return bytes; },
       exists: async (hash: ContentHash) => { sources(); return blobs.has(hash); } }
   };
