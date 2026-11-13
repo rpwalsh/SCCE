@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_SOURCE_SYSTEM,
-  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type InformationAccessContext } from "@scce/kernel";
+  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, REQUEST_REQUIREMENT_PATTERN_SCHEMA, type InformationAccessContext } from "@scce/kernel";
 import * as postgres from "../postgres.js";
 import * as schema from "../postgres-schema.js";
 import { evidenceTextReferenceSchemaStatements } from "../evidence-text-reference-schema.js";
@@ -179,6 +179,10 @@ describe("Postgres schema contract extraction", () => {
     const continuationProjection = continuationProjectionAdditions(statements, fixture.q);
     const unitNormalization = languageUnitNormalizationAdditions(statements, fixture.q);
     const key = fixture.q.replaceAll('"', "");
+    const pooledParentIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_language_profiles_pooled_parents ON ${fixture.q}.language_profiles USING GIN ((profile_json->'pooledSourceBinding'->'parents')) WHERE profile_json ? 'pooledSourceBinding'`;
+    expect(statements).toContain(pooledParentIndex);
+    const requirementIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_request_requirement_feature_lookup ON ${fixture.q}.language_patterns(source_system,(pattern_json->>'anchor'),(pattern_json->>'surface'),support DESC,updated_at DESC,id) WHERE pattern_schema='${REQUEST_REQUIREMENT_PATTERN_SCHEMA}'`;
+    expect(statements).toContain(requirementIndex);
     const addedColumn = `ALTER TABLE ${fixture.q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`;
     const retiredIndex = `DROP INDEX IF EXISTS ${fixture.q}.idx_${key}_semantic_frames_surface_rank`;
     const hashIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_normalized_surface_hash_rank ON ${fixture.q}.semantic_frames(normalized_surface_hash,alpha DESC,created_at DESC,id ASC)`;
@@ -201,8 +205,8 @@ describe("Postgres schema contract extraction", () => {
     expect(statements).toContain(retiredAnchorTable);
     expect(statements).not.toContain(anchorTable);
     expect(statements).not.toContain(anchorIndex);
-    expect(statements).toHaveLength(fixture.statementCount + 5 + schema32.length + pages.length + associations.length + sourceReferences.length + sourceReplay.length + continuationProjection.length + unitNormalization.length - 2);
-    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql) && !associations.includes(sql) && !sourceReferences.includes(sql) && !sourceReplay.includes(sql) && !continuationProjection.includes(sql) && !unitNormalization.includes(sql))
+    expect(statements).toHaveLength(fixture.statementCount + 7 + schema32.length + pages.length + associations.length + sourceReferences.length + sourceReplay.length + continuationProjection.length + unitNormalization.length - 2);
+    const prior = statements.filter(sql => sql !== pooledParentIndex && sql !== requirementIndex && sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && sql !== contextualQaIndex && !headerStatements.includes(sql) && !schema32.includes(sql) && !pages.includes(sql) && !associations.includes(sql) && !sourceReferences.includes(sql) && !sourceReplay.includes(sql) && !continuationProjection.includes(sql) && !unitNormalization.includes(sql))
       .map(sql => sql === hashIndex ? oldIndex : sql === retiredAnchorTable ? anchorTable : sql.includes(`${fixture.q}.evidence_spans (`)
         ? sql.replace("text_preview TEXT NOT NULL, language_hints", "text_preview TEXT NOT NULL, text_content TEXT NOT NULL, language_hints") : sql);
     for (const operation of ["ADD COLUMN IF NOT EXISTS information_label", "ALTER COLUMN information_label DROP DEFAULT"]) {

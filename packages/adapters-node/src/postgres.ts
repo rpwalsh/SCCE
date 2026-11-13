@@ -4774,6 +4774,14 @@ export function createExecutiveEventJournal(storage: PostgresStorageAdapter): Ex
 }
 
 function createModelStore(storage: PostgresStorageAdapter): ModelStore {
+  const profileHasher = createHasher();
+  const profileFromRow = (row: { profile_json: LanguageProfile }): LanguageProfile => {
+    validatePooledLanguageProfileOwnership(row.profile_json, profileHasher);
+    return row.profile_json;
+  };
+  // Every route that can warm a resident profile window must prove the whole pool, not only the requested parent.
+  const pooledAdmissionSql = (params: unknown[]): string => `(NOT (lp.profile_json ? 'pooledSourceBinding') OR
+    ${pooledProfileOwnershipSql(storage, params, "lp.id", "lp.source_version_id", "(lp.profile_json->'pooledSourceBinding')")})`;
   const defaultModel = (): ModelState => ({ languageProfiles: [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 });
   return {
     async readModel() {
@@ -4838,20 +4846,22 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
              )`
           : "";
         const access = storage.informationAccessPredicate("lp", 3);
+        const params: unknown[] = [ngrams, boundedLimit, ...access.params];
+        const pooledSql = pooledAdmissionSql(params);
         return (await storage.query<{ profile_json: LanguageProfile }>(
           `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
            FROM ${storage.table("language_profiles")} lp
            WHERE lp.ngram_keys && $1::text[]
              ${referencedFilter}
-             AND ${access.sql}
+             AND ${access.sql} AND ${pooledSql}
            ORDER BY (
              SELECT COUNT(*)
              FROM unnest(lp.ngram_keys) key
              WHERE key=ANY($1::text[])
            ) DESC, lp.created_at DESC, lp.id ASC
            LIMIT $2`,
-          [ngrams, boundedLimit, ...access.params]
-        )).map(row => row.profile_json);
+          params
+        )).map(profileFromRow);
       }
       if (typeof query === "object" && query?.sourceDerivedAliases !== undefined) {
         const aliasKeys = [...new Set(query.sourceDerivedAliases
@@ -4884,6 +4894,8 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
              )`
           : "";
         const access = storage.informationAccessPredicate("lp", 3);
+        const params: unknown[] = [aliasKeys, boundedLimit, ...access.params];
+        const pooledSql = pooledAdmissionSql(params);
         return (await storage.query<{ profile_json: LanguageProfile }>(
           `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
            FROM ${storage.table("language_profile_aliases")} alias
@@ -4901,11 +4913,11 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
                )
              )
              ${referencedFilter}
-             AND ${access.sql}
+             AND ${access.sql} AND ${pooledSql}
            ORDER BY alias.confidence DESC,alias.updated_at DESC,lp.id ASC
            LIMIT $2`,
-          [aliasKeys, boundedLimit, ...access.params]
-        )).map(row => row.profile_json);
+          params
+        )).map(profileFromRow);
       }
       if (typeof query === "object" && query?.sourceVersionIds !== undefined) {
         const sourceVersionIds = uniquePostgresStrings(query.sourceVersionIds.map(String).filter(Boolean)).slice(0, 512);
@@ -4922,19 +4934,25 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
              )`
           : "";
         const access = storage.informationAccessPredicate("lp", 3);
+        const params: unknown[] = [sourceVersionIds, boundedLimit, ...access.params];
+        const ownerSql = profileSourceOwnershipSql(storage, params, "lp");
         return (await storage.query<{ profile_json: LanguageProfile }>(
           `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
            FROM ${storage.table("language_profiles")} lp
-           WHERE lp.source_version_id=ANY($1::text[])
+           WHERE (lp.source_version_id=ANY($1::text[])
+             OR (lp.profile_json ? 'pooledSourceBinding'
+               AND (lp.profile_json->'pooledSourceBinding'->'parents') ?| $1::text[]))
              ${referencedFilter}
-             AND ${access.sql}
+             AND ${access.sql} AND ${ownerSql}
            ORDER BY lp.created_at DESC, lp.id ASC
            LIMIT $2`,
-          [sourceVersionIds, boundedLimit, ...access.params]
-        )).map(row => row.profile_json);
+          params
+        )).map(profileFromRow);
       }
       if (typeof query === "object" && query?.referencedByLanguageMemory) {
         const access = storage.informationAccessPredicate("lp", 2);
+        const params: unknown[] = [boundedLimit, ...access.params];
+        const pooledSql = pooledAdmissionSql(params);
         return (await storage.query<{ profile_json: LanguageProfile }>(
           `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
            FROM ${storage.table("language_profiles")} lp
@@ -4945,21 +4963,23 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
              OR ${observationReferencedProfileFilterSql(storage)}
              OR EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")} f WHERE f.frame_json->>'profileId'=lp.id OFFSET 0)
            )
-             AND ${access.sql}
+             AND ${access.sql} AND ${pooledSql}
            ORDER BY lp.created_at DESC, lp.id ASC
            LIMIT $1`,
-          [boundedLimit, ...access.params]
-        )).map(row => row.profile_json);
+          params
+        )).map(profileFromRow);
       }
       const access = storage.informationAccessPredicate("lp", 2);
+      const params: unknown[] = [boundedLimit, ...access.params];
+      const pooledSql = pooledAdmissionSql(params);
       return (await storage.query<{ profile_json: LanguageProfile }>(
         `SELECT lp.profile_json || jsonb_build_object('informationLabel', lp.information_label) AS profile_json
          FROM ${storage.table("language_profiles")} lp
-         WHERE ${access.sql}
+         WHERE ${access.sql} AND ${pooledSql}
          ORDER BY created_at DESC, id ASC
          LIMIT $1`,
-        [boundedLimit, ...access.params]
-      )).map(row => row.profile_json);
+        params
+      )).map(profileFromRow);
     }
   };
 }

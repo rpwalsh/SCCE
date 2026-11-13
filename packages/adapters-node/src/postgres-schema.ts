@@ -732,6 +732,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_created ON ${q}.language_profiles(created_at DESC,id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_ngrams ON ${q}.language_profiles USING GIN(ngram_keys)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_source_version ON ${q}.language_profiles(source_version_id,created_at DESC,id ASC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_pooled_parents ON ${q}.language_profiles USING GIN ((profile_json->'pooledSourceBinding'->'parents')) WHERE profile_json ? 'pooledSourceBinding'`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profile_alias_lookup ON ${q}.language_profile_aliases(alias_key,confidence DESC,updated_at DESC,profile_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_profile ON ${q}.language_units(profile_id,alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_profile_signature_source_version ON ${q}.language_profile_signatures(source_version_id)`,

@@ -12,8 +12,67 @@ import { CORPUS_SOURCE_SYSTEM_IDS } from "../corpus-registry.js";
 import type { LanguageContinuationPopulation, LanguagePatternRecord, LanguageUnitRecord, ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
 import type { SegmentationPopulationModelRecord } from "../segmentation-population-persistence.js";
 import type { LanguageProfile } from "../types.js";
+import { pooledProfileOwnerFixture } from "./fixtures/pooled-profile-owner.js";
+import { sourceOwnedSemanticSurfacePatterns } from "./fixtures/source-owned-semantic-surface.js";
 
 describe("surface language resident-only cache", () => {
+  it("cold-loads each pooled parent's constructions without admitting its sibling's source program", async () => {
+    const owner = pooledProfileOwnerFixture(["Aster powers pump.", "Beryl powers valve."], "parent.closure");
+    const fixture = runtimeFixture();
+    const restored = JSON.parse(JSON.stringify(owner.owned)) as LanguageProfile;
+    const evidence = owner.pages.flatMap(page => page.evidence);
+    const patterns = evidence.flatMap((span, index) => sourceOwnedSemanticSurfacePatterns({ evidence: span, profileId: restored.id, hasher: owner.hasher,
+      facts: [{ subject: index ? "Beryl" : "Aster", predicate: "powers", object: index ? "valve" : "pump", relationId: "relation.powers", surface: span.text }] }));
+    fixture.storage.model.listLanguageProfiles = async query => typeof query !== "number" && query?.sourceVersionIds
+      && !query.sourceVersionIds.some(id => owner.parentSourceVersionIds.includes(String(id))) ? [] : [restored];
+    fixture.storage.languageMemory.listLanguagePatterns = async query => query?.profileIds?.includes(restored.id) ? JSON.parse(JSON.stringify(patterns)) : [];
+    fixture.storage.evidence.getEvidenceBatch = async ids => evidence.filter(span => ids.includes(span.id));
+    for (const span of evidence) {
+      const bundles = await fixture.runtime.sourceOwnedConstructionsForEvidence([span]);
+      expect(bundles).toHaveLength(1);
+      expect(bundles[0]!.sourceProfileId).toBe(restored.id);
+      expect(bundles[0]!.sourceVersionIds).toEqual([String(span.sourceVersionId)]);
+    }
+    await fixture.runtime.surfaceLanguageProfilesCached();
+    for (const span of evidence) expect((await fixture.runtime.evidenceOwnedLanguageProfilesCached([span.sourceVersionId], { residentOnly: true })).profiles).toEqual([restored]);
+    expect(await fixture.runtime.sourceOwnedConstructionsForEvidence([{ ...evidence[0]!, sourceVersionId: "source.foreign" as never }])).toEqual([]);
+    expect(await fixture.runtime.sourceOwnedConstructionsForEvidence([{ ...evidence[0]!, status: "quarantined" }])).toEqual([]);
+  });
+
+  it("rejects a forged pooled parent binding before either cold or resident ownership admission", async () => {
+    const owner = pooledProfileOwnerFixture(["Aster powers pump.", "Beryl powers valve."], "parent.forged");
+    const fixture = runtimeFixture(), forged = JSON.parse(JSON.stringify(owner.owned)) as LanguageProfile;
+    forged.pooledSourceBinding = { ...forged.pooledSourceBinding!, parents: ["source.foreign"] };
+    fixture.storage.model.listLanguageProfiles = async () => [forged];
+    await expect(fixture.runtime.sourceOwnedConstructionsForEvidence([{ ...owner.pages[0]!.evidence[0]!, sourceVersionId: "source.foreign" as never }]))
+      .rejects.toThrow("invalid pooled profile ownership");
+    await expect(fixture.runtime.surfaceLanguageProfilesCached()).rejects.toThrow("invalid pooled profile ownership");
+  });
+
+  it("invalidates pooled resident membership when a required sibling loses current access", async () => {
+    const owner = pooledProfileOwnerFixture(["Aster powers pump.", "Beryl powers valve."], "parent.revision");
+    const fixture = runtimeFixture({ cacheMs: 100000 }), restored = JSON.parse(JSON.stringify(owner.owned)) as LanguageProfile;
+    let revision = "current", allParentsAdmitted = true;
+    fixture.storage.languageMemory.readRevision = async () => revision;
+    // The storage contract admits a pool only when every parent is current/promoted and principal-accessible.
+    fixture.storage.model.listLanguageProfiles = async () => allParentsAdmitted ? [restored] : [];
+    const evidence = owner.pages[0]!.evidence[0]!;
+    const patterns = sourceOwnedSemanticSurfacePatterns({ evidence, profileId: restored.id, hasher: owner.hasher,
+      facts: [{ subject: "Aster", predicate: "powers", object: "pump", relationId: "relation.powers", surface: evidence.text }] });
+    fixture.storage.languageMemory.listLanguagePatterns = async query => query?.profileIds?.includes(restored.id) ? patterns : [];
+    fixture.storage.evidence.getEvidenceBatch = async ids => ids.includes(evidence.id) ? [evidence] : [];
+    await fixture.runtime.synchronizeWithStorage();
+    await fixture.runtime.surfaceLanguageProfilesCached();
+    const parent = owner.pages[0]!.evidence[0]!.sourceVersionId;
+    expect((await fixture.runtime.evidenceOwnedLanguageProfilesCached([parent], { residentOnly: true })).profiles).toEqual([restored]);
+    expect(await fixture.runtime.sourceOwnedConstructionsForEvidence([evidence])).toHaveLength(1);
+    allParentsAdmitted = false; revision = "sibling-restricted";
+    await fixture.runtime.synchronizeWithStorage();
+    expect((await fixture.runtime.evidenceOwnedLanguageProfilesCached([parent], { residentOnly: true })).profiles).toEqual([]);
+    expect((await fixture.runtime.evidenceOwnedLanguageProfilesCached([parent])).profiles).toEqual([]);
+    expect(await fixture.runtime.sourceOwnedConstructionsForEvidence([evidence])).toEqual([]);
+  });
+
   it("keeps exact source populations distinct within one learned language", async () => {
     const fixture = runtimeFixture({ cacheMs: 100000, languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
     const secondProfile = { ...fixture.profile, id: "profile.second", sourceVersionId: "source.second" as never };

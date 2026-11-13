@@ -22,6 +22,7 @@ import { tidySurfaceTextMemoStats } from "./surface-linguistics.js";
 import { hydrateLanguageConstructionPatterns, isLanguageConstructionPattern, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type DurableLanguageConstructionBundle } from "./language-construction-memory.js";
 import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, onLanguageMemoryConstructionHydrated, peekLanguageMemoryConstructionState, scopeLanguageMemoryStateToCluster, scopeLanguageMemoryStateToLanguage } from "./language-memory-runtime.js";
 import { languageIdentityProfileIdsForArtifacts, type LanguageResolver } from "./language-identity-runtime.js";
+import { validatePooledLanguageProfileOwnership } from "./pooled-language-profile-binding.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import {
   buildLanguageProfileClusters,
@@ -1366,6 +1367,7 @@ export function createSurfaceLanguageRuntime(options: {
           .filter(pattern => corpusSourceAlias(kernelString(jsonRecord(pattern.patternJson).sourceSystem) ?? "") === corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.corrections))
           .map(pattern => pattern.profileId)
       );
+      for (const profile of persistedProfiles) validatePooledLanguageProfileOwnership(profile, hasher);
       const profiles = persistedProfiles
         .filter(profile => !requestControlProfileIds.has(profile.id))
         .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
@@ -1474,6 +1476,11 @@ export function createSurfaceLanguageRuntime(options: {
    * under which hydrateSurfaceLanguageMemory returns an explicitly empty state -- 226,992 learned units in storage and
    * models=0 patterns=0 units=0 at the mouth.
    */
+  function profileOwnsAnyEvidenceSource(profile: LanguageProfile, versions: ReadonlySet<string>): boolean {
+    const pooled = validatePooledLanguageProfileOwnership(profile, hasher);
+    return versions.has(String(profile.sourceVersionId)) || Boolean(pooled?.parents.some(parent => versions.has(parent)));
+  }
+
   async function evidenceOwnedLanguageProfilesCached(
     sourceVersionIds: readonly SourceVersionId[],
     cacheOptions: ResidentOnlyOptions = {}
@@ -1485,6 +1492,7 @@ export function createSurfaceLanguageRuntime(options: {
       if (key) byKey.set(key, sourceVersionId);
     }
     const versionKeys = [...byKey.keys()].sort();
+    const requested = new Set(versionKeys);
     if (!versionKeys.length) return { profiles: [], clusters: [] };
     const cacheKey = versionKeys.join(UNIT_SEPARATOR);
     const now = clock.now();
@@ -1498,9 +1506,8 @@ export function createSurfaceLanguageRuntime(options: {
       // to cover the evidence. It is still worth asking -- a warm cache costs nothing -- but a miss is not an error
       // here the way it is for a warmed cluster: the durable path below is the one that resolves these.
       if (!surfaceProfileCache) return { profiles: [], clusters: [] };
-      const requested = new Set(versionKeys);
       const profiles = surfaceProfileCache.value
-        .filter(profile => requested.has(String(profile.sourceVersionId)))
+        .filter(profile => profileOwnsAnyEvidenceSource(profile, requested))
         .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
       return { profiles, clusters: buildLanguageProfileClusters(profiles) };
     }
@@ -1508,7 +1515,8 @@ export function createSurfaceLanguageRuntime(options: {
       limit: surfaceLanguageProfileLimit,
       referencedByLanguageMemory: true,
       sourceVersionIds: versionKeys.map(key => byKey.get(key)!)
-    })).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+    })).filter(profile => profileOwnsAnyEvidenceSource(profile, requested))
+      .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
     const clusters = buildLanguageProfileClusters(profiles);
     if (generation === languageMemoryGeneration) boundedCacheSet(evidenceOwnedProfileCache, cacheKey, { loadedAt: now, profiles, clusters }, surfaceCandidateProfileCacheMaxEntries);
     return { profiles, clusters };
@@ -1605,7 +1613,8 @@ export function createSurfaceLanguageRuntime(options: {
     if (resident && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return resident;
     const generation = languageMemoryGeneration;
     const owned = await evidenceOwnedLanguageProfilesCached(versionIds as SourceVersionId[]);
-    const profileIds = owned.profiles.filter(profile => versionIds.includes(String(profile.sourceVersionId)))
+    const admittedVersions = new Set(versionIds);
+    const profileIds = owned.profiles.filter(profile => profileOwnsAnyEvidenceSource(profile, admittedVersions))
       .map(profile => profile.id).sort().slice(0, 32);
     if (!profileIds.length) return [];
     // Read only source-owned construction artifacts. Generic models and output-role priors do not compete for this budget.
@@ -1616,7 +1625,6 @@ export function createSurfaceLanguageRuntime(options: {
       .flatMap(pattern => pattern.evidenceIds.map(String)))].sort().slice(0, 4096);
     const constructionEvidence = constructionEvidenceIds.length
       ? await deps.storage.evidence.getEvidenceBatch(constructionEvidenceIds as EvidenceSpan["id"][]) : [];
-    const admittedVersions = new Set(versionIds);
     const memory = hydrateLanguageConstructionPatterns({ patterns, evidence: constructionEvidence, hasher });
     const bundles = memory.bundles.filter(bundle => bundle.sourceVersionIds.length > 0
       && bundle.sourceVersionIds.every(id => admittedVersions.has(String(id))));

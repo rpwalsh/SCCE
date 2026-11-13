@@ -37,7 +37,7 @@ export function pooledProfileOwnershipSql(storage: OwnershipStorage, params: unk
 
 export function profileSourceOwnershipSql(storage: OwnershipStorage, params: unknown[], alias: string, options: ProfileOwnershipLifecycle = {}): string {
   const access = storage.informationAccessPredicate("sv", params.length + 1); params.push(...access.params);
-  return `(EXISTS (SELECT 1 FROM ${storage.table("source_versions")} sv JOIN ${storage.table("sources")} s ON s.id=sv.source_id
-    WHERE sv.id=${alias}.source_version_id AND ${access.sql})
+  return `((NOT (${alias}.profile_json ? 'pooledSourceBinding') AND EXISTS (SELECT 1 FROM ${storage.table("source_versions")} sv JOIN ${storage.table("sources")} s ON s.id=sv.source_id
+    WHERE sv.id=${alias}.source_version_id AND ${access.sql}))
     OR ${pooledProfileOwnershipSql(storage, params, `${alias}.id`, `${alias}.source_version_id`, `(${alias}.profile_json->'pooledSourceBinding')`, options)})`;
 }

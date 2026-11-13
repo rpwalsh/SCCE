@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
 import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, SOURCE_COMPUTATION_CONSTRUCTION_RECIPE } from "@scce/kernel";
+import { createClock, createIdFactory, createLanguageAcquisitionEngine, createNgramMemoryCompiler } from "@scce/kernel";
 import { createHasher, stampSourceLanguageCompilation, validateSourceLanguageCompilationHeader, INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LANGUAGE_SEGMENTATION_WITNESS_MANIFEST_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID, SOURCE_SEGMENTATION_WITNESS_SCHEMA, POSTGRES_REQUIRED_TABLES, type JsonValue, type SourceVersionId } from "@scce/kernel";
 import { canonicalDigestHex } from "../../../kernel/src/canonical-json-digest.js";
 import { LANGUAGE_TRAINING_BATCH_RECIPE_ID } from "../../../kernel/src/language-training-recipe.js";
@@ -375,8 +376,14 @@ describe("Postgres language-memory ownership queries", () => {
   it("preserves immutable source metadata when a canonical model is recompiled by another producer", async () => {
     const { adapter, calls } = fixture();
     adapter.transaction = async operation => operation();
-    await adapter.languageMemory.putNgramModel({ id: "ngram.canonical", streamId: "source.language.training.canonical", languageHint: "und", maxOrder: 3, discount: 0.75,
-      modelJson: { profileId: "profile.owned", sourceVersionId: "source.owned", sourceSystem: "oss_code", model: { observedSymbolCount: 8 } }, updatedAt: 2,
+    const hasher = createHasher(), clock = createClock({ fixedTime: 2 });
+    const idFactory = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const text = "alpha beta alpha gamma beta delta", sourceVersionId = "source.owned" as SourceVersionId;
+    const profile = createLanguageAcquisitionEngine({ idFactory }).acquire({ sourceVersionId, text, createdAt: 2 });
+    const compiled = createNgramMemoryCompiler({ idFactory, hasher }).compile({ streamId: "source.language.training.canonical", sourceSystem: "oss_code",
+      sourceVersionId, profile, text, evidence: [], createdAt: 2, retainObservations: false });
+    expect(compiled.models.length).toBeGreaterThan(0);
+    await adapter.languageMemory.putNgramModel({ ...compiled.models[0]!,
       informationLabel: { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" } });
     const insertion = calls.find(call => call.sql.includes('INSERT INTO "fixture"."ngram_models"'));
     expect(insertion?.sql).toContain("AS n(id,stream_id");
