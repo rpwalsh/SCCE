@@ -87,6 +87,7 @@ import {
   CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
   CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
   REQUEST_SEED_PATTERN_JSON_FIELDS,
+  CREATIVE_SELECTOR_PATTERN_JSON_FIELDS, creativeSelectorLanguagePattern,
   REQUEST_SEED_FRAME_JSON_FIELDS,
   PREDICTION_SCORING_PATTERN_JSON_FIELDS,
   PREDICTION_SCORING_FRAME_JSON_FIELDS,
@@ -5424,6 +5425,11 @@ function jsonbFieldsSql(value: string, fields: readonly string[]): string {
 // never escapes in the returned request seed.
 const REQUEST_SEED_STORAGE_PATTERN_JSON_FIELDS = [...REQUEST_SEED_PATTERN_JSON_FIELDS, "modelId"] as const;
 
+function creativeSelectorPatternJsonSql(value: string, schema: string): string {
+  return `CASE WHEN ${schema}='${CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA}' THEN ${jsonbFieldsSql(value,
+    [...CREATIVE_SELECTOR_PATTERN_JSON_FIELDS, "sourceCompilationId", "sourceCompilation", "profileId", "_scceSourceArtifactMetadata"])} ELSE ${value} END`;
+}
+
 function requestSeedPatternJsonSql(value: string, schema: string): string {
   const declared = (roles: string, flag: string) => `(${value}->'${flag}'='true'::jsonb OR EXISTS (
     SELECT 1 FROM jsonb_array_elements(${jsonbArraySql(`${value}#>'{bundle,sourceExamples}'`)}) seed_example(value)
@@ -6264,7 +6270,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         throw new Error("language-pattern read accepts sourceSystem or sourceSystems, not both");
       }
       if (query.sourceSystems !== undefined && !query.sourceSystems.length) return [];
-      const projectedView = query.view === "request_seed" || query.view === "prediction_scoring";
+      const projectedView = query.view === "request_seed" || query.view === "prediction_scoring" || query.view === "creative_selector";
       const params: unknown[] = [];
       const projectionSets: string[] = [];
       const projectionScope: string[] = [];
@@ -6653,6 +6659,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
              admitted.id, admitted.profile_id, admitted.pattern_kind, admitted.support, admitted.entropy, admitted.evidence_ids, admitted.updated_at, admitted.information_label,
              ${query.view === "request_seed"
                ? requestSeedPatternJsonSql("pattern.pattern_json", "admitted.pattern_schema")
+               : query.view === "creative_selector"
+                 ? creativeSelectorPatternJsonSql("pattern.pattern_json", "admitted.pattern_schema")
                : query.view === "prediction_scoring"
                  ? predictionScoringPatternJsonSql("pattern.pattern_json", "admitted.pattern_schema")
                  : "pattern.pattern_json"} AS pattern_json,
@@ -6702,6 +6710,14 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.view === "prediction_scoring") {
         return rows.map(row => predictionScoringLanguagePattern(rowToLanguagePattern(row)));
       }
+      const selectorIndices = query.view === "creative_selector" ? rows.flatMap((row, index) =>
+        (row.pattern_json as Record<string, unknown>)?.schema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA ? [index] : []) : [];
+      if (selectorIndices.length) {
+        const selectors = await sourceArtifactMetadataCodec(storage).decodeCreativeSelectors(selectorIndices.map(index => ({
+          value: rows[index]!.pattern_json, profileId: rows[index]!.profile_id, informationLabel: rows[index]!.information_label
+        })));
+        selectorIndices.forEach((index, position) => { rows[index] = { ...rows[index]!, pattern_json: selectors[position] as JsonValue }; });
+      }
       // Source replay is exact but expensive: a semantic projection can authorize and reconstruct several source
       // witness pages before producing its small request-seed view. Pattern IDs are immutable and the bounded SQL
       // above rechecks current compilation, active projection, language, label and owner on every read. Cache only
@@ -6712,7 +6728,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       for (const [index, key] of cacheKeys.entries()) {
         const cached = key ? cachedRequestSeedSemanticPattern(storage, key) : undefined;
         if (cached) result[index] = cached;
-        else missingIndices.push(index);
+        else if (!selectorIndices.includes(index)) missingIndices.push(index);
+        else result[index] = creativeSelectorLanguagePattern(rowToLanguagePattern(rows[index]!));
       }
       if (!missingIndices.length) return result;
       const missingRows = missingIndices.map(index => rows[index]!);

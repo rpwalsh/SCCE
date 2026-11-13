@@ -9,6 +9,7 @@ import { createIdFactory } from "../ids.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
 import { CORPUS_SOURCE_SYSTEM_IDS } from "../corpus-registry.js";
+import { creativeSelectorLanguagePattern } from "../request-language-hydration.js";
 import type { LanguageContinuationPopulation, LanguagePatternRecord, LanguageUnitRecord, ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
 import type { SegmentationPopulationModelRecord } from "../segmentation-population-persistence.js";
 import type { LanguageProfile } from "../types.js";
@@ -16,6 +17,50 @@ import { pooledProfileOwnerFixture } from "./fixtures/pooled-profile-owner.js";
 import { sourceOwnedSemanticSurfacePatterns } from "./fixtures/source-owned-semantic-surface.js";
 
 describe("surface language resident-only cache", () => {
+  it("reads full compatibility bodies only for possible current owners while retaining calibrated and unspecified reliability", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100000 }), owner = pooledProfileOwnerFixture(["Aster powers pump."], "compatibility.scope");
+    const evidence = owner.pages.flatMap(page => page.evidence), currentId = String(evidence[0]!.id);
+    const base = { profileId: fixture.profile.id, patternKind: "semantic_role" as const, support: 1, entropy: 0, updatedAt: 1 };
+    const compatibility: LanguagePatternRecord[] = [
+      { ...base, id: "foreign.observed", evidenceIds: ["foreign" as never], patternJson: { schema: "scce.creative_event_compatibility_model.v1", reliability: "source_observed", sourceObservations: ["foreign body"] } },
+      { ...base, id: "mixed.observed", evidenceIds: [currentId as never, "foreign" as never], patternJson: { schema: "scce.creative_event_compatibility_model.v1", reliability: "source_observed", sourceObservations: ["whole mixed body"] } },
+      { ...base, id: "calibrated", evidenceIds: ["foreign" as never], patternJson: { schema: "scce.creative_event_compatibility_model.v1", reliability: "calibrated" } },
+      { ...base, id: "unspecified", evidenceIds: [], patternJson: { schema: "scce.creative_event_compatibility_model.v1" } }
+    ];
+    const constructions = sourceOwnedSemanticSurfacePatterns({ evidence: evidence[0]!, profileId: fixture.profile.id, hasher: owner.hasher,
+      facts: [{ subject: "Aster", predicate: "powers", object: "pump", relationId: "relation.powers", surface: evidence[0]!.text }] });
+    const modelReads: string[][] = [];
+    fixture.storage.languageMemory.listLanguagePatterns = async query => {
+      if (query?.view === "creative_selector") return compatibility.map(creativeSelectorLanguagePattern);
+      if (query?.patternIds) { modelReads.push([...query.patternIds]); return compatibility.filter(row => query.patternIds!.includes(row.id)); }
+      return constructions;
+    };
+    fixture.storage.evidence.getEvidenceBatch = async ids => evidence.filter(span => ids.includes(span.id));
+    const headers = await fixture.runtime.requestControlPatternsCached();
+    expect(headers.every(row => !Object.hasOwn(row.patternJson as object, "sourceObservations"))).toBe(true);
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "owner-scoped", undefined, "Aster", { languageId: "language.fixture" });
+    expect(modelReads).toEqual([["mixed.observed", "calibrated", "unspecified"]]);
+  });
+  it("does not promote an eligible model beyond the original combined admission window", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100000 }), owner = pooledProfileOwnerFixture(["Aster powers pump."], "compatibility.admission");
+    const evidence = owner.pages.flatMap(page => page.evidence);
+    const local = sourceOwnedSemanticSurfacePatterns({ evidence: evidence[0]!, profileId: fixture.profile.id, hasher: owner.hasher,
+      facts: [{ subject: "Aster", predicate: "powers", object: "pump", relationId: "relation.powers", surface: evidence[0]!.text }] });
+    const rows: LanguagePatternRecord[] = [...local, ...Array.from({ length: 255 - local.length }, (_, index) => ({ id: `local.${index}`,
+      profileId: fixture.profile.id, patternKind: "syntax" as const, support: 1, entropy: 0, evidenceIds: [], updatedAt: 1, patternJson: {} }))];
+    const selectors: LanguagePatternRecord[] = ["foreign", String(evidence[0]!.id)].map((id, index) => ({ id: `compatibility.${index}`,
+      profileId: fixture.profile.id, patternKind: "semantic_role", support: 1, entropy: 0, evidenceIds: [id as never], updatedAt: 1,
+      patternJson: { schema: "scce.creative_event_compatibility_model.v1", reliability: "source_observed" } }));
+    const modelReads: string[][] = [];
+    fixture.storage.languageMemory.listLanguagePatterns = async query => {
+      if (query?.view === "creative_selector") return selectors;
+      if (query?.patternIds) { modelReads.push([...query.patternIds]); return []; }
+      return rows;
+    };
+    fixture.storage.evidence.getEvidenceBatch = async ids => evidence.filter(span => ids.includes(span.id));
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(1, undefined, "admission", undefined, "Aster", { languageId: "language.fixture" });
+    expect(modelReads).toEqual([]);
+  });
   it("cold-loads each pooled parent's constructions without admitting its sibling's source program", async () => {
     const owner = pooledProfileOwnerFixture(["Aster powers pump.", "Beryl powers valve."], "parent.closure");
     const fixture = runtimeFixture();

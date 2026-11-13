@@ -39,6 +39,20 @@ function fixture(suffix = "", inherited: Record<string, JsonValue> = {}, schema 
 }
 
 describe("canonical source artifact metadata", () => {
+  it("projects logical creative selector fields from compact metadata without licensing the discarded model body", async () => {
+    const f = fixture("selector", { requestFrameAnchors: [{ requestFrameId: "observed", example: "owned" }],
+      sourceUtterancePrerequisites: { recipe: "owned", requests: [{ patternIds: ["source.pattern"] }] },
+      sourceObservations: [{ discardedBody: "owned source" }] }, "scce.creative_event_compatibility_model.v1");
+    const original = f.originals[1], [stored] = await f.codec.encodeMany([{ value: original, informationLabel: label }]);
+    expect(object(stored).requestFrameAnchors).toBeUndefined();
+    const expected = kernel.creativeSelectorLanguagePattern({ ...f.stamped.patterns[0]!, patternJson: original as JsonValue }).patternJson;
+    expect(await f.codec.decodeCreativeSelectors([{ value: clone(stored), informationLabel: label }])).toEqual([expected]);
+    const changed = clone(stored); object(object(changed)[SOURCE_ARTIFACT_METADATA_KEY]).recordDigest = "altered";
+    expect(await f.codec.decodeCreativeSelectors([{ value: changed, informationLabel: label }])).toEqual([expected]);
+    await expect(f.codec.decodeMany([{ value: changed, informationLabel: label }])).rejects.toThrow("metadata");
+    f.state.accessible = false;
+    await expect(f.codec.decodeCreativeSelectors([{ value: stored, informationLabel: label }])).rejects.toThrow("metadata");
+  });
   it("writes compact field indexes and reads existing named references against the same verified owner", async () => {
     const f = fixture(), [value] = await f.codec.encodeMany([{ value: f.originals[1], informationLabel: label }]);
     const stored = object(clone(value)), reference = object(stored[SOURCE_ARTIFACT_METADATA_KEY]);

@@ -11,6 +11,7 @@ import { compileCreativeRequestFrameFromCompatibilityModels } from "../creative-
 import { createIdFactory } from "../ids.js";
 import { canonicalStringify, createClock, createHasher, toJsonValue } from "../primitives.js";
 import type { LanguagePatternRecord, ScceKernelDeps } from "../storage.js";
+import { creativeSelectorLanguagePattern } from "../request-language-hydration.js";
 import type { EvidenceSpan } from "../types.js";
 import type { TranscriptTurn } from "../dialogue-communicative-act-learning.js";
 
@@ -102,13 +103,22 @@ it("refreshes the actual warm human creative prerequisite snapshot after same-so
     && !String(((pattern.patternJson as Record<string, unknown>).bundle as { bindingId?: string } | undefined)?.bindingId ?? "").startsWith("source.creative.utterance.")),
     legacy, ...legacySpeech.patterns];
   let revision = "old";
-  const storage = { languageMemory: { readRevision: async () => revision, listLanguagePatterns: async (query?: { patternIds?: string[]; patternSchemas?: string[] }) => active.filter(pattern =>
-    (!query?.patternIds || query.patternIds.includes(pattern.id)) && (!query?.patternSchemas || query.patternSchemas.includes(String((pattern.patternJson as Record<string, unknown>).schema)))) },
+  const patternReads: Array<{ view?: string; patternIds?: readonly string[] }> = [];
+  const storage = { languageMemory: { readRevision: async () => revision, listLanguagePatterns: async (query?: { view?: string; patternIds?: string[]; patternSchemas?: string[] }) => {
+    patternReads.push({ view: query?.view, patternIds: query?.patternIds });
+    const rows = active.filter(pattern => (!query?.patternIds || query.patternIds.includes(pattern.id))
+      && (!query?.patternSchemas || query.patternSchemas.includes(String((pattern.patternJson as Record<string, unknown>).schema))));
+    return query?.view === "creative_selector" ? rows.map(creativeSelectorLanguagePattern) : rows;
+  } },
     evidence: { getEvidenceBatch: async () => [evidence] }, model: { listLanguageProfiles: async () => [profile] } } as unknown as ScceKernelDeps["storage"];
   const runtime = createSurfaceLanguageRuntime({ deps: { storage }, languageMemoryRuntime: memory, clock, hasher, cacheMs: 100_000, profileLimit: 32 });
   const request = human.turns[0]!.surface, fresh = request.replace("Спанч", "Квартун");
   const original = await runtime.creativeSourceMemoryForRequest(request);
   expect(original).toBeDefined();
+  expect(patternReads.some(query => query.view === "creative_selector")).toBe(true);
+  expect(patternReads.some(query => query.view === undefined && query.patternIds?.includes(legacy.id))).toBe(true);
+  expect((await runtime.requestControlPatternsCached()).filter(pattern => (pattern.patternJson as Record<string, unknown>).schema === "scce.creative_event_compatibility_model.v1")
+    .every(pattern => !Object.hasOwn(pattern.patternJson as object, "sourceObservations"))).toBe(true);
   active = compiled.patterns;
   revision = "new";
   await runtime.synchronizeWithStorage?.();

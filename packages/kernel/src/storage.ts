@@ -151,6 +151,7 @@ export interface LanguageUnitRecord {
 
 /** Named, bounded language-memory projections. Absence means the complete consumer-facing row. */
 export type LanguageMemoryReadView = "request_seed" | "prediction_scoring";
+export type LanguagePatternReadView = LanguageMemoryReadView | "creative_selector";
 
 export interface UnitSourceMetadataPage {
   units: LanguageUnitRecord[];
@@ -1063,7 +1064,7 @@ export interface LanguageMemoryStore {
   /** Maintenance only: locked keyset prefix, decoded full-row byte bound, and explicit oversized-row progress. */
   listUnitSourceMetadataPage?(query: { afterId?: string; limit: number; maxTotalJsonBytes: number }): Promise<UnitSourceMetadataPage>;
   /** Operation views retain only their named consumer fields; construction and creative bodies remain deferred. */
-  listLanguagePatterns(query?: { view?: LanguageMemoryReadView; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; sourceSystems?: readonly string[]; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; sourceEditRequestFeatures?: readonly string[]; requestRequirementFeatures?: readonly { anchor: "start" | "any" | "end"; surface: string }[]; limit?: number; maxTotalJsonBytes?: number; requireComplete?: boolean }): Promise<LanguagePatternRecord[]>;
+  listLanguagePatterns(query?: { view?: LanguagePatternReadView; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; sourceSystems?: readonly string[]; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; sourceEditRequestFeatures?: readonly string[]; requestRequirementFeatures?: readonly { anchor: "start" | "any" | "end"; surface: string }[]; limit?: number; maxTotalJsonBytes?: number; requireComplete?: boolean }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { view?: LanguageMemoryReadView; profileIds?: readonly string[]; sourceSystem?: string; surface?: string; requestSurface?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }

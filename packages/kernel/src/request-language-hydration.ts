@@ -15,6 +15,23 @@ import type { JsonValue } from "./types.js";
 
 export const SOURCE_CONSTRUCTION_READ_BUDGET = Object.freeze({ limit: 512, maxTotalJsonBytes: 8 * 1024 * 1024 });
 
+export const CREATIVE_SELECTOR_PATTERN_JSON_FIELDS = ["schema", "id", "version", "requestCompilerId", "eventCompilerId",
+  "reliability", "sourceUtterancePrerequisites", "requestFrameAnchors"] as const;
+
+/** Selects owned programs to read; this view never licenses a compatibility model. */
+export function creativeSelectorLanguagePattern(pattern: LanguagePatternRecord): LanguagePatternRecord {
+  const row = record(pattern.patternJson);
+  if (row.schema !== CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA) return pattern;
+  const projected: Record<string, JsonValue> = {};
+  for (const key of CREATIVE_SELECTOR_PATTERN_JSON_FIELDS) if (Object.hasOwn(row, key)) projected[key] = row[key]!;
+  return { ...pattern, patternJson: projected };
+}
+
+/** A verified observation requires current request/reply owners listed by its model. */
+export function creativeCompatibilityCanOwnEvidence(pattern: LanguagePatternRecord, evidenceIds: ReadonlySet<string>): boolean {
+  return record(pattern.patternJson).reliability !== "source_observed" || pattern.evidenceIds.some(id => evidenceIds.has(String(id)));
+}
+
 export const REQUEST_SEED_PATTERN_JSON_FIELDS = [
   "schema", "profileId", "sourceId", "sourceVersionId", "parentSourceVersionIds", "profileBindingDigest",
   "sourceSystem", "corpusRoleId", "languageId", "componentRecipe", "compilerRecipe", "sourceCompilationId", "contentDigest",

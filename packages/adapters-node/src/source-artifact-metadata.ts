@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { canonicalDigestHex, canonicalStringify, createHasher, normalizeInformationLabel, REQUEST_SEED_PATTERN_JSON_FIELDS, REQUEST_SEED_FRAME_JSON_FIELDS, toJsonValue, validateSourceLanguageCompilationHeader, type SourceId, type SourceVersionId, type ContentHash, type InformationLabel } from "@scce/kernel";
+import { canonicalDigestHex, canonicalStringify, createHasher, normalizeInformationLabel, REQUEST_SEED_PATTERN_JSON_FIELDS, REQUEST_SEED_FRAME_JSON_FIELDS, CREATIVE_SELECTOR_PATTERN_JSON_FIELDS, toJsonValue, validateSourceLanguageCompilationHeader, type SourceId, type SourceVersionId, type ContentHash, type InformationLabel } from "@scce/kernel";
 import { profileSourceOwnershipSql } from "./pooled-profile-ownership.js";
 import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths } from "./durable-artifact-storage.js";
 import type { CreativeEventStorageHost } from "./canonical-creative-event-store.js";
@@ -94,6 +94,39 @@ export function createSourceArtifactMetadataCodec(host: Omit<CreativeEventStorag
     return shared;
   }
   return {
+    /** Resolves logical selector fields; the selected full model must still pass its complete record digest. */
+    async decodeCreativeSelectors(inputs: readonly Input[]): Promise<unknown[]> {
+      const owners = await holders(inputs, false), validated = new Map<Holder, ValidatedHolder | undefined>();
+      return inputs.map(input => {
+        const root = record(input.value); if (!root) return input.value;
+        const ref = record(root[SOURCE_ARTIFACT_METADATA_KEY]);
+        let shared: ValidatedHolder | undefined, keys: string[] = [];
+        if (Object.hasOwn(root, SOURCE_ARTIFACT_METADATA_KEY)) {
+          if (!ref || typeof ref.recordDigest !== "string" || typeof ref.introducedLedger !== "boolean") return fail();
+          const id = compilationId(root); if (!id) return fail();
+          const indexed = ref.schema === SOURCE_ARTIFACT_METADATA_INDEX_REF_SCHEMA;
+          if (indexed ? Object.keys(ref).sort().join(",") !== "fieldIndexes,introducedLedger,recordDigest,schema"
+            : ref.schema !== SOURCE_ARTIFACT_METADATA_REF_SCHEMA || ref.receiptId !== `source.language.compilation.${id}` || typeof ref.digest !== "string") return fail();
+          shared = validate(input, owners.get(`source.language.compilation.${id}`), id, validated, indexed ? undefined : ref.digest as string);
+          if (!shared) return fail();
+          const dictionary = Object.keys(shared.metadata).sort();
+          if (indexed && (!Array.isArray(ref.fieldIndexes) || ref.fieldIndexes.some((position, index, positions) =>
+            !Number.isSafeInteger(position) || position < 0 || position >= dictionary.length || index > 0 && position <= positions[index - 1]))) return fail();
+          const selected = indexed ? (ref.fieldIndexes as number[]).map(position => dictionary[position]) : ref.keys;
+          if (!Array.isArray(selected) || !selected.length || selected.some(key => typeof key !== "string" || QUERY_ROOTS.has(key)
+            || key === SOURCE_ARTIFACT_METADATA_KEY || key === DECODED_JSON_BYTE_LEDGER_KEY) || new Set(selected).size !== selected.length) return fail();
+          keys = selected as string[];
+        }
+        const projected: Record<string, unknown> = {};
+        for (const key of CREATIVE_SELECTOR_PATTERN_JSON_FIELDS) {
+          if (keys.includes(key)) {
+            if (!shared || !Object.hasOwn(shared.metadata, key) || Object.hasOwn(root, key)) return fail();
+            projected[key] = structuredClone(shared.metadata[key]);
+          } else if (Object.hasOwn(root, key)) projected[key] = root[key];
+        }
+        return projected;
+      });
+    },
     async encodeMany(inputs: readonly Input[]): Promise<unknown[]> {
       const owners = await holders(inputs, true), validated = new Map<Holder, ValidatedHolder | undefined>();
       return inputs.map(input => {

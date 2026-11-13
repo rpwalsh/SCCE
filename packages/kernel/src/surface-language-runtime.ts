@@ -6,7 +6,7 @@ import { canonicalDigestHex, canonicalJsonByteLength } from "./canonical-json-di
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import {
   conversationalConstructionBinding, requestConstructionCandidate, requestSeedLanguagePattern, requestSeedSemanticFrame,
-  sourceConstructionCandidate, SOURCE_CONSTRUCTION_READ_BUDGET,
+  sourceConstructionCandidate, SOURCE_CONSTRUCTION_READ_BUDGET, creativeSelectorLanguagePattern, creativeCompatibilityCanOwnEvidence,
   PREDICTION_SCORING_DECODED_BYTE_BUDGETS, PREDICTION_SCORING_MAX_DECODED_BYTES,
   predictionScoringLanguagePattern, predictionScoringLanguageUnit, predictionScoringPatternIsHydratable,
   predictionScoringSemanticFrame
@@ -375,12 +375,13 @@ export function createSurfaceLanguageRuntime(options: {
       .flatMap(sourceSystem => [sourceSystem, corpusSourceAlias(sourceSystem)]))];
     const pending = Promise.all(sourceSystems.map(sourceSystem =>
       deps.storage.languageMemory.listLanguagePatterns({
+        view: "creative_selector",
         sourceSystem,
         patternSchemas: [REQUEST_REQUIREMENT_PATTERN_SCHEMA, CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA],
         limit: 2048
       }))).then(groups => {
       const records = groups.flat();
-      const value = uniqueRecordsById(records, records.length);
+      const value = uniqueRecordsById(records, records.length).map(creativeSelectorLanguagePattern);
       if (generation === languageMemoryGeneration) requestControlPatternCache = { loadedAt: clock.now(), value };
       return value;
     });
@@ -605,8 +606,7 @@ export function createSurfaceLanguageRuntime(options: {
     const learnedRequestControlPatterns = latestRequestRequirementPatterns(requestControlPatterns);
     const populationSeed = purpose === "request_seed" && continuationPopulation !== undefined
       && deriveClosedClassWords({ continuationPopulation }).size > 0;
-    const requestControlCompatibilityPatterns = requestControlPatterns
-      .filter(isCreativeEventCompatibilityPattern);
+    const requestControlCompatibilitySelectors = requestControlPatterns.filter(isCreativeEventCompatibilityPattern);
     if (!selectionCluster && !preferredCorpusRoleId && !languageId) {
       const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
         importRunId: active.activeImportRunIds[0],
@@ -740,6 +740,17 @@ export function createSurfaceLanguageRuntime(options: {
     const constructionEvidence = constructionEvidenceIds.length
       ? await deps.storage.evidence.getEvidenceBatch(constructionEvidenceIds)
       : [];
+    const currentConstructionEvidenceIds = new Set(constructionEvidence.map(span => String(span.id)));
+    const admittedControlIds = new Set(uniqueRecordsById([...patterns, ...requestControlCompatibilitySelectors],
+      Math.max(256, boundedLimit * 64)).map(pattern => pattern.id));
+    const compatibleIds = purpose ? [] : requestControlCompatibilitySelectors
+      .filter(pattern => admittedControlIds.has(pattern.id) && creativeCompatibilityCanOwnEvidence(pattern, currentConstructionEvidenceIds))
+      .map(pattern => pattern.id);
+    const compatibilityBodies = compatibleIds.length ? await deps.storage.languageMemory.listLanguagePatterns({
+      patternIds: compatibleIds, limit: compatibleIds.length
+    }) : [];
+    const compatibilityById = new Map(compatibilityBodies.map(pattern => [pattern.id, pattern]));
+    const requestControlCompatibilityPatterns = compatibleIds.flatMap(id => compatibilityById.get(id) ?? []);
     hydrateHeapTrace("language.hydrate.loaded", { elapsedMs: Date.now() - hydrateStartedAt, modelsJsonMb: approxJsonMb(models), observationsJsonMb: approxJsonMb(observations), unitsJsonMb: approxJsonMb(units), patternsJsonMb: approxJsonMb(patterns), framesJsonMb: approxJsonMb(semanticFrames), constructionEvidenceJsonMb: approxJsonMb(constructionEvidence), models: models.length, observations: observations.length, units: units.length, patterns: patterns.length, semanticFrames: semanticFrames.length, constructionEvidence: constructionEvidence.length, queries: hydrationQueries.length });
     const hydrationInput = {
       importRunId: active.activeImportRunIds[0],
@@ -1648,11 +1659,15 @@ export function createSurfaceLanguageRuntime(options: {
     if (inFlight) return inFlight;
     const generation = languageMemoryGeneration;
     const pending = (async () => {
-      const sourcePatterns = await deps.storage.languageMemory.listLanguagePatterns({ patternIds, limit: patternIds.length,
-        maxTotalJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_PATTERNS_MB) || 32) * 1024 * 1024 });
+      const modelIds = [...new Set(candidates.map(candidate => candidate.modelPattern.id))];
+      const [sourcePatterns, modelPatterns] = await Promise.all([
+        deps.storage.languageMemory.listLanguagePatterns({ patternIds, limit: patternIds.length,
+          maxTotalJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_PATTERNS_MB) || 32) * 1024 * 1024 }),
+        deps.storage.languageMemory.listLanguagePatterns({ patternIds: modelIds, limit: modelIds.length })
+      ]);
       const evidenceIds = [...new Set(sourcePatterns.flatMap(pattern => pattern.evidenceIds))];
       const evidence = evidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(evidenceIds) : [];
-      const patterns = uniqueRecordsById([...sourcePatterns, ...candidates.map(candidate => candidate.modelPattern)], sourcePatterns.length + candidates.length);
+      const patterns = uniqueRecordsById([...sourcePatterns, ...modelPatterns], sourcePatterns.length + modelPatterns.length);
       const hydrated = languageMemoryRuntime.hydrate({ models: [], patterns, constructionEvidence: evidence });
       const owned = await evidenceOwnedLanguageProfilesCached([...new Set(evidence.map(span => span.sourceVersionId))]);
       const resolver = languageId ? await options.languageResolver?.(languageIdentityProfileIdsForArtifacts({ patterns, profiles: owned.profiles })) : undefined;
