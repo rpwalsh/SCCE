@@ -1031,9 +1031,13 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         ...(process.env.SCCE_TRACE_GROUPS ? { perGroup: perGroupCounts } : {})
       }
     });
+    const semanticFrameOwnersStarted = Date.now();
     const semanticFrameEvidence: SourceAnchoredEvidenceSelection = allowSemanticFrameEvidence
       ? await sourceAnchorSemanticFrameEvidence(text)
       : { evidence: [], semanticFrameBoundEvidenceIds: [] };
+    kernelTrace({ stage: "graph.resolve.semantic_frame_owners", label: "kernel.sourceAnchoredEvidenceForText",
+      durationMs: Date.now() - semanticFrameOwnersStarted, counts: { evidence: semanticFrameEvidence.evidence.length } });
+    const candidateAdmissionStarted = Date.now();
     // The frame lane fetches spans by id, so neither the SQL source-kind exclusion nor the prose filter above ever
     // saw them: a semantic frame built over the repository re-admitted the code those two guards had just removed.
     // The rule is the request's, not the lane's, so it is applied once to the merged pool.
@@ -1048,9 +1052,16 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         && !isControlCorpusSpan(span)
         && !spanIsUnparsedMarkup(span)));
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
+    kernelTrace({ stage: "graph.resolve.anchor_candidate_admission", label: "kernel.sourceAnchoredEvidenceForText",
+      durationMs: Date.now() - candidateAdmissionStarted, counts: { merged: mergedCandidates.length, promoted: promoted.length } });
+    const contextualQaStarted = Date.now();
     const currentContextualQa = (allowSemanticFrameEvidence || contextualQa) && deps.evaluationCondition?.flags.disableLanguageMemory !== true
       ? await contextualQaForRequest({ storage: deps.storage, hasher, requestText: text, evidence: promoted, ...contextualQa }) : undefined;
+    kernelTrace({ stage: "graph.resolve.contextual_qa", label: "kernel.sourceAnchoredEvidenceForText",
+      durationMs: Date.now() - contextualQaStarted, counts: { patterns: currentContextualQa?.patternIds.length ?? 0,
+        evidence: currentContextualQa?.binding.evidenceIds.length ?? 0 }, support: { suppliedConstructions: Boolean(contextualQa?.constructions) } });
     for (const id of currentContextualQa?.binding.evidenceIds ?? []) semanticFrameBoundEvidenceIds.add(id);
+    const identityAdmissionStarted = Date.now();
     const anchored = sourceIdentityAdmissibleEvidenceForRequest(
       text,
       promoted,
@@ -1065,6 +1076,8 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       ? temporalConceptTitledEvidence(text, admittedEvidence, promoted)
       : [];
     const evidence = conceptEvidence.length ? mergeEvidenceSpans([...admittedEvidence, ...conceptEvidence]).slice(0, 24) : admittedEvidence;
+    kernelTrace({ stage: "graph.resolve.anchor_identity_admission", label: "kernel.sourceAnchoredEvidenceForText",
+      durationMs: Date.now() - identityAdmissionStarted, counts: { anchored: anchored.evidence.length, admitted: evidence.length } });
     kernelTrace({
       stage: "graph.resolve.anchor_admissibility",
       label: "kernel.sourceAnchoredEvidenceForText",

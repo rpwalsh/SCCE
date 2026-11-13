@@ -58,6 +58,8 @@ export interface LanguageIdentityRuntime {
   readiness(): LanguageIdentityReadiness;
   /** Immutable assignment snapshot for precisely the owners present in bounded work. */
   resolver(profileIds: readonly string[]): Promise<LanguageResolver | undefined>;
+  /** Exact current owner assignments must agree; a surface guess cannot resolve missing or mixed owners. */
+  identityForProfileOwners(profileIds: readonly string[]): Promise<LanguageIdentityRecord | undefined>;
   /** The identity a request surface is written in, once identities are loaded. */
   selectForSurface(surface: string, options?: { excludeCorpusRoleIds?: readonly string[] }): { identity: LanguageIdentityRecord; coverage: number } | undefined;
   /** The identity most of a corpus family's documents belong to. */
@@ -263,6 +265,15 @@ export function createLanguageIdentityRuntime(options: {
         profile: profileId => profileLanguage.get(profileId),
         corpus: sourceSystem => (sourceSystem ? families.get(corpusFamilyForSourceSystem(sourceSystem)) : undefined)
       };
+    },
+    identityForProfileOwners: async requestedIds => {
+      const profileIds = [...new Set(requestedIds.filter(Boolean))];
+      if (!loaded.length || !options.store || !profileIds.length) return undefined;
+      const assignments = await options.store.listProfileLanguages({ profileIds });
+      const owners = profileIds.map(profileId => assignments.filter(row => row.profileId === profileId));
+      if (owners.some(rows => rows.length !== 1)) return undefined;
+      const languages = new Set(owners.map(rows => rows[0]!.languageId));
+      return languages.size === 1 ? loaded.find(identity => identity.id === owners[0]![0]!.languageId) : undefined;
     },
     selectForSurface: (surface, selection = {}) => selectLanguageIdentityForSurface(loaded, surface, {
       ...selection,

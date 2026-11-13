@@ -9,15 +9,30 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createClock,sourceOwnedProgramBehaviorFromDocumentation,searchProgramTransformations,evaluateProgramExpression,type JsonValue, type EvidenceSpan, type SourceVersion, type IngestionCheckpoint } from "@scce/kernel";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { createCapabilityTestKernel } from "../../../kernel/src/__tests__/fixtures/capability-runtime.js";
-import { trainOssCorpus, ingestMaterialSnapshot } from "../oss-corpus.js";
+import { trainOssCorpus, ingestMaterialSnapshot, createOssProjectContextPlanner, loadOssDependencyManifest } from "../oss-corpus.js";
 import { inspectEngineeringCorpusFolder } from "../engineering-corpus-folder.js";
-import { collectTypeScriptContractClosure, type ContractClosureBudget } from "../typescript-contract-closure.js";
+import { collectTypeScriptContractClosure, loadContractClosureFile, type ContractClosureBudget } from "../typescript-contract-closure.js";
 import * as kernel from "@scce/kernel";
 import { NodeBuildTestAdapter } from "../process.js";
 import type { ScceRuntimeConfig } from "../config.js";
 import { createApprovalSession } from "../approval-session.js";
+import { gzipSync } from "node:zlib";
+import { inspectPinnedPackageArchive, prepareOssPinnedDependencies } from "../oss-pinned-dependency.js";
 
 const roots: string[] = [];
+function packageArchive(files: Record<string, string>, kind = "0"): Buffer {
+  const blocks: Buffer[] = [];
+  for (const [name, text] of Object.entries(files)) {
+    const bytes = Buffer.from(text), header = Buffer.alloc(512);
+    header.write(`package/${name}`, 0, 100, "utf8");
+    header.write(`${bytes.byteLength.toString(8).padStart(11, "0")}\0`, 124, 12, "ascii");
+    header.fill(32, 148, 156); header.write(kind, 156, 1, "ascii"); header.write("ustar\0", 257, 6, "ascii");
+    const checksum = header.reduce((sum, value) => sum + value, 0);
+    header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
+    blocks.push(header, bytes, Buffer.alloc((512 - bytes.byteLength % 512) % 512));
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+}
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const entries: Record<string, string> = {
   "00-base.json": JSON.stringify({ compilerOptions: { strict: true, target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", baseUrl: ".", paths: { "@owned/*": ["src/*"] } } }),
@@ -217,6 +232,107 @@ it("reports an unresolved dependency without promoting a partially collected con
   expect(report.trainingComplete).toBe(false);
 });
 
+it("shares pinned context planning with read-only inspection without creating canonical owners", async () => {
+  const f = await fixture();
+  const inspection = await inspectEngineeringCorpusFolder(f.root, { maxFiles: 100, maxFileBytes: 1_000_000, includeUnsupported: false });
+  const planner = createOssProjectContextPlanner({ rootPath: f.root, inventory: inspection.files.filter(file => file.importable), maxFileBytes: 1_000_000 });
+  const closure = await planner.collect("spec/first.spec.ts");
+  expect(closure.complete).toBe(true);
+  expect(closure.configPath).toBe("tsconfig.json");
+  expect(closure.files.map(file => file.path)).toEqual(["00-base.json", "package.json", "spec/first.spec.ts", "src/index.ts", "src/value.ts", "tsconfig.json", "types/value.d.ts"]);
+  expect(f.versions.size).toBe(0);
+  expect(f.checkpoints.size).toBe(0);
+  expect(await f.storage.languageMemory.listLanguagePatterns()).toEqual([]);
+  await writeFile(path.join(f.root, "tsconfig.json"), "{}\n");
+  await expect(planner.readSource("tsconfig.json")).rejects.toThrow("OSS source changed after snapshot inspection: tsconfig.json");
+});
+
+it("acquires lock-pinned package declarations through ordinary source commits with distinct package owners", async () => {
+  const packageFiles = { "package.json": JSON.stringify({ name: "@types/owned-scalar", version: "1.2.3", types: "index.d.ts", license: "MIT" }),
+    "index.d.ts": "declare module 'δ.source' {export type Scalar=number;}\n" };
+  const archive = packageArchive(packageFiles), archiveUri = "https://registry.npmjs.org/@types/owned-scalar/-/owned-scalar-1.2.3.tgz";
+  const integrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;
+  const f = await fixture({ ...entries,
+    "tsconfig.json": JSON.stringify({ extends: "./00-base.json", compilerOptions: { noEmit: true, types: ["owned-scalar"] }, include: ["src/**/*.ts", "spec/**/*.ts", "types/**/*.ts"] }),
+    "src/value.ts": "import type {Scalar} from 'δ.source';export function measured(value:Scalar):Scalar{return value*value+value;}\n",
+    "spec/first.spec.ts": "import {test,expect} from 'vitest';import {f0 as observed} from '@owned/index.js';test('owned',()=>{expect(observed(2)).toBe(6);expect(observed(4)).toBe(20);expect(observed(-2)).toBe(2);expect(observed(5)).toBe(30);});\n",
+    "package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: { "node_modules/@types/owned-scalar": { version: "1.2.3", resolved: archiveUri, integrity } } })
+  });
+  const directoryPath = path.join(f.root, ".cache", "package"); await mkdir(directoryPath, { recursive: true });
+  for (const [name, text] of Object.entries(packageFiles)) await writeFile(path.join(directoryPath, name), text);
+  const archivePath = path.join(f.root, ".cache", "package.tgz"); await writeFile(archivePath, archive);
+  const declarations = [{ lockfilePath: "package-lock.json", packageLocation: "node_modules/@types/owned-scalar", archivePath, directoryPath }];
+  const inspection = await inspectEngineeringCorpusFolder(f.root, { maxFiles: 100, maxFileBytes: 1_000_000, includeUnsupported: false });
+  const inventory = inspection.files.filter(file => file.importable), snapshotHash = ingestMaterialSnapshot(inventory).snapshotHash;
+  const dependencies = await prepareOssPinnedDependencies({ rootPath: f.root, inventory, declarations, maxFileBytes: 1_000_000, maxTotalBytes: 8 * 1024 * 1024 });
+  expect(dependencies.files).toHaveLength(2);
+  expect(f.versions.size).toBe(0);
+  const manifestPath = path.join(f.root, ".cache", "dependencies.json");
+  const manifestText = JSON.stringify({ schema: "scce.oss_dependency_manifest.v1", sourceSnapshotHash: snapshotHash, packages: [{
+    lockfilePath: "package-lock.json", lockfileContentHash: inventory.find(file => file.path === "package-lock.json")!.contentHash,
+    packageLocation: "node_modules/@types/owned-scalar", packageName: "@types/owned-scalar", version: "1.2.3", archiveUri, integrity,
+    snapshotHash: dependencies.snapshots[0]!.snapshotHash, archivePath: "package.tgz", directoryPath: "package"
+  }] });
+  await writeFile(manifestPath, manifestText);
+  const manifestHash = createHash("sha256").update(manifestText).digest("hex");
+  const preflight = await loadOssDependencyManifest({ path: manifestPath, contentHash: manifestHash, rootPath: f.root });
+  expect(preflight.snapshots).toEqual(dependencies.snapshots);
+  expect(f.versions.size).toBe(0);
+  await expect(loadOssDependencyManifest({ path: manifestPath, contentHash: "0".repeat(64), rootPath: f.root })).rejects.toThrow("SHA256 mismatch");
+  const startFileIndex = inventory.findIndex(file => file.path === "spec/first.spec.ts");
+  const replaceProjection = f.storage.languageMemory.replaceLanguagePatternProjection;
+  if (!replaceProjection) throw new Error("Canonical projection fixture is unavailable");
+  const publications: Parameters<typeof replaceProjection>[0][] = [];
+  f.storage.languageMemory.replaceLanguagePatternProjection = async input => { publications.push(input); return replaceProjection.call(f.storage.languageMemory, input); };
+  const report = await trainOssCorpus({ ...f.options, startFileIndex, expectedSnapshotHash: snapshotHash, dependencyManifest: { path: manifestPath, contentHash: manifestHash } });
+  expect(report.snapshotHash).toBe(snapshotHash);
+  expect(report.filesTotal).toBe(inventory.length);
+  expect(report.nextFileIndex, JSON.stringify({ skipped: report.filesSkipped, stoppedByHeapSafetyBound: report.stoppedByHeapSafetyBound, contextAcquisition: report.contextAcquisition })).toBe(startFileIndex + 1);
+  const patterns = await f.storage.languageMemory.listLanguagePatterns({ patternKind: "source_code_assertion_contract" });
+  expect(patterns, JSON.stringify(report.contextAcquisition)).toHaveLength(1);
+  const packageOwners = [...f.versions.values()].filter(owner => owner.canonicalUri.startsWith(archiveUri));
+  expect(packageOwners).toHaveLength(4);
+  expect(packageOwners.every(owner => owner.canonicalUri.includes("#path=") && !owner.canonicalUri.includes("node_modules"))).toBe(true);
+  const projection = publications.map(input => input.projection).find(projection => projection.patternIds.includes(patterns[0]!.id))!;
+  expect(projection.sourceDependencies?.some(dependency => packageOwners.some(owner => owner.sourceVersionId === dependency.sourceVersionId))).toBe(true);
+  expect(projection.sourceDependencies?.some(dependency => f.versions.get(dependency.sourceVersionId)?.canonicalUri.endsWith("#path=package-lock.json"))).toBe(true);
+  const body = patterns[0]!.patternJson as { repositoryFamily: string; sourceHash: string };
+  const behavior = sourceOwnedProgramBehaviorFromDocumentation({ requestText: "TypeScript measured", ownerCallableIds: ["measured"],
+    intent: { languageId: "typescript", symbols: [], references: [{ sourceFamily: body.repositoryFamily, relativePath: "src/value.ts", sourceHash: body.sourceHash, score: 1 }], audit: null }, patterns });
+  expect(evaluateProgramExpression(searchProgramTransformations(behavior.behaviorRequirements).selected[0]!.producedIr, [-7])).toBe(42);
+  await writeFile(path.join(directoryPath, "index.d.ts"), "declare const forged:number;");
+  await expect(prepareOssPinnedDependencies({ rootPath: f.root, inventory, declarations, maxFileBytes: 1_000_000, maxTotalBytes: 8 * 1024 * 1024 })).rejects.toThrow("extracted bytes differ");
+});
+
+it("rejects unpinned archives, links, traversal and source-byte overruns before package admission", () => {
+  const valid = { "package.json": JSON.stringify({ name: "owned", version: "1" }), "index.d.ts": "export {};" };
+  const inspect = (bytes: Buffer, integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`, maxTotalBytes = 8 * 1024 * 1024) => inspectPinnedPackageArchive({ bytes, packageName: "owned", version: "1", archiveUri: "https://registry.npmjs.org/owned/-/owned-1.tgz", integrity, maxFileBytes: 1_000_000, maxTotalBytes });
+  const bytes = packageArchive(valid);
+  expect(() => inspect(bytes, "sha512-wrong")).toThrow("integrity");
+  expect(() => inspect(packageArchive(valid, "2"))).toThrow("links");
+  expect(() => inspect(packageArchive({ ...valid, "../../escape": "foreign" }))).toThrow("Unsafe");
+  expect(() => inspect(bytes, undefined, 32)).toThrow();
+});
+
+it.each(["owned", "unselected", "augmentation"] as const)("binds ambient modules only to selected source declarations: %s", async kind => {
+  const declarationPath = kind === "unselected" ? "unselected/ambient.d.ts" : "types/ambient.d.ts";
+  const f = await fixture({ ...entries,
+    "src/value.ts": "import type {Scalar} from 'δ.source';export function measured(value:Scalar):Scalar{return value*value+value;}\n",
+    [declarationPath]: `${kind === "augmentation" ? "export {};" : ""}declare module 'δ.source' {export type Scalar=number;}\n`
+  });
+  const inspection = await inspectEngineeringCorpusFolder(f.root, { maxFiles: 100, maxFileBytes: 1_000_000, includeUnsupported: false });
+  const planner = createOssProjectContextPlanner({ rootPath: f.root, inventory: inspection.files.filter(file => file.importable), maxFileBytes: 1_000_000 });
+  const closure = await planner.collect("spec/first.spec.ts");
+  expect(closure.complete).toBe(kind === "owned");
+  if (kind === "owned") {
+    expect(closure.reasons).toEqual([]);
+    expect(closure.files.some(file => file.path === declarationPath)).toBe(true);
+    const trained = await trainOssCorpus({ ...f.options, maxFilesPerRun: 100 });
+    expect(trained.sourceContractClosure?.complete).toBe(true);
+    expect(await f.storage.languageMemory.listLanguagePatterns({ patternKind: "source_code_assertion_contract" })).toHaveLength(2);
+  } else expect(closure.reasons).toContain("module_dependency_unavailable:src/value.ts:δ.source");
+});
+
 it("publishes the native smoke's mixed Node and Vitest roots through the same canonical closure", async () => {
   const f=await fixture({...entries,"spec/first.spec.ts":"import {test} from 'node:test';import {strictEqual} from 'node:assert';import {f0 as observed} from '@owned/index.js';test('first',()=>{strictEqual(observed(2),6);strictEqual(observed(4),20);});\n"});
   const report=await trainOssCorpus({...f.options,maxFilesPerRun:100});
@@ -232,7 +348,52 @@ it("enforces the shared decoded-byte ledger before loading dependencies and repo
   const budget: ContractClosureBudget = { maxFiles: 127, maxFileBytes: 65536, maxTotalBytes: Buffer.byteLength(entries["spec/first.spec.ts"]!), files: new Map(), usedBytes: 0 };
   const result = await collectTypeScriptContractClosure({ root, testPath: "spec/first.spec.ts", inventory: known, budget, load });
   expect(result.complete).toBe(false); expect(result.reasons.some(reason => reason.startsWith("max_total_bytes:"))).toBe(true);
-  expect(budget.usedBytes).toBeLessThanOrEqual(budget.maxTotalBytes); expect(load.mock.calls).toEqual([["spec/first.spec.ts"]]);
+  expect(budget.usedBytes).toBeLessThanOrEqual(budget.maxTotalBytes); expect(load.mock.calls).toEqual([]);
+});
+
+it("qualifies a complete project with more than 127 files under its measured source and descriptor byte budget", async () => {
+  const files = { ...entries } as Record<string, string>;
+  for (let index = 0; index < 130; index++) files[`types/context-${index}.d.ts`] = `/**${"x".repeat(20_800)}*/interface Context${index}{value:number}\n`;
+  const f = await fixture(files);
+  const before = process.memoryUsage(), start = performance.now();
+  let report = await trainOssCorpus({ ...f.options, maxFiles: Object.keys(files).length, maxFilesPerRun: Object.keys(files).length });
+  const qualified = report.sourceContractClosure!;
+  for (let attempt = 0; attempt < Object.keys(files).length && !report.trainingComplete; attempt++) {
+    report = await trainOssCorpus({ ...f.options, maxFiles: Object.keys(files).length, startFileIndex: report.nextFileIndex, expectedSnapshotHash: report.snapshotHash });
+  }
+  const after = process.memoryUsage();
+  expect(report.trainingComplete, JSON.stringify(report.sourceContractClosure)).toBe(true);
+  expect(qualified.filesLoaded).toBeGreaterThan(127);
+  expect(qualified.bytesLoaded).toBeLessThanOrEqual(8 * 1024 * 1024);
+  const patterns = await f.storage.languageMemory.listLanguagePatterns({ patternKind: "source_code_assertion_contract" });
+  expect(patterns).toHaveLength(2);
+  const body = patterns[0]!.patternJson as { repositoryFamily: string; sourceHash: string };
+  const behavior = sourceOwnedProgramBehaviorFromDocumentation({ requestText: "TypeScript measured", ownerCallableIds: ["measured"],
+    intent: { languageId: "typescript", symbols: [], references: [{ sourceFamily: body.repositoryFamily, relativePath: "src/value.ts", sourceHash: body.sourceHash, score: 1 }], audit: null }, patterns });
+  expect(evaluateProgramExpression(searchProgramTransformations(behavior.behaviorRequirements).selected[0]!.producedIr, [-7])).toBe(42);
+  const evidenceBytes = Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text), 0);
+  expect(evidenceBytes).toBeGreaterThan(2_700_000);
+  console.info(JSON.stringify({ schema: "scce.project_context_resource_regression.v1", files: Object.keys(files).length, sourceBytes: evidenceBytes,
+    chargedBytes: qualified.bytesLoaded, sourceBufferBytes: qualified.sourceBytesLoaded, descriptorBytes: qualified.descriptorBytesLoaded, wallMs: performance.now() - start,
+    heapBefore: before.heapUsed, heapAfter: after.heapUsed, nativeBefore: before.external, nativeAfter: after.external, peakRssBytes: process.resourceUsage().maxRSS * 1024 }));
+});
+
+it("charges metadata-only source descriptors before I/O and preserves explicit file limits", async () => {
+  const budget: ContractClosureBudget = { maxFiles: 1000, maxFileBytes: 1000, maxTotalBytes: 1024, files: new Map(), usedBytes: 0 };
+  const load = vi.fn(async (name: string) => ({ path: name, bytes: new Uint8Array(), sourceHash: "sha256_empty", sourceVersionId: `owner:${name}` }));
+  let refused = 0;
+  for (let index = 0; index < 1000; index++) {
+    const admission = await loadContractClosureFile({ row: { path: `empty/${index}.d.ts`, byteLength: 0, contentHash: "sha256_empty" }, budget, load });
+    if (admission.reason) { expect(admission.reason).toBe(`max_total_bytes:empty/${index}.d.ts`); refused++; }
+  }
+  expect(refused).toBeGreaterThan(0);
+  expect(load).toHaveBeenCalledTimes(budget.files.size);
+  expect(budget.sourceBytes).toBe(0);
+  expect(budget.usedBytes).toBe(budget.descriptorBytes);
+  expect(budget.usedBytes).toBeLessThanOrEqual(budget.maxTotalBytes);
+  const explicit: ContractClosureBudget = { maxFiles: 1, maxFileBytes: 1000, maxTotalBytes: 10_000, files: new Map(), usedBytes: 0 };
+  expect((await loadContractClosureFile({ row: { path: "one.d.ts", byteLength: 0 }, budget: explicit, load })).file).toBeDefined();
+  expect((await loadContractClosureFile({ row: { path: "two.d.ts", byteLength: 0 }, budget: explicit, load })).reason).toBe("max_files:two.d.ts");
 });
 
 it("continues beyond the first 32 candidates and never calls a wrapped unavailable round complete", async () => {

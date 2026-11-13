@@ -39,6 +39,21 @@ function memoryStore(rows: LanguageProfileSignatureRow[], initialIdentities: Lan
 }
 
 describe("language identity runtime", () => {
+  it("grounds a request in agreeing current program owners despite a stronger incidental surface cohort", async () => {
+    const identity = (id: string, share: number): LanguageIdentityRecord => ({ schema: "scce.language_identity.v2", id, script: "script:Latn",
+      directions: [], closedClass: [{ word: "a", documentShare: share }], families: [], corpusRoles: [], profileCount: 1, membershipCut: 0, createdAt: 1 });
+    const owner = identity("identity.owner", 0.46), foreign = identity("identity.foreign", 1), store = memoryStore([], [owner, foreign]);
+    store.assignments.set("profile.owner", owner.id); store.assignments.set("profile.same", owner.id); store.assignments.set("profile.foreign", foreign.id);
+    const runtime = createLanguageIdentityRuntime({ store, hasher: createHasher(), now: () => 2 });
+    await runtime.ensure();
+    expect(runtime.selectForSurface("a qzv")?.identity.id).toBe(foreign.id);
+    expect(await runtime.identityForProfileOwners(["profile.owner", "profile.same"])).toEqual(owner);
+    expect(await runtime.identityForProfileOwners(["profile.owner", "profile.foreign"])).toBeUndefined();
+    expect(await runtime.identityForProfileOwners(["profile.owner", "missing.profile"])).toBeUndefined();
+    store.assignments.set("profile.owner", "stale.identity");
+    expect(await runtime.identityForProfileOwners(["profile.owner"])).toBeUndefined();
+    expect(await runtime.identityForProfileOwners([])).toBeUndefined();
+  });
   it("reads corpus families from provenance without treating them as admission", () => {
     expect(corpusFamilyForSourceUri("wikipedia://enwiki/block/42")).toBe("wikipedia");
     expect(corpusFamilyForSourceUri("scce://construction-training/source.abc/batch-0006")).toBe("training-batch");

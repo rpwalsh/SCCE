@@ -40,6 +40,7 @@ const valueFlags = new Map([
   ["--receipt", "receiptPath"], ["--state", "statePath"], ["--wikipedia-dump", "wikipediaDump"],
   ["--wikipedia-index", "wikipediaIndex"], ["--gutenberg", "gutenbergRoot"], ["--dolly", "dollyRoot"],
   ["--oasst", "oasstRoot"], ["--code", "codeRoot"], ["--budget-bytes", "budgetBytes"],
+  ["--code-dependency-manifest", "codeDependencyManifestPath"], ["--code-dependency-manifest-hash", "codeDependencyManifestHash"],
   ["--guard-bytes", "guardBytes"], ["--target-bytes", "targetBytes"], ["--heap-checkpoint-mb", "heapCheckpointMb"],
   ["--source-workers", "sourceWorkers"], ["--source-worker-heap-mb", "sourceWorkerHeapMb"],
   ["--max-node-rss-bytes", "maxNodeRssBytes"]
@@ -75,6 +76,13 @@ export function parseArguments(args, cwd = process.cwd()) {
   if (guardBytes >= budgetBytes) throw new Error("guard-bytes must be smaller than budget-bytes");
   const targetBytes = result.targetBytes === undefined ? undefined : positiveInteger(result.targetBytes, "target-bytes");
   if (targetBytes !== undefined && targetBytes > budgetBytes) throw new Error("target-bytes must not exceed budget-bytes");
+  let codeDependencyManifest;
+  if (result.codeDependencyManifestPath !== undefined || result.codeDependencyManifestHash !== undefined) {
+    if (!result.codeDependencyManifestPath || !/^sha256_[a-f0-9]{64}$/u.test(result.codeDependencyManifestHash ?? "")) {
+      throw new Error("Code dependency manifest requires a path and canonical sha256_ content hash");
+    }
+    codeDependencyManifest = { path: absolute(result.codeDependencyManifestPath), contentHash: result.codeDependencyManifestHash };
+  }
   const workerFlags = [result.sourceWorkers, result.sourceWorkerHeapMb, result.maxNodeRssBytes];
   const workerFlagsPresent = workerFlags.filter(value => value !== undefined).length;
   if (workerFlagsPresent !== 0 && workerFlagsPresent !== workerFlags.length) {
@@ -97,6 +105,7 @@ export function parseArguments(args, cwd = process.cwd()) {
     dollyRoot: absolute(result.dollyRoot ?? path.join(cwd, ".scce", "corpus-bootstrap", "dolly15k-v1", "transcripts")),
     oasstRoot: absolute(result.oasstRoot ?? path.join(cwd, ".scce", "corpus-bootstrap", "oasst1-human-conversations-v1", "train")),
     codeRoot: absolute(result.codeRoot ?? path.join(cwd, ".scce", "corpus-bootstrap", "code-seed-v1", "repos")),
+    ...(codeDependencyManifest ? { codeDependencyManifest } : {}),
     budgetBytes, guardBytes, ...(targetBytes === undefined ? {} : { targetBytes }),
     heapCheckpointMb: positiveInteger(result.heapCheckpointMb ?? 7168, "heap-checkpoint-mb"),
     ...(sourceInductionExecution ? { sourceInductionExecution } : {}),
@@ -122,6 +131,10 @@ export function selectedOasstRoot(options) {
 }
 
 export function assertResumeCorpusScope(state, options) {
+  if (options.resume && (state.corpusIdentity?.codeDependencyManifest?.path !== options.codeDependencyManifest?.path
+    || state.corpusIdentity?.codeDependencyManifest?.contentHash !== options.codeDependencyManifest?.contentHash)) {
+    throw new Error("Resume code dependency manifest differs from the original initialization scope");
+  }
   const previous = state?.selection?.englishOnly;
   if (options.resume && typeof previous === "boolean" && previous !== (options.englishOnly === true)) {
     throw new Error("Resume english-only scope differs from the original brain build");
@@ -374,6 +387,7 @@ export async function trainCodeBatch(options, state, api, maxFilesPerRun) {
   const lane = state.lanes.code;
   const report = await api.adapters.trainOssCorpus({ storage: api.storage, rootPath: options.codeRoot,
     startFileIndex: lane.cursor, maxFilesPerRun, maxFilesPerRepo: 100_000, includeDocs: true, includeSource: true,
+    ...(options.codeDependencyManifest ? { dependencyManifest: options.codeDependencyManifest } : {}),
     ...(lane.snapshotHash ? { expectedSnapshotHash: lane.snapshotHash } : {}), ...api.settings });
   assertCorpusSkipsAdmissible("code", report.filesSkipped);
   if (!Number.isSafeInteger(report.filesTotal) || report.filesTotal < 0
@@ -662,7 +676,8 @@ function validateResumeState(state, options) {
 
 function corpusIdentity(options) {
   return { wikipediaDump: options.wikipediaDump ?? null, wikipediaIndex: options.wikipediaIndex ?? null,
-    gutenbergRoot: options.gutenbergRoot, dollyRoot: options.dollyRoot, oasstRoot: options.oasstRoot, codeRoot: options.codeRoot };
+    gutenbergRoot: options.gutenbergRoot, dollyRoot: options.dollyRoot, oasstRoot: options.oasstRoot, codeRoot: options.codeRoot,
+    ...(options.codeDependencyManifest ? { codeDependencyManifest: options.codeDependencyManifest } : {}) };
 }
 
 async function checkpoint(options, state, measurement, selectedItems = undefined) {
@@ -746,6 +761,13 @@ async function assertNonemptyDirectory(target, label) {
 export async function verifyBrainBuildPrerequisites(options) {
   if (process.env.SCCE_DATABASE_URL?.trim()) throw new Error("Unset SCCE_DATABASE_URL so the new brain config cannot be overridden");
   await assertRegularFile(options.configPath, "local SCCE config");
+  if (options.codeDependencyManifest) {
+    const manifest = options.codeDependencyManifest;
+    await assertRegularFile(manifest.path, "code dependency manifest");
+    if (`sha256_${createHash("sha256").update(await readFile(manifest.path)).digest("hex")}` !== manifest.contentHash) {
+      throw prerequisiteFailure("code dependency manifest", manifest.path, "content hash differs from its declared pin");
+    }
+  }
   await Promise.all([
     assertRegularFile(path.join(options.rootPath, "packages", "adapters-node", "dist", "index.js"), "built adapters-node package"),
     assertRegularFile(path.join(options.rootPath, "packages", "kernel", "dist", "index.js"), "built kernel package"),
@@ -756,6 +778,10 @@ export async function verifyBrainBuildPrerequisites(options) {
     ...(options.wikipediaDump ? [assertRegularFile(options.wikipediaDump, "Wikipedia dump")] : []),
     ...(options.wikipediaIndex ? [assertRegularFile(options.wikipediaIndex, "Wikipedia multistream index")] : [])
   ]);
+  if (options.codeDependencyManifest) {
+    const adapters = await import(pathToFileURL(path.join(options.rootPath, "packages", "adapters-node", "dist", "index.js")).href);
+    await adapters.loadOssDependencyManifest({ ...options.codeDependencyManifest, rootPath: options.codeRoot, maxFilesPerRepo: 100_000 });
+  }
   if (!options.existingFreshConfig && path.resolve(options.outputConfigPath) === path.resolve(options.configPath)) throw new Error("Output config must be a new path");
   if (path.resolve(options.receiptPath) === path.resolve(options.outputConfigPath) || path.resolve(options.statePath) === path.resolve(options.outputConfigPath)) {
     throw new Error("Receipt/state paths must not replace a config");
@@ -773,7 +799,7 @@ function positiveInteger(value, name) {
 }
 
 function usage() {
-  return "Usage: node --max-old-space-size=7168 tools/build-5gb-multicorpus-brain.mjs (--fresh-config <existing-empty-brain.json> | --config <base-local-config.json> --output-config <new-ignored-config.json> [--database-name <new-name>]) --receipt <ignored-receipt.json> [--wikipedia-dump <dump>] [--wikipedia-index <index>] [--gutenberg <dir>] [--dolly <transcripts-dir>] [--oasst <train-dir>] [--code <repos-dir>] [--budget-bytes 5000000000] [--guard-bytes 200000000] [--target-bytes 2000000000] [--heap-checkpoint-mb 7168] [--source-workers N --source-worker-heap-mb N --max-node-rss-bytes N] [--english-only] [--resume]";
+  return "Usage: node --max-old-space-size=7168 tools/build-5gb-multicorpus-brain.mjs (--fresh-config <existing-empty-brain.json> | --config <base-local-config.json> --output-config <new-ignored-config.json> [--database-name <new-name>]) --receipt <ignored-receipt.json> [--wikipedia-dump <dump>] [--wikipedia-index <index>] [--gutenberg <dir>] [--dolly <transcripts-dir>] [--oasst <train-dir>] [--code <repos-dir>] [--code-dependency-manifest <manifest.json> --code-dependency-manifest-hash <sha256_hex>] [--budget-bytes 5000000000] [--guard-bytes 200000000] [--target-bytes 2000000000] [--heap-checkpoint-mb 7168] [--source-workers N --source-worker-heap-mb N --max-node-rss-bytes N] [--english-only] [--resume]";
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {

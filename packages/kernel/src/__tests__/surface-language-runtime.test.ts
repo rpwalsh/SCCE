@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { clearNgramModelCompilationMemo, createLanguageMemoryRuntime, ngramModelCompilationCount } from "../language-memory-runtime.js";
 import { deriveClosedClassWords } from "../closed-class-words.js";
-import { languageSurfaceTrigrams } from "../language.js";
+import { buildLanguageProfileClusters, languageSurfaceTrigrams } from "../language.js";
 import { createNgramMemoryCompiler } from "../ngram-memory.js";
 import { createIdFactory } from "../ids.js";
 import { createClock, createHasher } from "../primitives.js";
@@ -17,6 +17,41 @@ import { pooledProfileOwnerFixture } from "./fixtures/pooled-profile-owner.js";
 import { sourceOwnedSemanticSurfacePatterns } from "./fixtures/source-owned-semantic-surface.js";
 
 describe("surface language resident-only cache", () => {
+  it("keeps verified owner request seeds distinct from broad-language and other-owner resident/in-flight seeds", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100000, languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
+    const other = { ...fixture.profile, id: "profile.other", sourceVersionId: "source.other" as LanguageProfile["sourceVersionId"] };
+    const profiles = [fixture.profile, other], clusters = profiles.map(profile => buildLanguageProfileClusters([profile])[0]!);
+    const units: LanguageUnitRecord[] = profiles.map(profile => ({ id: `unit.${profile.id}`, profileId: profile.id, sourceVersionId: profile.sourceVersionId,
+      script: "script:Latn", unitKind: "phrase", text: profile.id, features: [], competenceVector: [], alpha: 1, evidenceIds: [], metadata: {} }));
+    const hasher = createHasher(), compiler = createNgramMemoryCompiler({ hasher,
+      idFactory: createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true }) });
+    const models = profiles.flatMap(profile => compiler.compile({ streamId: `stream.${profile.id}`, sourceSystem: "dialogue", profile,
+      sourceVersionId: profile.sourceVersionId, text: "alpha beta alpha gamma alpha beta", evidence: [], createdAt: 1, retainObservations: false }).models);
+    const modelQueries: Array<readonly string[] | undefined> = [];
+    fixture.storage.model.listLanguageProfiles = async () => profiles;
+    fixture.storage.languageMemory.listLanguageUnits = async query => units.filter(unit => !query?.profileIds || query.profileIds.includes(unit.profileId));
+    fixture.storage.languageMemory.listNgramModels = async query => { modelQueries.push(query?.profileIds);
+      return models.filter(model => !query?.profileIds || query.profileIds.includes(String((model.modelJson as { profileId: string }).profileId))); };
+    fixture.storage.languageMemory.listSemanticFrames = async () => [];
+    const options = { languageId: "language.fixture", purpose: "request_seed" as const };
+    const broad = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, clusters[0], "broad", undefined, "surface", options);
+    expect(broad.state.importedUnits).toHaveLength(2);
+    await expect(fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, clusters[0], "owned", undefined, "surface",
+      { ...options, sourceOwnedRequest: true, residentOnly: true })).rejects.toThrow(/was not warmed/u);
+    modelQueries.length = 0;
+    const [first, second] = await Promise.all(clusters.map(cluster => fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster,
+      "owned", undefined, "surface", { ...options, sourceOwnedRequest: true })));
+    expect(modelQueries).toEqual([[fixture.profile.id], [other.id]]);
+    expect(first!.state.importedUnits.map(unit => unit.profileId)).toEqual([fixture.profile.id]);
+    expect(second!.state.importedUnits.map(unit => unit.profileId)).toEqual([other.id]);
+    expect(first!.state).not.toBe(second!.state);
+    const reads = modelQueries.length;
+    const resident = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, clusters[0], "owned", undefined, "another surface",
+      { ...options, sourceOwnedRequest: true, residentOnly: true });
+    expect(resident.state).toBe(first!.state);
+    expect(modelQueries).toHaveLength(reads);
+    expect((await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, clusters[0], "broad", undefined, "surface", options)).state).toBe(broad.state);
+  });
   it("reads full compatibility bodies only for possible current owners while retaining calibrated and unspecified reliability", async () => {
     const fixture = runtimeFixture({ cacheMs: 100000 }), owner = pooledProfileOwnerFixture(["Aster powers pump."], "compatibility.scope");
     const evidence = owner.pages.flatMap(page => page.evidence), currentId = String(evidence[0]!.id);

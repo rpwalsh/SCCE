@@ -27,6 +27,8 @@ export interface CorpusTrainOptions {
   actsOnly?: boolean;
   commitSha?: string;
   sourceUriBase?: string;
+  dependencyManifestPath?: string;
+  dependencyManifestHash?: string;
   sourceSystem?: string;
   afterSourceVersionId?: string;
   sourcePageSize?: number;
@@ -60,6 +62,8 @@ export function parseCorpusTrainOptions(args: string[]): CorpusTrainOptions {
     else if (flag === "--min-article-bytes" && Number.isFinite(num)) out.minArticleBytes = Math.max(0, Math.floor(num));
     else if (flag === "--max-article-bytes" && Number.isFinite(num)) out.maxArticleBytes = Math.max(1, Math.floor(num));
     else if (flag === "--source-uri-base" && raw?.trim()) out.sourceUriBase = raw.trim();
+    else if (flag === "--dependency-manifest" && raw?.trim()) out.dependencyManifestPath = raw.trim();
+    else if (flag === "--dependency-manifest-hash" && raw && /^[a-f0-9]{64}$/iu.test(raw)) out.dependencyManifestHash = raw.toLowerCase();
     else if (flag === "--language" && raw?.trim()) {
       out.languageAliases = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
     }
@@ -82,6 +86,7 @@ export function parseCorpusTrainOptions(args: string[]): CorpusTrainOptions {
       out.includeSource = true;
     } else throw new Error(`unknown corpus train option: ${arg}`);
   }
+  if (Boolean(out.dependencyManifestPath) !== Boolean(out.dependencyManifestHash)) throw new Error("--dependency-manifest and --dependency-manifest-hash must be supplied together");
   return out;
 }
 
@@ -101,6 +106,7 @@ export function ossCorpusTrainOptionsFrom(options: CorpusTrainOptions): Omit<Oss
     ...(options.startFileIndex !== undefined ? { startFileIndex: options.startFileIndex } : {}),
     ...(options.heapCheckpointMb !== undefined ? { heapCheckpointMb: options.heapCheckpointMb } : {}),
     ...(options.sourceUriBase !== undefined ? { sourceUriBase: options.sourceUriBase } : {}),
+    ...(options.dependencyManifestPath && options.dependencyManifestHash ? { dependencyManifest: { path: options.dependencyManifestPath, contentHash: options.dependencyManifestHash } } : {}),
     ...(options.includeDocs !== undefined ? { includeDocs: options.includeDocs } : {}),
     ...(options.includeSource !== undefined ? { includeSource: options.includeSource } : {}),
     ...(options.ngramMaxOrder !== undefined ? { ngramMaxOrder: options.ngramMaxOrder } : {}),

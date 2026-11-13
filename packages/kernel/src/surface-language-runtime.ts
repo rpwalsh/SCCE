@@ -267,6 +267,10 @@ const approxJsonMb = (rows: readonly unknown[]): number => {
 const hydrateHeapTrace = (stage: string, counts: Record<string, number>) =>
   traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, { stage, label: "kernel.language.hydrate", counts: { ...counts, heapMb: (process.env.SCCE_TRACE_GC === "1" && typeof (globalThis as { gc?: () => void }).gc === "function" ? ((globalThis as { gc?: () => void }).gc!(), 0) : 0) + Math.round(process.memoryUsage().heapUsed / 1048576) } });
 
+const creativeSourcePartTrace = (part: string, startedAt: number, counts: Record<string, number>) =>
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: `language.creative_source.${part}`, label: "kernel.language.creative_source", durationMs: Date.now() - startedAt, counts });
+
 export function createSurfaceLanguageRuntime(options: {
   deps: Pick<ScceKernelDeps, "storage" | "corpusRegistry" | "surfaceLanguageMemoryCacheMaxEstimatedBytes">;
   languageMemoryRuntime: ReturnType<typeof createLanguageMemoryRuntime>;
@@ -508,6 +512,8 @@ export function createSurfaceLanguageRuntime(options: {
     languageId?: string;
     /** Request interpretation consumes the canonical population statistics, not generative history indexes. */
     purpose?: SurfaceLanguageHydrationPurpose;
+    /** A verified source request program supplies the exact owner cluster and its current learned language. */
+    sourceOwnedRequest?: boolean;
   };
 
 
@@ -539,14 +545,16 @@ export function createSurfaceLanguageRuntime(options: {
     preferredSurface = "",
     languageId?: string,
     generation = languageMemoryGeneration,
-    purpose?: SurfaceLanguageHydrationPurpose
+    purpose?: SurfaceLanguageHydrationPurpose,
+    sourceOwnedRequest = false
   ) {
     const boundedLimit = Math.max(1, Math.min(256, Math.floor(limit)));
     // Request-seed uses typed natural-language roles below; the unsupervised surface cluster may be symbolic.
-    const selectionCluster = purpose === "request_seed" && languageId ? undefined : cluster;
+    const ownedRequestSeed = purpose === "request_seed" && sourceOwnedRequest;
+    const selectionCluster = purpose === "request_seed" && languageId && !ownedRequestSeed ? undefined : cluster;
     const hydrateHeapStart = process.memoryUsage().heapUsed;
     const hydrateStartedAt = Date.now();
-    const profileIds = preferredCorpusRoleId ? undefined : selectionCluster?.profileIds;
+    const profileIds = preferredCorpusRoleId && !ownedRequestSeed ? undefined : selectionCluster?.profileIds;
     const hydrationLimits = {
       ngramModels: Math.max(12, boundedLimit * Math.max(1, corpusRegistry.length)),
       ngramObservations: Math.max(1200, boundedLimit * 320),
@@ -1021,6 +1029,8 @@ export function createSurfaceLanguageRuntime(options: {
     const now = clock.now();
     const generation = languageMemoryGeneration;
     const languageId = hydrationOptions.languageId;
+    const ownedRequestSeed = hydrationOptions.sourceOwnedRequest === true && hydrationOptions.purpose === "request_seed";
+    if (ownedRequestSeed && (!languageId || !cluster?.profileIds.length)) throw Error("source-owned request seed requires its exact owner profiles and learned language");
     const lookup = (result: string, extra: Record<string, number> = {}) => traceEvent(
       (globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace,
       {
@@ -1032,8 +1042,8 @@ export function createSurfaceLanguageRuntime(options: {
     );
     // Exact source reads remain distinct even when their owners speak the same language.
     if (languageId) {
-      const sourceScopeKey = cluster && !preferredCorpusRoleId && hydrationOptions.purpose !== "request_seed"
-        ? `${UNIT_SEPARATOR}${languageProfileClusterCacheKey(cluster)}` : "";
+      const sourceScopeKey = cluster && ((!preferredCorpusRoleId && hydrationOptions.purpose !== "request_seed") || ownedRequestSeed)
+        ? `${UNIT_SEPARATOR}${ownedRequestSeed ? "source-owned-request" + UNIT_SEPARATOR : ""}${languageProfileClusterCacheKey(cluster)}` : "";
       const languageKey = `${languageId}\u001flanguage${sourceScopeKey}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}${hydrationOptions.purpose ? `\u001f${hydrationOptions.purpose}` : ""}`;
       const resident = surfaceLanguageMemoryCache.get(languageKey);
       if (resident && resident.limit >= limit && (hydrationOptions.residentOnly || now - resident.loadedAt < surfaceLanguageMemoryCacheMs)) {
@@ -1046,7 +1056,7 @@ export function createSurfaceLanguageRuntime(options: {
       if (hydrationOptions.residentOnly) return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
       let pending = surfaceLanguageMemoryInFlight.get(languageKey);
       if (!pending) {
-        pending = admitHydration(() => hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, languageId, generation, hydrationOptions.purpose))
+        pending = admitHydration(() => hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, languageId, generation, hydrationOptions.purpose, hydrationOptions.sourceOwnedRequest))
           .then(hydrated => {
             if (generation === languageMemoryGeneration && hydrationWorthCaching(hydrated)) boundedSurfaceLanguageMemoryCacheSet(
               surfaceLanguageMemoryCache,
@@ -1163,7 +1173,7 @@ export function createSurfaceLanguageRuntime(options: {
     // selected profile.
     let pending = surfaceLanguageMemoryInFlight.get(cacheKey);
     if (!pending) {
-      pending = admitHydration(() => hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, "", undefined, generation, hydrationOptions.purpose));
+      pending = admitHydration(() => hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, "", undefined, generation, hydrationOptions.purpose, hydrationOptions.sourceOwnedRequest));
       void pending.then(value => {
         // An explicit unscoped decision is reusable; missing data for a
         // selected language must remain retryable.
@@ -1255,8 +1265,10 @@ export function createSurfaceLanguageRuntime(options: {
     preferredSurface = "",
     hydrationOptions: ResidentOnlyOptions = {}
   ): void {
+    const ownedRequestScope = hydrationOptions.sourceOwnedRequest && hydrationOptions.purpose === "request_seed"
+      ? `\u001fsource-owned-request\u001f${languageProfileClusterCacheKey(cluster)}` : "";
     const warmKey = hydrationOptions.languageId
-      ? `language:${hydrationOptions.languageId}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}${hydrationOptions.purpose ? `\u001f${hydrationOptions.purpose}` : ""}`
+      ? `language:${hydrationOptions.languageId}${ownedRequestScope}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}${hydrationOptions.purpose ? `\u001f${hydrationOptions.purpose}` : ""}`
       : `cluster:${languageProfileClusterCacheKey(cluster)}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}\u001f${cluster ? "" : unscopedReason}${hydrationOptions.purpose ? `\u001f${hydrationOptions.purpose}` : ""}`;
     if (deferredLanguageWarmups.has(warmKey)) return;
     deferredLanguageWarmups.add(warmKey);
@@ -1647,7 +1659,11 @@ export function createSurfaceLanguageRuntime(options: {
 
   async function creativeSourceMemoryForRequest(requestText: string, languageId?: string): Promise<{ state: LanguageMemoryRuntimeState; profile: LanguageProfile; patterns: LanguagePatternRecord[] } | undefined> {
     if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
-    const candidates = creativeRequestSourcePrerequisites({ requestText, patterns: await requestControlPatternsCached(), hasher });
+    const selectorReadStarted = Date.now(), selectors = await requestControlPatternsCached();
+    creativeSourcePartTrace("selectors", selectorReadStarted, { rows: selectors.length });
+    const selectorMatchStarted = Date.now();
+    const candidates = creativeRequestSourcePrerequisites({ requestText, patterns: selectors, hasher });
+    creativeSourcePartTrace("matching", selectorMatchStarted, { rows: selectors.length, candidates: candidates.length });
     const patternIds = [...new Set(candidates.flatMap(candidate => candidate.patternIds))].sort();
     if (!patternIds.length) return undefined;
     const key = canonicalDigestHex({ patternIds, models: candidates.map(candidate => candidate.modelPattern.id).sort(), languageId: languageId ?? null }, hasher);
@@ -1660,16 +1676,26 @@ export function createSurfaceLanguageRuntime(options: {
     const generation = languageMemoryGeneration;
     const pending = (async () => {
       const modelIds = [...new Set(candidates.map(candidate => candidate.modelPattern.id))];
+      const patternReadStarted = Date.now();
       const [sourcePatterns, modelPatterns] = await Promise.all([
         deps.storage.languageMemory.listLanguagePatterns({ patternIds, limit: patternIds.length,
-          maxTotalJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_PATTERNS_MB) || 32) * 1024 * 1024 }),
+          maxTotalJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_PATTERNS_MB) || 32) * 1024 * 1024 })
+          .then(rows => { creativeSourcePartTrace("prerequisite_patterns", patternReadStarted, { requested: patternIds.length, rows: rows.length }); return rows; }),
         deps.storage.languageMemory.listLanguagePatterns({ patternIds: modelIds, limit: modelIds.length })
+          .then(rows => { creativeSourcePartTrace("model_patterns", patternReadStarted, { requested: modelIds.length, rows: rows.length }); return rows; })
       ]);
       const evidenceIds = [...new Set(sourcePatterns.flatMap(pattern => pattern.evidenceIds))];
+      const evidenceReadStarted = Date.now();
       const evidence = evidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(evidenceIds) : [];
+      creativeSourcePartTrace("evidence", evidenceReadStarted, { requested: evidenceIds.length, rows: evidence.length });
       const patterns = uniqueRecordsById([...sourcePatterns, ...modelPatterns], sourcePatterns.length + modelPatterns.length);
+      const programBuildStarted = Date.now();
       const hydrated = languageMemoryRuntime.hydrate({ models: [], patterns, constructionEvidence: evidence });
+      creativeSourcePartTrace("hydrate_base", programBuildStarted, { patterns: patterns.length });
+      const profilesReadStarted = Date.now();
       const owned = await evidenceOwnedLanguageProfilesCached([...new Set(evidence.map(span => span.sourceVersionId))]);
+      creativeSourcePartTrace("owner_profiles", profilesReadStarted, { profiles: owned.profiles.length });
+      const programScopeStarted = Date.now();
       const resolver = languageId ? await options.languageResolver?.(languageIdentityProfileIdsForArtifacts({ patterns, profiles: owned.profiles })) : undefined;
       let state: LanguageMemoryRuntimeState;
       if (languageId && resolver) state = scopeLanguageMemoryStateToLanguage(hydrated, languageId, resolver);
@@ -1678,12 +1704,15 @@ export function createSurfaceLanguageRuntime(options: {
         if (!cluster) return undefined;
         state = scopeLanguageMemoryStateToCluster(hydrated, cluster);
       }
+      creativeSourcePartTrace("scope", programScopeStarted, { patterns: patterns.length });
+      const frameStarted = Date.now();
       const sourceProfiles = owned.profiles.filter(profile => state.scope.profileIds.includes(profile.id));
       const profile = selectLanguageProfileForSurface(sourceProfiles, requestText) ?? sourceProfiles[0];
       const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText, models: state.creativeEventCompatibilityModels, hasher });
       const learned = frame && state.creativeEventCompatibilityModels.some(model => model.reliability === "source_observed"
         && candidates.some(candidate => candidate.modelPattern.id === model.id)
         && model.sourceObservations.some(row => frame.sourceActivationIds.includes(row.requestFrameId)));
+      creativeSourcePartTrace("frame", frameStarted, { models: state.creativeEventCompatibilityModels.length, frame: frame ? 1 : 0 });
       traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
         stage: "language.creative_source_request", label: "kernel.language.hydrate", counts: { requestedPatterns: patternIds.length, patterns: sourcePatterns.length, evidence: evidence.length },
         support: { admitted: Boolean(profile && frame && learned), sourceProfileIds: candidates.map(candidate => candidate.profileId), frameId: frame?.id ?? null }

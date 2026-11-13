@@ -5,9 +5,38 @@ import ts from "typescript";
 import { pathGlobMatches } from "./path-glob.js";
 import type { OwnedContractSnapshotFile } from "./source-owned-contract-compiler.js";
 import { SOURCE_OWNED_ASSERTION_FRAMEWORK_MODULES } from "./source-owned-test-contracts.js";
+import { canonicalJsonByteLength } from "@scce/kernel";
 
-export interface ContractClosureInventoryFile { readonly path: string; readonly byteLength: number; readonly contentHash?: string }
-export interface ContractClosureBudget { readonly maxFiles: number; readonly maxFileBytes: number; readonly maxTotalBytes: number; readonly files: Map<string, OwnedContractSnapshotFile>; usedBytes: number }
+export interface ContractClosureInventoryFile { readonly path: string; readonly byteLength: number; readonly contentHash?: string;
+  readonly sourceUri?: string; readonly sourceSnapshotHash?: string; readonly sourceDependencyPaths?: readonly string[] }
+export interface ContractClosureBudget { readonly maxFiles: number; readonly maxFileBytes: number; readonly maxTotalBytes: number; readonly files: Map<string, OwnedContractSnapshotFile>; usedBytes: number; sourceBytes?: number; descriptorBytes?: number }
+
+/** Every retained source buffer and its canonical owner descriptor consumes the same byte ledger. */
+export async function loadContractClosureFile(input: { row: ContractClosureInventoryFile; budget: ContractClosureBudget; load: (name: string) => Promise<OwnedContractSnapshotFile | undefined>; discard?: (name: string) => void }): Promise<{ file?: OwnedContractSnapshotFile; reason?: string }> {
+  const { row, budget } = input;
+  if ([budget.maxFiles, budget.maxFileBytes, budget.maxTotalBytes].some(value => !Number.isSafeInteger(value) || value <= 0)
+    || !Number.isSafeInteger(budget.usedBytes) || budget.usedBytes < 0 || budget.usedBytes > budget.maxTotalBytes
+    || !Number.isSafeInteger(row.byteLength) || row.byteLength < 0) throw new Error("invalid source contract closure resource budget");
+  const existing = budget.files.get(row.path);
+  if (existing) return { file: existing };
+  if (row.byteLength > budget.maxFileBytes) return { reason: `max_file_bytes:${row.path}` };
+  if (budget.files.size >= budget.maxFiles) return { reason: `max_files:${row.path}` };
+  const descriptor = (file?: OwnedContractSnapshotFile) => ({ path: row.path, byteLength: row.byteLength,
+    contentHash: row.contentHash ?? null, sourceHash: file?.sourceHash ?? row.contentHash ?? null, sourceVersionId: file?.sourceVersionId ?? null,
+    ...(row.sourceUri ? { sourceUri: row.sourceUri, sourceSnapshotHash: row.sourceSnapshotHash, sourceDependencyPaths: row.sourceDependencyPaths } : {}) });
+  const remaining = budget.maxTotalBytes - budget.usedBytes;
+  if (row.byteLength + canonicalJsonByteLength(descriptor(), remaining) > remaining) return { reason: `max_total_bytes:${row.path}` };
+  const file = await input.load(row.path);
+  if (!file) return { reason: `canonical_owner_unavailable:${row.path}` };
+  if (file.bytes.byteLength !== row.byteLength) { input.discard?.(row.path); return { reason: `canonical_byte_length_changed:${row.path}` }; }
+  const descriptorBytes = canonicalJsonByteLength(descriptor(file), remaining);
+  if (row.byteLength + descriptorBytes > remaining) { input.discard?.(row.path); return { reason: `max_total_bytes:${row.path}` }; }
+  budget.files.set(row.path, file);
+  budget.sourceBytes = (budget.sourceBytes ?? 0) + file.bytes.byteLength;
+  budget.descriptorBytes = (budget.descriptorBytes ?? 0) + descriptorBytes;
+  budget.usedBytes += file.bytes.byteLength + descriptorBytes;
+  return { file };
+}
 export interface TypeScriptContractClosure {
   readonly testPath: string; readonly configPath?: string; readonly files: readonly OwnedContractSnapshotFile[];
   readonly complete: boolean; readonly reasons: readonly string[];
@@ -24,6 +53,7 @@ export function hasSourceOwnedTestImport(text: string, name: string): boolean {
 export async function collectTypeScriptContractClosure(input: {
   readonly root: string; readonly testPath: string; readonly inventory: readonly ContractClosureInventoryFile[];
   readonly budget: ContractClosureBudget; readonly load: (relativePath: string) => Promise<OwnedContractSnapshotFile | undefined>;
+  readonly discard?: (relativePath: string) => void;
 }): Promise<TypeScriptContractClosure> {
   if ([input.budget.maxFiles,input.budget.maxFileBytes,input.budget.maxTotalBytes].some(value=>!Number.isSafeInteger(value)||value<=0)
     || !Number.isSafeInteger(input.budget.usedBytes)||input.budget.usedBytes<0||input.budget.usedBytes>input.budget.maxTotalBytes||input.budget.files.size>input.budget.maxFiles) throw new Error("invalid source contract closure resource budget");
@@ -37,14 +67,10 @@ export async function collectTypeScriptContractClosure(input: {
     const row = known.get(key(path.resolve(root, name)));
     if (!row) { reasons.add(`dependency_outside_inventory:${name}`); return false; }
     selected.add(row.path);
-    if (input.budget.files.has(row.path)) return true;
-    if (row.byteLength > input.budget.maxFileBytes) { reasons.add(`max_file_bytes:${row.path}`); return false; }
-    if (input.budget.files.size >= input.budget.maxFiles) { reasons.add(`max_files:${row.path}`); return false; }
-    if (input.budget.usedBytes + row.byteLength > input.budget.maxTotalBytes) { reasons.add(`max_total_bytes:${row.path}`); return false; }
-    const file = await input.load(row.path);
-    if (!file) { reasons.add(`canonical_owner_unavailable:${row.path}`); return false; }
-    if (file.bytes.byteLength !== row.byteLength) { reasons.add(`canonical_byte_length_changed:${row.path}`); return false; }
-    input.budget.files.set(row.path, file); input.budget.usedBytes += file.bytes.byteLength;
+    const result = await loadContractClosureFile({ row, budget: input.budget, load: input.load, discard: input.discard });
+    if (result.reason) reasons.add(result.reason);
+    if (!result.file) return false;
+    for (const dependency of row.sourceDependencyPaths ?? []) if (!await load(dependency)) return false;
     return true;
   };
   const read = (fileName: string): string | undefined => {
@@ -104,6 +130,17 @@ export async function collectTypeScriptContractClosure(input: {
     }
     for (const name of [...requested].sort()) if (await load(name)) changed = true;
     if (changed || reasons.size) continue;
+    const ambientModules = new Set<string>();
+    for (const name of selected) {
+      const file = input.budget.files.get(name);
+      if (!file || !/\.[cm]?[jt]sx?$/u.test(name)) continue;
+      const source = ts.createSourceFile(name, Buffer.from(file.bytes).toString("utf8"), ts.ScriptTarget.Latest, true);
+      if (ts.isExternalModule(source)) continue;
+      for (const declaration of source.statements) {
+        if (ts.isModuleDeclaration(declaration) && ts.isStringLiteral(declaration.name)
+          && (source.isDeclarationFile || declaration.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.DeclareKeyword))) ambientModules.add(declaration.name.text);
+      }
+    }
     for (const name of [...selected].sort()) {
       if (!/\.[cm]?[jt]sx?$/u.test(name)) continue;
       const file = input.budget.files.get(name); if (!file) continue;
@@ -131,6 +168,7 @@ export async function collectTypeScriptContractClosure(input: {
       for (const directive of source.referencedFiles) { const target = relative(path.resolve(root, path.dirname(name), directive.fileName)); if (!target) reasons.add(`reference_dependency_unavailable:${directive.fileName}`); else if (!selected.has(target)) { requested.add(target); } }
       for (const module of modules) {
         if (SOURCE_OWNED_ASSERTION_FRAMEWORK_MODULES.some(framework=>framework===module)) continue;
+        if (ambientModules.has(module)) continue;
         const resolved = ts.resolveModuleName(module, path.resolve(root, name), applicable.options, host).resolvedModule;
         const target = resolved && relative(resolved.resolvedFileName);
         if (!target && !requested.size) reasons.add(`module_dependency_unavailable:${name}:${module}`); else if (target && !selected.has(target)) requested.add(target);

@@ -78,6 +78,25 @@ test("new database mode requires both base and new ignored configs", () => {
   assert.notEqual(parsed.configPath, parsed.outputConfigPath);
 });
 
+test("code dependency snapshots require a pinned manifest and survive builder forwarding", async () => {
+  const base = ["--fresh-config", ".scce/fresh.json", "--receipt", ".scce/receipt.json"];
+  assert.throws(() => parseArguments([...base, "--code-dependency-manifest", "deps.json"]), /requires a path/u);
+  assert.throws(() => parseArguments([...base, "--code-dependency-manifest-hash", "sha256_" + "a".repeat(64)]), /requires a path/u);
+  const options = parseArguments([...base, "--code-dependency-manifest", "deps.json", "--code-dependency-manifest-hash", "sha256_" + "a".repeat(64)]);
+  assert.equal(options.codeDependencyManifest.path, path.resolve("deps.json"));
+  let received;
+  const state = { lanes: { code: { cursor: 0, snapshotHash: null } }, reports: [] };
+  await trainCodeBatch(options, state, { storage: {}, settings: {}, adapters: { trainOssCorpus: async input => {
+    received = input.dependencyManifest;
+    return { reports: [], filesSkipped: [], snapshotHash: "snapshot", snapshotComplete: true, nextFileIndex: 0,
+      filesTotal: 0, trainingComplete: true, stoppedByHeapSafetyBound: false, sourceContractClosure: {
+        complete: true, roots: [], candidateCount: 0, nextCandidateIndex: 0, round: 0, incompleteInRound: 0 } };
+  } } }, 1);
+  assert.deepEqual(received, options.codeDependencyManifest);
+  assert.throws(() => assertResumeCorpusScope({ corpusIdentity: { codeDependencyManifest: received } }, { resume: true }), /manifest differs/u);
+  assert.doesNotThrow(() => assertResumeCorpusScope({ corpusIdentity: { codeDependencyManifest: received } }, { resume: true, codeDependencyManifest: received }));
+});
+
 test("preflight proves every external input before a brain build starts", async t => {
   const rootPath = await mkdtemp(path.join(os.tmpdir(), "scce-brain-preflight-"));
   t.after(() => rm(rootPath, { recursive: true, force: true }));
@@ -111,6 +130,9 @@ test("preflight proves every external input before a brain build starts", async 
   await file("packages/adapters-node/dist/index.js");
   await file("packages/kernel/dist/index.js");
   await assert.doesNotReject(verifyBrainBuildPrerequisites(options));
+  const manifestPath = await file("dependency-manifest.json");
+  await assert.rejects(verifyBrainBuildPrerequisites({ ...options, codeDependencyManifest: { path: manifestPath, contentHash: "sha256_" + "0".repeat(64) } }),
+    error => error.code === "SCCE_BRAIN_PREREQUISITE_INVALID" && /content hash differs/u.test(error.message));
   await rm(options.codeRoot, { recursive: true, force: true });
   await assert.rejects(verifyBrainBuildPrerequisites(options), error =>
     error.code === "SCCE_BRAIN_PREREQUISITE_INVALID" && /code corpus/u.test(error.message));

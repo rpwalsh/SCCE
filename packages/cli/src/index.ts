@@ -2009,7 +2009,7 @@ function usage(error?: string): void {
     "  pnpm scce corpus train dialogue <path>   (human-authored .txt or scce.dialogue_transcript.v1 .json sources; owner-private, enable runtime.corpora.registry.dialogue to hydrate it)",
     "  pnpm scce relation-potential fit [--promote] [--max-edges=N] | status | promote --model-id=<id>",
     "  pnpm scce self-rewrite propose --target=<goal> [--capability=<id>] [--path=<root>]",
-    "  pnpm scce corpus train oss <path> [--start-file-index=<n>] [--max-files=<n>] [--heap-checkpoint-mb=<n>] [--source-uri-base=<uri>] [--commit=<sha>]",
+    "  pnpm scce corpus train oss <path> [--start-file-index=<n>] [--max-files=<n>] [--heap-checkpoint-mb=<n>] [--source-uri-base=<uri>] [--commit=<sha>] [--dependency-manifest=<json> --dependency-manifest-hash=<sha256_hex>]",
     "  pnpm scce corpus train oss-github <https://github.com/owner/repo> --commit=<40-hex-sha> [limits]",
     "  pnpm scce repo inspect <path>",
     "  pnpm scce repo graph <path>",

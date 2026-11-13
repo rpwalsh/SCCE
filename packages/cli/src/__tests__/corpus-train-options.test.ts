@@ -4,6 +4,14 @@ import { describe, expect, it } from "vitest";
 import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions, storedCorpusTrainOptionsFrom } from "../corpus-train-options.js";
 
 describe("corpus train option forwarding", () => {
+  it("forwards a hash-pinned dependency manifest through the ordinary OSS trainer", () => {
+    const hash = "a".repeat(64);
+    expect(ossCorpusTrainOptionsFrom(parseCorpusTrainOptions(["--dependency-manifest=offline/dependencies.json", `--dependency-manifest-hash=${hash}`])))
+      .toEqual({ dependencyManifest: { path: "offline/dependencies.json", contentHash: hash } });
+    expect(() => parseCorpusTrainOptions(["--dependency-manifest=offline/dependencies.json"])).toThrow("must be supplied together");
+    expect(() => parseCorpusTrainOptions([`--dependency-manifest-hash=${hash}`])).toThrow("must be supplied together");
+    expect(() => parseCorpusTrainOptions(["--dependency-manifest=offline/dependencies.json", "--dependency-manifest-hash=wrong"])).toThrow();
+  });
   it("forwards full stored-learning capacities without replacing them with construction replay limits", () => {
     expect(storedCorpusTrainOptionsFrom(parseCorpusTrainOptions(["--ngram-max-order=4", "--ngram-max-counters=12000", "--ngram-vocabulary-limit=24000", "--min-article-bytes=0"])))
       .toMatchObject({ ngramMaxOrder: 4, ngramMaxCountersPerOrder: 12000, ngramVocabularyLimit: 24000, minArticleBytes: 0 });

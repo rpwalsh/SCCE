@@ -24,7 +24,7 @@ import {
   type ScceStorage
 } from "@scce/kernel";
 import { extractNodeSourceCodeFacts, measureExhibitedContent } from "./code-graph.js";
-import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions, type EngineeringCorpusFileInspection } from "./engineering-corpus-folder.js";
+import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
 import { compileSourceCodeFunctionsAsync } from "./source-code-function-learning.js";
@@ -33,6 +33,9 @@ import { publishOssOwnedContractClosures, OSS_CONTRACT_CLOSURE_BOUNDS, type OssC
 import { collectTypeScriptContractClosure, hasSourceOwnedTestImport, type ContractClosureBudget } from "./typescript-contract-closure.js";
 import {compileSourceOwnedContracts} from "./source-owned-contract-compiler.js";
 import { type GrammarContractFile } from "./grammar-source-owned-test-contracts.js";
+import { prepareOssPinnedDependencies, readOssPinnedDependencyManifest, type OssPinnedDependencyDeclaration, type OssCorpusInventoryFile } from "./oss-pinned-dependency.js";
+export { prepareOssPinnedDependencies, inspectPinnedPackageArchive, type OssPinnedDependencyDeclaration, type OssPinnedPackageSnapshot } from "./oss-pinned-dependency.js";
+export { qualifyOssProjectContext } from "./oss-owned-contract-closure.js";
 
 export const DEFAULT_OSS_FILES_PER_RUN = 2000;
 export const DEFAULT_OSS_FILES_PER_REPOSITORY = 100000;
@@ -61,6 +64,9 @@ export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
   maxFilesPerRepo?: number;
   includeDocs?: boolean;
   includeSource?: boolean;
+  /** Exact external package snapshots declared by inspected project lockfiles. */
+  dependencySnapshots?: readonly OssPinnedDependencyDeclaration[];
+  dependencyManifest?: { readonly path: string; readonly contentHash: string };
   languageAliases?: readonly string[];
   ngramMaxOrder?: number;
   ngramMaxCountersPerOrder?: number;
@@ -102,6 +108,7 @@ export interface OssCorpusTrainReport {
   /** Acquisition and requested canonical project contracts are both complete. */
   trainingComplete?: boolean;
   contextAcquisition?: { roots: Array<{ path: string; status: "acquired" | "incomplete" | "deferred"; reasons: string[]; dependencyPaths: string[] }>; preacquiredPaths: string[] };
+  dependencySnapshots?: readonly import("./oss-pinned-dependency.js").OssPinnedPackageSnapshot[];
   heapCheckpointMb: number;
   docsTrained: number;
   codeTrained: number;
@@ -167,6 +174,41 @@ async function ingestSourceOwnedTestContracts(input: {
 
 type OssCorpusSourceSystem = typeof CORPUS_SOURCE_SYSTEM_IDS.ossDocs | typeof CORPUS_SOURCE_SYSTEM_IDS.ossCode;
 
+/** Pinned context planning reads source bytes; ordinary ingestion alone establishes canonical owners. */
+export function createOssProjectContextPlanner(input: {
+  rootPath: string; inventory: readonly OssCorpusInventoryFile[]; maxFileBytes: number; maxFiles?: number;
+}) {
+  const budget: ContractClosureBudget = { ...OSS_CONTRACT_CLOSURE_BOUNDS, maxFiles: input.maxFiles ?? Math.max(1, input.inventory.length), maxFileBytes: input.maxFileBytes, files: new Map(), usedBytes: 0 };
+  const inventory = new Map(input.inventory.map(file => [file.path, file]));
+  const readSource = async (name: string) => {
+    const file = inventory.get(name);
+    if (!file?.contentHash || file.byteLength > input.maxFileBytes) return undefined;
+    const bytes = await readFile(file.absolutePath);
+    if (bytes.byteLength !== file.byteLength || sha256Bytes(bytes) !== file.contentHash.replace(/^sha256[:_]/u, "")) throw new Error(`OSS source changed after snapshot inspection: ${name}`);
+    if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) return undefined;
+    return { path: name, bytes, sourceHash: file.contentHash };
+  };
+  return {
+    readSource,
+    collect: (testPath: string) => collectTypeScriptContractClosure({ root: input.rootPath, testPath, inventory: input.inventory, budget, load: readSource })
+  };
+}
+
+export async function loadOssDependencyManifest(input: {
+  path: string; contentHash: string; rootPath: string; maxFileBytes?: number; maxFilesPerRepo?: number; maxDepth?: number;
+  inventory?: readonly OssCorpusInventoryFile[]; sourceSnapshotHash?: string;
+}) {
+  const maxFileBytes = input.maxFileBytes ?? 1_000_000;
+  const inspection = input.inventory ? undefined : await inspectEngineeringCorpusFolder(input.rootPath, {
+    maxFiles: input.maxFilesPerRepo ?? DEFAULT_OSS_FILES_PER_REPOSITORY, maxFileBytes, maxDepth: input.maxDepth ?? 12, includeUnsupported: false });
+  if (inspection?.skipped.some(item => item.reason === "max_files" || item.reason === "max_depth" || item.reason === "unreadable_directory")) throw new Error("Pinned dependency manifest needs a complete source inventory");
+  const inventory = input.inventory ?? inspection!.files.filter(file => file.importable);
+  const sourceSnapshotHash = input.sourceSnapshotHash ?? ingestMaterialSnapshot(inventory).snapshotHash;
+  const manifest = await readOssPinnedDependencyManifest({ path: input.path, contentHash: input.contentHash, sourceSnapshotHash, maxTotalBytes: OSS_CONTRACT_CLOSURE_BOUNDS.maxTotalBytes });
+  const prepared = await prepareOssPinnedDependencies({ rootPath: input.rootPath, inventory, declarations: manifest.declarations, maxFileBytes, maxTotalBytes: OSS_CONTRACT_CLOSURE_BOUNDS.maxTotalBytes });
+  return { ...manifest, ...prepared };
+}
+
 export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssCorpusTrainReport> {
   const root = path.resolve(input.rootPath);
   const startFileIndex = nonNegativeInteger(input.startFileIndex, 0);
@@ -196,6 +238,13 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   if (startFileIndex > importable.length) {
     throw new Error(`OSS resume index ${startFileIndex} exceeds importable file count ${importable.length}`);
   }
+
+  if (input.dependencyManifest && input.dependencySnapshots?.length) throw new Error("OSS dependency manifest and inline declarations cannot both be supplied");
+  const dependencies = input.dependencyManifest
+    ? await loadOssDependencyManifest({ ...input.dependencyManifest, rootPath: root, inventory: importable, sourceSnapshotHash: snapshotHash, maxFileBytes: input.maxFileBytes ?? 1_000_000 })
+    : await prepareOssPinnedDependencies({ rootPath: root, inventory: importable, declarations: input.dependencySnapshots ?? [],
+      maxFileBytes: input.maxFileBytes ?? 1_000_000, maxTotalBytes: OSS_CONTRACT_CLOSURE_BOUNDS.maxTotalBytes });
+  const contextInventory: OssCorpusInventoryFile[] = [...importable, ...dependencies.files];
 
   const window = importable.slice(startFileIndex, startFileIndex + maxFilesPerRun);
   const reports: LanguageCorpusTrainingReport[] = [];
@@ -237,7 +286,8 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   const sourceOwnedContractsByPath = await ingestSourceOwnedTestContracts({ root, window, knownPaths: importable.map(file=>normalizeRelative(file.path)), snapshotComplete: !inspectionTruncated, sourceUriBase, ids, hasher, maxFileBytes: input.maxFileBytes ?? 1_000_000 });
 
   const completedFiles = new Set<string>();
-  const trainFile = async (file: EngineeringCorpusFileInspection): Promise<boolean> => {
+  const dependencyIndexes = new Map<string, { roles: ReturnType<typeof createProjectDeclarationIndex>; licenses: ReturnType<typeof createProjectLicenseIndex> }>();
+  const trainFile = async (file: OssCorpusInventoryFile): Promise<boolean> => {
     if (completedFiles.has(file.path)) return true;
     const sourceSystem = sourceSystemForPath(file.path);
     if (!sourceSystem) {
@@ -257,9 +307,13 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       return true;
     }
     const raw = rawBytes.toString("utf8");
-    const artifactRole = await roles.roleFor(file.absolutePath);
-    const license = await licenses.licenseFor(file.absolutePath);
-    const relativePath = normalizeRelative(file.path);
+    const dependency = file.dependency;
+    if (dependency && !dependencyIndexes.has(dependency.directoryPath)) dependencyIndexes.set(dependency.directoryPath,
+      { roles: createProjectDeclarationIndex({ stopAt: dependency.directoryPath }), licenses: createProjectLicenseIndex({ stopAt: dependency.directoryPath }) });
+    const indexes = dependency ? dependencyIndexes.get(dependency.directoryPath)! : { roles, licenses };
+    const artifactRole = await indexes.roles.roleFor(file.absolutePath);
+    const license = await indexes.licenses.licenseFor(file.absolutePath);
+    const relativePath = normalizeRelative(dependency?.packageRelativePath ?? file.path);
     const sourceHash = file.contentHash ?? sha256Bytes(rawBytes);
     // Same producers document.ts uses, over the file rather than a projection: a projection is a different text,
     // but every projection of a file is reachable by the one name and identity the file itself declares.
@@ -294,7 +348,11 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
             : [])
         ];
 
-    const sourceUri = `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`;
+    const sourceUri = file.sourceUri ?? `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`;
+    const fileOwnerUri = dependency?.snapshot.archiveUri ?? sourceUriBase;
+    const fileProvenance = dependency ? toJsonValue({ identityKind: "pinned_package_archive", packageName: dependency.snapshot.packageName,
+      version: dependency.snapshot.version, sourceUri: dependency.snapshot.archiveUri, integrity: dependency.snapshot.integrity,
+      archiveContentHash: dependency.snapshot.archiveContentHash, snapshotHash: dependency.snapshot.snapshotHash }) : acquisitionProvenance;
     const preparedProjections = projections.map(projected => ({ ...projected, transformId: projected.projection === "code_surface_tokens"
       ? `${CODE_SURFACE_RECIPE_ID}:${projected.projection}` : `scce.oss.corpus-projection.v1:${projected.projection}` }));
     if (input.beforeSourceTraining) await input.beforeSourceTraining({ canonicalUri: sourceUri, rawContentHash: sourceHash, rawByteLength: rawBytes.byteLength,
@@ -305,7 +363,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     for (const projected of preparedProjections) {
       if (!projected.text.trim()) continue;
       trainedAnyProjection = true;
-      const relativePath = normalizeRelative(file.path);
+      const relativePath = normalizeRelative(dependency?.packageRelativePath ?? file.path);
       const transformId = projected.transformId;
       const trainingInput: LanguageCorpusTrainingInput = {
         corpusSegmentation: input.corpusSegmentation,
@@ -317,9 +375,9 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
         sourceUri,
         sourceVersionId: ids.sourceVersionId(canonicalStringify({ contract: "scce.oss-projection-source-version.v1",
           sourceUri, sourceHash, transformId, projectedTextHash: hasher.digestHex(projected.text) })),
-        acquisitionProvenance,
+        acquisitionProvenance: fileProvenance,
         corpusCheckpoint: {
-          rootUri: sourceUriBase,
+          rootUri: fileOwnerUri,
           itemUri: `${relativePath}#projection=${encodeURIComponent(projected.projection)}&sourceHash=${sourceHash}`,
           contentHash: sourceHash,
           transformId,
@@ -355,12 +413,13 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
           projection: projected.projection,
           formalLanguage: codeLanguageForPath(file.path) ?? null,
           ...(projected.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode ? { codeFunctionConstructions: await compileSourceCodeFunctionsAsync({
-            text: raw, path: file.path, languageId: codeLanguageForPath(file.path), sourceHash
+            text: raw, path: relativePath, languageId: codeLanguageForPath(relativePath), sourceHash
           }), sourceOwnedTestContracts: sourceOwnedContractsByPath.get(relativePath) ?? [],
             sourceOwnedTestContractInputHash: hasher.digestHex(canonicalStringify(sourceOwnedContractsByPath.get(relativePath) ?? [])) } : {}),
           artifactRole,
           license,
-          repository: repositoryIdentity,
+          repository: dependency ? { identityKind: "pinned_package_archive", ownerUri: fileOwnerUri, packageName: dependency.snapshot.packageName,
+            version: dependency.snapshot.version, snapshotHash: dependency.snapshot.snapshotHash, integrity: dependency.snapshot.integrity, license } : repositoryIdentity,
           exhibitedContent: projected.projection === "verbatim"
             ? measureExhibitedContent({ uri: relativePath, mediaType: file.mediaType, text: projected.text })
             : {
@@ -403,23 +462,15 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   };
 
   const contextAcquisition: NonNullable<OssCorpusTrainReport["contextAcquisition"]> = { roots: [], preacquiredPaths: [] };
-  const contextBudget: ContractClosureBudget = { ...OSS_CONTRACT_CLOSURE_BOUNDS, maxFileBytes: input.maxFileBytes ?? 1_000_000, files: new Map(), usedBytes: 0 };
-  const inventory = new Map(importable.map(file => [file.path, file]));
-  const loadContext = async (name: string) => {
-    const file = inventory.get(name);
-    if (!file?.contentHash) return undefined;
-    const bytes = await readFile(file.absolutePath);
-    if (bytes.byteLength !== file.byteLength || sha256Bytes(bytes) !== file.contentHash.replace(/^sha256[:_]/u, "")) throw new Error(`OSS source changed after snapshot inspection: ${name}`);
-    if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) return undefined;
-    return { path: name, bytes, sourceHash: file.contentHash };
-  };
+  const inventory = new Map(contextInventory.map(file => [file.path, file]));
+  const contextPlanner = createOssProjectContextPlanner({ rootPath: root, inventory: contextInventory, maxFileBytes: input.maxFileBytes ?? 1_000_000 });
   for (const file of window) {
     if (heapMiB() >= heapCheckpointMb) { stoppedByHeapSafetyBound = true; break; }
     const fileOffset = filesConsidered++;
     let context: NonNullable<OssCorpusTrainReport["contextAcquisition"]>["roots"][number] | undefined;
     const languageId = codeLanguageForPath(file.path);
     if (includeSource && (languageId === "typescript" || languageId === "javascript")) {
-      const source = await loadContext(file.path);
+      const source = await contextPlanner.readSource(file.path);
       if (source && hasSourceOwnedTestImport(Buffer.from(source.bytes).toString("utf8"), file.path)) {
         context = { path: file.path, status: "incomplete", reasons: [], dependencyPaths: [] };
         contextAcquisition.roots.push(context);
@@ -427,7 +478,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
           context.status = "deferred"; context.reasons = ["workunit_candidate_budget_exhausted"];
         } else if (inspectionTruncated) context.reasons = ["repository_inventory_incomplete"];
         else {
-          const closure = await collectTypeScriptContractClosure({ root, testPath: file.path, inventory: importable, budget: contextBudget, load: loadContext });
+          const closure = await contextPlanner.collect(file.path);
           context.reasons = [...closure.reasons];
           if (closure.complete) {
             context.status = "acquired";
@@ -450,7 +501,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     }
   }
   const nextFileIndex = startFileIndex + (firstIncompleteFileOffset ?? filesConsidered);
-  const sourceContractClosure = includeSource ? await publishOssOwnedContractClosures({ storage: input.storage, root, inventory: importable, sourceUriBase, snapshotHash,
+  const sourceContractClosure = includeSource ? await publishOssOwnedContractClosures({ storage: input.storage, root, inventory: contextInventory, sourceUriBase, snapshotHash,
     snapshotComplete: !inspectionTruncated, maxFileBytes: input.maxFileBytes ?? 1_000_000, informationLabel: OSS_CORPUS_INFORMATION_LABEL,
     priorityTestPaths: contextAcquisition.roots.filter(context => context.status === "acquired").map(context => context.path) }) : undefined;
   const report: OssCorpusTrainReport = {
@@ -469,6 +520,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     trainingComplete: !inspectionTruncated && nextFileIndex === importable.length && !stoppedByHeapSafetyBound
       && firstIncompleteFileOffset === undefined && (!includeSource || sourceContractClosure?.complete === true),
     contextAcquisition,
+    ...(dependencies.snapshots.length ? { dependencySnapshots: dependencies.snapshots } : {}),
     heapCheckpointMb,
     docsTrained: reports.filter(report => report.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossDocs).length,
     codeTrained: reports.filter(report => report.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossCode).length,

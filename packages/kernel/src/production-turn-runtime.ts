@@ -27,7 +27,7 @@ import { cognitiveProposalComparisonReceipt, planCognitiveProposals, type Cognit
 import { createConnectorGovernance } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS, CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, type CorpusRoleId } from "./corpus-registry.js";
-import { closedClassForFamilies } from "./language-identity.js";
+import { closedClassForFamilies, selectLanguageIdentityForSurface } from "./language-identity.js";
 import { corpusFamiliesForRole, roleHydrationLanguageIdentityId } from "./language-identity-runtime.js";
 import {
   languagePopulationSelectionTrace,
@@ -43,7 +43,7 @@ import {
   translationCorrectionPriorsFromRecords,
   type TranslationCorrectionPrior
 } from "./translation-correction-engine.js";
-import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeRequestFrame } from "./creative-event-compatibility.js";
+import { compileCreativeRequestFrameFromCompatibilityModels, creativeRequestSourcePrerequisites, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { compileCounterclaimSearchIntent, realizeCounterclaimSearchIntent } from "./counterclaim-search.js";
 import { traceEvent } from "./debug/trace.js";
@@ -127,6 +127,7 @@ import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, scopeLanguageMemoryStateToProfile } from "./language-memory-runtime.js";
 import {
   selectLanguageProfileClusterForSourceVersions,
+  buildLanguageProfileClusters,
   languageHintFromProfile,
   selectLanguageProfileForSurface
 } from "./language.js";
@@ -1074,16 +1075,50 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const translationTarget = translationTargetFromMetadata(input.metadata);
       const sourceLanguageAlias = sourceLanguageAliasFromMetadata(input.metadata);
       if (translationTarget) warmTranslationCorrectionPriors(translationTarget, sourceLanguageAlias);
+      const callerAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
+      const observedSourceSpeech = !deps.evaluationCondition?.flags.disableLanguageMemory
+        && !translationTarget && (!callerAuthority || callerAuthority === "creative")
+        && jsonRecord(input.metadata).sourceSpanCompletion === undefined
+        ? await surfaceLanguageRuntime.creativeSourceMemoryForRequest(input.text) : undefined;
+      const observedSourceRequestFrame = observedSourceSpeech ? compileCreativeRequestFrameFromCompatibilityModels({
+        requestText: input.text, models: observedSourceSpeech.state.creativeEventCompatibilityModels, hasher
+      }) : undefined;
+      if (!deps.evaluationCondition?.flags.disableLanguageMemory && !languageIdentityRuntime.identities().length) {
+        deadlineCheckpoint("runtime.seed.language_identity.load", 0);
+        lazyLanguageIdentityLoad ??= languageIdentityRuntime.ensure()
+          .then(() => undefined)
+          .catch(error => {
+            const message = error instanceof Error ? error.message : String(error);
+            failures.push(`language identity hydration failed: ${message}`);
+            kernelTrace({ stage: "runtime.seed.language_identity.error", label: "kernel.turn", support: { message } });
+          });
+        await lazyLanguageIdentityLoad;
+      }
+      const requestProgramOwnerIds = observedSourceSpeech && observedSourceRequestFrame && !sourceLanguageAlias
+        ? [...new Set([observedSourceSpeech.profile.id, ...observedSourceSpeech.state.scope.profileIds,
+          ...creativeRequestSourcePrerequisites({ requestText: input.text, patterns: observedSourceSpeech.patterns, hasher }).map(candidate => candidate.profileId)])]
+        : [];
+      const requestProgramIdentity = requestProgramOwnerIds.length
+        ? await languageIdentityRuntime.identityForProfileOwners(requestProgramOwnerIds) : undefined;
+      const programRequestLanguage = requestProgramIdentity ? selectLanguageIdentityForSurface([requestProgramIdentity], input.text,
+        { excludeCorpusRoleIds: [CORPUS_ROLE_IDS.softwareSymbolic] }) : undefined;
+      const requestProgramProfiles = programRequestLanguage && observedSourceSpeech
+        ? (await surfaceLanguageRuntime.evidenceOwnedLanguageProfilesCached(observedSourceSpeech.state.scope.sourceVersionIds as SourceVersionId[])).profiles
+          .filter(profile => requestProgramOwnerIds.includes(profile.id)) : [];
+      const requestProgramClusters = requestProgramOwnerIds.length && requestProgramOwnerIds.every(id => requestProgramProfiles.some(profile => profile.id === id))
+        ? buildLanguageProfileClusters(requestProgramProfiles) : [];
+      const requestProgramCluster = observedSourceSpeech
+        ? requestProgramClusters.find(cluster => cluster.profileIds.includes(observedSourceSpeech.profile.id)) : undefined;
       const surfaceClusterStarted = Date.now();
       let selectedSurfaceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
         ? undefined
-        : sourceLanguageAlias
+        : requestProgramCluster ?? (sourceLanguageAlias
           ? await sourceOwnedLanguageClusterForAlias(
             sourceLanguageAlias,
             input.text,
             { residentOnly: fastRuntimeBudget }
           )
-          : await surfaceLanguageClusterCached(input.text, fastRuntimeBudget);
+          : await surfaceLanguageClusterCached(input.text, fastRuntimeBudget));
       // Same rule as the durable evidence escalation: a fast budget may skip the durable scan when the resident set
       // already answers, but it may not turn an unsearched memory into an empty one. The server sets
       // `fastLocalEvidenceAnswer` on every API turn, so the durable profile scan was permanently off and the turn saw
@@ -1124,27 +1159,21 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // knew, and had no way to say so, because the escalation was inside a single stage. It is a stage boundary now:
       // when the remaining budget cannot afford the scan the turn proceeds on resident memory alone, which is the
       // degraded path the deadline contract calls for rather than a turn that silently runs three times over.
-      const unscopedLanguageReason = selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal";
+      const unscopedLanguageReason = requestProgramCluster ? "verified-request-program-source-owners"
+        : selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal";
       // The request's language identity, when the brain has learned identities: hydration and scoping follow it,
       // and the cluster only names a surface profile for realization.
-      if (!deps.evaluationCondition?.flags.disableLanguageMemory && !languageIdentityRuntime.identities().length) {
-        deadlineCheckpoint("runtime.seed.language_identity.load", 0);
-        lazyLanguageIdentityLoad ??= languageIdentityRuntime.ensure()
-          .then(() => undefined)
-          .catch(error => {
-            const message = error instanceof Error ? error.message : String(error);
-            failures.push(`language identity hydration failed: ${message}`);
-            kernelTrace({ stage: "runtime.seed.language_identity.error", label: "kernel.turn", support: { message } });
-          });
-        await lazyLanguageIdentityLoad;
-      }
-      const requestLanguage = deps.evaluationCondition?.flags.disableLanguageMemory ? undefined : languageIdentityRuntime.selectForSurface(input.text);
+      const surfaceRequestLanguage = deps.evaluationCondition?.flags.disableLanguageMemory ? undefined : languageIdentityRuntime.selectForSurface(input.text);
+      const requestLanguage = requestProgramCluster ? programRequestLanguage : surfaceRequestLanguage;
       const requestLanguageId = requestLanguage?.identity.id;
       kernelTrace({
         stage: "runtime.seed.language_identity",
         label: "kernel.turn",
         counts: { identities: languageIdentityRuntime.identities().length, coverage: requestLanguage?.coverage ?? 0 },
-        support: { readiness: languageIdentityRuntime.readiness(), languageId: requestLanguageId ?? null, script: requestLanguage?.identity.script ?? null, closedClass: requestLanguage?.identity.closedClass.slice(0, 6).map(row => row.word) ?? [] }
+        support: { readiness: languageIdentityRuntime.readiness(), languageId: requestLanguageId ?? null,
+          selectionBasis: requestProgramCluster ? "verified_request_program_owners" : "surface_population",
+          surfaceLanguageId: surfaceRequestLanguage?.identity.id ?? null, requestProgramProfileIds: requestProgramOwnerIds,
+          script: requestLanguage?.identity.script ?? null, closedClass: requestLanguage?.identity.closedClass.slice(0, 6).map(row => row.word) ?? [] }
       });
       const hydrateAuthorityLanguage = () => hydrateSurfaceLanguageMemoryResidentOrDurable(
         12,
@@ -1152,7 +1181,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         unscopedLanguageReason,
         undefined,
         "",
-        { residentOnly: fastRuntimeBudget, languageId: requestLanguageId, purpose: "request_seed" }
+        { residentOnly: fastRuntimeBudget, languageId: requestLanguageId, purpose: "request_seed", sourceOwnedRequest: Boolean(requestProgramCluster) }
       );
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
@@ -1382,12 +1411,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         evidence: contextualQaRetrieval.evidence, constructions: contextualQaConstructions, generation: contextualQaGeneration,
         authorityContext: contextualQaAuthorityContext,
         sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
-      const observedSourceSpeech = !deps.evaluationCondition?.flags.disableLanguageMemory
-        && !translationTarget && (!explicitAuthority || explicitAuthority === "creative")
-        ? await surfaceLanguageRuntime.creativeSourceMemoryForRequest(input.text) : undefined;
-      const observedSourceRequestFrame = observedSourceSpeech ? compileCreativeRequestFrameFromCompatibilityModels({
-        requestText: input.text, models: observedSourceSpeech.state.creativeEventCompatibilityModels, hasher
-      }) : undefined;
       let requirementField = deriveTurnRequirementField({
         requestText: input.text,
         explicitRequirements: [
@@ -3124,6 +3147,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           }
         });
       }
+      const sourceSpeech = requestedAuthority === "creative" ? observedSourceSpeech : undefined;
       const candidateLanguageStarted = Date.now();
       // Unlike the other language-memory reads above, this one was never
       // gated on disableLanguageMemory -- under the no_language_memory
@@ -3186,7 +3210,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const nearDuplicateTurn = turnSequences.length > 0
         && selectedEvidence.some(span => spanContainsRequestNearDuplicateSentence(span, turnSequences));
       const candidateHydrateResidentOnly = (nearDuplicateTurn && Boolean(answerProposal)) || candidateHydrateDecision?.allowed === false;
-      const evidenceOutputLanguage = evidenceSurfaceCluster
+      const evidenceOutputLanguage = !sourceSpeech && evidenceSurfaceCluster
         && (evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id || authorityLanguage.hydrationPurpose !== "realization"
           || !authorityLanguage.state.models.length)
         ? await hydrateSurfaceLanguageMemoryCached(
@@ -3218,7 +3242,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.softwareSymbolic
           ? { residentOnly: false }
           : { residentOnly: candidateHydrateResidentOnly || realizationLanguageReady, languageId: roleHydrationLanguageIdentityId(preferredSurfaceCorpusRole, requestLanguageId) };
-      const roleOutputLanguage = preferredSurfaceCorpusRole && !exactCreativeAuthorityReady
+      const roleOutputLanguage = preferredSurfaceCorpusRole && !exactCreativeAuthorityReady && !sourceSpeech
         ? await hydrateSurfaceLanguageMemoryCached(
           12,
           roleLanguageCluster,
@@ -3264,9 +3288,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         durationMs: 0,
         counts: { models: roleOutputLanguage?.state.models.length ?? 0, units: roleOutputLanguage?.state.importedUnits.length ?? 0, bundles: roleOutputLanguage?.state.importedConstructionBundles.length ?? 0, scopeProfiles: roleOutputLanguage?.state.scope.profileIds.length ?? 0 },
         support: { role: preferredSurfaceCorpusRole ?? null, authority: requestedAuthority, speaks: roleLanguageSpeaks, ready: exactCreativeAuthorityReady,
-          realizationLanguageReady, scope: roleOutputLanguage?.state.scope.mode ?? null, languageId: roleOutputLanguage?.state.scope.languageId ?? null }
+          realizationLanguageReady, sourceProgramSelected: Boolean(sourceSpeech), scope: roleOutputLanguage?.state.scope.mode ?? null, languageId: roleOutputLanguage?.state.scope.languageId ?? null }
       });
-      let surfaceLanguage = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
+      const sourceSpeechOutputLanguage = sourceSpeech ? { ...authorityLanguage, state: sourceSpeech.state, surfaceProfile: sourceSpeech.profile,
+        models: [], observations: [], units: [], patterns: sourceSpeech.patterns, semanticFrames: [] } : undefined;
+      let surfaceLanguage = sourceSpeechOutputLanguage ?? (preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
         ? exactCreativeAuthorityReady
           ? authorityLanguage
           : requireHydratedSurfaceLanguage(
@@ -3277,7 +3303,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ? roleOutputLanguage!
           : evidenceOutputLanguage
             ? evidenceOutputLanguage
-            : authorityLanguage;
+            : authorityLanguage);
       const admittedSourcePrograms = surfaceLanguage === authorityLanguage
         ? await constructionBundlesForScope([...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles, ...acquiredConversationalConstructionBundles], authorityLanguage.state.scope) : [];
       if (admittedSourcePrograms.length) {
@@ -3387,10 +3413,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             );
         }
       }
-      const sourceSpeech = requestedAuthority === "creative"
-        ? observedSourceSpeech : undefined;
-      const realizationLanguage = sourceSpeech ? { ...surfaceLanguage, state: sourceSpeech.state, surfaceProfile: sourceSpeech.profile,
-        models: [], observations: [], units: [], patterns: sourceSpeech.patterns, semanticFrames: [] } : surfaceLanguage;
+      const realizationLanguage = surfaceLanguage;
       const surfaceLanguageModels = realizationLanguage.models;
       // A translation speaks the target language, so its language memory is scoped to the target profile rather than to
       // the cluster the request surface selected.
