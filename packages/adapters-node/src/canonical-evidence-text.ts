@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
 import { canonicalStringify } from "@scce/kernel";
-import { readWikipediaArchiveBlob } from "./wikipedia.js";
+import { readContentAddressedWikipediaArchiveBlob } from "./wikipedia.js";
 import type { WikipediaInputFileStat, WikipediaInputSourceFile, WikipediaInputVerificationCache } from "./wikipedia-input-manifest.js";
 
 export interface CanonicalBlobHost {
@@ -178,7 +178,8 @@ export function createCanonicalBlobReader(host: CanonicalBlobHost): (hash: strin
       }
       if (!row.archive) throw new Error("canonical corpus archive descriptor is missing");
       const archive = verifiedArchiveDescriptor(row.archive, row.archive_reference.archiveId);
-      bytes = await readWikipediaArchiveBlob(archive, row.archive_reference.page,
+      bytes = await readContentAddressedWikipediaArchiveBlob(archive, row.archive_reference.page,
+        { contentHash: hash, byteLength: expectedLength },
         { verificationCache: wikipediaSourceVerificationCache(host, row.archive_reference.archiveId) });
     } else {
       if (row.range_start !== null || row.range_end !== null) throw new Error("orphan canonical blob range coordinates");

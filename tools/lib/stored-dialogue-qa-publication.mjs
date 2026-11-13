@@ -18,6 +18,7 @@ export async function runStoredDialogueQaPublication(input) {
     maxSourceAttempts: input.maxSourceAttempts,
     sourcePageSize: input.sourcePageSize,
     ...(input.includeUriPrefix ? { includeUriPrefixes: [input.includeUriPrefix] } : {}),
+    ...(input.contextualQaJointPool ? { contextualQaJointPool: input.contextualQaJointPool } : {}),
     ...(input.contextualQaExecution ? { contextualQaExecution: input.contextualQaExecution } : {})
   });
 

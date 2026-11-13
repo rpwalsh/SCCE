@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { canonicalStringify, createBuildTestCapabilityExecutor, createCapabilityExecutorRegistry, createHasher, runExecutiveGoal, solveTaskSchedule, toJsonValue, type BuildTestPort, type ConstructGraph, type DurableExecutiveEpisode, type EpisodeId, type PolicyProfile } from "@scce/kernel";
+import { canonicalStringify, createHasher, solveTaskSchedule, toJsonValue, type ConstructGraph, type EpisodeId, type PolicyProfile, type RuntimeCapabilities } from "@scce/kernel";
 
 export interface LocalExecutiveGoalRequest {
   schema: "scce.local_executive_goal.v1";
@@ -29,13 +29,13 @@ export function parseLocalExecutiveGoal(value: unknown): LocalExecutiveGoalReque
 }
 
 /** One local production lane, shared by CLI and HTTP and the ordinary turn executor. */
-export async function runLocalExecutiveGoal(input: { request: LocalExecutiveGoalRequest; executive: DurableExecutiveEpisode; buildTest: BuildTestPort; ownerId: string; policy: PolicyProfile; approved: boolean }) {
+export async function runLocalExecutiveGoal(input: { request: LocalExecutiveGoalRequest; capabilities: RuntimeCapabilities; ownerId: string; policy: PolicyProfile; approved: boolean }) {
   const request = parseLocalExecutiveGoal(input.request);
   const hasher = createHasher();
   const objectiveRef = hasher.digestHex(canonicalStringify(request));
   const policyVersionId = `policy_${hasher.digestHex(canonicalStringify(input.policy))}`;
   const capabilityId = "process.build_test";
-  return runExecutiveGoal({ executive: input.executive, executors: createCapabilityExecutorRegistry([createBuildTestCapabilityExecutor({ buildTest: input.buildTest, capabilityId })]), hasher, now: () => Date.now() }, {
+  return input.capabilities.runGoal({
     maxDispatches: input.policy.maxToolCalls,
     tasks: request.tasks.map(task => ({
       episodeId: request.episodeId, ownerId: input.ownerId, policyVersionId,

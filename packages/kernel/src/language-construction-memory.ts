@@ -104,6 +104,7 @@ export interface SourceBoundConstructionObservation {
 
 export interface SourceBoundLanguageConstructionTrainingSet {
   bindingId: string;
+  requestMode?: "closed_proposition";
   observations: readonly SourceBoundConstructionObservation[];
   alignmentSummary?: JsonValue;
 }
@@ -146,6 +147,7 @@ export interface DurableSourceConstructionExample {
 export interface DurableLanguageConstructionBundleContent {
   schema: typeof LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA;
   bindingId: string;
+  requestMode?: "closed_proposition";
   sourceProfileId: string;
   targetProfileId: string;
   sourceVersionIds: string[];
@@ -318,6 +320,7 @@ export function languageConstructionOccurrenceId(
 
 interface LanguageConstructionPatternInput {
   bindingId: string;
+  requestMode?: "closed_proposition";
   profileId: string;
   observations: readonly SourceBoundConstructionObservation[];
   evidence: readonly EvidenceSpan[];
@@ -331,8 +334,8 @@ export function compileLanguageConstructionPattern(input: LanguageConstructionPa
   return compileConstructionPattern(input, uniqueEvidenceById(input.evidence), new Map());
 }
 
-export function* compileLanguageConstructionPatterns(input: Omit<LanguageConstructionPatternInput, "bindingId" | "observations" | "acquisitionStatus"> & {
-  sets: readonly Pick<LanguageConstructionPatternInput, "bindingId" | "observations" | "acquisitionStatus">[];
+export function* compileLanguageConstructionPatterns(input: Omit<LanguageConstructionPatternInput, "bindingId" | "observations" | "acquisitionStatus" | "requestMode"> & {
+  sets: readonly Pick<LanguageConstructionPatternInput, "bindingId" | "observations" | "acquisitionStatus" | "requestMode">[];
 }): IterableIterator<LanguageConstructionPatternCompilation> {
   const evidenceById = uniqueEvidenceById(input.evidence.map(span => ({ ...span })));
   const evidencePointsById = new Map<string, string[]>();
@@ -345,6 +348,9 @@ function compileConstructionPattern(
   evidencePointsById: Map<string, string[]>
 ): LanguageConstructionPatternCompilation {
   if (!nonempty(input.bindingId)
+    || input.requestMode !== undefined && input.requestMode !== "closed_proposition"
+    || input.requestMode === "closed_proposition" && input.observations.some(observation => (observation.nullRoles?.length ?? 0) > 0
+      || !observation.roles.some(role => role.graphBinding))
     || !nonempty(input.profileId)
     || !Number.isFinite(input.updatedAt)
     || input.observations.length === 0
@@ -390,6 +396,7 @@ function compileConstructionPattern(
   const content: DurableLanguageConstructionBundleContent = {
     schema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
     bindingId: input.bindingId,
+    ...(input.requestMode ? { requestMode: input.requestMode } : {}),
     sourceProfileId: input.profileId,
     targetProfileId: input.profileId,
     sourceVersionIds,
@@ -415,7 +422,7 @@ function compileConstructionPattern(
       contentDigest,
       bundle: (input.storageEncoding === SOURCE_EXAMPLE_CONSTRUCTION_STORAGE ? sourceExampleStorageBundle(bundle, input.hasher) : bundle) as unknown as JsonValue,
       ...(input.storageEncoding ? { storageEncoding: input.storageEncoding,
-        ...(sourceExamples.some(example => example.nullRoles.some(role => role.graphBinding !== undefined)) ? { requestConstructionCandidate: true } : {}),
+        ...(input.requestMode === "closed_proposition" || sourceExamples.some(example => example.nullRoles.some(role => role.graphBinding !== undefined)) ? { requestConstructionCandidate: true } : {}),
         ...(sourceExamples.some(example => example.roles.some(role => role.graphBinding !== undefined)) ? { sourceConstructionCandidate: true } : {}),
         ...(input.bindingId.startsWith("surface.conversational_act.binding.") && sourceExamples.some(example => example.antecedent)
           ? { conversationalBindingId: input.bindingId } : {}) } : {})
@@ -1431,6 +1438,7 @@ function verifyPersistedPattern(
   if (evidence.length !== evidenceIds.length) return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.evidence);
   const recompiled = compileConstructionPattern({
     bindingId,
+    ...(rawBundle.requestMode !== undefined ? { requestMode: rawBundle.requestMode as "closed_proposition" } : {}),
     profileId: targetProfileId,
     observations,
     evidence,

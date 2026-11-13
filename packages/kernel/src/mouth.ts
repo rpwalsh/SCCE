@@ -86,7 +86,7 @@ import { requestSubjectText } from "./turn-requirements.js";
 import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { ANSWER_SLOT_IDS, QUESTION_TYPE_IDS, RELATION_ROLE_IDS } from "./question-routing-ids.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
-import { answerCoversRequest, evidenceTitledForRequestSubject, learnedRequestScaffoldingUnits, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
+import { answerCoversRequest, evidenceTitledForRequestSubject, learnedRequestScaffoldingUnits, requestContentAnchorUnits, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
 import { createCreativeEventSpeechGrammarIndex } from "./creative-event-speech-grammar.js";
 import { renderDocumentParagraphs } from "./document-plan.js";
@@ -721,6 +721,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ? undefined
         : sourceExcerptContentCandidate(input, plan, discoursePlan);
       const sourceExcerptReusesKernelCandidate = Boolean(unlicensedKernelCandidate && proposedSourceExcerptCandidate
+        && !currentSourceBoundRoleValueFact({ text: unlicensedKernelCandidate.text, contract: input.realizationContract,
+          facts: semanticAnswerConstructState(input.construct)?.selectedFacts ?? [], evidence: input.evidence })
         && unlicensedKernelCandidate.id === proposedSourceExcerptCandidate.id
         && normalizeEvidenceSentence(unlicensedKernelCandidate.text) === normalizeEvidenceSentence(proposedSourceExcerptCandidate.text));
       const kernelSelectedCandidate = sourceExcerptReusesKernelCandidate
@@ -735,7 +737,10 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           })
         }
         : unlicensedKernelCandidate;
-      const sourceExcerptCandidate = sourceExcerptReusesKernelCandidate ? undefined : proposedSourceExcerptCandidate;
+      const sourceExcerptCandidate = sourceExcerptReusesKernelCandidate ? undefined
+        : proposedSourceExcerptCandidate && proposedSourceExcerptCandidate.id === kernelSelectedCandidate?.id
+          ? { ...proposedSourceExcerptCandidate, id: `candidate:source-excerpt:${options.hashText(proposedSourceExcerptCandidate.id)}` }
+          : proposedSourceExcerptCandidate;
       const selectedClaimCandidate = selectedSourceSynthesisCandidate(input, discoursePlan);
       const semanticSourceCandidate = structuralCreativeBound ? undefined : semanticSourceAnswerCandidate(input, discoursePlan);
       const learnedConstructionCandidate = structuralCreativeBound
@@ -850,7 +855,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const rawCandidates = rawCandidatePool.filter(candidate => {
         const codeCandidate = candidate.id.startsWith("candidate:generated:code:");
         let rejectionReason: string | undefined;
-        if (codeCandidate ? !candidate.text.trim().length : !admissibleMouthSurface(candidate.text)) {
+        if (codeCandidate ? !candidate.text.trim().length : !admissibleMouthSurface(candidate.text, undefined, input)) {
           rejectionReason = "inadmissible_surface";
         } else if (!nearDuplicatePreservation && !sessionAssertionTurn(input) && !codeCandidate && candidate.producerAuthority?.kind !== "verified_computation" && surfaceRepeatsPrompt(candidate.text, input.requestText ?? "")) {
           // An echo of the request is never an answer, grounded or not; a quotation the corpus holds is recall, not an echo.
@@ -1161,7 +1166,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const formatProtectedSurfaceText = protectedSelectedSurface
         ? selected?.text
         : selected?.text ? finalFormattedSurface(selected.text, input, plan) : undefined;
-      const unmarkedOutputSurfaceText = admissibleMouthSurface(formatProtectedSurfaceText ?? protectedSurfaceText)
+      const unmarkedOutputSurfaceText = admissibleMouthSurface(formatProtectedSurfaceText ?? protectedSurfaceText, undefined, input)
         ? (formatProtectedSurfaceText ?? protectedSurfaceText)
         : "";
       const proofSurface = proofSurfaceMarker({ evidenceRefs, entailment: input.entailment });
@@ -2463,7 +2468,7 @@ function surfaceCandidateFromKernelCandidate(candidate: CandidateSurface, discou
     path: "generated",
     claimBasis: candidate.claimBases?.includes("invented") ? "invented" : undefined,
     text: selectedText,
-    evidenceIds: candidate.evidenceIds,
+    evidenceIds: roleFact?.evidenceIds as EvidenceId[] | undefined ?? candidate.evidenceIds,
     fit: clamp01(
       0.24 * candidate.scores.support +
       0.2 * candidate.scores.faithfulness +
@@ -3472,7 +3477,7 @@ function kernelCandidateSurfaceAdmissible(candidate: CandidateSurface, input: Sp
   if (containsSurfaceRealizerTelemetry(answer)) return false;
   if (containsInternalSurfaceArtifact(answer)) return false;
   if (containsStructuredCandidateTelemetry(answer)) return false;
-  if (!admissibleMouthSurface(answer)) return false;
+  if (!admissibleMouthSurface(answer, undefined, input)) return false;
   if (looksLikeInternalDiagnosticCode(answer.toLocaleLowerCase())) return false;
   if (candidate.kind !== "creative-candidate" && input.requestedAuthority !== "creative" && questionEchoHits(answer, mouthEchoQuestionText(input)).length && !evidenceBoundQuestionOverlapAllowed(candidate, input)) return false;
   return true;
@@ -3891,6 +3896,10 @@ function semanticDirectEvidenceCandidate(
     if (selected.length >= Math.max(1, Math.min(4, discoursePlan.units.length || 2))) break;
   }
   if (!selected.length) return undefined;
+  // Source quotes certify their passages, not answerhood. Validate the complete plan
+  // before binding all producers to it; different facts may answer different request parts.
+  if (!input.evidence.some(span => selected.some(row => row.evidenceIds.includes(String(span.id)))
+    && sourceQuoteCoversRequest(selected.map(row => row.surface), span, input))) return undefined;
   if (!sourceContentPlans.has(input)) sourceContentPlans.set(input, selected.map(row => sourceClaimForRealizedFact(row.fact, row.surface, row.evidenceIds, [],
     toJsonValue({ source: "semantic_source_content_plan", selectedFactKey: semanticFactKey(row.fact) }))));
   let text = "";
@@ -7223,10 +7232,12 @@ function containsStructuredCandidateTelemetry(text: string): boolean {
   );
 }
 
-function admissibleMouthSurface(text: string, evidenceTexts?: readonly string[]): boolean {
+function admissibleMouthSurface(text: string, evidenceTexts?: readonly string[], input?: SpeakInput): boolean {
   const clean = tidySurface(text);
   if (!clean) return false;
-  if (isDegenerateBareSurface(clean)) return false;
+  const exactSourceSpan = input && currentSourceBoundRoleValueFact({ text: clean, contract: input.realizationContract,
+    facts: semanticAnswerConstructState(input.construct)?.selectedFacts ?? [], evidence: input.evidence })?.sourceSpan;
+  if (isDegenerateBareSurface(clean) && !exactSourceSpan) return false;
   if (containsUnresolvedSurfaceKey(clean)) return false;
   if (containsSurfaceRealizerTelemetry(clean) || containsInternalSurfaceArtifact(clean) || containsStructuredCandidateTelemetry(clean)) return false;
   return detectCannedAnswerSpeech(clean, evidenceTexts?.length ? { evidenceTexts } : {}).length === 0;
@@ -7693,17 +7704,31 @@ function repairPreservation(input: { text: string; plan: SurfacePlan; preservati
   return removeEmptyLines(input.text);
 }
 
-/** The request's content units the mouth holds an answer to: no derived closed-class word, nothing short enough for the fuzzy matcher to confuse. Pure. */
+/** Coverage retains short content values ("wax", "DNA"); retrieval's four-character cutoff is not answer authority. */
 function mouthCoverageUnits(input: SpeakInput): string[] {
-  // A translation carries the source, not the request; it is judged by preservation, not coverage.
-  if (!input.requestText || sessionAssertionTurn(input) || input.requestedAuthority === "translation") return [];
-  const closedClass = mouthClosedClass(input);
-  const scaffolding = learnedRequestScaffoldingUnits(input.requestText, closedClass);
-  return requestContentEvidenceUnits(input.requestText).filter(unit => !scaffolding.has(unit));
+  return mouthCoverageUnitsWithClosedClass(input, mouthClosedClass(input));
 }
 
-/** The learned closed class the mouth judges coverage with: the role language's models plus the request scaffolding. Pure. */
+function mouthCoverageUnitsWithClosedClass(input: SpeakInput, closedClass: ReadonlySet<string>): string[] {
+  // A translation carries the source, not the request; it is judged by preservation, not coverage.
+  if (!input.requestText || sessionAssertionTurn(input) || input.requestedAuthority === "translation") return [];
+  const scaffolding = learnedRequestScaffoldingUnits(input.requestText, closedClass);
+  return requestContentAnchorUnits(input.requestText).filter(unit => !scaffolding.has(unit));
+}
+
+function sourceQuoteCoversRequest(sentences: readonly string[], span: EvidenceSpan, input: SpeakInput): boolean {
+  const words = mouthClosedClass(input);
+  const units = mouthCoverageUnitsWithClosedClass(input, words);
+  return !units.length || answerCoversRequest(sentences, span, units, input.requestText ?? "", {
+    relationRequired: words.size > 0, languageClosedClassWords: words
+  });
+}
+
+/** Request-language controls survive a change of realization profile. Standalone callers derive their own scope. */
 function mouthClosedClass(input: SpeakInput): Set<string> {
+  // Source/profile selection can change the realization model. Its topical
+  // continuation ranks must not erase obligations from the already-parsed request.
+  if (input.requestClosedClassWords !== undefined) return new Set(input.requestClosedClassWords);
   const scope = mouthClosedClassScopes.get(input);
   if (scope?.words) return new Set(scope.words);
   const words = requestClosedClassWords({
@@ -7729,14 +7754,8 @@ function mouthLanguageClosedClass(input: SpeakInput): Set<string> {
   return mouthClosedClass(input);
 }
 
-/** Whether the relation asked about can be required of a surface: only a learned closed class can name it. Pure. */
+/** Learned request scaffolding permits relation-specific coverage; an empty set keeps every content obligation. */
 function mouthRelationRequired(input: SpeakInput): boolean {
-  // The language's closed class, not the request-scoped one. The request-scoped set applies the corpus signal only
-  // to a request's opening two words and then removes whatever the request names, so it is empty for exactly the
-  // requests that most need the relation gate: "What did he discover?" produced an empty set, fell to the loose
-  // quota, and declined an answer it had already retrieved and ranked first (live, turn 2 of six). Which units a
-  // language uses as scaffolding is a property of the language, and reading it by word position assumes the
-  // question word comes first, which is false in every verb-final language.
   return mouthLanguageClosedClass(input).size > 0;
 }
 
@@ -8042,7 +8061,7 @@ function admitRequestedContentPlan(
     };
   }
   const state = semanticAnswerConstructState(input.construct);
-  if (state && learnedPriorRequiredFacts(state).length) {
+  if (state && learnedPriorRequiredFacts(state).some(fact => fact.relationId !== LOCAL_ANSWER_RELATION_IDS.sourceQuote)) {
     return { status: "supported", decisionId: "content_plan.learned_graph_claim", reasonId: "planner_selected_fact_slots", ownerEvidenceIds: [] };
   }
   const selectedOwnerIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
@@ -8486,7 +8505,10 @@ function factualProducerAuthorityHits(
         && exactSourceExcerptOwners(text, owners).some(span => String(span.id) === String(plan.ownerEvidenceId)));
     })();
   return uniqueStrings([
-    ...(candidate.plannedClaims?.length || discourseBound || verifiedExactClaimExcerpt ? [] : requestCoverageHits(text, candidate, scopedInput, false)),
+    // Planned source quotes carry source fidelity, not a resolved relation/value.
+    // Only typed realizations may replace request coverage with their selected-claim contract.
+    ...(candidate.plannedClaims?.length && candidate.id !== "candidate:generated:semantic-direct-evidence"
+      || discourseBound || verifiedExactClaimExcerpt ? [] : requestCoverageHits(text, candidate, scopedInput, false)),
     ...(authority.kind === "evidence_bound_proposition" && !roleValue ? semanticAnswerDriftHits(text, scopedInput, priorPieces) : []),
     ...(verifiedExactClaimExcerpt ? [] : questionEchoHits(text, mouthEchoQuestionText(input))),
     ...unlicensedCommitmentHits(text, scopedInput, candidate.constructionFormLiterals),
@@ -8500,7 +8522,8 @@ function factualProducerAuthorityHits(
 /** Corpus-oriented truth at the mouth: a sourced surface that shares none of the request's content units (nor its source title) speaks about something else. Pure. */
 function requestCoverageHits(text: string, candidate: SurfaceCandidate, input: SpeakInput, quotation: boolean): string[] {
   if (quotation || input.codeLanguage) return [];
-  const units = mouthCoverageUnits(input);
+  const closedClass = mouthLanguageClosedClass(input);
+  const units = mouthCoverageUnitsWithClosedClass(input, closedClass);
   if (!units.length) return [];
   const ids = new Set([...candidate.evidenceIds, ...(candidate.id === input.selectedCandidate?.id ? input.selectedCandidate?.evidenceIds ?? [] : [])].map(String));
   const bound = input.evidence.filter(span => ids.has(String(span.id)));
@@ -8508,7 +8531,7 @@ function requestCoverageHits(text: string, candidate: SurfaceCandidate, input: S
   if (!spans.length) return [];
   const coverageSpans = exactSourceExcerptOwners(text, spans);
   const checkedSpans = coverageSpans.length ? coverageSpans : spans;
-  return checkedSpans.some(span => answerCoversRequest([text], span, units, input.requestText ?? "", { relationRequired: mouthRelationRequired(input), languageClosedClassWords: mouthLanguageClosedClass(input) })) ? [] : ["surface.reject.request_coverage"];
+  return checkedSpans.some(span => answerCoversRequest([text], span, units, input.requestText ?? "", { relationRequired: closedClass.size > 0, languageClosedClassWords: closedClass })) ? [] : ["surface.reject.request_coverage"];
 }
 
 /** A surface repeats the request when it echoes it or when every content unit it carries is already in the request: it adds nothing. Pure. */

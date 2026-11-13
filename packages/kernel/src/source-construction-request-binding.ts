@@ -4,7 +4,7 @@ import { SOURCE_CONSTRUCTION_PREDICATE_SLOT_INDEX, type DurableLanguageConstruct
 import type { LearnedConstruction } from "./language-construction.js";
 import type { RequestValueResolver, ResolvedRequestValue } from "./semantic-answer-construct.js";
 import { graphNodeSurface } from "./semantic-proof-adapter.js";
-import { canonicalStringify } from "./primitives.js";
+import { canonicalStringify, createHasher } from "./primitives.js";
 import { isSentenceBoundarySymbol, splitSurfaceSentences, stripTerminalSentenceBoundary, surfaceContainsBoundValue } from "./surface-linguistics.js";
 import type { EvidenceSpan, GraphSnapshot, JsonValue } from "./types.js";
 import { createLearnedSurfaceInterpreter, type LearnedSurfaceInterpreter } from "./learned-surface-interpretation.js";
@@ -57,8 +57,44 @@ export interface LearnedRequestOmittedSlotDemand {
 export interface LearnedRequestOmittedSlotAudit {
   status: "value_demand" | "closed_proposition" | "unavailable" | "ambiguous" | "incomplete";
   demand?: LearnedRequestOmittedSlotDemand;
+  proposition?: LearnedRequestProposition;
   matchedConstructionIds: string[];
   visited: number;
+}
+
+export interface LearnedRequestProposition {
+  requestSurface: string;
+  relationId: string;
+  qualifiers: JsonValue;
+  modality: JsonValue;
+  temporalScope: JsonValue;
+  participants: Array<{
+    surface: string;
+    startCodePoint: number;
+    endCodePoint: number;
+    binding: SourceConstructionGraphBinding;
+  }>;
+  constructionIds: string[];
+  bindingIds: string[];
+}
+
+export interface SourceBoundRequestProposition {
+  requestSurface: string;
+  relationId: string;
+  hyperedgeIds: string[];
+  surfaces: Array<{ evidenceId: string; sourceVersionId: string; contentHash: string; textHash: string; text: string }>;
+}
+
+const propositionWitnesses = new WeakMap<SourceBoundRequestProposition, string>();
+
+export function currentSourcePropositionSurfaces(binding: SourceBoundRequestProposition,
+  requestText: string, evidence: readonly EvidenceSpan[]): SourceBoundRequestProposition["surfaces"] {
+  const hasher = createHasher();
+  if (propositionWitnesses.get(binding) !== hasher.digestHex(canonicalStringify(binding))
+    || normalizeCanonicalSurface(stripTerminalSentenceBoundary(requestText)) !== normalizeCanonicalSurface(binding.requestSurface)) return [];
+  return binding.surfaces.filter(surface => evidence.some(span => span.status === "promoted" && String(span.id) === surface.evidenceId
+    && String(span.sourceVersionId) === surface.sourceVersionId && String(span.contentHash) === surface.contentHash
+    && hasher.digestHex(span.text) === surface.textHash && span.text.includes(surface.text)));
 }
 interface BindingInput {
   bundles: readonly DurableLanguageConstructionBundle[];
@@ -85,6 +121,7 @@ export function inspectLearnedRequestOmittedSlot(input: Pick<BindingInput, "bund
   const matchedConstructionIds = new Set<string>();
   const found: Array<{ binding: SourceConstructionGraphBinding; constructionId: string; bindingId: string;
     placementSignature: string; literalSurfaces: string[]; roleSurfaces: LearnedRequestOmittedSlotDemand["matchedRoleSurfaces"] }> = [];
+  const propositions = new Map<string, LearnedRequestProposition>();
   for (const bundle of input.bundles) for (const construction of bundle.constructions) {
     if (remaining < 1) { incomplete = true; break; }
     // A contextual-QA bundle intentionally contains both the request header
@@ -108,7 +145,27 @@ export function inspectLearnedRequestOmittedSlot(input: Pick<BindingInput, "bund
           const exemplar = group[0]!;
           if (!rolesMatchSurface(exemplar.roles, slots, group)) continue;
           matchedConstructionIds.add(construction.id);
-          if (exemplar.nullRoles.length === 0) { closed = true; continue; }
+          if (exemplar.nullRoles.length === 0) {
+            closed = true;
+            if (bundle.requestMode !== "closed_proposition") continue;
+            const declarations = exemplar.roles.filter(role => role.graphBinding);
+            const scope = declarations[0]?.graphBinding;
+            if (!scope || declarations.some(role => !scopeMatches(scopeAsFact(role.graphBinding!), scope))) continue;
+            const participants = roles.flatMap(role => {
+              const binding = declarations.find(declaration => declaration.occurrenceId === role.occurrenceId)?.graphBinding;
+              return binding ? [{ surface: role.surface, startCodePoint: role.startCodePoint, endCodePoint: role.endCodePoint, binding }] : [];
+            }).sort((left, right) => compareCanonical(left.binding, right.binding)
+              || left.startCodePoint - right.startCodePoint || left.endCodePoint - right.endCodePoint);
+            if (participants.length !== declarations.length) continue;
+            const proposition = { requestSurface, relationId: scope.relationId, qualifiers: scope.qualifiers ?? {},
+              modality: scope.modality ?? {}, temporalScope: scope.temporalScope ?? {}, participants,
+              constructionIds: [construction.id], bindingIds: [bundle.bindingId] };
+            const key = canonicalStringify({ ...proposition, constructionIds: [], bindingIds: [] });
+            const prior = propositions.get(key);
+            propositions.set(key, prior ? { ...prior, constructionIds: [...new Set([...prior.constructionIds, construction.id])].sort(),
+              bindingIds: [...new Set([...prior.bindingIds, bundle.bindingId])].sort() } : proposition);
+            continue;
+          }
           if (exemplar.nullRoles.length !== 1 || !exemplar.nullRoles[0]!.graphBinding) continue;
           const binding = exemplar.nullRoles[0]!.graphBinding!;
           if (!group.every(example => example.nullRoles.length === 1
@@ -137,7 +194,11 @@ export function inspectLearnedRequestOmittedSlot(input: Pick<BindingInput, "bund
   const visited = allowance - remaining;
   const ids = [...matchedConstructionIds].sort();
   if (incomplete) return { status: "incomplete", matchedConstructionIds: ids, visited };
-  if (!found.length) return { status: closed ? "closed_proposition" : "unavailable", matchedConstructionIds: ids, visited };
+  if (!found.length) {
+    if (propositions.size > 1) return { status: "ambiguous", matchedConstructionIds: ids, visited };
+    return { status: closed ? "closed_proposition" : "unavailable", matchedConstructionIds: ids, visited,
+      ...(propositions.size === 1 ? { proposition: propositions.values().next().value! } : {}) };
+  }
   if (closed) return { status: "ambiguous", matchedConstructionIds: ids, visited };
   if (new Set(found.map(row => row.placementSignature)).size !== 1) {
     return { status: "ambiguous", matchedConstructionIds: ids, visited };
@@ -170,6 +231,71 @@ export function inspectLearnedRequestOmittedSlot(input: Pick<BindingInput, "bund
     matchedConstructionIds: ids,
     visited
   };
+}
+
+/** Match the complete typed proposition, preserving role multiplicity and current source ownership. */
+export function sourceConstructionRequestPropositionMatches(input: {
+  audit: LearnedRequestOmittedSlotAudit;
+  requestText: string;
+  graph: Pick<GraphSnapshot, "nodes" | "hyperedges">;
+  evidence: readonly EvidenceSpan[];
+}): { evidenceIds: string[]; hyperedgeIds: string[]; answerBinding?: SourceBoundRequestProposition } {
+  const proposition = input.audit.status === "closed_proposition" ? input.audit.proposition : undefined;
+  if (!proposition || !proposition.participants.length
+    || normalizeCanonicalSurface(stripTerminalSentenceBoundary(input.requestText)) !== normalizeCanonicalSurface(proposition.requestSurface)) {
+    return { evidenceIds: [], hyperedgeIds: [] };
+  }
+  const nodes = new Map(input.graph.nodes.map(node => [String(node.id), node]));
+  const evidence = new Map(input.evidence.filter(span => span.status === "promoted").map(span => [String(span.id), span]));
+  const evidenceIds = new Set<string>(), hyperedgeIds = new Set<string>();
+  const surfaces = new Map<string, SourceBoundRequestProposition["surfaces"][number]>();
+  const hasher = createHasher();
+  const participantKey = (roleId: string, valueKind: string, surface: string) => canonicalStringify([roleId, valueKind, normalizeCanonicalSurface(surface)]);
+  for (const edge of input.graph.hyperedges) {
+    if (edge.relationId !== proposition.relationId || canonicalStringify(edge.qualifiers) !== canonicalStringify(proposition.qualifiers)
+      || canonicalStringify(edge.modality) !== canonicalStringify(proposition.modality)
+      || canonicalStringify(edge.temporalScope) !== canonicalStringify(proposition.temporalScope)) continue;
+    const ownerIds = new Set(edge.evidenceIds.map(String));
+    const ports = edge.participantPorts.flatMap(port => {
+      const surface = port.realization === "observed" && port.nodeId ? graphNodeSurface(nodes.get(String(port.nodeId))) : undefined;
+      if (!surface) return [];
+      const spans = (port.evidenceIds.length ? port.evidenceIds.map(String) : [...ownerIds])
+        .filter(id => ownerIds.has(id)).map(id => evidence.get(id))
+        .filter((span): span is EvidenceSpan => Boolean(span && surfaceContainsBoundValue(span.text, surface)));
+      return spans.length ? [{ key: participantKey(port.roleId, port.valueKind, surface), spans }] : [];
+    });
+    const required = new Map<string, number>();
+    for (const participant of proposition.participants) {
+      const key = participantKey(participant.binding.roleId, participant.binding.valueKind, participant.surface);
+      required.set(key, (required.get(key) ?? 0) + 1);
+    }
+    let versions: Set<string> | undefined;
+    const ownedSpans = new Map<string, EvidenceSpan>();
+    for (const [key, count] of required) {
+      const matching = ports.filter(port => port.key === key);
+      const candidates = new Map<string, number>();
+      for (const port of matching) for (const version of new Set(port.spans.map(span => String(span.sourceVersionId)))) {
+        candidates.set(version, (candidates.get(version) ?? 0) + 1);
+      }
+      const qualified = new Set([...candidates].filter(([, cardinality]) => cardinality >= count).map(([version]) => version));
+      versions = new Set(versions ? [...versions].filter(version => qualified.has(version)) : qualified);
+      if (!versions.size) break;
+      for (const span of matching.flatMap(port => port.spans)) ownedSpans.set(String(span.id), span);
+    }
+    if (!versions?.size) continue;
+    hyperedgeIds.add(String(edge.id));
+    for (const span of ownedSpans.values()) if (versions.has(String(span.sourceVersionId))) {
+      evidenceIds.add(String(span.id));
+      const candidates = [...new Set(splitSurfaceSentences(span.text).filter(sentence => span.text.includes(sentence)
+        && proposition.participants.every(participant => surfaceContainsBoundValue(sentence, participant.surface))))];
+      if (candidates.length === 1) surfaces.set(String(span.id), { evidenceId: String(span.id), sourceVersionId: String(span.sourceVersionId),
+        contentHash: String(span.contentHash), textHash: hasher.digestHex(span.text), text: candidates[0]! });
+    }
+  }
+  const answerBinding = { requestSurface: proposition.requestSurface, relationId: proposition.relationId,
+    hyperedgeIds: [...hyperedgeIds].sort(), surfaces: [...surfaces.values()].sort((left, right) => compareCanonical(left, right)) };
+  propositionWitnesses.set(answerBinding, hasher.digestHex(canonicalStringify(answerBinding)));
+  return { evidenceIds: [...evidenceIds].sort(), hyperedgeIds: answerBinding.hyperedgeIds, answerBinding };
 }
 
 function compareCanonical(left: unknown, right: unknown): number {
@@ -209,7 +335,9 @@ function inspectSourceConstructionRequestBinding(input: BindingInput, requestTex
   if (!matchingPrograms.size) return { status: "unavailable", visited: preflightVisited };
   const observed = inspectObservedContextualQaBinding(input, requestSurface, matchingPrograms, evidence);
   if (observed) return { ...observed, visited: preflightVisited };
-  const sourcePrograms = input.bundles.flatMap(bundle => bundle.constructions.flatMap(construction => {
+  const transferBundles = input.bundles.filter(bundle => !bundle.sourceExamples.some(example => example.contextualQaSupervision !== undefined)
+    || bundle.acquisitionStatus === "document_heldout_qualified");
+  const sourcePrograms = transferBundles.flatMap(bundle => bundle.constructions.flatMap(construction => {
     const examples = bundle.sourceExamples.filter(example => construction.sourceExampleIds.includes(example.id)
       && example.nullRoles.length === 0 && example.roles.length > 0
       && example.roles.every(role => Boolean(role.graphBinding) || isStructuralPredicateRole(role)));
@@ -266,9 +394,21 @@ function inspectSourceConstructionRequestBinding(input: BindingInput, requestTex
     const ports = edge.participantPorts.filter(port => matchesPort(port, answerBinding));
     if (ports.length !== 1 || !ports[0]!.surface) return;
     const port = ports[0]!, value = port.surface!;
-    const ownerIds = new Set((port.evidenceIds.length ? port.evidenceIds : edge.evidenceIds).map(String));
-    const evidenceIds = evidence.filter(span => span.status === "promoted" && ownerIds.has(String(span.id)) && surfaceContainsBoundValue(span.text, value)).map(span => String(span.id));
-    if (!evidenceIds.length) return;
+    const edgeOwners = new Set(edge.evidenceIds.map(String));
+    const witnesses = [...anchored.map(anchor => ({ port: edge.participantPorts[anchor.port]!, surface: anchor.surface })), { port, surface: value }]
+      .map(({ port: participant, surface }) => {
+        const owners = new Set((participant.evidenceIds.length ? participant.evidenceIds : edge.evidenceIds).map(String));
+        return evidence.filter(span => span.status === "promoted" && edgeOwners.has(String(span.id))
+          && owners.has(String(span.id)) && surfaceContainsBoundValue(span.text, surface));
+      });
+    const versions = witnesses.reduce<Set<string> | undefined>((shared, spans) => {
+      const current = new Set(spans.map(span => String(span.sourceVersionId)));
+      return shared ? new Set([...shared].filter(version => current.has(version))) : current;
+    }, undefined);
+    if (!versions?.size) return;
+    const selectedVersion = [...versions].sort()[0]!;
+    const evidenceIds = [...new Set(witnesses.flatMap(spans => spans.filter(span => String(span.sourceVersionId) === selectedVersion)
+      .map(span => String(span.id))))].sort();
     const subject = [...anchored].sort((a, b) => a.port - b.port).map(anchor => anchor.surface).join(" ");
     const binding = { value, evidenceIds, subject, ...(relation ? { relation } : {}), requestedRoleId: answerBinding.roleId, relationId: answerBinding.relationId };
     // Distinct surface predicates can realize the same typed fact. They are explanatory labels, not competing
@@ -278,7 +418,7 @@ function inspectSourceConstructionRequestBinding(input: BindingInput, requestTex
     if (found.length && found[0]!.key !== key) { ambiguous = true; ambiguityCause = "distinct_bindings"; }
     found.push({ binding, key });
   };
-  for (const bundle of input.bundles) for (const construction of bundle.constructions) {
+  for (const bundle of transferBundles) for (const construction of bundle.constructions) {
     if (!matchingPrograms.has(construction.id)) continue;
     const examples = bundle.sourceExamples.filter(example => construction.sourceExampleIds.includes(example.id)
       && example.nullRoles.length === 1 && Boolean(example.nullRoles[0]?.graphBinding)
@@ -388,7 +528,8 @@ function inspectSourceConstructionRequestBinding(input: BindingInput, requestTex
     candidates: [...new Map(found.map(row => [row.key, row.binding])).values()], visited };
   if (incomplete) return { status: "incomplete", visited };
   if (!found.length) return { status: "unavailable", visited };
-  return { status: "bound", visited, binding: { ...found[0]!.binding, evidenceIds: [...new Set(found.flatMap(row => row.binding.evidenceIds))] } };
+  const selected = [...found].sort((left, right) => canonicalStringify(left.binding.evidenceIds).localeCompare(canonicalStringify(right.binding.evidenceIds)))[0]!;
+  return { status: "bound", visited, binding: selected.binding };
 }
 
 /**
@@ -437,7 +578,7 @@ function inspectObservedContextualQaBinding(input: BindingInput, requestSurface:
         const key = canonicalStringify([normalizeCanonicalSurface(value.trim()), normalizeCanonicalSurface(subject.trim()),
           answerBinding.roleId, answerBinding.relationId]);
         const previous = found.get(key);
-        found.set(key, previous ? { ...previous, evidenceIds: [...new Set([...previous.evidenceIds, example.evidenceId])].sort() } : binding);
+        if (!previous || canonicalStringify(binding.evidenceIds).localeCompare(canonicalStringify(previous.evidenceIds)) < 0) found.set(key, binding);
       }
     }
   }

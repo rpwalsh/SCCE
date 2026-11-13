@@ -7,7 +7,8 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NodeBuildTestAdapter, runLocalExecutiveGoal, type ScceRuntimeConfig, type LocalExecutiveGoalRequest } from "@scce/adapters-node";
 import { ApprovalSession } from "../../../adapters-node/src/approval-session.js";
-import { createDurableExecutiveEpisode, createExecutiveEpisodeMachine, createHasher, DEFAULT_POLICY, toJsonValue, type ConstructGraph, type ExecutiveEvent } from "@scce/kernel";
+import { createDurableExecutiveEpisode, createExecutiveEpisodeMachine, createHasher, createRuntimeCapabilities, createConnectorCapabilityOperations, createCapabilityRegistry, DEFAULT_POLICY, toJsonValue, type ConstructGraph, type ExecutiveEvent } from "@scce/kernel";
+import { capabilityRuntimeFixture } from "../../../kernel/src/__tests__/fixtures/capability-runtime.js";
 import { handleRequest, type ApiContext } from "../routes.js";
 
 describe("local executive goal HTTP lane", () => {
@@ -21,10 +22,13 @@ describe("local executive goal HTTP lane", () => {
     } });
     let approvals = new ApprovalSession();
     const buildTest = new NodeBuildTestAdapter({ runtime: { tempRoot: join(root, "runs") } } as ScceRuntimeConfig);
+    const { blobs } = capabilityRuntimeFixture();
+    const capabilities = createRuntimeCapabilities({ executive, blobs,
+      operations: createConnectorCapabilityOperations({ buildTest, blobs, capabilities: createCapabilityRegistry({ process: true }).all() }) });
     const content = `import {appendFileSync} from 'node:fs'; appendFileSync(${JSON.stringify(effect)},'once');`;
     const artifact = { artifactId: "artifact.local", path: "main.mjs", content, contentHash: `sha256_${createHasher().digestHex(content)}`, mediaType: "text/javascript", role: "source" };
     const request: LocalExecutiveGoalRequest = { schema: "scce.local_executive_goal.v1", episodeId: "episode.api.local", goalId: "goal.api.local", tasks: [{ id: "task.local", dependencyTaskIds: [], construct: { id: "construct.local", artifacts: [artifact], program: { id: "program.local", files: [artifact], nodes: [], edges: [], language: "javascript", packageManager: "node", entrypoint: "main.mjs", build: { command: process.execPath, args: ["--check", "main.mjs"], cwd: "." }, test: { command: process.execPath, args: ["main.mjs"], cwd: "." } } } as unknown as ConstructGraph }] };
-    const context = { runtime: { approvals, executive, runExecutiveGoal: (request: LocalExecutiveGoalRequest) => runLocalExecutiveGoal({ request, executive, buildTest, ownerId: "owner", policy: DEFAULT_POLICY, approved: approvals.isApproved({ capabilityId: "process.build_test", input: toJsonValue(request) }) }) },
+    const context = { runtime: { approvals, executive, capabilities, runExecutiveGoal: (request: LocalExecutiveGoalRequest) => runLocalExecutiveGoal({ request, capabilities, ownerId: "owner", policy: DEFAULT_POLICY, approved: approvals.isApproved({ capabilityId: "process.build_test", input: toJsonValue(request) }) }) },
       config: { server: { url: "http://127.0.0.1:0" } }, maxBodyBytes: 1_000_000, startupReadiness: { snapshot: () => ({ phase: "ready", complete: true }) } } as unknown as ApiContext;
     const server = createServer((req, res) => { void handleRequest(req, res, context); });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -33,7 +37,8 @@ describe("local executive goal HTTP lane", () => {
     const url = `http://127.0.0.1:${address.port}`;
     const run = () => fetch(`${url}/api/executive/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
     try {
-      expect((await run()).status).toBe(202);
+      const pending = await run();
+      expect(pending.status, await pending.text()).toBe(202);
       await expect(readFile(effect)).rejects.toMatchObject({ code: "ENOENT" });
       const plan = approvals.snapshot().pending[0]!;
       await fetch(`${url}/api/session/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ planId: plan.planId }) });

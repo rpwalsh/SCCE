@@ -55,7 +55,7 @@ Use real values derived from the sealed fixture/provider. The example quantities
 
 | Registered category | Operation | Actual candidate lane |
 |---|---|---|
-| chat | `turn` | Ordinary `/api/turn?full=1`, actual prompt and stable conversation |
+| chat | `turn` | Ordinary compact `/api/turn`, actual prompt and stable conversation |
 | creative | `turn`, `requestedAuthority:"creative"` if the task requests it | Same ordinary turn producer |
 | corpus facts | `turn`, public sources and their admission/trust | `/api/ingest` then ordinary factual turn |
 | code repair, any admitted language | `code_repair` | Official CLI `code --root=<public workspace> --path=... --validation-policy=...`; shared learned proposer/code mouth |
@@ -76,6 +76,39 @@ Generation may explicitly set `allowNewFiles:true` to admit new local source/tes
 Repair uses the official CLI because `/api/workspace/code` always uses the server-configured workspace root and accepts no per-request root. The CLI's public `--root` routes to the same learned repair path while preserving its native compile/test gate and rollback. The current producer has a minimum four-iteration ceiling; preregister an appropriate public attempt budget. If its actual reported attempts exceed the sealed budget the adapter returns a failed budget outcome. The same declared attempt count bounds reference proposal/public-feedback rounds. The reference accepts only exact JSON `{"answer":"...","artifacts":{"path":"complete text"}}`; no fence stripping, language guessing or repair templates are used. Both sides run the identical public checks against actual files. Directory deletion/binary artifact tasks are outside this current text-artifact envelope and must be preregistered as uncovered rather than silently removed.
 
 For explicit local tool tasks, include the product's exact `scce.local_executive_goal.v1` value in `executiveGoal` and allow `process.build_test` when intended. Its public tasks contain their source artifacts and native build/test commands with cwd `.`. Scope episode/goal/task IDs uniquely per campaign so historical ACTS replay does not masquerade as a fresh execution. The candidate sends that goal unchanged to the real executive and requires a succeeded disposition. The reference must select the exact supplied goal in its strict machine response (`executiveGoal` plus `answer` and `artifacts`); the host then executes the same dependency-ordered public build/test jobs in isolated public subdirectories. A proposal, prose claim or successful scheduling alone does not count. Broader natural-language tool planning uses the actual ordinary action turn; it must return real `CapabilitySucceeded` events, including any preregistered `requiredCapabilityIds`, and no failure events. Unsupported or unexecuted actions fail. This bridge does not claim that a fixed public build/test goal establishes general autonomous tool use.
+
+## Retained canonical factual sources
+
+A factual `turn` may declare `retainedSources` instead of `sourceAdmission` and `sourceTrust`:
+
+```json
+{
+  "schema": "scce.blind-retained-sources.v1",
+  "sources": [{
+    "id": "PUBLIC_PACKET_SOURCE_ID",
+    "sourceId": "CANONICAL_SOURCE_ID",
+    "sourceVersionId": "CANONICAL_SOURCE_VERSION_ID",
+    "contentHash": "sha256_LOWERCASE_64_HEX",
+    "canonicalUri": "EXACT_CANONICAL_URI",
+    "evidenceIds": ["PROMOTED_CANONICAL_EVIDENCE_ID"]
+  }]
+}
+```
+
+This value belongs inside the existing JSON task contract. Every visible public source must have exactly one binding, and its full UTF-8 bytes must hash to that source version's content hash. Missing sources, changed bytes, source updates and incomplete bindings fail before a turn. The candidate uses its frozen `--config` and `--schema` to verify current canonical ownership, source bytes, promoted evidence and Unicode byte/code-point coordinates through the existing canonical corpus reader in a read-only transaction. Archive verification cache updates remain ephemeral. It then calls only the ordinary turn route, without ingestion or a test-only runtime control. Answered factual output must cite only the verified evidence IDs with matching source/version/hash/status. Existing typed abstention handling is unchanged.
+
+The reference receives the identical full public source text and contract through its existing context bridge. Both receipts retain the same public-context hash and source-revision hashes. Pin the public source manifest and all adapter dependencies before secret selection; keep private answers and checks out of that manifest. The existing `generateClozeQuestions` export in `tools/sealed-eval/harness/generate-cloze-questions.mjs` can select hash-ranked source-derived cloze cases from an exported, hash-verified corpus. Label that coverage as cloze retrieval; its name/year selection and fixed negative probes do not establish unrestricted factual reasoning. Chat/creative ballots and coding validators remain their existing independent graders.
+
+The existing campaign accepts `--retained-corpus CORPUS_MANIFEST`. Export a bounded public cohort once, using read-only canonical storage; the source selection seed is public and is separate from the custodian's later secret question seed:
+
+```powershell
+node tools/blind-comparison/retained-corpus.mjs --config OPERATOR_CONFIG --out NEW_PUBLIC_SOURCE_DIRECTORY --documents 10 --min-bytes 8000 --max-bytes 16000 --language en --source-prefix wikipedia://enwiki/ --seed PUBLIC_SOURCE_SELECTION
+node tools/blind-comparison/campaign.mjs run --config OPERATOR_CONFIG --retained-corpus NEW_PUBLIC_SOURCE_DIRECTORY/corpus-manifest.json --out NEW_CAMPAIGN_DIRECTORY --count 5 --diagnostic --device cpu --threads 4 --context-tokens 32768 --output-tokens 4096 --max-reference-model-bytes 4000000000
+```
+
+The campaign freezes the canonical manifest, every full source document, code, runner, baseline admission, settings and public instructions before the custodian selects five cloze cases. Only the private key contains exact expected answers and source offsets. The unchanged shared instruction requests the missing source span with its exact spelling; task language is the manifest language, with no translation or fabricated answer. The candidate uses its ordinary factual turn; the reference uses the pinned `qwen2.5:3b` task interface and its declared JSON answer/abstention schema. This mode excludes the generator's fixed negative probes. The result covers the single retained-source cloze cell, and diagnostic mode makes no superiority claim.
+
+No source text is shortened. Reference admission proves the pinned runtime rejects overflow with typed token/context evidence while `truncate:false` and `shift:false`. Every successful reference case additionally requires those policies, a normal stop, positive prompt/output token counts within the frozen context/output budgets, and the exact allocated context length. Missing or inconsistent accounting becomes a typed `scce.blind-reference-context-invalid.v1` error. The bounded example cohort leaves room for the complete public contract and output; an overflow remains an error instead of a scored clipped response.
 
 ## Conditions the operator must establish
 

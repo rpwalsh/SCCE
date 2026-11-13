@@ -10,7 +10,7 @@ import { compileLanguageConstructionPattern, SOURCE_EXAMPLE_CONSTRUCTION_STORAGE
 import { compileRequestRequirementCorpus, REQUEST_REQUIREMENT_CORPUS_SCHEMA } from "../request-requirement-learning.js";
 import { deriveTurnRequirementField } from "../turn-requirements.js";
 import { projectRequestAuthority } from "../request-authority.js";
-import { sourceConstructionRequestValueResolver } from "../source-construction-request-binding.js";
+import { inspectLearnedRequestOmittedSlot, sourceConstructionRequestValueResolver } from "../source-construction-request-binding.js";
 import { resolveRequestValueBinding } from "../semantic-answer-construct.js";
 import { learnedEntitySurfacesFromLanguageMemory } from "../kernel-answer-primitives.js";
 import type { EvidenceSpan, LanguageProfile, RequestedAuthority, SourceVersionId } from "../types.js";
@@ -50,6 +50,37 @@ function fixture(patterns: LanguagePatternRecord[], evidence: EvidenceSpan[] = [
 
 const pattern = (id: string, patternJson: LanguagePatternRecord["patternJson"], patternKind: LanguagePatternRecord["patternKind"] = "semantic_role"): LanguagePatternRecord =>
   ({ id, profileId: profile.id, patternKind, patternJson, evidenceIds: [], support: 1, entropy: 0, updatedAt: 1 });
+
+it("loads a source-owned closed proposition through request headers without inventing an omitted role", async () => {
+  const text = "α «Luma» ω «Bora»?\nα «Vela» ω «Cedar»?";
+  const evidence = span(text);
+  const surfaces = text.split("\n");
+  const fields = [["Luma", "Bora"], ["Vela", "Cedar"]];
+  let offset = 0;
+  const compiled = compileLanguageConstructionPattern({ bindingId: "request.closed", requestMode: "closed_proposition", profileId: profile.id,
+    hasher, evidence: [evidence], updatedAt: 1, observations: surfaces.map((surface, index) => {
+      const start = offset; offset += [...surface].length + 1;
+      return { sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id), surfaceStartCodePoint: start,
+        surfaceEndCodePoint: start + [...surface].length, roles: fields[index]!.map((value, slotIndex) => ({ slotIndex,
+          startCodePoint: [...surface.slice(0, surface.indexOf(value))].length,
+          endCodePoint: [...surface.slice(0, surface.indexOf(value))].length + [...value].length,
+          graphBinding: { relationId: "relation.opaque", roleId: `role.${slotIndex}`, valueKind: "opaque.entity" } })) };
+    }) });
+  expect(compiled.status).toBe("compiled");
+  if (compiled.status !== "compiled") throw new Error("closed proposition did not compile");
+  const header = requestSeedLanguagePattern(compiled.pattern);
+  expect(header.patternJson).toMatchObject({ requestConstructionCandidate: true, sourceConstructionCandidate: true });
+  expect(header.patternJson).not.toHaveProperty("bundle");
+  const f = fixture([compiled.pattern], [evidence]);
+  const seed = await f.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "seed", undefined, "", { purpose: "request_seed" });
+  expect(seed.state.importedConstructionBundles).toEqual([]);
+  const bundles = await f.runtime.requestConstructionBundles(seed.patterns, seed.state.scope);
+  expect(bundles).toHaveLength(1);
+  expect(inspectLearnedRequestOmittedSlot({ bundles }, "α «𐐀» ω «한국어»?")).toMatchObject({
+    status: "closed_proposition", proposition: { relationId: "relation.opaque", participants: [
+      { surface: "𐐀", binding: { roleId: "role.0" } }, { surface: "한국어", binding: { roleId: "role.1" } }
+    ] } });
+});
 
 it("never reads generic frames or source evidence during request seeding, and keeps realization queries complete", async () => {
   const page = pattern("source.page", { schema: "scce.language_construction_pattern.v1", bundle: {

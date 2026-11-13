@@ -30,7 +30,32 @@ describe("workspace coding chat request", () => {
       diagnosticCodes: [2552]
     });
     expect(input).not.toHaveProperty("authorization");
-    expect(input).not.toHaveProperty("execution");
+    expect(input?.execution).toBe("plan");
+  });
+
+  it("keeps execution authority separate while accepting the governed apply continuation", () => {
+    const input = parseTurnWorkspaceCodingRequest({
+      schemaVersion: WORKSPACE_CODING_TURN_REQUEST_SCHEMA,
+      workspaceId: "workspace.1",
+      expectedWorkspaceUpdatedAt: 7,
+      requestId: "request.1",
+      requestedPaths: [],
+      diagnosticCodes: [],
+      validationPlan: { validatorId: "trusted-host-pnpm-validate.v1", checks: ["compiler", "tests"] },
+      execution: "apply"
+    }, "build and test the application");
+    expect(input?.execution).toBe("apply");
+    expect(input).not.toHaveProperty("authorization");
+    expect(() => parseTurnWorkspaceCodingRequest({
+      schemaVersion: WORKSPACE_CODING_TURN_REQUEST_SCHEMA,
+      workspaceId: "workspace.1",
+      expectedWorkspaceUpdatedAt: 7,
+      requestId: "request.1",
+      requestedPaths: [],
+      diagnosticCodes: [],
+      validationPlan: { validatorId: "trusted-host-pnpm-validate.v1", checks: ["compiler"] },
+      execution: "unreviewed"
+    }, "build it")).toThrow(/execution must be plan or apply/u);
   });
 
   it("rejects prose and authority fields inside the compiler selector", () => {

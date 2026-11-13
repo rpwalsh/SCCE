@@ -11,12 +11,12 @@ import { semanticAnswerConstructFacts } from "../semantic-answer-construct.js";
 import { semanticAnswerConstructState } from "../mouth-source-facts.js";
 import { attachSourceBoundAnswerConstruct } from "../local-evidence-runtime.js";
 import { resolveRequestValueBinding } from "../semantic-answer-construct.js";
-import { inspectLearnedRequestOmittedSlot, sourceConstructionRequestValueResolver } from "../source-construction-request-binding.js";
+import { currentSourcePropositionSurfaces, inspectLearnedRequestOmittedSlot, sourceConstructionRequestPropositionMatches, sourceConstructionRequestValueResolver } from "../source-construction-request-binding.js";
 import { decodeConstructionSourceExamples, encodeConstructionSourceExamples } from "../construction-source-example-storage.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
 import { CORPUS_ROLE_IDS } from "../corpus-registry.js";
 import { induceSourceBoundConstructionTrainingSets } from "../graph-surface-alignment.js";
-import { answerCoversRequest } from "../local-evidence-runtime.js";
+import { answerCoversRequest, localEvidenceAnswerClaimSurface, proposeSourceExactEvidenceAnswer } from "../local-evidence-runtime.js";
 import { createEvidenceExtractor } from "../evidence.js";
 import { jsonRecord } from "../kernel-answer-primitives.js";
 import type { BuildTestResult, EvidenceSpan, GraphNode, GraphSnapshot, GraphSlice, Hyperedge } from "../types.js";
@@ -105,7 +105,174 @@ function teach(input: { subjects: [string, string, string]; marker: string; valu
     bundles: restarted.importedConstructionBundles };
 }
 
+function teachProposition(question: (actor: string, patient: string) => string) {
+  const rows = [{ actor: "𝒜", patient: "Bora" }, { actor: "Βήτα", patient: "Cedar" }];
+  const surfaces = rows.map(row => question(row.actor, row.patient));
+  const lesson = evidenceSpan(surfaces.join("\n"));
+  const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: lesson.sourceVersionId, text: lesson.text, createdAt: 140_000 });
+  const actor: SourceConstructionGraphBinding = { relationId: "relation.transfer", roleId: "role.actor", valueKind: "opaque.entity" };
+  const patient: SourceConstructionGraphBinding = { ...actor, roleId: "role.patient" };
+  let offset = 0;
+  const observations: SourceBoundConstructionObservation[] = surfaces.map((surface, index) => {
+      const start = offset;
+      offset += [...surface].length + 1;
+      return { sourceVersionId: String(lesson.sourceVersionId), evidenceId: String(lesson.id),
+        surfaceStartCodePoint: start, surfaceEndCodePoint: start + [...surface].length,
+        roles: [{ value: rows[index]!.actor, binding: actor }, { value: rows[index]!.patient, binding: patient }].map((row, slotIndex) => {
+          const at = [...surface.slice(0, surface.indexOf(row.value))].length;
+          return { slotIndex, startCodePoint: at, endCodePoint: at + [...row.value].length, graphBinding: row.binding };
+        }) };
+    });
+  const trained = compileLanguageTrainingBatch({ runtime: createLanguageMemoryRuntime({ idFactory: ids, hasher }), hasher,
+    batch: { streamId: "fixture://proposition-lesson", profile, sourceVersionId: lesson.sourceVersionId, text: lesson.text,
+      evidence: [lesson], createdAt: 140_000, constructionSets: observations.map(observation => ({ bindingId: "request.closed",
+        requestMode: "closed_proposition", observations: [observation] })) } });
+  const pattern = trained.constructionPatterns.find(pattern => jsonRecord(jsonRecord(pattern.patternJson).bundle).bindingId === "request.closed");
+  expect(pattern).toBeDefined();
+  if (!pattern) throw new Error("proposition lesson did not compile");
+  const state = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({ models: [],
+    patterns: JSON.parse(JSON.stringify([pattern])), constructionEvidence: [lesson] });
+  expect(state.rejectedConstructionPatterns).toEqual([]);
+  const source = evidenceSpan("𐐀𐐁 منتقل 한국어.");
+  const nodes = [{ id: "node.actor", representation: { surface: "𐐀𐐁" } }, { id: "node.patient", representation: { surface: "한국어" } }] as unknown as GraphNode[];
+  const edge = { schema: "scce.hyperedge.v2", id: "fact.transfer", relationId: actor.relationId,
+    memberNodeIds: nodes.map(node => node.id), evidenceIds: [source.id], qualifiers: {}, modality: {}, temporalScope: {},
+    weightVector: {}, provenanceRefs: [], createdAt: 140_000, updatedAt: 140_000,
+    participantPorts: [actor, patient].map((binding, index) => ({ portId: binding.roleId, roleId: binding.roleId,
+      valueKind: binding.valueKind, realization: "observed", nodeId: nodes[index]!.id, evidenceIds: [source.id] })) } as unknown as Hyperedge;
+  const graph = { nodes, hyperedges: [edge] };
+  const request = question("𐐀𐐁", "한국어");
+  const audit = inspectLearnedRequestOmittedSlot({ bundles: state.importedConstructionBundles }, request);
+  return { request, audit, source, lesson, profile, patterns: [pattern], graph, bundles: state.importedConstructionBundles,
+    match: (input: { graph?: typeof graph; evidence?: EvidenceSpan[]; requestText?: string } = {}) =>
+      sourceConstructionRequestPropositionMatches({ audit, requestText: input.requestText ?? request, graph: input.graph ?? graph, evidence: input.evidence ?? [source] }) };
+}
+
 describe("acquired typed request construction transfer", () => {
+  it.each([
+    (actor: string, patient: string) => `Does «${actor}» transfer «${patient}»?`,
+    (actor: string, patient: string) => `«${actor}»가 «${patient}»를 옮겼습니까?`,
+    (actor: string, patient: string) => `هل نقل «${actor}» «${patient}»؟`,
+    (actor: string, patient: string) => `«${patient}» λ «${actor}» ω?`
+  ])("retains a closed proposition's learned roles and matches a fresh graph fact after restart (%#)", question => {
+    const lesson = teachProposition(question);
+    expect(lesson.audit).toMatchObject({ status: "closed_proposition", proposition: { relationId: "relation.transfer",
+      participants: [{ surface: "𐐀𐐁", binding: { roleId: "role.actor" } }, { surface: "한국어", binding: { roleId: "role.patient" } }] } });
+    const matched = lesson.match();
+    expect(matched.hyperedgeIds).toEqual(["fact.transfer"]);
+    expect(matched.evidenceIds).toEqual([String(lesson.source.id)]);
+    expect(matched.answerBinding).toEqual({ requestSurface: lesson.audit.proposition!.requestSurface, relationId: "relation.transfer",
+      hyperedgeIds: ["fact.transfer"], surfaces: [{ evidenceId: String(lesson.source.id), sourceVersionId: String(lesson.source.sourceVersionId),
+        contentHash: String(lesson.source.contentHash), textHash: hasher.digestHex(lesson.source.text), text: lesson.source.text }] });
+    expect(lesson.match({ evidence: [{ ...lesson.source, status: "quarantined" }] }).evidenceIds).toEqual([]);
+    expect(lesson.match({ evidence: [{ ...lesson.source, text: "both named participants are absent" }] }).evidenceIds).toEqual([]);
+    expect(lesson.match({ requestText: `${lesson.request} foreign` }).evidenceIds).toEqual([]);
+    const edge = lesson.graph.hyperedges[0]!;
+    expect(lesson.match({ graph: { ...lesson.graph, hyperedges: [{ ...edge, relationId: "relation.other" as typeof edge.relationId }] } }).evidenceIds).toEqual([]);
+    expect(lesson.match({ graph: { ...lesson.graph, hyperedges: [{ ...edge, qualifiers: { polarity: "negative" } }] } }).evidenceIds).toEqual([]);
+    expect(lesson.match({ graph: { ...lesson.graph, hyperedges: [{ ...edge, participantPorts: edge.participantPorts.map(port => ({ ...port,
+      nodeId: port.nodeId === "node.actor" ? "node.patient" as never : "node.actor" as never })) }] } }).evidenceIds).toEqual([]);
+    expect(inspectLearnedRequestOmittedSlot({ bundles: lesson.bundles, maxTransitions: 1 }, lesson.request).status).toBe("incomplete");
+  });
+
+  it("does not assemble a proposition by combining participant witnesses from unrelated source versions", () => {
+    const lesson = teachProposition((actor, patient) => `«${actor}» λ «${patient}»?`);
+    const other = evidenceSpan("한국어 alone belongs to this different source.");
+    const edge = lesson.graph.hyperedges[0]!;
+    const graph = { ...lesson.graph, hyperedges: [{ ...edge, evidenceIds: [lesson.source.id, other.id],
+      participantPorts: edge.participantPorts.map((port, index) => ({ ...port, evidenceIds: [index === 0 ? lesson.source.id : other.id] })) }] };
+    expect(lesson.match({ graph, evidence: [lesson.source, other] }).evidenceIds).toEqual([]);
+    const proposition = lesson.audit.proposition!;
+    expect(sourceConstructionRequestPropositionMatches({ ...lesson, requestText: lesson.request, evidence: [lesson.source],
+      audit: { ...lesson.audit, proposition: { ...proposition, participants: [...proposition.participants, proposition.participants[0]!] } } }).evidenceIds).toEqual([]);
+  });
+
+  it("keeps one complete witness usable without requiring other sources and rejects changed or fabricated bindings", () => {
+    const lesson = teachProposition((actor, patient) => `«${actor}» λ «${patient}»?`);
+    const independent = evidenceSpan("𐐀𐐁 переместил 한국어.");
+    const edge = lesson.graph.hyperedges[0]!;
+    const graph = { ...lesson.graph, hyperedges: [{ ...edge, evidenceIds: [lesson.source.id, independent.id],
+      participantPorts: edge.participantPorts.map(port => ({ ...port, evidenceIds: [lesson.source.id, independent.id] })) }] };
+    const matched = lesson.match({ graph, evidence: [lesson.source, independent] });
+    expect(matched.answerBinding?.surfaces).toHaveLength(2);
+    const binding = matched.answerBinding!;
+    expect(currentSourcePropositionSurfaces(binding, lesson.request, [independent]).map(surface => surface.text)).toEqual([independent.text]);
+    const proposal = proposeSourceExactEvidenceAnswer({ requestText: lesson.request, selectedEvidence: [lesson.lesson, independent], boundProposition: binding });
+    expect(proposal).toBeDefined();
+    expect(localEvidenceAnswerClaimSurface(proposal!)).toBe(independent.text);
+    expect(currentSourcePropositionSurfaces({ ...binding }, lesson.request, [independent])).toEqual([]);
+    expect(currentSourcePropositionSurfaces(binding, lesson.request, [{ ...independent, text: independent.text + " altered" }])).toEqual([]);
+    expect(currentSourcePropositionSurfaces(binding, lesson.request + " foreign", [independent])).toEqual([]);
+    expect(proposeSourceExactEvidenceAnswer({ requestText: lesson.request, selectedEvidence: [lesson.lesson], boundProposition: binding })).toBeUndefined();
+  });
+
+  it("does not choose a sentence by overlap when one source contains competing propositions about the same participants", () => {
+    const lesson = teachProposition((actor, patient) => `«${actor}» λ «${patient}»?`);
+    const source = evidenceSpan("𐐀𐐁 переместил 한국어. 𐐀𐐁 отверг 한국어.");
+    const edge = lesson.graph.hyperedges[0]!;
+    const graph = { ...lesson.graph, hyperedges: [{ ...edge, evidenceIds: [source.id],
+      participantPorts: edge.participantPorts.map(port => ({ ...port, evidenceIds: [source.id] })) }] };
+    const matched = lesson.match({ graph, evidence: [source] });
+    expect(matched.hyperedgeIds).toEqual(["fact.transfer"]);
+    expect(matched.answerBinding?.surfaces).toEqual([]);
+    expect(proposeSourceExactEvidenceAnswer({ requestText: lesson.request, selectedEvidence: [source, lesson.lesson],
+      boundProposition: matched.answerBinding })).toBeUndefined();
+  });
+
+  it("keeps competing complete role interpretations ambiguous", () => {
+    const lesson = teachProposition((actor, patient) => `«${actor}» λ «${patient}»?`);
+    const reversed = lesson.bundles.map(bundle => ({ ...bundle, id: `${bundle.id}.reversed`,
+      sourceExamples: bundle.sourceExamples.map(example => ({ ...example, roles: example.roles.map(role => ({ ...role,
+        graphBinding: role.graphBinding ? { ...role.graphBinding, roleId: role.graphBinding.roleId === "role.actor" ? "role.patient" : "role.actor" } : undefined })) })) }));
+    expect(inspectLearnedRequestOmittedSlot({ bundles: [...lesson.bundles, ...reversed] }, lesson.request).status).toBe("ambiguous");
+  });
+
+  it("does not promote an altered source bundle into a closed request program", () => {
+    const lesson = teachProposition((actor, patient) => `«${actor}» λ «${patient}»?`);
+    const pattern = lesson.patterns[0]!;
+    const row = jsonRecord(pattern.patternJson), bundle = jsonRecord(row.bundle);
+    const changed = { ...pattern, patternJson: { ...row, bundle: { ...bundle, requestMode: "foreign" } } };
+    const state = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({ models: [], patterns: [changed], constructionEvidence: [lesson.lesson] });
+    expect(state.importedConstructionBundles).toEqual([]);
+    expect(state.rejectedConstructionPatterns).toHaveLength(1);
+  });
+
+  it("binds a learned closed proposition through the production turn's graph and source selection", async () => {
+    const lesson = teachProposition((actor, patient) => `Does «${actor}» transfer «${patient}»?`);
+    const resident = sourceOwnedAnswerhoodLanguage();
+    const evidence = [lesson.source, lesson.lesson, ...resident.evidence];
+    const fixture = storageFixtureForEvaluation({ evidence, clockNow: () => 140_000 });
+    fixture.storage.userModelClaims = { putClaim: async () => undefined, listClaims: async () => [] };
+    fixture.storage.taskResumption = { putSnapshot: async () => undefined, getLatestSnapshot: async () => null };
+    fixture.storage.model.listLanguageProfiles = async query => {
+      const profiles = [lesson.profile, ...resident.profiles];
+      return typeof query === "number" ? profiles.slice(0, query)
+        : profiles.filter(row => !query?.sourceVersionIds || query.sourceVersionIds.includes(row.sourceVersionId)).slice(0, query?.limit);
+    };
+    fixture.storage.languageMemory.listNgramModels = async query => resident.models.filter(model =>
+      !query?.profileIds || query.profileIds.includes(String((model.modelJson as { profileId: string }).profileId)));
+    fixture.storage.languageMemory.listLanguagePatterns = async query => [...lesson.patterns, ...resident.patterns].filter(pattern =>
+      (!query?.profileIds || query.profileIds.includes(pattern.profileId)) && (!query?.patternIds || query.patternIds.includes(pattern.id))
+      && (!query?.patternKind || query.patternKind === pattern.patternKind)
+      && (!query?.patternSchemas || query.patternSchemas.includes(String(jsonRecord(pattern.patternJson).schema))));
+    fixture.storage.graph.getSlice = async query => ({ bounded: true, query: query as GraphSlice["query"],
+      nodes: lesson.graph.nodes.map(node => ({ ...node, typeId: "entity" as GraphNode["typeId"], features: [], alpha: 1,
+        evidenceIds: [lesson.source.id], metadata: {}, createdAt: 140_000, updatedAt: 140_000 })), edges: [], hyperedges: lesson.graph.hyperedges });
+    const turnClock = createClock({ fixedTime: 141_000, stepMs: 1 });
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async () => { throw new Error("A proposition question must not execute a program"); } },
+      idFactory: createIdFactory({ clock: turnClock, hasher, deterministicReplay: true, namespace: "closed-proposition-cold-turn" }),
+      clock: turnClock, deterministicReplay: true });
+    const result = await kernel.turn({ text: lesson.request, requestedAuthority: "factual", metadata: {
+      sessionContextEvidence: true, runtimeEvidenceIds: [String(lesson.source.id), String(lesson.lesson.id)]
+    } });
+    expect(result.events.filter(event => event.typeId === "RequestPropositionBound").map(event => event.payload)).toEqual([
+      expect.objectContaining({ relationId: "relation.transfer", hyperedgeIds: ["fact.transfer"], evidenceIds: [String(lesson.source.id)] })
+    ]);
+    expect(result.answer, JSON.stringify(result.withheld)).toContain(lesson.source.text);
+    expect(result.withheld).toBeUndefined();
+  });
+
   it("exposes a unique request-only typed omitted slot and keeps a closed construction non-value-bearing", () => {
     const lesson = teach({ subjects: ["Aster build", "Beryl build", "Walkdir pinned build"], marker: "", value: "1.60.0",
       valueKind: "opaque.version", question: subject => `Which Rust version does ${subject} use?` });
@@ -168,6 +335,32 @@ describe("acquired typed request construction transfer", () => {
     expect(requestValueBindingConstructFact(binding, [lesson.evidence])).toMatchObject({ subject: "Neralis observatory", predicate: "", object: "31 August 2000",
       relationId: "relation.opaque", relationRoleId: "role.answer", requestedSlotId: "role.answer", sourceVersionId: String(lesson.evidence.sourceVersionId), evidenceIds: [String(lesson.evidence.id)] });
     expect(lesson.resolve(lesson.graph, [{ ...lesson.evidence, status: "quarantined" }])).toBeUndefined();
+  });
+
+  it("joins every omitted-value participant to current edge-owned evidence in one source version", () => {
+    const lesson = teach({ subjects: ["Luma", "Vela", "Zora"], marker: "HAS TOKEN", value: "Bora", valueKind: "opaque.token" });
+    expect(lesson.resolve(lesson.graph, [{ ...lesson.evidence, text: "Bora." }])).toBeUndefined();
+    const anchor = evidenceSpan("Zora belongs to this source.");
+    const answer = evidenceSpan("Bora belongs to a separate source.");
+    const edge = lesson.graph.hyperedges[0]!;
+    const graph = { ...lesson.graph, hyperedges: [{ ...edge, evidenceIds: [anchor.id, answer.id],
+      participantPorts: edge.participantPorts.map((port, index) => ({ ...port, evidenceIds: [index === 0 ? anchor.id : answer.id] })) }] };
+    expect(lesson.resolve(graph, [anchor, answer])).toBeUndefined();
+    const sharedAnswer = { ...answer, sourceVersionId: anchor.sourceVersionId };
+    const split = lesson.resolve(graph, [anchor, sharedAnswer]);
+    expect(split).toMatchObject({ value: "Bora", subject: "Zora", evidenceIds: expect.arrayContaining([String(anchor.id), String(answer.id)]) });
+    expect(split?.evidenceIds).toHaveLength(2);
+    expect(requestValueBindingConstructFact(split, [anchor, sharedAnswer])).toMatchObject({ subject: "Zora", object: "Bora",
+      evidenceIds: split?.evidenceIds, sourceVersionId: anchor.sourceVersionId });
+    expect(sourceConstructionRequestValueResolver({ bundles: lesson.bundles, graph }).resolve(lesson.requestText, [anchor, sharedAnswer]))
+      .toMatchObject({ evidenceIds: expect.arrayContaining([String(anchor.id), String(answer.id)]) });
+    const foreign = { ...graph, hyperedges: [{ ...graph.hyperedges[0]!, evidenceIds: [answer.id] }] };
+    expect(lesson.resolve(foreign, [anchor, sharedAnswer])).toBeUndefined();
+    expect(lesson.resolve({ ...graph, hyperedges: [{ ...graph.hyperedges[0]!, relationId: "relation.unknown" }] } as typeof graph,
+      [anchor, sharedAnswer])).toBeUndefined();
+    const reversed = { ...graph, hyperedges: [{ ...graph.hyperedges[0]!, participantPorts: graph.hyperedges[0]!.participantPorts
+      .map(port => ({ ...port, nodeId: port.nodeId === "node.subject" ? "node.value" : "node.subject" })) }] };
+    expect(lesson.resolve(reversed as typeof graph, [anchor, sharedAnswer])).toBeUndefined();
   });
 
   it("hydrates admitted source constructions for factual binding despite a separate wording corpus", async () => {
@@ -264,14 +457,20 @@ describe("acquired typed request construction transfer", () => {
   });
 
 
-  it("projects a learned role-only binding through the actual cold factual turn and owned answer readers", async () => {
+  it.each([false, true])("projects a learned role-only binding through the actual cold factual turn and owned answer readers (independent corroboration: %s)", async corroboration => {
     const lesson = teach({ subjects: ["Luma", "Vela", "Zora"], marker: "", value: "Bora", valueKind: "entity.place",
       statement: "Zora is located in Bora.", question: subject => `Where is ${subject} located?` });
     const binding = lesson.resolve();
     expect(binding).toMatchObject({ subject: "Zora", value: "Bora", requestedRoleId: "role.answer" });
     expect(binding?.relation).toBeUndefined();
     const resident = sourceOwnedAnswerhoodLanguage();
-    const fixture = storageFixtureForEvaluation({ evidence: [lesson.evidence, ...resident.evidence], clockNow: () => 140_000 });
+    const independent = { ...evidenceSpan("Zora is located in Bora. An independent current source owns this same relation."), id: "zz.evidence.corroboration" as EvidenceSpan["id"] };
+    const currentEvidence = corroboration ? [lesson.evidence, independent] : [lesson.evidence];
+    const currentHyperedges = corroboration ? [...lesson.graph.hyperedges, { ...lesson.graph.hyperedges[0]!, id: "hyperedge.corroboration" as Hyperedge["id"],
+      evidenceIds: [independent.id], participantPorts: lesson.graph.hyperedges[0]!.participantPorts.map(port => ({ ...port, evidenceIds: [independent.id] })) }] : lesson.graph.hyperedges;
+    const currentBinding = lesson.resolve({ ...lesson.graph, hyperedges: currentHyperedges }, currentEvidence);
+    expect(currentBinding?.evidenceIds).toEqual([String(lesson.evidence.id)]);
+    const fixture = storageFixtureForEvaluation({ evidence: [...currentEvidence, ...resident.evidence], clockNow: () => 140_000 });
     fixture.storage.userModelClaims = { putClaim: async () => undefined, listClaims: async () => [] };
     fixture.storage.taskResumption = { putSnapshot: async () => undefined, getLatestSnapshot: async () => null };
     fixture.storage.model.listLanguageProfiles = async query => {
@@ -284,7 +483,7 @@ describe("acquired typed request construction transfer", () => {
     fixture.storage.languageMemory.listLanguagePatterns = async query => [...lesson.patterns, ...resident.patterns].filter(pattern =>
       (!query?.profileIds || query.profileIds.includes(pattern.profileId)) && (!query?.patternKind || query.patternKind === pattern.patternKind));
     fixture.storage.graph.getSlice = async query => ({ bounded: true, query: query as GraphSlice["query"],
-      nodes: lesson.graph.nodes.map(node => ({ ...node, typeId: "entity" as GraphNode["typeId"], features: [], alpha: 1, createdAt: 140_000, updatedAt: 140_000 })), edges: [], hyperedges: lesson.graph.hyperedges });
+      nodes: lesson.graph.nodes.map(node => ({ ...node, typeId: "entity" as GraphNode["typeId"], features: [], alpha: 1, createdAt: 140_000, updatedAt: 140_000 })), edges: [], hyperedges: currentHyperedges });
     const turnClock = createClock({ fixedTime: 141_000, stepMs: 1 });
     const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
       buildTest: { executeProgram: async () => { throw new Error("A factual turn must not execute a program"); } },

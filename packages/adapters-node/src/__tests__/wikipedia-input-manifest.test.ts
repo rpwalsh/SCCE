@@ -205,6 +205,45 @@ it("refuses a metadata race during rehash and never installs its unverified refr
   expect(calls).toBe(2);
 });
 
+it("rehashes a transient metadata-only race before admitting it and stores only the stable receipt",async()=>{
+  const paths=await fixture(),manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));
+  await changeMetadataOnly(paths.dumpPath);
+  let calls=0,receipt:typeof manifest.inputs.dump.stat|undefined;
+  const cache={read:async()=>false,write:async(_source:typeof manifest.inputs.dump,current:typeof manifest.inputs.dump.stat)=>{receipt=current;}};
+  expect(await wikipediaInputSourcesStillMatch(manifest,{retryUnstableMetadata:true,verificationCache:cache,hashFile:async(filePath,chunkSize)=>{
+    calls++;const result=await hashWikipediaInputFile(filePath,{chunkSize});
+    if(calls===1)await changeMetadataOnly(filePath,0o666);
+    return result;
+  }})).toBe(true);
+  expect(calls).toBe(2);
+  expect(receipt?.ctimeNs).toBe((await stat(paths.dumpPath,{bigint:true})).ctimeNs.toString());
+  expect(receipt?.ctimeNs).not.toBe(manifest.inputs.dump.stat.ctimeNs);
+  const reconstructed=structuredClone(manifest);
+  expect(await wikipediaInputSourcesStillMatch(reconstructed,{verificationCache:{
+    read:async(_source,current)=>JSON.stringify(current)===JSON.stringify(receipt),write:async()=>{throw Error("must reuse stable receipt");}
+  },hashFile:async()=>{throw Error("must reuse stable receipt");}})).toBe(true);
+});
+
+it("never admits a continuously moving hash or changed bytes when metadata recovery is enabled",async()=>{
+  const paths=await fixture("aaaa\n"),time=new Date(1700000000000);await utimes(paths.dumpPath,time,time);
+  const manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));
+  await changeMetadataOnly(paths.dumpPath);
+  let calls=0,writes=0;
+  expect(await wikipediaInputSourcesStillMatch(manifest,{retryUnstableMetadata:true,verificationCache:{
+    read:async()=>false,write:async()=>{writes++;}
+  },hashFile:async(filePath,chunkSize)=>{
+    calls++;const result=await hashWikipediaInputFile(filePath,{chunkSize});await changeMetadataOnly(filePath,0o666);return result;
+  }})).toBe(false);
+  expect({calls,writes}).toEqual({calls:2,writes:0});
+  const original=await stat(paths.dumpPath);
+  await writeFile(paths.dumpPath,"bbbb\n");await utimes(paths.dumpPath,original.atime,original.mtime);
+  calls=0;
+  expect(await wikipediaInputSourcesStillMatch(manifest,{retryUnstableMetadata:true,hashFile:async(filePath,chunkSize)=>{
+    calls++;return hashWikipediaInputFile(filePath,{chunkSize});
+  }})).toBe(false);
+  expect(calls).toBe(1);
+});
+
 it("shares one ctime-only full-file verification across concurrent source guards",async()=>{
   const paths=await fixture(),manifest=await createWikipediaInputManifest(options(paths,{indexPath:undefined}));
   await changeMetadataOnly(paths.dumpPath);let calls=0,release!:()=>void,started!:()=>void;

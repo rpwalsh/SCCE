@@ -343,6 +343,7 @@ function fakeRuntime(workspace: WorkspaceStore, dialogueMemory: DialogueMemorySt
     connectors: {} as NodeScceRuntime["connectors"],
     approvals: {} as NodeScceRuntime["approvals"],
     executive: {} as NodeScceRuntime["executive"],
+    capabilities: undefined as unknown as NodeScceRuntime["capabilities"],
     relationPotential: { hydrated: Promise.resolve(), capability: () => describeRelationPotentialCapability({ artifact: "untrained" }), promotedModelId: () => undefined },
     close: async () => {}
   };

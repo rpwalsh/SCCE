@@ -1,4 +1,5 @@
 import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { retainedSourceBindings } from './retained-sources.mjs';
 import path from 'node:path';
 import { canonical, hash, safeRelative } from '../protocol.mjs';
 import { execute } from '../runner.mjs';
@@ -11,7 +12,7 @@ export function publicContextReceipt(input) {
 export function nativeContract(input) {
   let contract;
   try { contract = JSON.parse(input.outputContract); } catch { throw new Error('Native adapter requires a public JSON task contract'); }
-  const fields = ['schema', 'operation', 'maxPublicAttempts', 'writablePaths', 'publicChecks', 'approvals', 'targetPaths', 'validationPolicyId', 'validationChecks', 'validationPolicy', 'programMode', 'sourceAdmission', 'sourceTrust', 'sourceMediaTypes', 'responseInstruction', 'requestedAuthority', 'executiveGoal', 'requiredCapabilityIds', 'answerMode', 'toolPolicy', 'prepareWorkspace', 'coverageBlocker', 'allowNewFiles', 'nativeValidationPermission'];
+  const fields = ['schema', 'operation', 'maxPublicAttempts', 'writablePaths', 'publicChecks', 'approvals', 'targetPaths', 'validationPolicyId', 'validationChecks', 'validationPolicy', 'programMode', 'sourceAdmission', 'sourceTrust', 'sourceMediaTypes', 'responseInstruction', 'requestedAuthority', 'executiveGoal', 'requiredCapabilityIds', 'answerMode', 'toolPolicy', 'prepareWorkspace', 'coverageBlocker', 'allowNewFiles', 'nativeValidationPermission', 'retainedSources'];
   if (!contract || typeof contract !== 'object' || Array.isArray(contract) || Object.keys(contract).some(k => !fields.includes(k))) throw new Error('Unknown public native contract field');
   if (contract.schema !== 'scce.blind-native-task.v1' || !['turn', 'code_repair', 'code_generation', 'learning_update', 'tool_use'].includes(contract.operation)) throw new Error('Invalid native task operation');
   if (!Number.isSafeInteger(contract.maxPublicAttempts) || contract.maxPublicAttempts < 1 || !Array.isArray(contract.writablePaths) || contract.writablePaths.some(p => !safeRelative(p)) || new Set(contract.writablePaths).size !== contract.writablePaths.length) throw new Error('Declare public attempts and exact writable paths');
@@ -34,6 +35,7 @@ export function nativeContract(input) {
   if (contract.answerMode !== undefined && (contract.answerMode !== 'answer_or_abstain' || !['turn', 'learning_update'].includes(contract.operation) || contract.requestedAuthority !== 'factual')) throw new Error('Answer-or-abstain requires an explicit factual turn contract');
   if (input.category === 'math_reasoning' && (contract.operation !== 'turn' || contract.requestedAuthority !== undefined || contract.answerMode !== undefined
     || contract.publicChecks.length || contract.writablePaths.length || contract.approvals.length || input.steps.some(step => step.sources.length || Object.keys(step.files).length))) throw new Error('Arithmetic comparison requires an ordinary source-free turn');
+  retainedSourceBindings(input, contract);
   contract.publicReadonlyFiles = Object.fromEntries(input.steps.flatMap(step => Object.entries(step.files)).filter(([name]) => !contract.writablePaths.includes(name)));
   return contract;
 }

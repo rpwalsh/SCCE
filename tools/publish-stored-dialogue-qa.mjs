@@ -10,6 +10,8 @@
  */
 import path from "node:path";
 import process from "node:process";
+import { readFile } from "node:fs/promises";
+import { dryRunStoredDialogueQaPublication } from "./lib/stored-dialogue-qa-dry-run.mjs";
 import { atomicWriteJson } from "./lib/brain-build-publication.mjs";
 import {
   assertStoredDialogueQaPublication,
@@ -28,14 +30,27 @@ const kernel = await import("../packages/kernel/dist/index.js");
 const configPath = path.resolve(options.configPath);
 const outputPath = path.resolve(options.outputPath);
 const config = await adapters.readScceRuntimeConfig(configPath);
-const storage = adapters.createPostgresStorageAdapter({ ...config.database, informationAccess: config.security?.informationAccess });
+const readOnlyUrl = new URL(config.database.url);
+if (options.dryRun) readOnlyUrl.searchParams.set("options",
+  [readOnlyUrl.searchParams.get("options"), "-c default_transaction_read_only=on"].filter(Boolean).join(" "));
+const storage = adapters.createPostgresStorageAdapter({ ...config.database, url: readOnlyUrl.toString(), informationAccess: config.security?.informationAccess });
 const startedAt = new Date().toISOString();
 let report;
 let result;
 let failure;
 
 try {
-  ({ report, result } = await runStoredDialogueQaPublication({
+  const qualification = options.jointPoolReceiptPath ? JSON.parse(await readFile(options.jointPoolReceiptPath, "utf8")) : undefined;
+  if (qualification && (qualification.schema !== "scce.stored_dialogue_qa_qualification.v1"
+    || qualification.sourceSelectionComplete !== true || qualification.transcriptFiltering !== false
+    || !Array.isArray(qualification.sourceReceipts) || !qualification.sourceReceipts.length)) {
+    throw Error("Joint publication requires a complete retained-source qualification receipt");
+  }
+  const contextualQaJointPool = qualification ? {
+    rootUri: `scce://declared-retained-dialogue-qa/${kernel.createHasher().digestHex(kernel.canonicalStringify(qualification.sourceReceipts))}`,
+    sourceVersionIds: qualification.sourceReceipts.map(source => source.sourceVersionId)
+  } : undefined;
+  const publicationInput = {
     storage, adapters, kernel, databaseSchema: config.database.schema,
     createVerificationStorage: async () => adapters.createPostgresStorageAdapter({
       ...config.database,
@@ -46,6 +61,7 @@ try {
     maxSourceAttempts: options.maxSourceAttempts,
     sourcePageSize: options.sourcePageSize,
     includeUriPrefix: options.includeUriPrefix,
+    ...(contextualQaJointPool ? { contextualQaJointPool } : {}),
     contextualQaExecution: {
       backend: "node_workers.v1",
       workers: options.workers,
@@ -54,8 +70,18 @@ try {
       maxNodeRssBytes: options.maxNodeRssBytes,
       abortGraceMs: options.abortGraceMs
     }
-  }));
-  assertStoredDialogueQaPublication(result);
+  };
+  if (options.dryRun) {
+    result = await dryRunStoredDialogueQaPublication({ storage, adapters, kernel, trainingOptions: {
+      minArticleBytes: 0, maxArticleBytes: options.maxArticleBytes, maxTotalBytes: options.maxTotalBytes,
+      maxSourceAttempts: options.maxSourceAttempts, sourcePageSize: options.sourcePageSize,
+      ...(options.includeUriPrefix ? { includeUriPrefixes: [options.includeUriPrefix] } : {}),
+      ...(contextualQaJointPool ? { contextualQaJointPool } : {}), contextualQaExecution: publicationInput.contextualQaExecution
+    } });
+  } else {
+    ({ report, result } = await runStoredDialogueQaPublication(publicationInput));
+    assertStoredDialogueQaPublication(result);
+  }
 } catch (error) {
   failure = error instanceof Error ? error.message : String(error);
 } finally {
@@ -69,6 +95,8 @@ const receipt = {
   status: failure ? "failed" : "complete",
   input: {
     configFile: path.basename(configPath),
+    dryRun: options.dryRun,
+    jointPoolReceipt: options.jointPoolReceiptPath ?? null,
     sourceSystem: "dialogue",
     corpusFilesRead: 0,
     languageTrainingInvoked: false,
@@ -107,6 +135,8 @@ function parseArguments(args) {
     if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
     return value;
   };
+  const dryRun = values.get("--dry-run");
+  if (dryRun !== undefined && dryRun !== "true" && dryRun !== "false") throw new Error("--dry-run must be true or false");
   return {
     help: false,
     configPath: values.get("--config") ?? ".scce/brain-5gb-20261111-r004.json",
@@ -116,6 +146,8 @@ function parseArguments(args) {
     maxSourceAttempts: positive("--max-source-attempts", 2048),
     sourcePageSize: positive("--source-page-size", 128),
     includeUriPrefix: values.get("--include-uri-prefix"),
+    jointPoolReceiptPath: values.get("--joint-pool-receipt"),
+    dryRun: values.get("--dry-run") === "true",
     workers: positive("--workers", 5),
     workerHeapMb: positive("--worker-heap-mb", 576),
     coordinatorHeapMb: positive("--coordinator-heap-mb", 512),
@@ -135,6 +167,8 @@ function helpText() {
     `  --max-source-attempts <count> Source-count bound\n` +
     `  --source-page-size <count>    Bounded inventory page size\n` +
     `  --include-uri-prefix <uri>    Restrict publication to one retained corpus root\n` +
+    `  --joint-pool-receipt <path>   Joint selection; preserves verified active knowledge\n` +
+    `  --dry-run <true|false>        Compute publication with in-memory writes\n` +
     `  --workers <count>             Deterministic QA group workers (default 5)\n` +
     `  --worker-heap-mb <MiB>        Heap ceiling per QA worker\n` +
     `  --coordinator-heap-mb <MiB>   Coordinator reservation\n` +

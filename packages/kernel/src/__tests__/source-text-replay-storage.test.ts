@@ -29,8 +29,15 @@ function fixture() {
       evidenceIds: [ids.evidenceId({ sourceVersionId: owner.sourceVersionId!, byteStart: 0, byteEnd: Buffer.byteLength(owner.text), spanHash: ids.contentHash(owner.text) })],
       ...(index === 0 ? { sourceWindow: { ownerDocumentId: "owner.0", startUtf16: start, endUtf16: start + text.length } } : {}) };
   });
+  const views: SourceTextReplayContext["views"] = new Map(documents.map(document => {
+    const ownerDocumentId = document.sourceWindow?.ownerDocumentId ?? document.id;
+    const owner = owners.get(ownerDocumentId)!;
+    return [document.id, { documentId: document.id, ownerDocumentId, sourceVersionId: document.sourceVersionId ?? null,
+      startUtf16: document.sourceWindow?.startUtf16 ?? 0, endUtf16: document.sourceWindow?.endUtf16 ?? owner.text.length,
+      text: document.text }];
+  }));
   // Unwindowed documents identify their complete owner directly.
-  return { documents, context: { owners, hasher } };
+  return { documents, context: { owners, views, hasher } };
 }
 function resolved() {
   const bindings = captureSourceTextReplayBindings(f.documents, f.context);
@@ -66,13 +73,28 @@ describe("owner-bound source text replay", () => {
     if (mutation === "version") owners.set("owner.0", { ...owners.get("owner.0")!, sourceVersionId: ids.sourceVersionId("foreign") });
     if (mutation === "text") owners.set("owner.0", { ...owners.get("owner.0")!, text: "changed" + owners.get("owner.0")!.text });
     if (mutation === "window") refs[0]!.startUtf16++;
-    expect(() => restoreSourceTextReplayDocuments(refs, { owners, hasher })).toThrow();
+    expect(() => restoreSourceTextReplayDocuments(refs, { ...f.context, owners })).toThrow();
+  });
+  it("replays a projected view through the same witness-owned contract without another text copy", () => {
+    const owner = { text: "alpha 0 binds beta", sourceVersionId: ids.sourceVersionId("alpha 0 binds beta") };
+    const document: LanguageInductionDocument = { id: "projected", text: "alpha x binds beta", sourceVersionId: owner.sourceVersionId,
+      evidenceIds: [],
+      sourceWindow: { ownerDocumentId: "owner.projected", startUtf16: 0, endUtf16: owner.text.length } };
+    const context: SourceTextReplayContext = { hasher, owners: new Map([["owner.projected", owner]]), views: new Map([[document.id, {
+      documentId: document.id, ownerDocumentId: "owner.projected", sourceVersionId: owner.sourceVersionId,
+      startUtf16: 0, endUtf16: owner.text.length, text: document.text
+    }]]) };
+    const bindings = captureSourceTextReplayBindings([document], context);
+    expect(restoreSourceTextReplayDocuments(cold(bindings), context)).toEqual([document]);
+    expect(JSON.stringify(bindings)).not.toContain(document.text);
   });
   it("rejects a producer window that splits a surrogate pair", () => {
     const owner = { text: "🧭x", sourceVersionId: ids.sourceVersionId("🧭x") };
     const doc = { id: "split", text: owner.text.slice(1), sourceVersionId: owner.sourceVersionId,
       sourceWindow: { ownerDocumentId: "owner", startUtf16: 1, endUtf16: owner.text.length } };
-    expect(() => captureSourceTextReplayBindings([doc], { owners: new Map([["owner", owner]]), hasher })).toThrow();
+    const views: SourceTextReplayContext["views"] = new Map([[doc.id, { documentId: doc.id, ownerDocumentId: "owner",
+      sourceVersionId: doc.sourceVersionId ?? null, startUtf16: 1, endUtf16: owner.text.length, text: doc.text }]]);
+    expect(() => captureSourceTextReplayBindings([doc], { owners: new Map([["owner", owner]]), views, hasher })).toThrow();
   });
 });
 

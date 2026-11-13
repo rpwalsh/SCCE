@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
-  acquireContextualQaConstructions, canonicalJsonByteLength, canonicalStringify, createHasher, CONTEXTUAL_QA_CONSTRUCTION_RECIPE as RECIPE,
+  acquireContextualQaConstructions, verifyContextualQaConstruction, canonicalJsonByteLength, canonicalStringify, createHasher, CONTEXTUAL_QA_CONSTRUCTION_RECIPE as RECIPE,
   CONTEXTUAL_QA_SOURCE_SYSTEM as SYSTEM, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA as SCHEMA, CONTEXTUAL_QA_COMPILER_FINGERPRINT,
   LANGUAGE_IDENTITY_SCHEMA, type ConversationalConstructionDocument, type InformationLabel, type LanguageIdentityRecord, type LanguagePatternProjection,
   type ScceStorage, type SourceVersionId, type TranscriptTurn
@@ -27,6 +27,7 @@ export async function persistDialogueContextualQaComponent(input: {
   storage: ScceStorage; rootUri: string; informationLabel: InformationLabel; authorship: string;
   sources: readonly { sourceUri: string; text: string; sourceVersionId?: string; transcriptTurns?: readonly TranscriptTurn[] }[];
   contextualQaExecution?: ContextualQaWorkerExecution;
+  preserveExisting?: boolean;
   signal?: AbortSignal;
 }): Promise<DialogueContextualQaReport> {
   const unchanged = (): DialogueContextualQaReport => ({ schema: "scce.dialogue_contextual_qa_report.v1", pairs: 0,
@@ -75,7 +76,8 @@ export async function persistDialogueContextualQaComponent(input: {
       byteLength: source.byteLength, transcriptDigest: hasher.digestHex(canonicalStringify(source.transcriptTurns ?? [])),
       ...(verified ? { languageIdentityId: verified.identity.id, languageIdentityDigest: verified.digest } : {}) };
   });
-  return runDialogueContextualQaComponent({ storage: input.storage, rootUri: input.rootUri,
+  return runDialogueContextualQaComponent({ storage: input.storage,
+    rootUri: input.preserveExisting ? `${input.rootUri}#preserve-existing.v1` : input.rootUri,
     informationLabel: input.informationLabel, authorship: input.authorship,
     sources: sourceBindings, unchanged,
     prepare: async () => {
@@ -125,7 +127,21 @@ export async function persistDialogueContextualQaComponent(input: {
           projections.push(previous); continue;
         }
         const families = acquired.families.filter(family => family.pattern.profileId === document.profileId);
-        const patterns = families.map(family => ({ ...family.pattern, informationLabel: input.informationLabel }));
+        let patterns = families.map(family => ({ ...family.pattern, informationLabel: input.informationLabel }));
+        if (input.preserveExisting && previous?.patternIds.length) {
+          const retained = await memory.listLanguagePatterns({ patternIds: previous.patternIds, patternSchemas: [SCHEMA],
+            sourceSystem: SYSTEM, limit: previous.patternIds.length, maxTotalJsonBytes: 64 * 1024 * 1024, requireComplete: true });
+          if (canonicalStringify(retained.map(pattern => pattern.id).sort()) !== canonicalStringify([...previous.patternIds].sort())) {
+            throw Error("Contextual QA cannot preserve an unavailable active construction");
+          }
+          const evidence = documents.flatMap(candidate => candidate.spans);
+          for (const pattern of retained) if (pattern.profileId !== document.profileId
+            || canonicalStringify(pattern.informationLabel) !== canonicalStringify(input.informationLabel)
+            || !verifyContextualQaConstruction({ pattern, evidence, hasher })) {
+            throw Error("Contextual QA cannot preserve an invalid active construction");
+          }
+          patterns = [...new Map([...retained, ...patterns].map(pattern => [pattern.id, { ...pattern, informationLabel: input.informationLabel }])).values()];
+        }
         if (!patterns.length && !previous) continue;
         const dependencies = new Map<string, NonNullable<LanguagePatternProjection["sourceDependencies"]>[number]>();
         for (const dependency of families.flatMap(family => family.sourceDependencies)) {
@@ -133,6 +149,17 @@ export async function persistDialogueContextualQaComponent(input: {
           if (prior && prior.sourceId !== dependency.sourceId) throw Error("Contextual QA dependency has conflicting source ownership");
           dependencies.set(String(dependency.sourceVersionId), { ...dependency,
             evidenceIds: [...new Set([...(prior?.evidenceIds ?? []), ...dependency.evidenceIds])].sort() });
+        }
+        if (input.preserveExisting) {
+          const currentEvidence = new Map(documents.flatMap(candidate => candidate.spans).map(span => [String(span.id), span]));
+          for (const pattern of patterns) for (const evidenceId of pattern.evidenceIds) {
+            const span = currentEvidence.get(String(evidenceId));
+            if (!span || span.status !== "promoted") throw Error("Contextual QA preserved dependency is unavailable");
+            const version = String(span.sourceVersionId), prior = dependencies.get(version);
+            if (prior && prior.sourceId !== span.sourceId) throw Error("Contextual QA preserved dependency ownership changed");
+            dependencies.set(version, { sourceId: span.sourceId, sourceVersionId: span.sourceVersionId,
+              evidenceIds: [...new Set([...(prior?.evidenceIds ?? []), span.id])].sort() });
+          }
         }
         const projection: LanguagePatternProjection = { ...key, patternIds: patterns.map(pattern => pattern.id).sort(),
           sourceDependencies: [...dependencies.values()].sort((a, b) => String(a.sourceVersionId).localeCompare(String(b.sourceVersionId))) };

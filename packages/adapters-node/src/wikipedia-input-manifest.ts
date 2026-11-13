@@ -152,7 +152,8 @@ const pendingSourceChecks = new WeakMap<WikipediaInputSourceFile, { before: Wiki
 /** Unchanged metadata is fast; ctime-only drift requires a stable full-content proof against the pinned bytes. */
 export async function wikipediaInputSourcesStillMatch(manifest: WikipediaInputManifest,
   options: { readonly chunkSize?: number; readonly hashFile?: WikipediaInputHasher;
-    readonly verificationCache?: WikipediaInputVerificationCache } = {}): Promise<boolean> {
+    readonly verificationCache?: WikipediaInputVerificationCache;
+    readonly retryUnstableMetadata?: boolean } = {}): Promise<boolean> {
   const files = [manifest.inputs.dump, ...(manifest.inputs.index === undefined ? [] : [manifest.inputs.index])];
   for (const source of files) {
     try {
@@ -177,19 +178,25 @@ export async function wikipediaInputSourcesStillMatch(manifest: WikipediaInputMa
       const chunkSize = normalizeChunkSize(options.chunkSize);
       const hashFile = options.hashFile ?? ((filePath, size) => hashWikipediaInputFile(filePath, { chunkSize: size }));
       const check = { before, result: (async () => {
-        const hashed = await hashFile(source.path, chunkSize);
-        const after = await readFileStat(source.path);
-        if (!sameStat(before, after) || !HASH_PATTERN.test(hashed.sha256)
-          || hashed.byteLength !== source.byteLength || !Number.isSafeInteger(hashed.byteLength)
-          || hashed.byteLength < 0 || BigInt(hashed.byteLength) !== BigInt(before.size)
-          || `sha256:${hashed.sha256}` !== source.sha256) return false;
-        verifiedSourceStats.set(source, after);
-        return true;
+        let current = before;
+        let retry = options.retryUnstableMetadata === true;
+        for (;;) {
+          const hashed = await hashFile(source.path, chunkSize);
+          const after = await readFileStat(source.path);
+          if (!HASH_PATTERN.test(hashed.sha256) || hashed.byteLength !== source.byteLength
+            || !Number.isSafeInteger(hashed.byteLength) || hashed.byteLength < 0
+            || BigInt(hashed.byteLength) !== BigInt(current.size)
+            || `sha256:${hashed.sha256}` !== source.sha256 || !samePhysicalStat(current, after)) return false;
+          if (sameStat(current, after)) { verifiedSourceStats.set(source, after); return true; }
+          // A metadata-only race needs a new complete, stable content proof; its first hash is never admitted.
+          if (!retry) return false;
+          retry = false; current = after;
+        }
       })() };
       pendingSourceChecks.set(source, check);
       try {
         if (!await check.result) return false;
-        try { await options.verificationCache?.write(source, before); } catch { /* correctness never depends on cache writes */ }
+        try { await options.verificationCache?.write(source, verifiedSourceStats.get(source) ?? before); } catch { /* correctness never depends on cache writes */ }
       }
       finally { if (pendingSourceChecks.get(source) === check) pendingSourceChecks.delete(source); }
     } catch {

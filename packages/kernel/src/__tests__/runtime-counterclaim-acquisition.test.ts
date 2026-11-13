@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createRuntimeAcquisition } from "../runtime-acquisition.js";
+import { createRuntimeCapabilities } from "../capability-runtime.js";
+import { createConnectorCapabilityOperations } from "../connector-capabilities.js";
+import { createCapabilityRegistry } from "../safety.js";
+import { capabilityRuntimeFixture } from "./fixtures/capability-runtime.js";
 import { createEventFactory } from "../events.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
@@ -15,8 +19,9 @@ function fixture() {
   const queries: string[] = [];
   const ingests: IngestInput[] = [];
   const events: ScceEvent[] = [];
+  const durable = capabilityRuntimeFixture();
   const deps = {
-    storage: {},
+    storage: { blobs: durable.blobs },
     approvals: { isApproved: () => true },
     connectors: {
       search: async (query: string) => {
@@ -32,6 +37,9 @@ function fixture() {
       })
     }
   } as unknown as ScceKernelDeps;
+  deps.capabilities = createRuntimeCapabilities({ executive: durable.executive(), blobs: durable.blobs,
+    operations: createConnectorCapabilityOperations({ connectors: deps.connectors!, blobs: durable.blobs,
+      capabilities: createCapabilityRegistry({ network: true }).all() }) });
   const acquisition = createRuntimeAcquisition({
     deps, eventFactory, hasher, failures: [], now: clock.now,
     append: async event => event,

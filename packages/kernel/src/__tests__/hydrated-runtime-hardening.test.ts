@@ -18,13 +18,44 @@ describe("hydrated runtime surface hardening", () => {
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "hydrated-hardening" });
 
   it("reports a learning need as a typed id and its subject, never as authored text", () => {
-    const needs = learningNeedsFor("azurite operator stabilizes cyan surface", entailment("azurite", []), []);
+    const needs = learningNeedsFor("azurite operator stabilizes cyan surface", entailment("azurite", []));
     expect(needs.map(need => need.needId)).toContain("learning.need.evidence");
     // The record carries only what the turn measured: no sentence was composed around it.
     for (const need of needs) {
       expect(Object.keys(need).sort()).toEqual(["needId", "subject"]);
       expect(need.subject).toBe("azurite operator stabilizes cyan surface");
     }
+  });
+
+  it("does not request more evidence for an entailed claim with one source owner", () => {
+    const text = "નિરાલિસ પેલોરા ટાપુ પર છે";
+    const evidence = [evidenceSpan(text, {}, [])];
+    const result = entailment(text, evidence);
+    result.verdict = "entailed";
+    result.semanticVerdict = "entailed";
+    result.confidence.verdict = "entailed";
+
+    expect(learningNeedsFor(text, result)).toEqual([]);
+  });
+
+  it("keeps an unresolved claim open regardless of source count or confidence mass", () => {
+    const text = "観測所の所在地";
+    const evidence = ["甲", "乙", "丙"].map(value => evidenceSpan(value, {}, []));
+    const result = entailment(text, evidence);
+    result.faithfulnessLcb = 1;
+
+    expect(learningNeedsFor(text, result).map(need => need.needId)).toEqual(["learning.need.evidence"]);
+  });
+
+  it("preserves an adjudicated contradiction even below a raw score cutoff", () => {
+    const text = "α → β";
+    const evidence = [evidenceSpan(text, {}, [])];
+    const result = entailment(text, evidence);
+    result.verdict = "contradicted";
+    result.semanticVerdict = "contradicted";
+    result.contradiction = 0;
+
+    expect(learningNeedsFor(text, result).map(need => need.needId)).toEqual(["learning.need.contradiction"]);
   });
 
   it("keeps unresolved surface keys out of user text", () => {

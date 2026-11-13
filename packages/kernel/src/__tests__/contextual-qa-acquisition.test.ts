@@ -148,7 +148,15 @@ it("publishes independently observed source relations without pretending they pa
   const verification = inspectContextualQaConstructionVerification({ pattern: learned.families[0]!.pattern,
     evidence: documents.flatMap(row => row.spans), hasher });
   expect(verification.status, JSON.stringify(verification)).toBe("verified");
-  if (verification.status === "verified") expect(verification.bundle.acquisitionStatus).toBe("source_observed");
+  expect(verification.status).toBe("verified");
+  if (verification.status !== "verified") throw Error("source-observed fixture did not verify");
+  expect(verification.bundle.acquisitionStatus).toBe("source_observed");
+  const resolver = sourceConstructionRequestValueResolver({ bundles: [verification.bundle], graph: { nodes: [], hyperedges: [] } });
+  for (const source of documents) expect(resolver.resolve(source.transcriptTurns[0]!.surface, source.spans))
+    .toMatchObject({ value: source.transcriptTurns[1]!.surface });
+  const fresh = document("Delta Book", "Dan", 99, "Delta Book was created by Dan.", "Who wrote Delta Book?");
+  const context = fresh.transcriptTurns[1]!.supportingSourceRanges![0]!;
+  expect(resolver.resolve(fresh.transcriptTurns[0]!.surface, [{ ...fresh.spans[0]!, text: context.surface }])).toBeUndefined();
 });
 it("learns a possessive author relation across independently observed request decorations", () => {
   const rows = [

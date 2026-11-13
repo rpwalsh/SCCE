@@ -34,7 +34,13 @@ function fixture() {
     { id: "doc.b", text: owners.get("doc.b")!.text, sourceVersionId: owners.get("doc.b")!.sourceVersionId!, sourceFamilyId: "encyclopedia",
       evidenceIds: ["evidence-b" as never], trust: 0.7 }
   ];
-  const context = { owners, hasher }, bindings = captureSourceTextReplayBindings(documents, context);
+  const views: SourceTextReplayContext["views"] = new Map(documents.map(document => {
+    const ownerDocumentId = document.sourceWindow?.ownerDocumentId ?? document.id, owner = owners.get(ownerDocumentId)!;
+    return [document.id, { documentId: document.id, ownerDocumentId, sourceVersionId: document.sourceVersionId ?? null,
+      startUtf16: document.sourceWindow?.startUtf16 ?? 0, endUtf16: document.sourceWindow?.endUtf16 ?? owner.text.length,
+      text: document.text }];
+  }));
+  const context = { owners, views, hasher }, bindings = captureSourceTextReplayBindings(documents, context);
   const bindingSet = createSourceTextReplayBindingSet({ modelId: "model.1", profileId: "profile.1",
     manifestPatternId: "pattern.manifest.1", manifestDigest: "a".repeat(64), bindings }, hasher);
   const reference = sourceTextReplayBindingSetReference(bindingSet, hasher);

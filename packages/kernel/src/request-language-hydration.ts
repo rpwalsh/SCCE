@@ -116,7 +116,7 @@ export function conversationalConstructionBinding(pattern: LanguagePatternRecord
 export function requestConstructionCandidate(pattern: LanguagePatternRecord): boolean {
   const row = record(pattern.patternJson);
   if (row.schema !== LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA) return false;
-  if (row.requestConstructionCandidate === true) return true;
+  if (row.requestConstructionCandidate === true || record(row.bundle).requestMode === "closed_proposition") return true;
   const examples = record(row.bundle).sourceExamples;
   return Array.isArray(examples) && examples.some(example => {
     const nullRoles = record(example).nullRoles;

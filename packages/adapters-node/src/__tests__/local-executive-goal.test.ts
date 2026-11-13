@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createDurableExecutiveEpisode, createExecutiveEpisodeMachine, createHasher, DEFAULT_POLICY, type ConstructGraph, type ExecutiveEvent, type ExecutiveEventJournal } from "@scce/kernel";
+import { createDurableExecutiveEpisode, createExecutiveEpisodeMachine, createHasher, createRuntimeCapabilities, createConnectorCapabilityOperations, createCapabilityRegistry, DEFAULT_POLICY, type ConstructGraph, type ContentHash, type ExecutiveEvent, type ExecutiveEventJournal } from "@scce/kernel";
 import { NodeBuildTestAdapter } from "../process.js";
 import { runLocalExecutiveGoal, type LocalExecutiveGoalRequest } from "../local-executive-goal.js";
 import type { ScceRuntimeConfig } from "../config.js";
@@ -40,8 +40,17 @@ describe("production local executive goal runner", () => {
         build: { command: process.execPath, args: ["--check", "main.mjs"], cwd: "." }, test: { command: process.execPath, args: ["main.mjs"], cwd: "." } } } as unknown as ConstructGraph;
       return { id: `stage.${index}`, dependencyTaskIds: index ? [`stage.${index - 1}`] : [], construct };
     }) };
-    const restart = () => ({ request, executive: createDurableExecutiveEpisode({ machine: createExecutiveEpisodeMachine(createHasher()), journal: journal(), maxConflictRetries: 1 }),
-      buildTest: new NodeBuildTestAdapter({ runtime: { tempRoot: join(root, "runs") } } as ScceRuntimeConfig), ownerId: "owner.local", policy: { ...DEFAULT_POLICY, maxToolCalls: fails ? 3 : 1 }, approved: true });
+    const restart = () => {
+      const executive = createDurableExecutiveEpisode({ machine: createExecutiveEpisodeMachine(createHasher()), journal: journal(), maxConflictRetries: 1 });
+      const buildTest = new NodeBuildTestAdapter({ runtime: { tempRoot: join(root, "runs") } } as ScceRuntimeConfig);
+      const blobs = {
+        put: async (bytes: Uint8Array) => { const hash = `sha256_${createHasher().digestHex(bytes)}` as ContentHash; await writeFile(join(root, hash), bytes); return hash; },
+        get: async (hash: ContentHash) => new Uint8Array(await readFile(join(root, hash)))
+      };
+      const capabilities = createRuntimeCapabilities({ executive, blobs,
+        operations: createConnectorCapabilityOperations({ buildTest, blobs, capabilities: createCapabilityRegistry({ process: true }).all() }) });
+      return { request, capabilities, ownerId: "owner.local", policy: { ...DEFAULT_POLICY, maxToolCalls: fails ? 3 : 1 }, approved: true };
+    };
     try {
       expect((await runLocalExecutiveGoal({ ...restart(), approved: false })).disposition).toBe("not_ready");
       await expect(readFile(effectsPath)).rejects.toMatchObject({ code: "ENOENT" });

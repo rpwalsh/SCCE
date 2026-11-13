@@ -4,12 +4,12 @@ import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CORPUS_ARCHIVE_KEY_PREFIX, corpusArchiveIdentity, createCanonicalBlobReader,
   type CanonicalBlobHost } from "../canonical-evidence-text.js";
-import { readWikipediaArchiveBlob } from "../wikipedia.js";
+import { readContentAddressedWikipediaArchiveBlob } from "../wikipedia.js";
 
 // Archive parsing/file identity has its own boundary. These tests exercise the
 // blob host's representation, descriptor identity and exact decoded byte checks.
-vi.mock("../wikipedia.js", () => ({ readWikipediaArchiveBlob: vi.fn() }));
-const archiveRead = vi.mocked(readWikipediaArchiveBlob);
+vi.mock("../wikipedia.js", () => ({ readContentAddressedWikipediaArchiveBlob: vi.fn() }));
+const archiveRead = vi.mocked(readContentAddressedWikipediaArchiveBlob);
 const hash = (bytes: Uint8Array | string): string => `sha256_${createHash("sha256").update(bytes).digest("hex")}`;
 interface Row {
   content: Buffer; byte_length: string; range_parent_hash: string | null; range_start: string | null; range_end: string | null;
@@ -173,14 +173,15 @@ describe("canonical archive descriptor and decoded hash boundary", () => {
     expect(archiveRead).toHaveBeenCalledTimes(1);
     expect(archiveRead.mock.calls[0]?.[0]).toBe(descriptor);
     expect(archiveRead.mock.calls[0]?.[1]).toBe(page);
-    expect(archiveRead.mock.calls[0]?.[2]?.verificationCache).toBeDefined();
+    expect(archiveRead.mock.calls[0]?.[3]?.verificationCache).toBeDefined();
+    expect(archiveRead.mock.calls[0]?.[2]).toEqual({ contentHash: parent, byteLength: bytes.length });
   });
 
   it("stores and revalidates an exact archive-source verification receipt", async () => {
     const f = fixture(), bytes = Buffer.from("owned"), descriptor = { schema: "test.archive", fixture: "receipt" };
     const id = f.archive(bytes, descriptor), source = { path: "C:/fixture/wiki.bz2", sha256: `sha256:${"a".repeat(64)}` as const,
       byteLength: 5, stat: { size: "5", mtimeNs: "1", ctimeNs: "2", dev: "3", ino: "4" } };
-    archiveRead.mockImplementation(async (_archive, _page, options) => {
+    archiveRead.mockImplementation(async (_archive, _page, _identity, options) => {
       expect(await options?.verificationCache?.read(source, source.stat)).toBe(false);
       await options?.verificationCache?.write(source, source.stat);
       expect(await options?.verificationCache?.read(source, source.stat)).toBe(true);

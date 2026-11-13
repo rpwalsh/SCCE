@@ -2,10 +2,24 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { constructionSourceExampleStorageJson as exact } from "./construction-source-example-storage.js";
 import type { LanguageInductionDocument } from "./language-induction.js";
+import type { LanguageSegmentationWitness } from "./source-segmentation-witness.js";
 import type { EvidenceId, Hasher, SourceVersionId } from "./types.js";
 
 export interface SourceTextReplayOwner { text: string; sourceVersionId: SourceVersionId | null }
-export interface SourceTextReplayContext { owners: ReadonlyMap<string, SourceTextReplayOwner>; hasher: Hasher }
+/** One authenticated logical text view decoded from the segmentation witness. */
+export interface SourceTextReplayView {
+  documentId: string;
+  ownerDocumentId: string;
+  sourceVersionId: SourceVersionId | null;
+  startUtf16: number;
+  endUtf16: number;
+  text: string;
+}
+export interface SourceTextReplayContext {
+  owners: ReadonlyMap<string, SourceTextReplayOwner>;
+  views: ReadonlyMap<string, SourceTextReplayView>;
+  hasher: Hasher;
+}
 export interface SourceTextReplayBinding {
   id: string; sourceVersionId: SourceVersionId | null; sourceFamilyId: string | null; evidenceIds: EvidenceId[]; trust: number | null;
   ownerDocumentId: string; startUtf16: number; endUtf16: number; windowed: boolean; textDigest: string; ownerTextDigest: string;
@@ -38,13 +52,60 @@ const digest = (value: unknown): boolean => typeof value === "string" && /^[a-f0
 const splitsSurrogate = (text: string, position: number): boolean => position > 0 && position < text.length
   && /[\uD800-\uDBFF]/u.test(text[position - 1]!) && /[\uDC00-\uDFFF]/u.test(text[position]!);
 
-/** Ordered document metadata and UTF-16 windows; the recipe contains no source body. */
+/**
+ * Project the already-validated segmentation witness into the sole downstream
+ * source-text view registry. The physical archive owns projection deltas;
+ * replay consumers reference these decoded views and never store another copy.
+ */
+export function sourceTextReplayViewsFromSegmentationWitness(
+  witness: LanguageSegmentationWitness
+): ReadonlyMap<string, SourceTextReplayView> {
+  const views = new Map<string, SourceTextReplayView>();
+  for (const document of witness.populations.flatMap(population => population.documents)) {
+    if (views.has(document.documentId)) return sourceTextReplayFail();
+    views.set(document.documentId, {
+      documentId: document.documentId,
+      ownerDocumentId: document.ownerDocumentId,
+      sourceVersionId: (document.sourceVersionId ?? null) as SourceVersionId | null,
+      startUtf16: document.sourceUtf16Start,
+      endUtf16: document.sourceUtf16End,
+      text: document.text
+    });
+  }
+  return views;
+}
+
+function exactSourceTextReplayView(input: {
+  id: string;
+  sourceVersionId: SourceVersionId | null;
+  ownerDocumentId: string;
+  startUtf16: number;
+  endUtf16: number;
+  textDigest?: string;
+}, context: SourceTextReplayContext): SourceTextReplayView {
+  const owner = context.owners.get(input.ownerDocumentId) ?? sourceTextReplayFail();
+  const view = context.views.get(input.id) ?? sourceTextReplayFail();
+  if (typeof owner.text !== "string" || owner.sourceVersionId !== input.sourceVersionId
+    || view.documentId !== input.id || view.ownerDocumentId !== input.ownerDocumentId
+    || view.sourceVersionId !== input.sourceVersionId || view.startUtf16 !== input.startUtf16
+    || view.endUtf16 !== input.endUtf16 || view.endUtf16 > owner.text.length
+    || view.text.length !== view.endUtf16 - view.startUtf16
+    || splitsSurrogate(owner.text, view.startUtf16) || splitsSurrogate(owner.text, view.endUtf16)
+    || input.textDigest !== undefined && sourceTextReplayDigest(view.text, context.hasher) !== input.textDigest) {
+    return sourceTextReplayFail();
+  }
+  return view;
+}
+
+/** Ordered metadata references authenticated source views; the recipe contains no source body or projection delta. */
 export function captureSourceTextReplayBindings(documents: readonly LanguageInductionDocument[], context: SourceTextReplayContext): SourceTextReplayBinding[] {
   const bindings = documents.map(document => {
     const ownerDocumentId = document.sourceWindow?.ownerDocumentId ?? document.id;
     const owner = context.owners.get(ownerDocumentId) ?? sourceTextReplayFail();
     const startUtf16 = document.sourceWindow?.startUtf16 ?? 0, endUtf16 = document.sourceWindow?.endUtf16 ?? owner.text.length;
-    if (owner.text.slice(startUtf16, endUtf16) !== document.text) return sourceTextReplayFail();
+    const sourceVersionId = document.sourceVersionId ?? null;
+    const view = exactSourceTextReplayView({ id: document.id, sourceVersionId, ownerDocumentId, startUtf16, endUtf16 }, context);
+    if (view.text !== document.text) return sourceTextReplayFail();
     return { id: document.id, sourceVersionId: document.sourceVersionId ?? null, sourceFamilyId: document.sourceFamilyId ?? null,
       evidenceIds: [...(document.evidenceIds ?? [])], trust: document.trust ?? null, ownerDocumentId, startUtf16, endUtf16,
       windowed: document.sourceWindow !== undefined, textDigest: sourceTextReplayDigest(document.text, context.hasher),
@@ -82,8 +143,7 @@ export function restoreSourceTextReplayDocuments(value: unknown, context: Source
       || splitsSurrogate(owner.text, binding.startUtf16) || splitsSurrogate(owner.text, binding.endUtf16)
       || !binding.windowed && (binding.ownerDocumentId !== binding.id || binding.startUtf16 !== 0 || binding.endUtf16 !== owner.text.length)
       || sourceTextReplayDigest(owner.text, context.hasher) !== binding.ownerTextDigest) return sourceTextReplayFail();
-    const text = owner.text.slice(binding.startUtf16, binding.endUtf16);
-    if (sourceTextReplayDigest(text, context.hasher) !== binding.textDigest) return sourceTextReplayFail();
+    const text = exactSourceTextReplayView(binding, context).text;
     return { id: binding.id, text, evidenceIds: [...binding.evidenceIds],
       ...(binding.sourceVersionId !== null ? { sourceVersionId: binding.sourceVersionId } : {}),
       ...(binding.sourceFamilyId !== null ? { sourceFamilyId: binding.sourceFamilyId } : {}),

@@ -19,12 +19,16 @@ let model: ReturnType<ReturnType<typeof createLanguageInductionEngine>["induce"]
 let ownerRows: Map<string, { text: string; sourceVersionId: string }>, sourceRows: Array<{ value: unknown; profileId: string }>;
 const profileId = "profile.source-replay";
 beforeAll(async () => {
-  const texts = ["甲 follows 乙。 丙 follows 丁。 ".repeat(5), "戊 follows 己。 Мира видит Бориса. العربية لغة. हिन्दी भाषा। ".repeat(4)];
+  const ownerTexts = ["甲 follows 乙。 丙 follows 丁。 ".repeat(5), "戊 follows 己。 Мира видит Бориса. العربية لغة. हिन्दी भाषा। ".repeat(4)];
+  const texts = [ownerTexts[0]!.replace("甲", "天"), ownerTexts[1]!];
   const documents: LanguageInductionDocument[] = texts.map((text, index) => ({ id: `owner.${1 - index}`, text,
-    sourceVersionId: ids.sourceVersionId(text), sourceFamilyId: "family.source", trust: 0.43 + index / 10,
-    evidenceIds: [ids.evidenceId({ sourceVersionId: ids.sourceVersionId(text), byteStart: 0, byteEnd: Buffer.byteLength(text), spanHash: ids.contentHash(text) })],
+    sourceVersionId: ids.sourceVersionId(ownerTexts[index]!), sourceFamilyId: "family.source", trust: 0.43 + index / 10,
+    evidenceIds: [ids.evidenceId({ sourceVersionId: ids.sourceVersionId(ownerTexts[index]!), byteStart: 0,
+      byteEnd: Buffer.byteLength(ownerTexts[index]!), spanHash: ids.contentHash(ownerTexts[index]!) })],
     sourceWindow: { ownerDocumentId: `owner.${1 - index}`, startUtf16: 0, endUtf16: text.length } }));
-  ownerRows = new Map(documents.map(document => [document.id, { text: document.text, sourceVersionId: document.sourceVersionId! }]));
+  ownerRows = new Map(documents.map((document, index) => [document.id,
+    { text: ownerTexts[index]!, sourceVersionId: document.sourceVersionId! }]));
+  expect(ownerRows.get(documents[0]!.id)!.text).not.toBe(documents[0]!.text);
   model = createLanguageInductionEngine({ hasher }).induce({ documents, captureScoreFactors: true });
   const profiles = documents.map(document => createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: document.sourceVersionId!, text: document.text, createdAt: 1 }));
   const published = languageMemoryPatternsFromInducedLanguageModel({ model, profiles, idFactory: ids, updatedAt: 1 });
@@ -83,7 +87,8 @@ function fixture(bindingSets = new Map<string, SourceTextReplayBindingSet>()) {
 it("cold-restores actual pattern syntax/counts and semantic factors through archive-owned source text", async () => {
   const f = fixture(), originals = [syntax, semantic], durable = await f.base.encodeMany(originals.map(value => ({ value })));
   const stored = await f.store.encodeMany(durable.map((value, index) => ({ value, logicalValue: originals[index] })));
-  expect(object(stored[0]).templates).toBeUndefined(); expect(object(stored[0]).counts).toBeUndefined();
+  expect(object(stored[0]).templates).toBeUndefined();
+  expect(object(stored[0]).counts).toEqual(syntax.counts);
   expect(object(stored[0])[SYNTAX_SOURCE_REPLAY_KEY]).toBeDefined();
   expect(f.bindingSets.size).toBe(1); expect(f.publishBindingSet).toHaveBeenCalledTimes(1);
   expect(JSON.stringify(stored)).not.toContain(String(model.semanticInductionFactors!.documents[0]!.evidenceIds[0]));

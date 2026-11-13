@@ -26,6 +26,7 @@ export interface ApprovalRecord {
   planId: string;
   capabilityId: string;
   input: JsonValue;
+  approvalScope?: CapabilityPlan["approvalScope"];
   fingerprint: string;
   reason: string;
   createdAt: number;
@@ -49,34 +50,37 @@ export class ApprovalSession implements ApprovalPort {
     return input.capabilityId === "network.search" ? this.runtimeSearchDisabled : undefined;
   }
 
-  isApproved(input: { capabilityId: string; input: JsonValue }): boolean {
+  isApproved(input: { capabilityId: string; input: JsonValue; approvalScope?: CapabilityPlan["approvalScope"] }): boolean {
     if (this.operatorGrant) return true;
     if (this.runtimeSearchConsent && input.capabilityId === "network.search") return true;
-    return this.approved.has(fingerprint(input.capabilityId, input.input));
+    return this.approved.has(fingerprint(input.capabilityId, input.input, input.approvalScope));
   }
 
-  isRejected(input: { capabilityId: string; input: JsonValue }): boolean {
-    return (this.runtimeSearchRefused && input.capabilityId === "network.search") || this.rejected.has(fingerprint(input.capabilityId, input.input));
+  isRejected(input: { capabilityId: string; input: JsonValue; approvalScope?: CapabilityPlan["approvalScope"] }): boolean {
+    return (this.runtimeSearchRefused && input.capabilityId === "network.search") || this.rejected.has(fingerprint(input.capabilityId, input.input, input.approvalScope));
   }
 
   observePending(plan: CapabilityPlan): void {
     const permission = plan.permission as { dryRun?: boolean; allowed?: boolean; reason?: string };
     if (permission.allowed && !permission.dryRun) return;
     const record = recordFromPlan(plan, permission.reason ?? "approval-required");
+    if (record.approvalScope && [...this.pending.values(), ...this.approved.values(), ...this.rejected.values()].some(row => row.planId === record.planId && row.fingerprint !== record.fingerprint)) throw new Error("scoped approval plan identity reused with different action");
     this.pending.set(record.planId, record);
   }
 
-  requestApproval(input: { capabilityId: string; input: JsonValue; reason?: string }): ApprovalRecord {
+  requestApproval(input: { capabilityId: string; input: JsonValue; reason?: string; approvalScope?: CapabilityPlan["approvalScope"] }): ApprovalRecord {
+    const actionFingerprint = fingerprint(input.capabilityId, input.input, input.approvalScope);
     const record: ApprovalRecord = {
-      planId: `approval_${fingerprint(input.capabilityId, input.input).slice(0, 24)}`,
+      planId: `approval_${actionFingerprint.slice(0, 24)}`,
       capabilityId: input.capabilityId,
-      input: input.input,
-      fingerprint: fingerprint(input.capabilityId, input.input),
+      input: structuredClone(input.input),
+      ...(input.approvalScope ? { approvalScope: { ...input.approvalScope } } : {}),
+      fingerprint: actionFingerprint,
       reason: input.reason ?? "approval-required",
       createdAt: Date.now()
     };
     this.pending.set(record.planId, record);
-    return record;
+    return structuredClone(record);
   }
 
   approve(planId: string): ApprovalRecord {
@@ -86,7 +90,7 @@ export class ApprovalSession implements ApprovalPort {
     this.pending.delete(planId);
     this.rejected.delete(approved.fingerprint);
     this.approved.set(approved.fingerprint, approved);
-    return approved;
+    return structuredClone(approved);
   }
 
   reject(planId: string): ApprovalRecord {
@@ -95,7 +99,7 @@ export class ApprovalSession implements ApprovalPort {
     const rejected = { ...record, rejectedAt: Date.now() };
     this.pending.delete(planId);
     this.rejected.set(rejected.fingerprint, rejected);
-    return rejected;
+    return structuredClone(rejected);
   }
 
   setTemporaryOperatorGrant(enabled: boolean): ApprovalSnapshot {
@@ -110,7 +114,7 @@ export class ApprovalSession implements ApprovalPort {
   }
 
   snapshot(): ApprovalSnapshot {
-    return {
+    return structuredClone({
       operatorGrant: this.operatorGrant,
       runtimeSearchConsent: this.runtimeSearchConsent,
       runtimeSearchRefused: this.runtimeSearchRefused,
@@ -118,7 +122,7 @@ export class ApprovalSession implements ApprovalPort {
       pending: [...this.pending.values()].sort((a, b) => b.createdAt - a.createdAt),
       approved: [...this.approved.values()].sort((a, b) => (b.approvedAt ?? 0) - (a.approvedAt ?? 0)).slice(0, 100),
       rejected: [...this.rejected.values()].sort((a, b) => (b.rejectedAt ?? 0) - (a.rejectedAt ?? 0)).slice(0, 100)
-    };
+    });
   }
 }
 
@@ -136,17 +140,22 @@ export function createApprovalSession(config?: Pick<ScceRuntimeConfig, "connecto
 }
 
 function recordFromPlan(plan: CapabilityPlan, reason: string): ApprovalRecord {
-  const input = toJsonValue(plan.input);
+  const input = structuredClone(toJsonValue(plan.input));
   return {
     planId: String(plan.id),
     capabilityId: plan.capabilityId,
     input,
-    fingerprint: fingerprint(plan.capabilityId, input),
+    ...(plan.approvalScope ? { approvalScope: { ...plan.approvalScope } } : {}),
+    fingerprint: fingerprint(plan.capabilityId, input, plan.approvalScope),
     reason,
     createdAt: plan.createdAt
   };
 }
 
-function fingerprint(capabilityId: string, input: JsonValue): string {
+function fingerprint(capabilityId: string, input: JsonValue, approvalScope?: CapabilityPlan["approvalScope"]): string {
+  if (approvalScope !== undefined) {
+    if (!approvalScope || [approvalScope.episodeId, approvalScope.goalId, approvalScope.taskId, approvalScope.inputRef].some(value => typeof value !== "string" || !value)) throw new Error("approval scope requires exact episode, goal, task, and input identities");
+    return createHash("sha256").update(canonicalStringify({ schema: "scce.scoped_capability_approval.v1", capabilityId, input, approvalScope })).digest("hex");
+  }
   return createHash("sha256").update(`${capabilityId}\u001f${canonicalStringify(input)}`).digest("hex");
 }

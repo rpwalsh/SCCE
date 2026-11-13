@@ -131,6 +131,12 @@ export interface WikipediaArchiveReference {
   transformId: string;
 }
 
+/** The canonical blob row pins the exact consumed article, independently of its archive container. */
+export interface WikipediaArchiveContentIdentity {
+  readonly contentHash: string;
+  readonly byteLength: number;
+}
+
 // One bounded block/page cache and a single decode queue; corpus size cannot increase resident cache size.
 let archiveDecodeQueue: Promise<void> = Promise.resolve();
 let archiveBlockCache: { key: string; xml: string } | undefined;
@@ -139,8 +145,35 @@ let archivePageCache: { key: string; original: Buffer; evidence: Buffer } | unde
 /** Reuses the ingestor's parser and normalizer; it never acquires language or refits learned state. */
 export async function readWikipediaArchiveBlob(archiveValue: unknown, referenceValue: unknown,
   options: { verificationCache?: WikipediaInputVerificationCache } = {}): Promise<Buffer> {
+  return reconstructWikipediaArchiveBlob(archiveValue, referenceValue, { verificationCache: options.verificationCache });
+}
+
+/** Reconstruct one canonical artifact and verify its bytes, rather than auditing the entire container. */
+export async function readContentAddressedWikipediaArchiveBlob(archiveValue: unknown, referenceValue: unknown,
+  contentIdentity: WikipediaArchiveContentIdentity,
+  options: { verificationCache?: WikipediaInputVerificationCache } = {}): Promise<Buffer> {
+  if (!contentIdentity) throw new Error("invalid retained Wikipedia article content identity");
+  return reconstructWikipediaArchiveBlob(archiveValue, referenceValue,
+    { ...options, contentIdentity: { contentHash: contentIdentity.contentHash, byteLength: contentIdentity.byteLength } });
+}
+
+async function reconstructWikipediaArchiveBlob(archiveValue: unknown, referenceValue: unknown,
+  options: { verificationCache?: WikipediaInputVerificationCache;
+    contentIdentity?: WikipediaArchiveContentIdentity }): Promise<Buffer> {
   const archive = archiveValue as WikipediaArchiveDescriptor;
   const reference = referenceValue as WikipediaArchiveReference;
+  const contentHash = options.contentIdentity?.contentHash, byteLength = options.contentIdentity?.byteLength;
+  if (options.contentIdentity !== undefined && (typeof contentHash !== "string"
+    || !/^sha256_[0-9a-f]{64}$/u.test(contentHash) || !Number.isSafeInteger(byteLength) || byteLength! < 0)) {
+    throw new Error("invalid retained Wikipedia article content identity");
+  }
+  const verifiedContent = (bytes: Buffer): Buffer => {
+    if (contentHash !== undefined && (bytes.byteLength !== byteLength
+      || `sha256_${createHash("sha256").update(bytes).digest("hex")}` !== contentHash)) {
+      throw new Error("retained Wikipedia article content integrity mismatch");
+    }
+    return Buffer.from(bytes);
+  };
   const semanticConfig = archive?.manifest?.semantics?.config;
   const declaredMaxArticleChars = semanticConfig && typeof semanticConfig === "object" && !Array.isArray(semanticConfig)
     ? (semanticConfig as Record<string, unknown>).maxArticleChars : undefined;
@@ -172,7 +205,11 @@ export async function readWikipediaArchiveBlob(archiveValue: unknown, referenceV
   archiveDecodeQueue = new Promise<void>(resolve => { release = resolve; });
   await previous;
   try {
-    if (!await wikipediaInputSourcesStillMatch(archive.manifest, { verificationCache: options.verificationCache })) {
+    // Canonical article reads prove their exact consumed bytes below. The multi-gigabyte dump and its
+    // ingestion index are locators, not additional consumed evidence; auditing those belongs to the
+    // unpinned archive path. In particular, ctime drift must not trigger a whole-container hash here.
+    if (contentHash === undefined && !await wikipediaInputSourcesStillMatch(archive.manifest,
+      { verificationCache: options.verificationCache, retryUnstableMetadata: true })) {
       throw new Error("retained Wikipedia archive changed or is unavailable");
     }
     const blockKey = `${archive.manifest.sourceSetDigest}:${reference.blockOffset}:${reference.blockEnd}:${archive.maxBlockBytes}`;
@@ -194,12 +231,13 @@ export async function readWikipediaArchiveBlob(archiveValue: unknown, referenceV
       const decoded = { key: pageKey, original: Buffer.from(selected.rawText, "utf8"),
         evidence: Buffer.from(redactSecretsWithMap(selected.text).text, "utf8") };
       archivePageCache = decoded.original.length + decoded.evidence.length <= 16 * 1024 * 1024 ? decoded : undefined;
-      if (!await wikipediaInputSourcesStillMatch(archive.manifest, { verificationCache: options.verificationCache })) {
+      if (contentHash === undefined && !await wikipediaInputSourcesStillMatch(archive.manifest,
+        { verificationCache: options.verificationCache })) {
         throw new Error("retained Wikipedia archive changed during reconstruction");
       }
-      return Buffer.from(decoded[reference.representation]);
+      return verifiedContent(decoded[reference.representation]);
     }
-    return Buffer.from(archivePageCache[reference.representation]);
+    return verifiedContent(archivePageCache[reference.representation]);
   } finally {
     release();
   }

@@ -2,14 +2,11 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
+import { createCapabilityRegistry, createConnectorCapabilityOperations, createRuntimeCapabilities, DEFAULT_POLICY, type ConnectorPort } from "@scce/kernel";
+import { capabilityRuntimeFixture } from "../../../kernel/src/__tests__/fixtures/capability-runtime.js";
 import { handleRequest, type ApiContext } from "../routes.js";
 
-// Plan item 208: proves the approval gate in front of each mutating
-// Outlook route (draft create, send, calendar create) actually blocks the
-// real connector call when not approved, and only lets it through once
-// approved -- not that the executive dispatcher itself enforces this (it
-// doesn't; approval happens in the HTTP handler before dispatch is ever
-// reached).
+// Route consent and durable dispatch must both precede the provider effect.
 
 const servers: ReturnType<typeof createServer>[] = [];
 
@@ -26,13 +23,19 @@ function fakeApprovals(approvedCapabilityIds: Set<string>) {
 }
 
 async function startFixture(input: { approvedCapabilityIds?: Set<string>; connectors: Record<string, (...args: never[]) => Promise<unknown>> }): Promise<string> {
+  const durable = capabilityRuntimeFixture();
+  const executive = durable.executive();
+  const capabilities = createRuntimeCapabilities({ executive, blobs: durable.blobs,
+    operations: createConnectorCapabilityOperations({ connectors: input.connectors as unknown as ConnectorPort, blobs: durable.blobs,
+      capabilities: createCapabilityRegistry({ outlook: true }).all() }) });
   const context = {
     runtime: {
       approvals: fakeApprovals(input.approvedCapabilityIds ?? new Set()),
       connectors: input.connectors,
-      executive: undefined
+      executive,
+      capabilities
     },
-    config: { server: { url: "http://127.0.0.1:0" }, security: {} },
+    config: { server: { url: "http://127.0.0.1:0" }, policy: DEFAULT_POLICY, security: { informationAccess: { principalId: "owner.test" } } },
     startupReadiness: { snapshot: () => ({ phase: "ready" as const, complete: true }) }
   } as unknown as ApiContext;
   const server = createServer((request, response) => {
@@ -71,7 +74,7 @@ describe("outlook mutating routes fail closed on authorization denial", () => {
 
     const approvedUrl = await startFixture({ connectors, approvedCapabilityIds: new Set(["outlook.create_draft"]) });
     const allowed = await post(approvedUrl, "/api/connectors/outlook/draft", body);
-    expect(allowed.status).toBe(200);
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
     expect(calls).toBe(1);
   });
 
@@ -87,7 +90,7 @@ describe("outlook mutating routes fail closed on authorization denial", () => {
 
     const approvedUrl = await startFixture({ connectors, approvedCapabilityIds: new Set(["outlook.send_mail"]) });
     const allowed = await post(approvedUrl, "/api/connectors/outlook/send", body);
-    expect(allowed.status).toBe(200);
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
     expect(calls).toBe(1);
   });
 
@@ -103,7 +106,7 @@ describe("outlook mutating routes fail closed on authorization denial", () => {
 
     const approvedUrl = await startFixture({ connectors, approvedCapabilityIds: new Set(["outlook.create_calendar_event"]) });
     const allowed = await post(approvedUrl, "/api/connectors/outlook/calendar/create", body);
-    expect(allowed.status).toBe(200);
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
     expect(calls).toBe(1);
   });
 });

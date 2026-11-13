@@ -7,6 +7,10 @@ import {
   createExecutiveEpisodeMachine,
   createHasher,
   createScceKernel,
+  createCapabilityRegistry,
+  createProgramLocalValidationCapability,
+  createConnectorCapabilityOperations,
+  createRuntimeCapabilities,
   toJsonValue,
   type Clock,
   type DurableExecutiveEpisode,
@@ -16,7 +20,8 @@ import {
   type ScceStorage,
   describeRelationPotentialCapability,
   type RelationPotentialArtifactRecord,
-  type CognitiveCapability
+  type CognitiveCapability,
+  type RuntimeCapabilities
 } from "@scce/kernel";
 import { automaticWebAcquisitionEnabled, type ScceRuntimeConfig } from "./config.js";
 import { createExecutiveEventJournal, createPostgresStorageAdapter } from "./postgres.js";
@@ -36,6 +41,7 @@ export interface NodeScceRuntime {
   approvals: ApprovalSession;
   /** Durable, crash-recoverable executive episode coordinator backed by Postgres. */
   executive: DurableExecutiveEpisode;
+  capabilities: RuntimeCapabilities;
   runExecutiveGoal(request: LocalExecutiveGoalRequest): ReturnType<typeof runLocalExecutiveGoal>;
   /** Promoted relation-potential artifact resolution: await `hydrated` before claiming the component is active. */
   relationPotential: {
@@ -105,6 +111,14 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     journal: createExecutiveEventJournal(storage),
     maxConflictRetries: 5
   });
+  const capabilities = createRuntimeCapabilities({ executive, blobs: storage.blobs,
+    operations: createConnectorCapabilityOperations({ connectors, blobs: storage.blobs, buildTest,
+      capabilities: [...createCapabilityRegistry({ process: true,
+        network: config.connectors.web?.enabled === true,
+        outlook: config.connectors.outlook?.enabled === true,
+        youtube: config.connectors.youtube?.enabled === true,
+        telephone: config.connectors.telephone?.enabled === true }).all(), createProgramLocalValidationCapability(true)] }),
+    now: () => options.clock?.now() ?? Date.now(), dialogueMemory: storage.dialogueMemory });
   // Declared, config-gated visual embedder (Phase 3): registered for document extraction and
   // handed to the kernel only as a text->visual-space query function.
   const visualEmbeddings = config.ingestion?.visual?.embeddings;
@@ -119,6 +133,7 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     governance,
     connectors,
     approvals,
+    capabilities,
     ...(visualEmbedder ? { visualQueryEmbedder: (text: string) => visualEmbedder.embedText(text) } : {}),
     runtimeWebAutomaticAdmission: automaticWebAcquisitionEnabled(config),
     policy: config.policy,
@@ -171,8 +186,8 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
   };
   const productionTurn = kernel.turn.bind(kernel);
   kernel.turn = input => connectors.withRequestBudget(() => productionTurn(input), input.runtimeControl?.signal);
-  return { storage, kernel, connectors, approvals, executive, relationPotential,
-    runExecutiveGoal: request => runLocalExecutiveGoal({ request, executive, buildTest, ownerId: informationAccess.principalId, policy: config.policy,
+  return { storage, kernel, connectors, approvals, executive, capabilities, relationPotential,
+    runExecutiveGoal: request => runLocalExecutiveGoal({ request, capabilities, ownerId: informationAccess.principalId, policy: config.policy,
       approved: approvals.isApproved({ capabilityId: "process.build_test", input: toJsonValue(request) }) }),
     close: () => storage.close() };
 }

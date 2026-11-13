@@ -9,6 +9,7 @@ import type { OwnedSourceReferenceBindings } from "./source-reference-bindings.j
 import type { EvidenceId, Hasher, JsonValue } from "./types.js";
 import { induceLearnedConstructions, type AlignedSurfaceExample, type LearnedConstruction } from "./language-construction.js";
 import { createLearnedSurfaceInterpreter, type LearnedSurfaceInterpreter, type InterpretedSurfaceRole } from "./learned-surface-interpretation.js";
+import { codePointUtf16Offsets } from "./unicode-segmentation.js";
 import { CREATIVE_SOURCE_CORRESPONDENCE_RECIPE, createCreativeSourceCorrespondenceVerifier, type CreativeSurfaceRoleBinding, type CreativeSourceCorrespondence, type CreativeSourceCorrespondenceContext, type CreativeSourceCorrespondenceVerifier } from "./creative-source-correspondence.js";
 export { CREATIVE_SOURCE_OBSERVATION_FACTORS_SCHEMA, creativeSourceObservationStorageForm, creativeSourceObservationsFromStorage,
   type CreativeSourceObservationFactors } from "./creative-source-observation-factors.js";
@@ -622,7 +623,11 @@ const requestConstructionMemo = new WeakMap<CreativeRequestFrameAnchor, readonly
 function interpretedRequestRoles(anchor: CreativeRequestFrameAnchor, interpreter: LearnedSurfaceInterpreter, hasher: Hasher): InterpretedSurfaceRole[] | undefined {
   let constructions = requestConstructionMemo.get(anchor);
   if (!constructions) {
-    constructions = induceLearnedConstructions({ examples: anchor.requestRoleExamples ?? [], hasher }).constructions;
+    const examples = (anchor.requestRoleExamples ?? []).map(example => {
+      const offsets = codePointUtf16Offsets(example.surface);
+      return { ...example, roleSpans: example.roleSpans.map(role => ({ ...role, start: offsets[role.start]!, end: offsets[role.end]! })) };
+    });
+    constructions = induceLearnedConstructions({ examples, hasher }).constructions;
     requestConstructionMemo.set(anchor, constructions);
   }
   const interpretations = new Map<string, InterpretedSurfaceRole[]>();

@@ -14,6 +14,35 @@ import type { SegmentationPopulationModelRecord } from "../segmentation-populati
 import type { LanguageProfile } from "../types.js";
 
 describe("surface language resident-only cache", () => {
+  it("keeps exact source populations distinct within one learned language", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100000, languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
+    const secondProfile = { ...fixture.profile, id: "profile.second", sourceVersionId: "source.second" as never };
+    const hasher = createHasher();
+    const compiler = createNgramMemoryCompiler({ hasher, idFactory: createIdFactory({ hasher, clock: createClock(), deterministicReplay: true }) });
+    const compile = (profile: LanguageProfile, text: string) => compiler.compile({ streamId: profile.sourceVersionId, sourceSystem: "wikipedia", profile,
+      sourceVersionId: profile.sourceVersionId, text, evidence: [], createdAt: 1, retainObservations: false }).models;
+    const firstModels = compile(fixture.profile, "alpha beta alpha gamma");
+    const secondModels = compile(secondProfile, "delta epsilon delta zeta");
+    const modelQueries: string[][] = [];
+    fixture.storage.languageMemory.listNgramModels = async query => {
+      modelQueries.push([...(query?.profileIds ?? [])]);
+      return query?.profileIds?.includes(secondProfile.id) ? secondModels : firstModels;
+    };
+    const firstCluster = (await fixture.runtime.surfaceLanguageClusterCached("fixture language"))!;
+    const secondCluster = { ...firstCluster, id: "cluster.second", profileIds: [secondProfile.id], members: [secondProfile] };
+    const hydrate = (cluster: typeof firstCluster, residentOnly = false) => fixture.runtime.hydrateSurfaceLanguageMemoryCached(
+      12, cluster, "exact-language-source", undefined, "", { languageId: "language.fixture", residentOnly });
+    const first = await hydrate(firstCluster);
+    const second = await hydrate(secondCluster);
+    expect(first.state.models.length).toBeGreaterThan(0);
+    expect(second.state.models.length).toBeGreaterThan(0);
+    expect(first.models.map(model => model.id)).toEqual(firstModels.map(model => model.id));
+    expect(second.models.map(model => model.id)).toEqual(secondModels.map(model => model.id));
+    expect(modelQueries).toEqual([[fixture.profile.id], [secondProfile.id]]);
+    expect(await hydrate(firstCluster, true)).toBe(first);
+    expect(await hydrate(secondCluster, true)).toBe(second);
+    expect(modelQueries).toHaveLength(2);
+  });
   it("snapshots every bounded artifact owner and reuses that snapshot for warm rescoping", async () => {
     const snapshots: string[][] = [];
     const fixture = runtimeFixture({ cacheMs: 100000, languageResolver: async profileIds => {
@@ -66,16 +95,36 @@ describe("surface language resident-only cache", () => {
     const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
     const seed = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "seed", undefined, "", { purpose: "request_seed" });
     expect(seed.state.models.length).toBeGreaterThan(0);
+    expect(seed.hydrationPurpose).toBe("request_seed");
+    expect(seed.state.importedConstructionBundles).toEqual([]);
     expect(seed.patterns[0]?.patternJson).toEqual(expect.objectContaining({ counts: { alpha: 2 }, boundarySignals: [] }));
     expect(seed.patterns[0]?.patternJson).not.toHaveProperty("templates");
     expect(seed.patterns[0]?.patternJson).not.toHaveProperty("surfaceRealizationProgram");
     expect(queries.every(query => query.view === "request_seed" && query.profileIds?.includes(fixture.profile.id))).toBe(true);
     const realized = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "realization");
     expect(realized).not.toBe(seed);
+    expect(realized.hydrationPurpose).toBe("realization");
     expect(realized.patterns[0]?.patternJson).toHaveProperty("surfaceRealizationProgram", pattern.patternJson.surfaceRealizationProgram);
     const seedAgain = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "seed", undefined, "", { purpose: "request_seed", residentOnly: true });
     expect(seedAgain).toBe(seed);
   });
+  it("keeps prediction scoring projections out of resident realization lookup", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100000 });
+    const hasher = createHasher();
+    const compiled = createNgramMemoryCompiler({ hasher, idFactory: createIdFactory({ hasher, clock: createClock(), deterministicReplay: true }) }).compile({
+      streamId: "stream.fixture", sourceSystem: "wikipedia", profile: fixture.profile, sourceVersionId: fixture.profile.sourceVersionId,
+      text: "alpha beta alpha gamma", evidence: [], createdAt: 1, retainObservations: false });
+    fixture.storage.languageMemory.listNgramModels = async () => compiled.models;
+    const cluster = (await fixture.runtime.surfaceLanguageClusterCached("fixture language"))!;
+    const scored = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "scoring", undefined, "", { purpose: "prediction_scoring" });
+    expect(scored.hydrationPurpose).toBe("prediction_scoring");
+    expect(scored.state.models.length).toBeGreaterThan(0);
+    expect(fixture.runtime.residentSurfaceLanguageMemory(cluster)).toBeUndefined();
+    const realized = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "realization");
+    expect(realized.hydrationPurpose).toBe("realization");
+    expect(fixture.runtime.residentSurfaceLanguageMemory(cluster)).toBe(realized);
+  });
+
   it("loads exact request-control schemas, retries read failures, and TTL-caches a successful empty result", async () => {
     const fixture = runtimeFixture({ cacheMs: 100_000 });
     const queries: Array<{ sourceSystem?: string; patternSchemas?: readonly string[] }> = [];
@@ -102,6 +151,34 @@ describe("surface language resident-only cache", () => {
     fixture.runtime.invalidate();
     await fixture.runtime.requestControlPatternsCached();
     expect(queries).toHaveLength(12);
+  });
+
+  it("loads request controls by the exact learned features observed in this request", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100_000 });
+    const queries: NonNullable<Parameters<typeof fixture.storage.languageMemory.listLanguagePatterns>[0]>[] = [];
+    const control: LanguagePatternRecord = {
+      id: "request_requirement_pattern.what-does-the", profileId: "profile.dialogue", patternKind: "semantic_role",
+      support: 0.83, entropy: 0.1, evidenceIds: [], updatedAt: 1,
+      patternJson: {
+        schema: "scce.request_requirement_pattern.v1", sourceSystem: "dialogue", surface: "what does the", anchor: "start",
+        selectedAuthority: "factual", requestSpanRole: "control"
+      }
+    };
+    fixture.storage.languageMemory.listLanguagePatterns = async query => {
+      queries.push(query ?? {});
+      return query?.requestRequirementFeatures?.some(feature => feature.anchor === "start" && feature.surface === "what does the")
+        ? [control] : [];
+    };
+
+    expect(await fixture.runtime.requestControlPatternsForRequest("What does the admitted source say?")).toEqual([control]);
+    expect(queries).toHaveLength(4);
+    expect(queries.every(query => query.patternSchemas?.length === 1
+      && query.patternSchemas[0] === "scce.request_requirement_pattern.v1"
+      && query.requestRequirementFeatures?.some(feature => feature.anchor === "start" && feature.surface === "what does the"))).toBe(true);
+    expect(await fixture.runtime.requestControlPatternsForRequest("What does the admitted source say?")).toEqual([control]);
+    expect(queries).toHaveLength(4);
+    expect(await fixture.runtime.requestControlPatternsForRequest("Where is the observatory?")).toEqual([]);
+    expect(queries).toHaveLength(8);
   });
 
   it("reads stored source labels verbatim and keeps correction controls out of general language profiles", async () => {

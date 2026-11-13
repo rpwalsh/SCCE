@@ -1,10 +1,16 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "./language-pattern-projection-fixture.js";
-import type { QuarantineSource } from "../storage.js";
+import type { QuarantineSource, ScceKernelDeps } from "../storage.js";
+import { createRuntimeCapabilities } from "../capability-runtime.js";
+import { createConnectorCapabilityOperations } from "../connector-capabilities.js";
+import { createCapabilityRegistry } from "../safety.js";
+import { capabilityRuntimeFixture } from "./fixtures/capability-runtime.js";
+import { createCapabilityTestKernel as createScceKernel } from "./fixtures/capability-runtime.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createClock,
+  canonicalStringify,
   createHasher,
   createIdFactory,
   createUniversalCreativeEventConstructionCompiler,
@@ -15,16 +21,18 @@ import {
   compileLanguageTrainingBatch,
   CORPUS_SOURCE_SYSTEM_IDS,
   CORPUS_ROLE_IDS,
+  PRODUCTION_INITIAL_VISIBLE_RESPONSE_SCHEMA,
+  RUNTIME_DEADLINE_SCHEMA,
   toJsonValue,
   createLanguageMemoryRuntime,
   deriveClosedClassWords,
   canonicalCorpusSourceSystemId,
-  createScceKernel,
   anchorFeatureSet,
   featureSet,
   verifyEvaluationTrace,
   type AlphaTrace,
   type BuildTestResult,
+  type CapabilityPlan,
   type ContentHash,
   type EvidenceId,
   type EvidenceSpan,
@@ -50,11 +58,12 @@ import {
   localEvidenceAnswerSurface,
   proposeSourceExactEvidenceAnswer,
   sourceBodyAnswersRequest,
-  sourceAnchoredEvidenceForRequest
+  sourceAnchoredEvidenceForRequest,
+  requestUnitSharesStem
 } from "../local-evidence-runtime.js";
 import type { EventRangeQuery } from "../storage.js";
 import type { EpisodeId, GraphNode, Hyperedge } from "../types.js";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
@@ -70,6 +79,7 @@ import { surfaceEchoesPrompt } from "../creative-section-realization.js";
 import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
 import { withRequestLanguageFormScope } from "../request-language-form-scope.js";
 import { primeFreeFormLexicon } from "../free-form-lexicon.js";
+import { CAPABILITY_DEMONSTRATION_SCHEMA, CAPABILITY_CONSTRUCTION_SCHEMA, capabilityBindingForRequest, capabilityBindingVerified } from "../capability-construction.js";
 
 // Let worker event updates drain between synchronous corpus compiles.
 afterEach(() => new Promise<void>(resolve => setImmediate(resolve)));
@@ -172,6 +182,143 @@ vi.mock("../evaluation-runtime-bypass.js", async importOriginal => {
 });
 
 describe("kernel local evidence source anchoring", () => {
+  it.each([
+    { streamed: false, executionDeadline: false },
+    { streamed: true, executionDeadline: false },
+    { streamed: false, executionDeadline: true },
+    { streamed: true, executionDeadline: true }
+  ])("keeps cold learned language available after first visibility expires, with explicit execution limits preserved: %j", async ({ streamed, executionDeadline }) => {
+    const clock = createClock({ fixedTime: 6_050, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const ada = evidenceSpan({ id: "evidence:cold-language-ada", sourceVersionId: "source:cold-language-ada:v1" as SourceVersionId,
+      title: "Ada Lovelace", uri: "fixture://cold-language/ada",
+      text: "Ada Lovelace was an English mathematician who wrote notes about the Analytical Engine. "
+        + "Her work connected mathematics, machinery, imagination, and the symbolic manipulation of information. "
+        + "The notes described a sequence of operations for calculating Bernoulli numbers with a proposed mechanical computer. "
+        + "She considered how such a machine could process objects besides quantities when their relationships could be expressed through abstract rules. "
+        + "Babbage designed the engine around a store, a mill, punched cards, and mechanisms controlling arithmetic calculations. "
+        + "Lovelace translated an account by Luigi Menabrea and expanded it with explanations, diagrams, examples, and observations. "
+        + "Her education included geometry, algebra, astronomy, music, and scientific correspondence with teachers and collaborators. "
+        + "Historians discuss the extent of her contributions, the development of programming, and the historical context of Victorian science. "
+        + "Surviving letters document ambitious plans, practical difficulties, persistent questions, and a remarkable interest in general methods. "
+        + "The published material distinguishes individual numerical results from a reusable procedure whose instructions determine successive transformations. "
+        + "Its discussion explores variables, repetition, dependencies, intermediate values, and the organization of a calculation across several stages.", alpha: 0.94 });
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: ada.sourceVersionId, text: ada.text, createdAt: clock.now() });
+    const compiled = createNgramMemoryCompiler({ idFactory: ids, hasher }).compile({ streamId: "fixture://cold-language/ada", sourceSystem: "wikipedia",
+      profile, sourceVersionId: ada.sourceVersionId, text: ada.text, evidence: [ada], createdAt: clock.now(), retainObservations: false });
+    expect(compiled.models.length).toBeGreaterThan(0);
+    // Independent source owners can share a learned language without becoming this answer's realization population.
+    const unrelated = ["Mira Calder", "Nora Fenwick"].map((name, index) => {
+      const sourceVersionId = `source:cold-language:unrelated:${index}:v1` as SourceVersionId;
+      const text = ada.text.replaceAll("Ada Lovelace", name).replaceAll("Lovelace", name.split(" ")[1]!)
+        .replaceAll("Analytical Engine", "Difference Machine").replaceAll("Babbage", "Carver");
+      const learned = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text, createdAt: clock.now() });
+      const memory = createNgramMemoryCompiler({ idFactory: ids, hasher }).compile({ streamId: `fixture://cold-language/unrelated/${index}`,
+        sourceSystem: "wikipedia", profile: learned, sourceVersionId, text, evidence: [], createdAt: clock.now(), retainObservations: false });
+      expect(memory.models.length, "each unrelated same-language owner must have actual compiled models").toBeGreaterThan(0);
+      return { profile: learned, models: memory.models };
+    });
+    const profiles = [profile, ...unrelated.map(row => row.profile)];
+    const models = [...compiled.models, ...unrelated.flatMap(row => row.models)];
+    const { buildLanguageProfileClusters } = await import("../language.js");
+    const globalClusters = buildLanguageProfileClusters(profiles);
+    expect(globalClusters.some(cluster => profiles.every(row => cluster.profileIds.includes(row.id))),
+      "the bounded global window must contain a wider learned cluster than the evidence-owned lookup").toBe(true);
+    const fixture = storageFixture({ evidence: [ada], languageProfiles: profiles, languageModels: models });
+    const profileReads: Array<{ sourceVersionIds: string[]; profileIds: string[] }> = [];
+    fixture.storage.model.listLanguageProfiles = async query => {
+      const selection = typeof query === "number" ? { limit: query } : query;
+      const rows = profiles.filter(row => !selection?.sourceVersionIds?.length || selection.sourceVersionIds.includes(row.sourceVersionId))
+        .filter(row => !selection?.surfaceNgrams?.length || row.charNgrams.some(gram => selection.surfaceNgrams!.includes(gram.ngram)))
+        .slice(0, selection?.limit ?? profiles.length);
+      profileReads.push({ sourceVersionIds: (selection?.sourceVersionIds ?? []).map(String), profileIds: rows.map(row => row.id) });
+      return rows;
+    };
+    const learnedModels = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({ models: compiled.models }).models;
+    expect(learnedModels.length, "the source fixture must own a usable learned sequence structure").toBeGreaterThan(0);
+    const continuationCounts: Record<string, number> = {};
+    for (const model of learnedModels) for (const [symbol, count] of Object.entries(model.continuationCounts)) {
+      continuationCounts[symbol] = (continuationCounts[symbol] ?? 0) + count;
+    }
+    expect(deriveClosedClassWords({ models: learnedModels }).size, "the source fixture must teach a measurable request population").toBeGreaterThan(0);
+    expect(deriveClosedClassWords({ continuationPopulation: { languageId: "fixture-language", modelCount: learnedModels.length, continuationCounts } }).size,
+      "the source-owned canonical projection must independently support request interpretation").toBeGreaterThan(0);
+    let identityRecords: import("../language-identity.js").LanguageIdentityRecord[] = [];
+    const profileLanguages = new Map<string, string>();
+    fixture.storage.languageMemory.continuationPopulation = async ({ languageId }) => profileLanguages.get(profile.id) === languageId
+      ? { languageId, modelCount: learnedModels.length, continuationCounts } : undefined;
+    fixture.storage.languageIdentities = {
+      putIdentities: async rows => { identityRecords = [...rows]; },
+      listIdentities: async () => identityRecords,
+      assignProfileLanguages: async rows => { for (const row of rows) profileLanguages.set(row.profileId, row.languageId); },
+      listProfileLanguages: async query => [...profileLanguages].filter(([profileId]) => !query || query.profileIds.includes(profileId))
+        .map(([profileId, languageId]) => ({ profileId, languageId })),
+      listProfileSignatures: async query => profiles.filter(row => row.id > (query.afterId ?? "")).sort((a, b) => a.id.localeCompare(b.id))
+        .slice(0, query.limit).map(row => ({ id: row.id, sourceVersionId: row.sourceVersionId,
+          sourceSystem: "wikipedia", sourceUri: `wikipedia://fixture/${row.id}`, scripts: row.scripts, direction: row.direction,
+          topContinuation: (row.kneserNey as { topContinuation?: Array<[string, number]> }).topContinuation ?? [] }))
+    };
+    const modelScopes: string[][] = [];
+    fixture.storage.languageMemory.listNgramModels = async query => {
+      modelScopes.push([...(query?.profileIds ?? [])]);
+      return models.filter(model => {
+        const owner = model.modelJson as Record<string, JsonValue>;
+        return (!query?.profileIds?.length || query.profileIds.includes(String(owner.profileId)))
+          && (!query?.sourceSystem || canonicalCorpusSourceSystemId(query.sourceSystem) === canonicalCorpusSourceSystemId(String(owner.sourceSystem)))
+          && (!query?.streamId || query.streamId === model.streamId)
+          && (!query?.languageHint || query.languageHint === model.languageHint)
+          && (!query?.afterId || model.id > query.afterId);
+      }).slice(0, query?.limit ?? models.length);
+    };
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(),
+        repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) }, idFactory: ids, clock, deterministicReplay: true });
+    expect((await kernel.languageIdentities()).readiness).toBe("ready");
+    expect(new Set(profiles.map(row => profileLanguages.get(row.id))).size,
+      "global and evidence owners must resolve to the same learned language identity").toBe(1);
+    expect(profileLanguages.get(profile.id)).toBeTruthy();
+    modelScopes.length = 0;
+    const traceDirectory = mkdtempSync(join(tmpdir(), "scce-cold-language-"));
+    const traceFile = join(traceDirectory, "trace.jsonl");
+    const globals = globalThis as { __sccTrace?: unknown };
+    const previousTrace = globals.__sccTrace;
+    globals.__sccTrace = { traceId: "cold-language-realization", file: traceFile };
+    try {
+      const startedMonotonicMs = performance.now() - 6_000;
+      const result = await kernel.turn({ text: "Who was Ada Lovelace?", requestedAuthority: "factual",
+        ...(streamed ? { runtimeControl: { onProgress: () => undefined } } : {}),
+        metadata: { runtime: { fastLocalEvidenceAnswer: true, productionBoundedAnswer: true,
+          [executionDeadline ? "deadline" : "initialResponseDeadline"]: {
+            schema: executionDeadline ? RUNTIME_DEADLINE_SCHEMA : PRODUCTION_INITIAL_VISIBLE_RESPONSE_SCHEMA,
+            clock: "node.performance.v1", budgetMs: 5_000, startedMonotonicMs, deadlineMonotonicMs: startedMonotonicMs + 5_000
+          } } } });
+      const stages = readFileSync(traceFile, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      const mouth = stages.find(stage => stage.stage === "mouth.realize.decision");
+      expect(mouth?.support.learnedMouthAllowed).toBe(!executionDeadline);
+      const start = stages.find(stage => stage.stage === "runtime.deadline.check");
+      expect(start?.support.deadlinePurpose).toBe(executionDeadline ? "execution" : "initial_response");
+      if (!executionDeadline) {
+        const language = stages.find(stage => stage.stage === "candidate.language.hydrate");
+        expect(language?.counts.models).toBeGreaterThan(0);
+        expect(modelScopes.length).toBeGreaterThan(0);
+        expect(profileReads.some(read => !read.sourceVersionIds.length && read.profileIds.length === profiles.length)).toBe(true);
+        expect(profileReads.some(read => read.sourceVersionIds.includes(String(ada.sourceVersionId))
+          && read.profileIds.length === 1 && read.profileIds[0] === profile.id)).toBe(true);
+        expect(modelScopes.every(profileIds => profileIds.length === 1 && profileIds[0] === profile.id), JSON.stringify({ modelScopes, profileLanguages: [...profileLanguages],
+          modelCount: learnedModels.length, closedClassSize: deriveClosedClassWords({ continuationPopulation: {
+            languageId: profileLanguages.get(profile.id)!, modelCount: learnedModels.length, continuationCounts } }).size,
+          stages: stages.filter(stage => ["runtime.seed.language_identity", "language.cache.lookup", "runtime.candidates.language_role"].includes(stage.stage))
+            .map(({ stage, counts, support }) => ({ stage, counts, support })) })).toBe(true);
+        expect(result.answer).toContain("Analytical Engine");
+      }
+    } finally {
+      globals.__sccTrace = previousTrace;
+      rmSync(traceFile, { force: true });
+      rmdirSync(traceDirectory);
+    }
+  });
+
   it("carries the final owned proof passage instead of a stale local answer into realization", () => {
     const lead = "Mira Vale was an engineer who designed navigation instruments.";
     const birthplace = "Mira Vale was born in Valparaíso, Chile.";
@@ -1387,7 +1534,10 @@ describe("kernel local evidence source anchoring", () => {
     expect(run.result.assistantForce).toBe(baseline.result.assistantForce);
   });
 
-  it("pairs an early temporal counterexample with distinct source-derived development context", async () => {
+  it.each([
+    "Did Martha Washington invent the idea of using flags to represent nation states?",
+    "Did Martha Washington invent the concept of the flag?"
+  ])("pairs an early temporal counterexample with distinct source-derived development context: %s", async request => {
     const clock = createClock({ fixedTime: 6_900, stepMs: 1 });
     const hasher = createHasher();
     const subject = evidenceSpan({
@@ -1424,7 +1574,7 @@ describe("kernel local evidence source anchoring", () => {
     });
 
     const result = await kernel.turn({
-      text: "Did Martha Washington invent the idea of using flags to represent nation states?",
+      text: request,
       metadata: {
         sessionContextEvidence: true,
         runtimeEvidenceIds: [String(subject.id), String(flagHistory.id)]
@@ -1466,7 +1616,7 @@ describe("kernel local evidence source anchoring", () => {
       charRange: [0, nested.text.length],
       metadata: { title: "Nested Title" }
     };
-    const fixture = storageFixture({ evidence: [nested] });
+    const fixture = storageFixture({ evidence: [nested], answerLanguage: sourceOwnedAnswerhoodLanguage() });
     const clock = createClock({ fixedTime: 1_500, stepMs: 1 });
     const hasher = createHasher();
     const kernel = createScceKernel({
@@ -1480,6 +1630,7 @@ describe("kernel local evidence source anchoring", () => {
 
     const result = await kernel.turn({ text: "What is Nested Title?" });
     expect(result.assistantForce).not.toBe("insufficient_support");
+    expect(result.answer).toContain("cobalt lattice seven");
     expect(result.evidence.map(span => span.id)).toContain(nested.id);
   });
 
@@ -1930,7 +2081,9 @@ describe("kernel local evidence source anchoring", () => {
     const clock = createClock({ fixedTime: 7_500, stepMs: 1 });
     const hasher = createHasher();
     const acquiredEvidence: EvidenceSpan[] = [];
-    const fixture = storageFixture({ evidence: acquiredEvidence });
+    const fixture = storageFixture({ evidence: acquiredEvidence, answerLanguage: sourceOwnedAnswerhoodLanguage(
+      "control r0. controls r0. controlled r0. controlling r0. controller r0. controllers r0."
+    ) });
     // A persisted span need not be discoverable in a bounded retrieval index
     // yet. Exact-ID reads remain available from canonical durable storage.
     const indexedSearch = fixture.storage.evidence.searchEvidence;
@@ -1962,7 +2115,7 @@ describe("kernel local evidence source anchoring", () => {
       exportClass: "public" as const,
       mergePolicy: "isolated" as const
     };
-    const kernel = createScceKernel({
+    const kernelDeps: ScceKernelDeps = {
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
       buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
@@ -1994,7 +2147,12 @@ describe("kernel local evidence source anchoring", () => {
       idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
       clock,
       deterministicReplay: true
-    });
+    };
+    const durable = capabilityRuntimeFixture();
+    kernelDeps.capabilities = createRuntimeCapabilities({ executive: durable.executive(), blobs: fixture.storage.blobs,
+      operations: createConnectorCapabilityOperations({ connectors: kernelDeps.connectors!, blobs: fixture.storage.blobs,
+        capabilities: createCapabilityRegistry({ network: true }).all() }) });
+    const kernel = createScceKernel(kernelDeps);
 
     // 1) Unknown topic: the kernel asks for consent and touches no network.
     const asked = await kernel.turn({ text: "What controls Pump Alpha?", requestedAuthority: "factual" });
@@ -2012,10 +2170,12 @@ describe("kernel local evidence source anchoring", () => {
       "search:What controls Pump Alpha?:12",
       `fetch:${sourceUri}`
     ]);
+    expect(held.runtimeMotion).toMatchObject({ failures: [] });
     expect(held.runtimeMotion).toMatchObject({ status: "hydrated", fetchedSourceCount: 1, ingestedEvidenceCount: 1 });
     expect(acquiredEvidence).toHaveLength(1);
     expect(acquiredEvidence[0]?.status).toBe("promoted");
-    expect(held.answer).toContain("POST /api/pumps/alpha/control");
+    expect(held.answer, JSON.stringify({ selected: held.selectedCandidate, truth: held.truthState, guard: held.guardFlags,
+      evidence: held.evidence.map(span => ({ id: span.id, text: span.text })), availability: held.realizationAvailability })).toContain("POST /api/pumps/alpha/control");
     expect(held.assistantForce).toBe("source_grounded_answer");
     expect(held.evidence.map(span => span.id)).toEqual(acquiredEvidence.map(span => span.id));
     expect(held.runtimeMotion).toMatchObject({
@@ -2043,6 +2203,66 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.guardFlags.sourceBacked).toBe(true);
     expect(fixture.events.filter(event => event.typeId === "RuntimeMotionPlanned")).toHaveLength(2);
     expect(fixture.events.filter(event => event.typeId === "RuntimeMotionCompleted")).toHaveLength(2);
+  });
+
+  it("learns opaque multilingual action constructions through ingestion and executes their exact arguments through the shared runtime", async () => {
+    const evidence: EvidenceSpan[] = [], patterns: LanguagePatternRecord[] = [], profiles: LanguageProfile[] = [];
+    const fixture = storageFixture({ evidence, languagePatterns: patterns, languageProfiles: profiles });
+    fixture.storage.languageMemory.putLanguagePattern = async pattern => { const index = patterns.findIndex(row => row.id === pattern.id); if (index < 0) patterns.push(pattern); else patterns[index] = pattern; };
+    fixture.storage.model.putLanguageProfile = async profile => { profiles.push(profile); };
+    const calls: unknown[] = [], pending: CapabilityPlan[] = [];
+    let approved = false;
+    const clock = createClock({ fixedTime: 12_500, stepMs: 1 });
+    const hasher = createHasher();
+    const restart = () => createScceKernel({ storage: fixture.storage, clock, deterministicReplay: true,
+      files: { streamPath: async function* () {} }, buildTest: { executeProgram: async () => { throw new Error("mail request must not build a program"); } },
+      informationAccess: { tenantId: "action.fixture", principalId: "owner.action", compartments: [], maximumExportClass: "restricted" },
+      sourceInformationLabel: { tenantId: "action.fixture", principals: ["owner.action"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" },
+      connectors: { search: async () => { throw new Error("mail request must not search"); }, fetch: async () => { throw new Error("mail request must not fetch"); },
+        outlookCreateDraft: async input => { calls.push(input); return { id: "draft.receipted.1", status: "draft" }; } },
+      approvals: { isApproved: () => approved, observePending: plan => { pending.push(plan); } } });
+    const kernel = restart();
+    const example = (to: string, subject: string, body: string) => {
+      const request = `Письмо «${to}» тема «${subject}» текст «${body}»`;
+      const binding = (path: (string | number)[], value: string) => {
+        const startCodePoint = [...request.slice(0, request.indexOf(value))].length;
+        return { path, startCodePoint, endCodePoint: startCodePoint + [...value].length };
+      };
+      return { request, capabilityId: "outlook.create_draft", payload: { to: [to], subject, body },
+        bindings: [binding(["to", 0], to), binding(["subject"], subject), binding(["body"], body)] };
+    };
+    const source = JSON.stringify({ schema: CAPABILITY_DEMONSTRATION_SCHEMA, examples: [
+      example("first@example.invalid", "Наблюдения", "Материал источника"), example("second@example.invalid", "Другой", "Описание")
+    ] });
+    const learned = await kernel.ingest({ uri: "fixture://action-demonstrations", content: source, mediaType: "application/json", namespace: "action.fixture",
+      sourceAdmission: { sourceClass: "owner_local", intendedUse: "learned_prior", promotionAuthority: "owner" },
+      sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1,
+        independenceGroup: "action.fixture", accessScope: "private", licenseStatus: "owned" } });
+    expect(learned.sources).toBe(1);
+    expect(patterns.some(row => (row.patternJson as Record<string, JsonValue>).schema === CAPABILITY_CONSTRUCTION_SCHEMA)).toBe(true);
+    const fresh = example("new@example.invalid", "𝒳", "한국어 내용");
+    const binding = await capabilityBindingForRequest({ storage: fixture.storage, requestText: fresh.request });
+    expect(binding?.payload).toEqual(fresh.payload);
+    expect(capabilityBindingVerified(binding, fresh.request)).toBe(true);
+    expect(capabilityBindingVerified(binding ? { ...binding } : undefined, fresh.request)).toBe(false);
+    const waiting = await kernel.turn({ text: fresh.request, requestedAuthority: "action" });
+    expect(waiting.actionResults).toMatchObject([{ status: "planned", disposition: "not_ready" }]);
+    expect(pending.some(plan => plan.capabilityId === "outlook.create_draft" && canonicalStringify(plan.input) === canonicalStringify(fresh.payload))).toBe(true);
+    expect(calls).toEqual([]);
+    approved = true;
+    const completed = await kernel.turn({ text: fresh.request });
+    expect(completed.requestedAuthority).toBe("action");
+    expect(completed.actionResults).toMatchObject([{ status: "succeeded", disposition: "succeeded", receiptId: expect.any(String),
+      observation: { result: { id: "draft.receipted.1", status: "draft" } } }]);
+    expect(calls).toEqual([{ ...fresh.payload, approved: true }]);
+    const observed = fixture.events.filter(event => event.typeId === "CapabilityObserved").at(-1);
+    expect(observed?.payload).toMatchObject({ result: { observationRef: expect.stringMatching(/^sha256_/u) } });
+    expect(JSON.stringify(observed?.payload)).not.toContain("draft.receipted.1");
+    const replayed = await restart().turn({ text: fresh.request });
+    expect(replayed.actionResults).toMatchObject([{ disposition: "succeeded", receiptId: (completed.actionResults as Array<Record<string, JsonValue>>)[0]!.receiptId }]);
+    expect(calls).toHaveLength(1);
+    expect(hasher.digestHex(source)).toBe(learned.events.find(event => event.typeId === "SourceVersionObserved")?.payload
+      ? String((learned.events.find(event => event.typeId === "SourceVersionObserved")!.payload as Record<string, JsonValue>).contentHash).slice("sha256_".length) : "");
   });
 
   it("answers deterministic arithmetic without requiring source evidence", async () => {
@@ -2351,7 +2571,14 @@ describe("kernel local evidence source anchoring", () => {
     expect(proofEngineCalls.ccr).toBeGreaterThan(0);
     expect(proofEngineCalls.pface).toBeGreaterThan(0);
 
-    const factualFixture = storageFixture({ evidence: [premise] });
+    const factualLanguage = sourceOwnedAnswerhoodLanguage(
+      "write r0. writes r0. wrote r0. written r0. writing r0."
+    );
+    await withRequestLanguageFormScope(async () => {
+      factualLanguage.forms.prime();
+      expect(requestUnitSharesStem("write", "wrote"), "source-owned irregular forms").toBe(true);
+    });
+    const factualFixture = storageFixture({ evidence: [premise], answerLanguage: factualLanguage });
     const factualKernel = kernelFor(factualFixture.storage, 9_350);
     resetProofEngineCalls();
     const factualResult = await factualKernel.turn({
@@ -2359,6 +2586,7 @@ describe("kernel local evidence source anchoring", () => {
       requestedAuthority: "factual"
     });
     expect(factualResult.answer.trim()).not.toBe("");
+    expect(factualResult.answer).toContain("Analytical Engine");
     expect(proofEngineCalls.ablatedSupport).toBe(0);
     expect(proofEngineCalls.entailment).toBeGreaterThan(0);
     expect(proofEngineCalls.semanticProof).toBeGreaterThan(0);
@@ -2901,7 +3129,7 @@ function storageFixture(input: {
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),
     close: async () => undefined,
-    blobs: unusedStore(),
+    blobs: { ...unusedStore(), ...capabilityRuntimeFixture().blobs },
     ingestion: unusedStore(),
     proofs: unusedStore(),
     constructs: unusedStore(),

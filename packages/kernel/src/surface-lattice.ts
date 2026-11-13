@@ -9,6 +9,7 @@ import {
 } from "./boundary-estimator.js";
 import {
   buildSegmentationForest,
+  buildSegmentationAdjacencyFactors,
   exportSegmentationAdjacencyFactors,
   measureSegmentationBoundaries,
   resumeSegmentationForest,
@@ -354,7 +355,7 @@ export function replaySurfaceSegmentationAdjacency(input: {
 }): SegmentationAdjacencyFactors {
   const hasher = input.hasher ?? createHasher();
   const recipe = validateSurfaceSegmentationReplayRecipe(input.recipe, hasher);
-  const lattice = buildSurfaceLattice({
+  const factors = buildSurfaceLatticeInternal({
     documentId: input.documentId,
     ...(input.sourceFamilyId ? { sourceFamilyId: input.sourceFamilyId } : {}),
     text: input.text,
@@ -365,8 +366,7 @@ export function replaySurfaceSegmentationAdjacency(input: {
     ...(recipe.boundaryEstimator ? { boundaryEstimator: recipe.boundaryEstimator } : {}),
     ...(recipe.boundaryFeatureFactors ? { boundaryFeatureReplayFactors: recipe.boundaryFeatureFactors } : {}),
     hasher
-  });
-  const factors = exportSegmentationAdjacencyFactors(lattice.segmentationForest).factors;
+  }, false, false, true);
   if (factors.nodeCount !== recipe.expectedNodeCount || factors.arcs.length !== recipe.expectedArcCount
     || segmentationReplayGraphDigest(factors, hasher) !== recipe.expectedGraphDigest) {
     throw new Error("surface segmentation replay changed full-DAG topology or energy");
@@ -450,7 +450,8 @@ export function buildSourceAlignmentSurfaceLattice(options: SurfaceLatticeBuildO
 function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: false): SurfaceLattice;
 function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: true): SourceAlignmentSurfaceLattice;
 function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: false, boundaryMeasurement: true): SurfaceBoundaryMeasurement;
-function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: boolean, boundaryMeasurement = false): SurfaceLattice | SourceAlignmentSurfaceLattice | SurfaceBoundaryMeasurement {
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: false, boundaryMeasurement: false, adjacencyOnly: true): SegmentationAdjacencyFactors;
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: boolean, boundaryMeasurement = false, adjacencyOnly = false): SurfaceLattice | SourceAlignmentSurfaceLattice | SurfaceBoundaryMeasurement | SegmentationAdjacencyFactors {
   const hasher = options.hasher ?? createHasher();
   const normalizationContract = options.normalizationContract ?? canonicalNormalizationContract(hasher);
   const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS));
@@ -697,6 +698,7 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
     hasher,
     ...(options.captureScoreFactors ? { captureScoreFactors: true, sourceText: text, ...(options.boundaryEstimator ? { boundaryScoreState: options.boundaryEstimator } : {}) } : {})
   };
+  if (adjacencyOnly) return buildSegmentationAdjacencyFactors(segmentationForestBuild);
   if (boundaryMeasurement) return { schema: "scce.surface_boundary_measurement.v1", id: latticeId, documentId: options.documentId,
     units, boundaryMeasurement: measureSegmentationBoundaries(segmentationForestBuild) };
   const effectiveMaxEdges = maxEdges + Math.max(0, baseCandidates.length - 1);

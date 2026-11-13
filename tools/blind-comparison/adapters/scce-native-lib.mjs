@@ -5,6 +5,7 @@ import { canonical, hash } from '../protocol.mjs';
 import { sha256Text, sha256Bytes } from '../../sealed-eval/harness/lib/util.mjs';
 import { execute } from '../runner.mjs';
 import { nativeProgramApprovalAllowed } from './native-program-approval.mjs';
+import { verifyConfiguredRetainedSources, retainedAnswerProvenanceMatches } from './retained-sources.mjs';
 import { nativeContract, currentPrompt, failure, containedFile, validateArtifacts, publicFilesGuard, runPublicChecks, typedFactualAbstention, publicContextReceipt } from './native-contract.mjs';
 
 export async function runScceNative(input, config, dependencies = {}) {
@@ -78,7 +79,11 @@ async function scceNativeOperation(input, config, dependencies) {
     if (!checks.passed) return failure(checks.reason, trace, extra);
     return { status: 'ok', answer, artifacts, identity: { ...extra, productOutcome: 'completed', operation: contract.operation, trace } };
   }
-  if (!await ingestPublicSources()) return failure('public_source_ingestion_rejected', trace);
+  let retainedVerification;
+  if (contract.retainedSources) {
+    retainedVerification = await (dependencies.verifyRetainedSources ?? verifyConfiguredRetainedSources)(input, contract, config, remainingMs());
+    trace.push({ retainedSourceVerification: retainedVerification });
+  } else if (!await ingestPublicSources()) return failure('public_source_ingestion_rejected', trace);
   let workspaceProgramContext;
   if (contract.prepareWorkspace === true) {
     const prepared = await call('/api/workspace/ingest', { path: cwd });
@@ -135,6 +140,7 @@ async function scceNativeOperation(input, config, dependencies) {
   }
   if (result.status !== 200) return failure(`turn_http_${result.status}`, trace, { readiness: result.body?.detail ?? null });
   const turn = result.body;
+  if (retainedVerification && !retainedAnswerProvenanceMatches(turn, retainedVerification)) return failure('retained_source_answer_provenance_mismatch', trace);
   if (contract.operation === 'code_generation') {
     if (turn.programReadiness?.status === 'ready' && Array.isArray(turn.programArtifacts) && turn.programArtifacts.length) {
       if (turn.programReadiness.reasonId !== 'program.readiness.verified' || turn.programReadiness.artifactCount !== turn.programArtifacts.length || canonical(turn.programReadiness.artifactIds?.slice().sort()) !== canonical(turn.programArtifacts.map(a => a.artifactId).sort()) || new Set(turn.programArtifacts.map(a => a.path)).size !== turn.programArtifacts.length || turn.programArtifacts.some(a => typeof a.content !== 'string' || a.contentHash !== `sha256_${sha256Text(a.content)}`)) return failure('invalid_program_artifact_identity', trace);

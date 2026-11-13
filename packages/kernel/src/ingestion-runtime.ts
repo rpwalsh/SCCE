@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createSourceAdmissionController } from "./admission.js";
+import { compileCapabilityDemonstrations, CAPABILITY_CONSTRUCTION_PUBLICATION } from "./capability-construction.js";
 import {
   compileCreativeEventCompatibilityCorpus,
   creativeEventCompatibilityCorpusLanguageText,
@@ -16,6 +17,7 @@ import { jsonRecord, kernelString, observedEntitySurfacesFromInducedLanguageMode
 import { prepareConstructionInduction, preparedLanguageInductionProducts, sourceLanguageInductionDocuments } from "./graph-surface-alignment.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
+import type { SourceReferenceBindingDeclaration } from "./source-reference-bindings.js";
 import { LANGUAGE_CONSTRUCTION_PUBLICATION, publishCompiledLanguagePatterns } from "./language-pattern-publication.js";
 import {
   compileLanguageTrainingBatch,
@@ -497,7 +499,9 @@ export function createIngestionRuntime(options: {
           events.push(await append(eventFactory.create({ episodeId, typeId: "GraphUpdated", payload: { typedIngest: typedProjection.diagnostics } })));
         }
 
-        const languageTrainingText = requestRequirementCorpus
+        const languageTrainingText = jsonRecord(sourceMetadata).sourceReferenceBindings
+          ? sourceText
+          : requestRequirementCorpus
           ? requestRequirementCorpusLanguageText(requestRequirementCorpus)
           : creativeEventCompatibilityCorpus
             ? creativeEventCompatibilityCorpusLanguageText(creativeEventCompatibilityCorpus)
@@ -539,6 +543,9 @@ export function createIngestionRuntime(options: {
             canonicalSource: { sourceId, contentHash: source.contentHash },
             text: languageTrainingText,
             evidence: admittedSpans,
+            ...(jsonRecord(sourceMetadata).sourceReferenceBindings ? {
+              sourceReferenceBindings: jsonRecord(sourceMetadata).sourceReferenceBindings as unknown as SourceReferenceBindingDeclaration
+            } : {}),
             ...(preparedInduction ? { preparedInduction } : {}),
             createdAt: now,
             // Measured, not assumed: orders 6 through 9 are identical on this corpus (no 6-gram context recurs) and
@@ -605,7 +612,9 @@ export function createIngestionRuntime(options: {
         }
         const models = labelRecords(compiledBatch.models, informationLabel);
         const units = labelRecords(compiledBatch.units, informationLabel);
-        const learnedPatterns = labelRecords(compiledBatch.patterns, informationLabel);
+        const capabilityPatterns = compileCapabilityDemonstrations({ sourceText,
+          owner: { sourceId, sourceVersionId, contentHash: source.contentHash, profileId: profile.id }, evidence: admittedSpans, hasher, updatedAt: now });
+        const learnedPatterns = labelRecords([...compiledBatch.patterns, ...capabilityPatterns], informationLabel);
         const requestRequirementPatternIds = new Set(
           (requestRequirementLearning?.patterns ?? []).map(pattern => pattern.id)
         );
@@ -631,7 +640,8 @@ export function createIngestionRuntime(options: {
           : learnedPatterns;
         await publishCompiledLanguagePatterns({ store: deps.storage.languageMemory,
           owner: { sourceId, sourceVersionId, contentHash: source.contentHash }, profileId: profile.id, sourceSystem, informationLabel,
-          patterns: patternsToPersist, projections: [LANGUAGE_CONSTRUCTION_PUBLICATION] });
+          patterns: patternsToPersist, projections: [LANGUAGE_CONSTRUCTION_PUBLICATION,
+            ...(capabilityPatterns.length ? [CAPABILITY_CONSTRUCTION_PUBLICATION] : [])] });
         if (deps.storage.languageMemory.putSemanticFrames) await deps.storage.languageMemory.putSemanticFrames(semanticFrames);
         else for (const frame of semanticFrames) await deps.storage.languageMemory.putSemanticFrame(frame);
         events.push(await append(eventFactory.create({

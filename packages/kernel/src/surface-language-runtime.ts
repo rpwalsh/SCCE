@@ -37,7 +37,7 @@ import {
 } from "./language.js";
 import { primeNumericTokenCounts } from "./numeric-token-statistics.js";
 import { createClock, createHasher, sourceTextSurface, toJsonValue } from "./primitives.js";
-import { isRequestRequirementPattern, REQUEST_REQUIREMENT_PATTERN_SCHEMA } from "./request-requirement-learning.js";
+import { isRequestRequirementPattern, requestFeatures, REQUEST_REQUIREMENT_PATTERN_SCHEMA } from "./request-requirement-learning.js";
 import type { LanguageContinuationPopulation, LanguagePatternRecord, LanguageUnitRecord, NgramObservation, ScceKernelDeps, SemanticFrameRecord, TargetProfilePatternRecord } from "./storage.js";
 import type { SegmentationPopulationModelRecord } from "./segmentation-population-persistence.js";
 import type {
@@ -169,6 +169,7 @@ const DEFAULT_SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ENTRIES = 500;
 const DEFAULT_SURFACE_CANDIDATE_PROFILE_CACHE_MAX_ENTRIES = 2_000;
 
 export type SurfaceLanguageHydrationPurpose = "request_seed" | "prediction_scoring";
+export type SurfaceLanguageHydrationResultPurpose = SurfaceLanguageHydrationPurpose | "realization" | "disabled";
 
 export interface PredictionScoringLanguageViewReceipt {
   schema: "scce.language_operation_view_receipt.v1";
@@ -338,6 +339,8 @@ export function createSurfaceLanguageRuntime(options: {
   let languageMemoryGeneration = 0;
   let requestControlPatternCache: { loadedAt: number; value: LanguagePatternRecord[] } | undefined;
   let requestControlPatternInFlight: Promise<LanguagePatternRecord[]> | undefined;
+  const requestScopedControlPatternCache = new Map<string, { loadedAt: number; value: LanguagePatternRecord[] }>();
+  const requestScopedControlPatternInFlight = new Map<string, Promise<LanguagePatternRecord[]>>();
   let durableLanguageRevision: string | undefined;
   let revisionReadInFlight: Promise<void> | undefined;
 
@@ -383,6 +386,45 @@ export function createSurfaceLanguageRuntime(options: {
     requestControlPatternInFlight = pending;
     try { return await pending; }
     finally { if (requestControlPatternInFlight === pending) requestControlPatternInFlight = undefined; }
+  }
+
+  /**
+   * Read the request controls that can actually activate for this surface.
+   *
+   * A global support-ranked cap is not a valid request interpreter: once the
+   * dialogue corpus grew past that cap, ordinary observed controls such as
+   * `what does the` remained durable but could never reach a turn.  The
+   * compiler already gives every control an exact Unicode n-gram and anchor;
+   * ask storage for those observed coordinates directly instead of sampling
+   * unrelated controls.
+   */
+  async function requestControlPatternsForRequest(requestText: string): Promise<LanguagePatternRecord[]> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
+    const features = requestFeatures(requestText);
+    if (!features.length) return [];
+    const key = canonicalDigestHex(toJsonValue(features.map(feature => ({ anchor: feature.anchor, surface: feature.surface }))), hasher);
+    const now = clock.now();
+    const cached = requestScopedControlPatternCache.get(key);
+    if (cached && now - cached.loadedAt < surfaceLanguageMemoryCacheMs) return cached.value;
+    const existing = requestScopedControlPatternInFlight.get(key);
+    if (existing) return existing;
+    const generation = languageMemoryGeneration;
+    const sourceSystems = [...new Set([CORPUS_SOURCE_SYSTEM_IDS.corrections, CORPUS_SOURCE_SYSTEM_IDS.dialogue]
+      .flatMap(sourceSystem => [sourceSystem, corpusSourceAlias(sourceSystem)]))];
+    const pending = Promise.all(sourceSystems.map(sourceSystem =>
+      deps.storage.languageMemory.listLanguagePatterns({
+        sourceSystem,
+        patternSchemas: [REQUEST_REQUIREMENT_PATTERN_SCHEMA],
+        requestRequirementFeatures: features
+      }))).then(groups => {
+      const value = latestRequestRequirementPatterns(groups.flat());
+      if (generation === languageMemoryGeneration) boundedCacheSet(requestScopedControlPatternCache, key,
+        { loadedAt: clock.now(), value }, surfaceLanguageMemoryCacheMaxEntries);
+      return value;
+    });
+    requestScopedControlPatternInFlight.set(key, pending);
+    try { return await pending; }
+    finally { if (requestScopedControlPatternInFlight.get(key) === pending) requestScopedControlPatternInFlight.delete(key); }
   }
 
   async function continuationPopulationCached(languageId: string): Promise<LanguageContinuationPopulation | undefined> {
@@ -584,6 +626,7 @@ export function createSurfaceLanguageRuntime(options: {
         })
         : undefined;
       return {
+        hydrationPurpose: (purpose ?? "realization") as SurfaceLanguageHydrationResultPurpose,
         models: [],
         observations: [],
         units: [],
@@ -809,6 +852,7 @@ export function createSurfaceLanguageRuntime(options: {
       })
       : undefined;
     return {
+      hydrationPurpose: (purpose ?? "realization") as SurfaceLanguageHydrationResultPurpose,
       models,
       observations,
       units,
@@ -934,7 +978,7 @@ export function createSurfaceLanguageRuntime(options: {
         ? kernelString(record.sourceVersionId) === latestSourceVersionId
         : pattern.updatedAt === latest.updatedAt;
     });
-    return uniqueRecordsById(current, 2048);
+    return uniqueRecordsById(current, current.length);
   }
 
 
@@ -974,9 +1018,11 @@ export function createSurfaceLanguageRuntime(options: {
         support: { result, cluster: cluster?.id ?? null, language: languageId ?? null, profiles: cluster?.profileIds.length ?? 0, role: preferredCorpusRoleId ?? null, residentOnly: hydrationOptions.residentOnly === true, reason: unscopedReason }
       }
     );
-    // Keyed by language and role: the same language is the same hydration whatever the request cluster was.
+    // Exact source reads remain distinct even when their owners speak the same language.
     if (languageId) {
-      const languageKey = `${languageId}\u001flanguage\u001f${preferredCorpusRoleId ?? "corpus-role:any"}${hydrationOptions.purpose ? `\u001f${hydrationOptions.purpose}` : ""}`;
+      const sourceScopeKey = cluster && !preferredCorpusRoleId && hydrationOptions.purpose !== "request_seed"
+        ? `${UNIT_SEPARATOR}${languageProfileClusterCacheKey(cluster)}` : "";
+      const languageKey = `${languageId}\u001flanguage${sourceScopeKey}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}${hydrationOptions.purpose ? `\u001f${hydrationOptions.purpose}` : ""}`;
       const resident = surfaceLanguageMemoryCache.get(languageKey);
       if (resident && resident.limit >= limit && (hydrationOptions.residentOnly || now - resident.loadedAt < surfaceLanguageMemoryCacheMs)) {
         lookup("hit-language");
@@ -1267,7 +1313,7 @@ export function createSurfaceLanguageRuntime(options: {
     const prefix = `${languageProfileClusterCacheKey(cluster)}\u001fscoped\u001f`;
     const roleMarker = preferredCorpusRoleId ? `\u001f${preferredCorpusRoleId}` : undefined;
     return [...surfaceLanguageMemoryCache.entries()]
-      .filter(([key]) => key.startsWith(prefix) && !key.endsWith("\u001frequest_seed") && (!roleMarker || key.endsWith(roleMarker)))
+      .filter(([key, entry]) => key.startsWith(prefix) && entry.value.hydrationPurpose === "realization" && (!roleMarker || key.endsWith(roleMarker)))
       .map(([, entry]) => entry)
       .sort((left, right) => right.loadedAt - left.loadedAt)[0]?.value;
   }
@@ -1782,6 +1828,8 @@ export function createSurfaceLanguageRuntime(options: {
     surfaceLanguageMemoryCache.clear();
     requestControlPatternCache = undefined;
     requestControlPatternInFlight = undefined;
+    requestScopedControlPatternCache.clear();
+    requestScopedControlPatternInFlight.clear();
     languageScopeCache.clear();
     languageMemoryGeneration += 1;
     surfaceLanguageMemoryInFlight.clear();
@@ -1807,6 +1855,7 @@ export function createSurfaceLanguageRuntime(options: {
     revisionGeneration: () => languageMemoryGeneration,
     synchronizeWithStorage,
     requestControlPatternsCached,
+    requestControlPatternsForRequest,
     languageMemorySummary,
     targetProfilePatternsCached,
     warmTargetProfilePatterns,

@@ -858,6 +858,13 @@ export interface Capability {
   metadata: JsonValue;
 }
 
+export interface CapabilityApprovalScope {
+  episodeId: string;
+  goalId: string;
+  taskId: string;
+  inputRef: string;
+}
+
 export interface CapabilityPlan {
   id: CapabilityCallId;
   episodeId: EpisodeId;
@@ -865,6 +872,7 @@ export interface CapabilityPlan {
   phase: "read" | "prepare" | "commit";
   status: "planned" | "invoked" | "succeeded" | "failed" | "rolled_back";
   input: JsonValue;
+  approvalScope?: CapabilityApprovalScope;
   result?: JsonValue;
   riskVector: JsonValue;
   permission: JsonValue;
@@ -1141,6 +1149,7 @@ export interface RuntimeRetrievalRoleTrace {
 export interface TurnResult {
   episodeId: EpisodeId;
   answer: string;
+  actionResults?: JsonValue;
   epistemicForce: EpistemicForce;
   assistantForce?: AssistantForceClass;
   /** Mouth outcome distinguishes truthful abstention from an eligible plan it could not realize. */
@@ -1439,6 +1448,7 @@ export interface BenchmarkResult {
 
 export interface OwnerInput {
   text: string;
+  operationId?: string;
   metadata?: JsonValue;
   requestedAuthority?: RequestedAuthority;
   /**

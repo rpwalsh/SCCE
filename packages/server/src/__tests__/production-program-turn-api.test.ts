@@ -25,12 +25,10 @@ import {
   createInMemoryDialogueMemoryStore,
   createLanguageAcquisitionEngine,
   createLanguageMemoryRuntime,
-  createScceKernel,
   createUniversalCreativeEventConstructionCompiler,
   compileCreativeEventCompatibilityCorpus,
   compileLanguageTrainingBatch,
   hydrateLanguageConstructionPatterns,
-  type PatchTransactionPlan,
   type ScceEvent,
   type TurnResult,
   type ScceStorage,
@@ -47,9 +45,12 @@ import {
   trustedHostPatchValidationProvider,
   type StructuredPatchValidationPolicy
 } from "@scce/adapters-node";
-import { handleRequest, WORKSPACE_CODING_TURN_REQUEST_SCHEMA, WORKSPACE_PATCH_REQUEST_SCHEMA, type ApiContext } from "../routes.js";
+import { handleRequest, WORKSPACE_CODING_TURN_REQUEST_SCHEMA, type ApiContext } from "../routes.js";
 import { creativeReferenceTestAnnotation, replyWithReviewedProperty } from "../../../kernel/src/__tests__/fixtures/creative-reference-test-annotations.js";
 import { creativeSourceUtterances } from "../../../kernel/src/creative-source-utterance.js";
+import { capabilityRuntimeFixture, createCapabilityTestKernel as createScceKernel } from "../../../kernel/src/__tests__/fixtures/capability-runtime.js";
+import { CAPABILITY_DEMONSTRATION_SCHEMA, compileCapabilityDemonstrations } from "../../../kernel/src/capability-construction.js";
+import { ApprovalSession } from "../../../adapters-node/src/approval-session.js";
 
 const roots: string[] = [];
 const servers: ReturnType<typeof createServer>[] = [];
@@ -60,7 +61,208 @@ afterEach(async () => {
 });
 
 describe("production owner program turn through the API", () => {
-  it("emits a real source/test proposal, observes failure, replans, reruns, and then executes it in an empty workspace", async () => {
+  it("returns an approved learned action and its receipt through the ordinary turn API even without separate prose", async () => {
+    const requestText = "ζ «first@example.invalid» ξ «𝒜»";
+    const span = (value: string) => { const startCodePoint = [...requestText.slice(0, requestText.indexOf(value))].length;
+      return { startCodePoint, endCodePoint: startCodePoint + [...value].length }; };
+    const source = JSON.stringify({ schema: CAPABILITY_DEMONSTRATION_SCHEMA, examples: [{ request: requestText,
+      capabilityId: "outlook.create_draft", payload: { to: ["first@example.invalid"], subject: "fixture", body: "𝒜" },
+      bindings: [{ path: ["to", 0], ...span("first@example.invalid") }, { path: ["body"], ...span("𝒜") }] }] });
+    const hasher = createHasher(), contentHash = `sha256_${hasher.digestHex(source)}` as EvidenceSpan["contentHash"];
+    const evidence = [{ ...creativeLanguageSource(), id: "evidence.action.api", sourceId: "source.action.api", sourceVersionId: "version.action.api",
+      text: source, textPreview: source, contentHash, byteEnd: Buffer.byteLength(source), charEnd: [...source].length }] as EvidenceSpan[];
+    const patterns = compileCapabilityDemonstrations({ sourceText: source,
+      owner: { sourceId: evidence[0]!.sourceId, sourceVersionId: evidence[0]!.sourceVersionId, contentHash, profileId: "profile.action.api" },
+      evidence, hasher, updatedAt: 1 });
+    const storage = integrationStorage({ events: [], workspace: { id: "workspace.action.api" } as WorkspaceRecord, sources: [],
+      languagePatterns: patterns, constructionEvidence: evidence });
+    const approvals = new ApprovalSession();
+    const calls: unknown[] = [];
+    const kernel = createScceKernel({ storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async () => { throw new Error("action request must not build"); } }, approvals,
+      connectors: { search: async () => { throw new Error("action request must not search"); }, fetch: async () => { throw new Error("action request must not fetch"); },
+        outlookCreateDraft: async input => { calls.push(input); return { id: "draft.api.1", changeKey: "change.api.1" }; } } });
+    await storage.blobs.put(new TextEncoder().encode(source), "application/json");
+    const context = { runtime: { kernel, storage, approvals }, config: { server: { url: "http://127.0.0.1:0" } },
+      startupReadiness: { snapshot: () => ({ phase: "ready", complete: true }) } } as unknown as ApiContext;
+    const server = createServer((req, res) => { void handleRequest(req, res, context); });
+    servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address(); if (!address || typeof address === "string") throw new Error("no test listener");
+    const post = (route: string, value: unknown) => fetch(`http://127.0.0.1:${address.port}${route}`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify(value) });
+    const input = { text: "ζ «fresh@example.invalid» ξ «한국어»", operationId: "operation.action.api", conversationId: "conversation.action.api" };
+    const waiting = await post("/api/turn", input), pending = await waiting.json();
+    expect(waiting.status, JSON.stringify(pending)).toBe(202);
+    expect(pending.pendingApproval.capabilityId).toBe("outlook.create_draft");
+    expect(calls).toEqual([]);
+    await post("/api/session/approve", { planId: pending.pendingApproval.planId });
+    const completed = await post("/api/turn", input), result = await completed.json();
+    expect(completed.status, JSON.stringify(result)).toBe(200);
+    expect(result.actionResults).toMatchObject([{ disposition: "succeeded", receiptId: expect.any(String), observation: { result: { id: "draft.api.1", changeKey: "change.api.1" } } }]);
+    expect(calls).toEqual([{ to: ["fresh@example.invalid"], subject: "fixture", body: "한국어", approved: true }]);
+    const replay = await post("/api/turn", input), replayResult = await replay.json();
+    expect(replay.status, JSON.stringify(replayResult)).toBe(200);
+    expect(replayResult.actionResults[0].receiptId).toBe(result.actionResults[0].receiptId);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("approves each learned plan step with its observed predecessor result and replays a cold API kernel", async () => {
+    const requestText = "ζ «first@example.invalid» 제목 «𝒜» نص «내용»";
+    const span = (value: string) => { const startCodePoint = [...requestText.slice(0, requestText.indexOf(value))].length;
+      return { startCodePoint, endCodePoint: startCodePoint + [...value].length }; };
+    const source = JSON.stringify({ schema: CAPABILITY_DEMONSTRATION_SCHEMA, examples: [{ request: requestText,
+      steps: [
+        { id: "draft", capabilityId: "outlook.create_draft", payload: { to: ["first@example.invalid"], subject: "𝒜", body: "내용" }, dependencyStepIds: [] },
+        { id: "send", capabilityId: "outlook.send_mail", payload: { messageId: null }, dependencyStepIds: ["draft"],
+          resultBindings: [{ path: ["messageId"], predecessorTaskId: "draft", resultPath: ["id"], type: "string" }] }
+      ],
+      bindings: [{ path: ["steps", 0, "payload", "to", 0], ...span("first@example.invalid") },
+        { path: ["steps", 0, "payload", "subject"], ...span("𝒜") }, { path: ["steps", 0, "payload", "body"], ...span("내용") }] }] });
+    const hasher = createHasher(), contentHash = `sha256_${hasher.digestHex(source)}` as EvidenceSpan["contentHash"];
+    const evidence = [{ ...creativeLanguageSource(), id: "evidence.plan.api", sourceId: "source.plan.api", sourceVersionId: "version.plan.api",
+      text: source, textPreview: source, contentHash, byteEnd: Buffer.byteLength(source), charEnd: [...source].length }] as EvidenceSpan[];
+    const patterns = compileCapabilityDemonstrations({ sourceText: source,
+      owner: { sourceId: evidence[0]!.sourceId, sourceVersionId: evidence[0]!.sourceVersionId, contentHash, profileId: "profile.plan.api" },
+      evidence, hasher, updatedAt: 1 });
+    expect(patterns).toHaveLength(1);
+    const storage = integrationStorage({ events: [], workspace: { id: "workspace.plan.api" } as WorkspaceRecord, sources: [],
+      languagePatterns: JSON.parse(JSON.stringify(patterns)), constructionEvidence: JSON.parse(JSON.stringify(evidence)) });
+    expect(await storage.blobs.put(new TextEncoder().encode(source), "application/json")).toBe(contentHash);
+    const approvals = new ApprovalSession(), drafts: unknown[] = [], sent: string[] = [];
+    const createKernel = () => createScceKernel({ storage, files: { streamPath: async function* () {} },
+      policy: { alphaRiskCeiling: 1 }, approvals,
+      buildTest: { executeProgram: async () => { throw new Error("learned plan must not build"); } },
+      connectors: { search: async () => { throw new Error("learned plan must not search"); }, fetch: async () => { throw new Error("learned plan must not fetch"); },
+        outlookCreateDraft: async input => { drafts.push(input); return { id: "provider.observed.draft.api", changeKey: "provider.observed.change.api" }; },
+        outlookSendDraft: async (messageId, approved) => { expect(approved).toBe(true); sent.push(messageId); return { id: messageId, sent: true }; } } });
+    const context = { runtime: { kernel: createKernel(), storage, approvals }, config: { server: { url: "http://127.0.0.1:0" } },
+      startupReadiness: { snapshot: () => ({ phase: "ready", complete: true }) } } as unknown as ApiContext;
+    const server = createServer((req, res) => { void handleRequest(req, res, context); });
+    servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address(); if (!address || typeof address === "string") throw new Error("no test listener");
+    const post = (route: string, value: unknown) => fetch(`http://127.0.0.1:${address.port}${route}`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify(value) });
+    const input = { text: "ζ «fresh@example.invalid» 제목 «새 제목» نص «محتوى جديد»", operationId: "operation.plan.api", conversationId: "conversation.plan.api" };
+    const first = await post("/api/turn", input), pendingDraft = await first.json();
+    expect(first.status, JSON.stringify(pendingDraft)).toBe(202);
+    expect(pendingDraft.pendingApproval).toMatchObject({ capabilityId: "outlook.create_draft",
+      input: { to: ["fresh@example.invalid"], subject: "새 제목", body: "محتوى جديد" } });
+    expect(drafts).toEqual([]);
+    expect(sent).toEqual([]);
+    const draftApproval = await post("/api/session/approve", { planId: pendingDraft.pendingApproval.planId });
+    expect(draftApproval.status).toBe(200);
+    const second = await post("/api/turn", input), pendingSend = await second.json();
+    expect(second.status, JSON.stringify({ pendingApproval: pendingSend.pendingApproval, actionResults: pendingSend.actionResults, error: pendingSend.error })).toBe(202);
+    expect(pendingSend.pendingApproval).toMatchObject({ capabilityId: "outlook.send_mail", input: { messageId: "provider.observed.draft.api" } });
+    expect(pendingSend.pendingApproval.planId).not.toBe(pendingDraft.pendingApproval.planId);
+    expect(pendingSend.pendingApproval.approvalScope).toMatchObject({ taskId: "send" });
+    expect(drafts).toEqual([{ to: ["fresh@example.invalid"], subject: "새 제목", body: "محتوى جديد", approved: true }]);
+    expect(sent).toEqual([]);
+    const sendApproval = await post("/api/session/approve", { planId: pendingSend.pendingApproval.planId });
+    expect(sendApproval.status).toBe(200);
+    const completed = await post("/api/turn", input), result = await completed.json();
+    expect(completed.status, JSON.stringify(result)).toBe(200);
+    expect(result.actionResults).toMatchObject([
+      { disposition: "succeeded", receiptId: expect.any(String), observation: { result: { id: "provider.observed.draft.api", changeKey: "provider.observed.change.api" } } },
+      { disposition: "succeeded", receiptId: expect.any(String), observation: { result: { id: "provider.observed.draft.api", sent: true } } }
+    ]);
+    expect(new Set(result.actionResults.map((row: { receiptId: string }) => row.receiptId)).size).toBe(2);
+    expect(sent).toEqual(["provider.observed.draft.api"]);
+    context.runtime.kernel = createKernel();
+    const replay = await post("/api/turn", input), replayResult = await replay.json();
+    expect(replay.status, JSON.stringify(replayResult)).toBe(200);
+    expect(replayResult.actionResults).toEqual(result.actionResults);
+    expect(drafts).toHaveLength(1);
+    expect(sent).toEqual(["provider.observed.draft.api"]);
+    const changed = await post("/api/turn", { ...input, operationId: "operation.plan.api.distinct" }), changedResult = await changed.json();
+    expect(changed.status, JSON.stringify(changedResult)).toBe(202);
+    expect(changedResult.pendingApproval.capabilityId).toBe("outlook.create_draft");
+    expect(changedResult.pendingApproval.planId).not.toBe(pendingDraft.pendingApproval.planId);
+    expect(changedResult.pendingApproval.approvalScope).not.toEqual(pendingDraft.pendingApproval.approvalScope);
+    expect(drafts).toHaveLength(1);
+    expect(sent).toEqual(["provider.observed.draft.api"]);
+  });
+
+  it("forwards an explicit Unicode source-span operator unchanged and rejects invalid declarations before kernel effects", async () => {
+    const { createEvidenceExtractor } = await import("@scce/kernel");
+    const { storageFixtureForEvaluation } = await import("../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js");
+    const { sourceOwnedAnswerhoodLanguage } = await import("../../../kernel/src/__tests__/fixtures/source-owned-answerhood-language.js");
+    const hasher = createHasher(), clock = createClock({ fixedTime: 241_000, stepMs: 1 });
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "http-declared-source-span" });
+    const left = "🧭 기록: 봉인값은 «", marker = "⟦빈칸⟧", right = "»이다.", value = "نجمة🪐";
+    const sourceText = left + value + right, requestText = left + marker + right + "\n명시된 구간만 반환하라.";
+    const sourceVersionId = ids.sourceVersionId(sourceText);
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: sourceText, createdAt: clock.now() });
+    const span = createEvidenceExtractor({ idFactory: ids, hasher }).extract({
+      sourceId: ids.sourceId("fixture", "fixture://http-declared-source-span"), sourceVersionId, namespace: "fixture",
+      uri: "fixture://http-declared-source-span", text: sourceText, mediaType: "text/plain", languageProfile: profile,
+      observedAt: clock.now(), maxChunkBytes: Buffer.byteLength(sourceText) + 1, exactSourceText: true,
+      sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1,
+        independenceGroup: "http-declared-source-span", accessScope: "fixture", licenseStatus: "fixture" }
+    }).spans[0]!;
+    const owner = { ...span, status: "promoted" as const, alpha: 1 }, resident = sourceOwnedAnswerhoodLanguage();
+    const fixture = storageFixtureForEvaluation({ evidence: [owner, ...resident.evidence], clockNow: () => 241_000 });
+    fixture.storage.dialogueMemory = createInMemoryDialogueMemoryStore();
+    fixture.storage.userModelClaims = { putClaim: async () => undefined, listClaims: async () => [] };
+    fixture.storage.taskResumption = { putSnapshot: async () => undefined, getLatestSnapshot: async () => null };
+    fixture.storage.model.listLanguageProfiles = async query => {
+      const profiles = [profile, ...resident.profiles];
+      return typeof query === "number" ? profiles.slice(0, query)
+        : profiles.filter(row => !query?.sourceVersionIds || query.sourceVersionIds.includes(row.sourceVersionId)).slice(0, query?.limit);
+    };
+    fixture.storage.languageMemory.listNgramModels = async query => resident.models.filter(model =>
+      !query?.profileIds || query.profileIds.includes(String((model.modelJson as { profileId: string }).profileId)));
+    fixture.storage.languageMemory.listLanguagePatterns = async query => resident.patterns.filter(pattern =>
+      (!query?.profileIds || query.profileIds.includes(pattern.profileId)) && (!query?.patternKind || query.patternKind === pattern.patternKind));
+    const build = vi.fn(async () => { throw new Error("source-span completion must not execute code"); });
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: build }, idFactory: ids, clock, deterministicReplay: true });
+    const turn = vi.spyOn(kernel, "turn");
+    const context = { runtime: { kernel, storage: fixture.storage }, config: { server: { url: "http://127.0.0.1:0" } },
+      startupReadiness: { snapshot: () => ({ phase: "ready", complete: true }) } } as unknown as ApiContext;
+    const server = createServer((req, res) => { void handleRequest(req, res, context); });
+    servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address(); if (!address || typeof address === "string") throw new Error("no test listener");
+    const declaration = { schema: "scce.source_span_completion_request.v1",
+      templateRange: { startCodePoint: 0, endCodePoint: [...left + marker + right].length },
+      gapRange: { startCodePoint: [...left].length, endCodePoint: [...left + marker].length },
+      evidenceIds: [String(owner.id)], sourceVersionIds: [String(owner.sourceVersionId)] };
+    expect(declaration.gapRange.startCodePoint).not.toBe(left.length);
+    const post = (operator: unknown) => fetch(`http://127.0.0.1:${address.port}/api/turn`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ text: requestText, requestedAuthority: "factual",
+        conversationId: "conversation.http.declared-source-span", metadata: { sourceSpanCompletion: operator } }) });
+    const response = await post(declaration), result = await response.json();
+    expect(response.status, JSON.stringify(result)).toBe(200);
+    expect(result.answer).toBe(value);
+    expect(result.evidence.some((row: { id: string }) => row.id === String(owner.id))).toBe(true);
+    expect(turn).toHaveBeenCalledTimes(1);
+    expect(turn.mock.calls[0]![0].metadata).toMatchObject({ sourceSpanCompletion: declaration });
+    expect((turn.mock.calls[0]![0].metadata as { sourceSpanCompletion: unknown }).sourceSpanCompletion).toEqual(declaration);
+    const eventCount = fixture.events.length;
+    for (const malformed of [
+      { ...declaration, gapRange: { startCodePoint: [...left].length, endCodePoint: [...requestText].length + 1 } },
+      { ...declaration, templateRange: { startCodePoint: 0, endCodePoint: requestText.length } },
+      { ...declaration, requestText: requestText + " changed" },
+      { ...declaration, schema: "scce.source_span_completion_request.v99" },
+      { ...declaration, gapRange: [declaration.gapRange.startCodePoint, declaration.gapRange.endCodePoint] },
+      { ...declaration, gapRange: { startCodePoint: 1.5, endCodePoint: 4 } },
+      { ...declaration, evidenceIds: [owner.id, owner.id] },
+      { ...declaration, sourceVersionIds: "not-an-array" },
+      [declaration]
+    ]) {
+      const rejected = await post(malformed), failure = await rejected.json();
+      expect(rejected.status, JSON.stringify(failure)).toBe(400);
+      expect(JSON.stringify(failure)).toContain("Invalid source-span-completion request declaration");
+      expect(turn).toHaveBeenCalledTimes(1);
+      expect(fixture.events).toHaveLength(eventCount);
+    }
+    expect(build).not.toHaveBeenCalled();
+  });
+
+  it("emits, repairs, validates, commits, and refreshes a program in one governed turn", async () => {
     const root = await mkdtemp(join(tmpdir(), "scce-production-program-api-"));
     roots.push(root);
     const executionRoot = await mkdtemp(join(tmpdir(), "scce-production-program-exec-"));
@@ -150,7 +352,8 @@ describe("production owner program turn through the API", () => {
           requestId: "request.production.owner.blank",
           requestedPaths: ["src/program.mjs"],
           diagnosticCodes: [],
-          validationPlan: { validatorId: "trusted-host-pnpm-validate.v1", checks: ["compiler", "typecheck", "tests"] }
+          validationPlan: { validatorId: "owner-program-api-node.v1", checks: ["compiler", "typecheck", "tests"] },
+          execution: "apply"
         }
       })
     });
@@ -173,21 +376,8 @@ describe("production owner program turn through the API", () => {
     expect(decodeProgramArtifactWire(body).buildTest).toEqual(turnResults[0]?.buildTest);
     expect(JSON.stringify(body)).not.toContain("internal-only".repeat(1000));
 
-    const plan = body.workspaceCoding.plan as PatchTransactionPlan;
-    expect(await readFile(join(root, "src", "program.mjs")).catch(() => undefined)).toBeUndefined();
-    const applyResponse = await fetch(`http://127.0.0.1:${address.port}/api/workspace/patch`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        schemaVersion: WORKSPACE_PATCH_REQUEST_SCHEMA,
-        workspaceId: workspace.id,
-        plan,
-        validationPolicyId: "owner-program-api-node.v1"
-      })
-    });
-    const applied = await applyResponse.json() as Record<string, any>;
-    expect(applyResponse.status, JSON.stringify(applied)).toBe(200);
-    const receipt = applied.receipt as Record<string, any>;
+    expect(body.workspaceExecution?.state, JSON.stringify(body)).toBe("applied");
+    const receipt = body.workspaceExecution.receipt as Record<string, any>;
     expect(receipt.validation?.executedChecks?.map((check: { checkId: string }) => check.checkId)).toEqual(["compiler", "typecheck", "tests"]);
     const source = await readFile(join(root, "src", "program.mjs"), "utf8");
     const test = await readFile(join(root, "test", "program.test.mjs"), "utf8");
@@ -549,7 +739,7 @@ function integrationStorage(input: {
     model: { readModel: async () => ({ languageProfiles: input.languageProfiles ?? [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }), writeModel: async () => undefined, putLanguageProfile: async () => undefined, listLanguageProfiles: async () => input.languageProfiles ?? [] },
     languageMemory: { putNgramObservation: async () => undefined, putNgramObservationsBatch: async () => undefined, putNgramModel: async () => undefined, putLanguageUnit: async () => undefined, putLanguagePattern: async () => undefined, putSemanticFrame: async () => undefined, putTranslationAlignment: async () => undefined, listNgramModels: async () => input.languageModels ?? [], listNgramObservations: async () => [], listLanguageUnits: async () => [], listLanguagePatterns: async () => input.languagePatterns ?? [], listSemanticFrames: async () => [], listTranslationAlignments: async () => [] },
     stats: async () => ({ tables: [] }), init: async () => undefined, migrate: async () => undefined, verify: async () => ({ ok: true, tables: [], errors: [] }), close: async () => undefined,
-    blobs: emptyStore, ingestion: emptyStore, proofs: emptyStore, constructs: emptyStore, capabilities: emptyStore, forecasts: { putState: async () => undefined, putForecast: async () => undefined, getSeries: async () => [] }, benchmarks: emptyStore, brainImports: { active: async () => ({ activeImportRunIds: [] }), summarize: async () => ({ activeImportRunIds: [], importedLanguagePriorCount: 0, importedGraphPriorCount: 0, importedDirectEvidenceCount: 0, profileExcerptEvidenceCount: 0, importedLearnedPriorCount: 0, importedProgramPriorCount: 0, unknownPriorCount: 0, runs: [] }) }, corrections: { putRule: async () => undefined, listRules: async () => [] }, dialogueMemory,
+    blobs: capabilityRuntimeFixture().blobs, ingestion: emptyStore, proofs: emptyStore, constructs: emptyStore, capabilities: emptyStore, forecasts: { putState: async () => undefined, putForecast: async () => undefined, getSeries: async () => [] }, benchmarks: emptyStore, brainImports: { active: async () => ({ activeImportRunIds: [] }), summarize: async () => ({ activeImportRunIds: [], importedLanguagePriorCount: 0, importedGraphPriorCount: 0, importedDirectEvidenceCount: 0, profileExcerptEvidenceCount: 0, importedLearnedPriorCount: 0, importedProgramPriorCount: 0, unknownPriorCount: 0, runs: [] }) }, corrections: { putRule: async () => undefined, listRules: async () => [] }, dialogueMemory,
     userModelClaims: { putClaim: async () => undefined, listClaims: async () => [] }, taskResumption: { putSnapshot: async () => undefined, getLatestSnapshot: async () => null }, documentGeneration: { putSession: async () => undefined, getSession: async () => null, compareAndPutSession: async () => ({ stored: true, currentUpdatedAt: 0 }) }, localization: emptyStore, flowCache: emptyStore, selfRewrite: emptyStore,
     workspace: { latestWorkspace: async () => input.workspace, listSourceFiles: async () => input.sources, putWorkspace: async () => undefined, putReport: async () => undefined }
   };

@@ -1063,7 +1063,7 @@ export interface LanguageMemoryStore {
   /** Maintenance only: locked keyset prefix, decoded full-row byte bound, and explicit oversized-row progress. */
   listUnitSourceMetadataPage?(query: { afterId?: string; limit: number; maxTotalJsonBytes: number }): Promise<UnitSourceMetadataPage>;
   /** Operation views retain only their named consumer fields; construction and creative bodies remain deferred. */
-  listLanguagePatterns(query?: { view?: LanguageMemoryReadView; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; sourceSystems?: readonly string[]; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; limit?: number; maxTotalJsonBytes?: number; requireComplete?: boolean }): Promise<LanguagePatternRecord[]>;
+  listLanguagePatterns(query?: { view?: LanguageMemoryReadView; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; sourceSystems?: readonly string[]; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; requestRequirementFeatures?: readonly { anchor: "start" | "any" | "end"; surface: string }[]; limit?: number; maxTotalJsonBytes?: number; requireComplete?: boolean }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { view?: LanguageMemoryReadView; profileIds?: readonly string[]; sourceSystem?: string; surface?: string; requestSurface?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }
@@ -1461,6 +1461,7 @@ export interface KernelRuntimePorts {
   buildTest: BuildTestPort;
   connectors?: ConnectorPort;
   approvals?: ApprovalPort;
+  capabilities?: import("./capability-runtime.js").RuntimeCapabilities;
 }
 
 // Includes bounded lexical pages and source-owned construction decision pages.
@@ -1564,6 +1565,7 @@ export interface ScceKernelDeps {
   governance?: import("./governance-observation.js").GovernanceProbe;
   connectors?: ConnectorPort;
   approvals?: ApprovalPort;
+  capabilities?: import("./capability-runtime.js").RuntimeCapabilities;
   /**
    * Composition-root decision for public runtime acquisition. The adapter may
    * set this only when public-internet access scope and standing, read-only
@@ -1633,17 +1635,7 @@ export interface ScceKernelDeps {
    * opts in explicitly.
    */
   functionalCognitionOffloadProcess?: boolean;
-  /**
-   * Durable executive coordinator. When present, capability execution that
-   * has a bounded dispatcher executor (currently: local build/test) is
-   * routed through the executive state machine (prepare -> dispatch ->
-   * receipt -> outcome) instead of invoked directly, so it is durably
-   * attested with a goal/task/attempt/receipt/outcome/learning-record trail.
-   * When absent, execution falls back to the pre-existing direct invocation
-   * path unchanged -- this keeps the field optional so the dozens of
-   * existing fixture-built ScceKernelDeps objects that predate the
-   * dispatcher keep working without modification.
-   */
+  /** Durable executive state; capability execution requires the shared capabilities service. */
   executive?: DurableExecutiveEpisode;
   /**
    * Durable FTRL model lifecycle store for shadow-mode retrieval reranking
@@ -1680,9 +1672,9 @@ export interface ScceKernelDeps {
 }
 
 export interface ApprovalPort {
-  isApproved(input: { capabilityId: string; input: JsonValue }): boolean;
+  isApproved(input: { capabilityId: string; input: JsonValue; approvalScope?: CapabilityPlan["approvalScope"] }): boolean;
   /** Optional session-local refusal; older/test approval ports may omit it. */
-  isRejected?(input: { capabilityId: string; input: JsonValue }): boolean;
+  isRejected?(input: { capabilityId: string; input: JsonValue; approvalScope?: CapabilityPlan["approvalScope"] }): boolean;
   /** A deployment gate refusing this capability, named so it is never reported as the owner's decision. */
   disabledReason?(input: { capabilityId: string; input: JsonValue }): { reason: string; gate: string } | undefined;
   observePending(plan: CapabilityPlan): Promise<void> | void;

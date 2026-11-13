@@ -22,6 +22,7 @@ import type { CalibrationKey } from "./calibrations/public-calibrations.js";
 import { sourceObservedRequestAuthority, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import { contextualQaBindingVerified, type VerifiedContextualQaBinding } from "./contextual-qa-runtime.js";
 import type { ScceStorage } from "./storage.js";
+import { capabilityBindingVerified, type VerifiedCapabilityBinding } from "./capability-construction.js";
 
 export const REQUESTED_AUTHORITY_IDS = [
   "factual",
@@ -72,6 +73,7 @@ export interface ProjectRequestAuthorityInput {
   requirementField: TurnRequirementField;
   explicitAuthority?: RequestedAuthority;
   verifiedComputation?: {requestText:string;result:VerifiedSourceComputationResult};
+  verifiedCapability?: { requestText: string; binding: VerifiedCapabilityBinding };
   verifiedContextualQa?: { requestText: string; result: VerifiedContextualQaBinding; evidence: readonly EvidenceSpan[]; storage: ScceStorage; generation: number; authorityContext: object };
   /** Exact IDs of owner-declared executable behavior observations from CodeRequestSignal. */
   typedProgramBehaviorRequirementIds?: readonly string[];
@@ -243,8 +245,9 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
   const computationAuthority=computation&&sourceComputationResultVerified(computation.result,computation.requestText,createHasher())?"reasoned":undefined;
   const qa = input.verifiedContextualQa;
   const contextualQaAuthority = qa && contextualQaBindingVerified({ ...qa, hasher: createHasher() }) ? "factual" : undefined;
+  const capabilityAuthority = input.verifiedCapability && capabilityBindingVerified(input.verifiedCapability.binding, input.verifiedCapability.requestText) ? "action" : undefined;
   const requestedAuthority = input.explicitAuthority
-    ?? (computationAuthority ?? (typedProgramBehaviorRequirementIds.length ? "program" : contextualQaAuthority ?? observedAuthority?.authority ?? projectedAuthority));
+    ?? (capabilityAuthority ?? computationAuthority ?? (typedProgramBehaviorRequirementIds.length ? "program" : contextualQaAuthority ?? observedAuthority?.authority ?? projectedAuthority));
   const scoreMargin = neutralAuthorityApplied
     ? 0
     : clamp01((ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0));
@@ -257,6 +260,7 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
     source: "turn_requirement_field",
     selectionSource: input.explicitAuthority
       ? "explicit_authority"
+      : capabilityAuthority ? "source_owned_capability_construction"
       : computationAuthority
         ? "source_owned_computation"
         : typedProgramBehaviorRequirementIds.length

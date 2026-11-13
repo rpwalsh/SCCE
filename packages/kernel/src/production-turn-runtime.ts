@@ -16,13 +16,14 @@ import { assistantForceProposalFromCandidateClaimBasis, cognitiveProposalForCand
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
 import { requestValueBindingConstructFact, sourceOwnedValueResolver } from "./source-bound-semantic-fact.js";
+import { sourceSpanCompletionProofProjection, sourceSpanCompletionRequestFromMetadata, sourceSpanCompletionValueResolver } from "./source-owned-span-completion.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, resolveRequestValueBinding, semanticAnswerConstructFacts } from "./semantic-answer-construct.js";
-import { sourceConstructionRequestValueResolver } from "./source-construction-request-binding.js";
+import { inspectLearnedRequestOmittedSlot, sourceConstructionRequestPropositionMatches, sourceConstructionRequestValueResolver } from "./source-construction-request-binding.js";
 import { learnedEntitySurfacesFromLanguageMemory, namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
 import { createCcrEngine } from "./ccr.js";
 import { cognitiveProposalComparisonReceipt, planCognitiveProposals, type CognitiveActionPlan } from "./cognitive-planner.js";
-import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-governance.js";
+import { createConnectorGovernance } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS, CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, type CorpusRoleId } from "./corpus-registry.js";
 import { closedClassForFamilies } from "./language-identity.js";
@@ -174,7 +175,7 @@ import {
   expandPowerWalkSeedAnchors
 } from "./powerwalk.js";
 import { createPredictionLayer } from "./prediction.js";
-import { anchorSymbolUnits, clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
+import { anchorSymbolUnits, canonicalStringify, clamp01, createClock, createHasher, featureSet, toJsonValue } from "./primitives.js";
 import { collapseSurfaceWhitespace, splitSurfaceSentences, surfaceUnits, tidySurfaceText } from "./surface-linguistics.js";
 import { createEmissionEngine, createProgramGraphBuilder, createValidationGraphBuilder } from "./program.js";
 import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
@@ -337,8 +338,9 @@ import type {
   ScceEvent,
   TurnResult
 } from "./types.js";
-import { createCapabilityExecutorRegistry, dispatchCapabilityTask } from "./capability-dispatcher.js";
-import { createBuildTestCapabilityExecutor } from "./build-test-capability.js";
+import { invokeRuntimeCapability } from "./capability-runtime.js";
+import { executeBoundCapability } from "./bound-capability-runtime.js";
+import { capabilityBindingForRequest } from "./capability-construction.js";
 import { assembleTurnConstruct } from "./turn-construct-assembly.js";
 import { runExactComputationTurn } from "./turn-exact-computation.js";
 import {
@@ -738,8 +740,8 @@ export function createProductionTurnRuntime(options: {
    * prompt scored noveltyDemand 1.0 and authority "creative" the moment these 416 rows were present. Routing
    * control is not corpus content and must not be hostage to a corpus-hydration budget.
    */
-  async function requestControlPatternsCached(): Promise<LanguagePatternRecord[]> {
-    return surfaceLanguageRuntime.requestControlPatternsCached().catch(() => [] as LanguagePatternRecord[]);
+  async function requestControlPatternsForRequest(requestText: string): Promise<LanguagePatternRecord[]> {
+    return surfaceLanguageRuntime.requestControlPatternsForRequest(requestText).catch(() => [] as LanguagePatternRecord[]);
   }
 
   let requestCommunicativeActHydration: { model: RequestCommunicativeActModel | undefined; generation: number } | undefined;
@@ -1029,10 +1031,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const documentGenerationRequest = documentGenerationRequestFromMetadata(input.metadata);
       const fastRuntimeBudget = fastRuntimeBudgetRequested(input.metadata);
       const runtimeDeadline = executableRuntimeDeadlineFromMetadata(input.metadata);
-      // The streaming server opens an NDJSON response and emits its accepted
-      // frame before invoking the kernel. Its deadline measures that first
-      // visible frame, not permission to stop thinking. Once that frame is
-      // live, cognition may continue while progress is streamed to the user.
+      // First-visibility measurements do not cancel execution in either transport.
       const initialResponseAlreadyVisible = Boolean(input.runtimeControl?.onProgress);
       const deadlineCheckpoint = (phase: string, requiredMs: number): RuntimeDeadlineDecision | undefined => {
         input.runtimeControl?.onProgress?.({
@@ -1046,7 +1045,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             : new Error(`runtime turn aborted at ${phase}`);
         }
         const measuredDecision = runtimeDeadline?.checkpoint(phase, requiredMs);
-        const decision = measuredDecision && initialResponseAlreadyVisible
+        const initialResponseDeadline = runtimeDeadline?.purpose === "initial_response";
+        const decision = measuredDecision && initialResponseDeadline
           ? { ...measuredDecision, allowed: true }
           : measuredDecision;
         const deadlineMetadata = runtimeDeadline?.metadata;
@@ -1060,9 +1060,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               ...measuredDecision,
               budgetMs: deadlineMetadata.budgetMs,
               initialResponseAlreadyVisible,
-              cognitionContinues: initialResponseAlreadyVisible
+              cognitionContinues: initialResponseDeadline,
+              deadlinePurpose: runtimeDeadline.purpose
             },
-            ...(measuredDecision.allowed || initialResponseAlreadyVisible ? {} : { warnings: [`deadline guard did not admit ${phase}`] })
+            ...(decision?.allowed ? {} : { warnings: [`deadline guard did not admit ${phase}`] })
           });
         }
         return decision;
@@ -1326,24 +1327,30 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const runtimeDiagnosticRequested = explicitRuntimeDiagnosticRequest(input.metadata);
       const inheritedRuntimeMotion = acquisitionContinuation
         ?? runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
-      const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
-      const formalArithmetic = arithmeticAnswerForText(input.text);
-      const formalExactComputation = exactComputationForText(input.text);
-      const sourceComputation = !formalArithmetic && !formalExactComputation && /[0-9]/u.test(input.text) && !deps.evaluationCondition?.flags.disableLanguageMemory && (!explicitAuthority || explicitAuthority === "factual" || explicitAuthority === "reasoned")
+      const sourceSpanCompletionRequest = sourceSpanCompletionRequestFromMetadata(input.metadata, input.text);
+      const declaredEvidenceScope = sourceSpanCompletionRequest?.evidenceIds;
+      const declaredEvidenceIds = declaredEvidenceScope === undefined ? undefined : new Set(declaredEvidenceScope);
+      const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget)
+        ?? (sourceSpanCompletionRequest ? "factual" : undefined);
+      const boundCapability = deps.capabilities && !deps.evaluationCondition?.flags.disableLanguageMemory
+        && (!explicitAuthority || explicitAuthority === "action")
+        ? await capabilityBindingForRequest({ storage: deps.storage, requestText: input.text,
+          sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
+      const formalArithmetic = sourceSpanCompletionRequest ? undefined : arithmeticAnswerForText(input.text);
+      const formalExactComputation = sourceSpanCompletionRequest ? undefined : exactComputationForText(input.text);
+      const sourceComputation = !sourceSpanCompletionRequest && !formalArithmetic && !formalExactComputation && /[0-9]/u.test(input.text) && !deps.evaluationCondition?.flags.disableLanguageMemory && (!explicitAuthority || explicitAuthority === "factual" || explicitAuthority === "reasoned")
         ? await sourceComputationForRequest({ storage: deps.storage, hasher, requestText: input.text,
           generation: surfaceLanguageRuntime.revisionGeneration(), sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
       const workspacePlanContext = runtimeWorkspacePlanContext(input.metadata, input.text);
       // Routing control first, and from its own cache when hydration did not carry it.
       const turnRequestControlPatterns = deps.evaluationCondition?.flags.disableLanguageMemory
         ? []
-        : authorityLanguage.requestControlPatterns.length
-          ? authorityLanguage.requestControlPatterns
-          : await requestControlPatternsCached();
+        : await requestControlPatternsForRequest(input.text);
       const requestRequirementLanguageState = cloneLanguageMemoryRuntimeState(authorityLanguage.state, {
         importedPatterns: uniqueRecordsById([
           ...turnRequestControlPatterns,
           ...authorityLanguage.state.importedPatterns
-        ], 2048)
+        ], turnRequestControlPatterns.length + authorityLanguage.state.importedPatterns.length)
       });
       // Structure, not vocabulary: a request that names a formal language or a code path is asking for an artifact.
       const typedProgramBehavior = typedProgramBehaviorFromMetadata(input.metadata);
@@ -1354,7 +1361,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       ];
       const contextualQaGeneration = surfaceLanguageRuntime.revisionGeneration();
       const contextualQaAuthorityContext = Object.freeze({});
-      const contextualQaConstructions = !sourceComputation && !formalArithmetic && !formalExactComputation
+      const contextualQaConstructions = declaredEvidenceScope === undefined && !sourceComputation && !formalArithmetic && !formalExactComputation
         && !typedProgramBehaviorRequirementIds.length && (!explicitAuthority || explicitAuthority === "factual")
         && !deps.evaluationCondition?.flags.disableLanguageMemory && !deps.evaluationCondition?.flags.disableLearnedSemantics
         && !deps.evaluationCondition?.flags.disableGraph
@@ -1379,6 +1386,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let requirementField = deriveTurnRequirementField({
         requestText: input.text,
         explicitRequirements: [
+          ...(boundCapability ? [{ id: `requirement.${boundCapability.patternIds[0]}`, dimension: "actionCommitment" as const,
+            value: 1, confidence: 1, status: "inferred" as const, semanticRoleId: "request.capability",
+            learnedFrameOrPatternId: boundCapability.patternIds[0]!, sourceActivationId: boundCapability.patternIds[0]!,
+            trace: toJsonValue({ source: "source_owned_capability_construction", patternIds: boundCapability.patternIds }) }] : []),
           ...explicitTurnRequirementsFromInput(input, explicitAuthority),
           ...workspacePlanContext.explicitRequirements,
           ...codeRequestRequirements(input.text, codeSignal),
@@ -1406,6 +1417,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       const authorityProjection = projectRequestAuthority({
         requirementField,
+        ...(boundCapability ? { verifiedCapability: { requestText: input.text, binding: boundCapability } } : {}),
         ...(sourceComputation?{verifiedComputation:{requestText:input.text,result:sourceComputation}}:{}),
         ...(currentContextualQa && contextualQaRetrieval ? { verifiedContextualQa: { requestText: input.text, result: currentContextualQa,
           evidence: contextualQaRetrieval.evidence, storage: deps.storage, generation: surfaceLanguageRuntime.revisionGeneration(), authorityContext: contextualQaAuthorityContext } } : {}),
@@ -1691,16 +1703,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const retrievalText = requestedAuthority === "program" && !/[?？؟]\s*$/u.test(baseRetrievalText) ? `${baseRetrievalText}?` : baseRetrievalText;
       // A creative request's learned instruction spans are not its subject: retrieval and admission read the remainder.
       const subjectRetrievalText = requestedAuthority === "creative" ? turnSignals.subjectText : retrievalText;
-      const currentOwnerEvidence = currentOwnerSessionEvidence(input);
+      const currentOwnerEvidence = declaredEvidenceIds ? [] : currentOwnerSessionEvidence(input);
       // Keep this identity explicit: sessionEvidenceFromMetadata also carries prior owner turns, but only the
       // current turn's already-promoted owner observation may provide a proof-answer surface without an external
       // factual proof. The candidate lane receives the IDs as an authority boundary, never a broad session flag.
       const currentOwnerEvidenceIds = new Set(currentOwnerEvidence.map(span => String(span.id)));
-      const sessionEvidence = mergeEvidenceSpans([...currentOwnerEvidence, ...sessionEvidenceFromMetadata(input.metadata)]);
-      const metadataEvidence = await evidenceFromTurnMetadata(input.metadata);
+      const sessionEvidence = declaredEvidenceIds ? [] : mergeEvidenceSpans([...currentOwnerEvidence, ...sessionEvidenceFromMetadata(input.metadata)]);
+      const metadataEvidence = declaredEvidenceScope !== undefined
+        ? (await deps.storage.evidence.getEvidenceBatch([...declaredEvidenceScope] as EvidenceId[]))
+          .filter(span => declaredEvidenceIds!.has(String(span.id)))
+        : mergeEvidenceSpans(await evidenceFromTurnMetadata(input.metadata));
       const metadataEvidenceIds = new Set([
         ...metadataEvidence.map(span => String(span.id)),
-        ...(discourseObject?.evidenceIds ?? [])
+        ...(declaredEvidenceIds ? [] : discourseObject?.evidenceIds ?? [])
       ]);
       // A follow-up that names nobody is bound to what the conversation established -- that is what a follow-up
       // IS, not a feature a caller opts into. The binding used to require `sessionContextEvidence` in metadata, so
@@ -1710,7 +1725,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // evidence into a request that names its own subject, where it is a caller's choice and not a pronoun.
       const sessionContextEvidence = sessionContextEvidenceEnabled(input.metadata);
       const anaphoricFollowUp = Boolean(discourseObject?.evidenceIds.length) && turnSignals.namedSubjects.length === 0;
-      const explicitContextEvidenceIds = new Set(sessionContextEvidence || anaphoricFollowUp
+      const explicitContextEvidenceIds = new Set(!declaredEvidenceIds && (sessionContextEvidence || anaphoricFollowUp)
         ? discourseObject?.evidenceIds.length
           ? discourseObject.evidenceIds
           : runtimeEvidenceIdsFromMetadata(input.metadata)
@@ -1743,7 +1758,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && !discourseEvidenceBound
         && metadataEvidenceIds.size === 0
         && explicitContextEvidenceIds.size === 0;
-      const authoredRequestNeedsNoRetrieval = creativeRequestNeedsNoRetrieval || ownerChatNeedsNoRetrieval;
+      const authoredRequestNeedsNoRetrieval = declaredEvidenceScope === undefined && (creativeRequestNeedsNoRetrieval || ownerChatNeedsNoRetrieval);
+      const requestedEvidenceScope = declaredEvidenceScope !== undefined
+        ? [...declaredEvidenceScope]
+        : discourseEvidenceBound ? [...metadataEvidenceIds] : undefined;
       const graphSliceStarted = Date.now();
       let graphSlice = await evaluationComponent(
         "graph",
@@ -1755,14 +1773,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           // query. Measured 2026-09-12: the graph slice took 10.3s of a 20.6s creative turn, the response
           // deadline then elapsed, the learned mouth was refused, and a fallback stitched twelve sections out of
           // the request text. sourceDependence is the learned quantity that says so, so it is what gates this.
-          () => contextualQaRetrieval && currentContextualQa && !discourseEvidenceBound
+          () => contextualQaRetrieval && currentContextualQa && !requestedEvidenceScope && !sourceSpanCompletionRequest
             && contextualQaBindingVerified({ result: currentContextualQa, requestText: input.text, evidence: contextualQaRetrieval.evidence,
               storage: deps.storage, hasher, generation: surfaceLanguageRuntime.revisionGeneration(), authorityContext: contextualQaAuthorityContext })
             ? Promise.resolve(contextualQaRetrieval)
             : authoredRequestNeedsNoRetrieval
             ? graphForEvidenceIds([])
-            : discourseEvidenceBound
-            ? graphForEvidenceIds([...metadataEvidenceIds])
+            : requestedEvidenceScope
+            ? graphForEvidenceIds(requestedEvidenceScope)
             : graphForText(subjectRetrievalText, {
               allowSemanticFrameEvidence,
               evidenceFirst: true,
@@ -1796,9 +1814,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               // verifier's cache-owner check reads.
               ...(fieldEvaluation ? { evaluation: fieldEvaluation } : {})
             }),
-          () => discourseEvidenceBound ? graphForEvidenceIdsUnrouted([...metadataEvidenceIds]) : graphForTextUncached(retrievalText, undefined, undefined, false, evidenceAccessPolicy.sourceCodeEvidenceAllowed)
+          () => requestedEvidenceScope ? graphForEvidenceIdsUnrouted(requestedEvidenceScope) : graphForTextUncached(retrievalText, undefined, undefined, false, evidenceAccessPolicy.sourceCodeEvidenceAllowed)
         ),
-        () => discourseEvidenceBound ? evidenceOnlyForIds([...metadataEvidenceIds]) : evidenceOnlyForText(retrievalText, allowSemanticFrameEvidence, evidenceAccessPolicy.sourceCodeEvidenceAllowed)
+        () => requestedEvidenceScope ? evidenceOnlyForIds(requestedEvidenceScope) : evidenceOnlyForText(retrievalText, allowSemanticFrameEvidence, evidenceAccessPolicy.sourceCodeEvidenceAllowed)
       );
       kernelTrace({
         stage: "graph.resolve",
@@ -1817,7 +1835,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // keeps its own retrieval; one that names none, or names something the corpus has no article for ("what did
       // he win the Nobel Prize for?"), continues the conversation -- and the answerhood gate still requires the
       // bound sentence to carry the request's own units, so a subject the bound article never mentions declines.
-      if (!discourseEvidenceBound && discourseObject?.evidenceIds.length
+      if (!declaredEvidenceIds && !discourseEvidenceBound && discourseObject?.evidenceIds.length
         && !evidenceTitledForRequestSubject(input.text, graphSlice.evidence.filter(span => !String(span.id).startsWith("evidence_session_")))) {
         const discourseBoundStarted = Date.now();
         const boundSlice = await graphForEvidenceIds([...discourseObject.evidenceIds]).catch(() => undefined);
@@ -1885,7 +1903,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const authoredAnswerNeedsNoSources = requestedAuthority === "creative"
         || requestedAuthority === "program"
         || ownerChatNeedsNoRetrieval;
-      if (fastRuntimeBudget && !discourseEvidenceBound && !residentSliceAnswersSubject && !authoredAnswerNeedsNoSources) {
+      if (!declaredEvidenceIds && fastRuntimeBudget && !discourseEvidenceBound && !residentSliceAnswersSubject && !authoredAnswerNeedsNoSources) {
         const escalationStarted = Date.now();
         const allowed = deadlineCheckpoint("kernel.turn.durable_retrieval_escalation", DURABLE_RETRIEVAL_ESCALATION_MS)?.allowed !== false;
         if (allowed) {
@@ -1926,7 +1944,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // graph resolver and still pass source admission, proof and contradiction
       // checks below; an ID is neither an answer nor a semantic-frame binding.
       const acquiredEvidenceIds = acquisitionContinuation?.ingestedEvidenceIds ?? [];
-      if (acquiredEvidenceIds.length) {
+      if (!declaredEvidenceIds && acquiredEvidenceIds.length) {
         const acquiredSlice = await evaluationComponent(
           "graph",
           "graph.resolve.acquired_evidence",
@@ -1960,7 +1978,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const semanticReadback = !authoredRequestNeedsNoRetrieval && deps.evaluationCondition?.flags.disableLearnedSemantics !== true
         ? await evaluationComponent("graph", "graph.resolve.semantic_consolidation",
           () => readSemanticConsolidationGraph({ storage: deps.storage, requestText: input.text, beforeT: clock.now(), hasher,
-            ...(discourseEvidenceBound ? { evidenceOwnerIds: explicitContextEvidenceIds } : {}),
+            ...(declaredEvidenceIds ? { evidenceOwnerIds: declaredEvidenceIds }
+              : discourseEvidenceBound ? { evidenceOwnerIds: explicitContextEvidenceIds } : {}),
             ...(input.runtimeControl?.evidenceSourceAllowlist ? { sourceVersionAllowlist: new Set(input.runtimeControl.evidenceSourceAllowlist.map(String)) } : {}) }),
           async () => emptySemanticConsolidationReadback())
         : emptySemanticConsolidationReadback();
@@ -1973,6 +1992,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             hyperedges: uniqueRecordsById([...semanticReadback.graph.hyperedges, ...graphSlice.graph.hyperedges], graphSlice.graph.hyperedges.length + semanticReadback.graph.hyperedges.length) }
         };
       }
+      if (declaredEvidenceIds) {
+        const scopedEvidence = metadataEvidence;
+        graphSlice = { ...graphSlice, evidence: scopedEvidence, graph: graphFilteredToEvidence(graphSlice.graph, scopedEvidence),
+          semanticFrameBoundEvidenceIds: graphSlice.semanticFrameBoundEvidenceIds?.filter(id => declaredEvidenceIds.has(id)) };
+      }
       kernelTrace({ stage: "graph.resolve.semantic_consolidation", label: "kernel.turn.graph_slice",
         counts: { events: semanticReadback.eventsRead, matched: semanticReadback.matchedObservations,
           recovered: semanticReadback.recoveredObservations, evidence: semanticReadback.evidence.length },
@@ -1984,7 +2008,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // neighborhood rather than reading anything off graphSlice, which
       // may be served from a cache shared across turns/queries and must
       // never carry per-turn learning state.
-      const ftrlShadowRankingPromise = requestedAuthority === "creative"
+      const ftrlShadowRankingPromise = requestedAuthority === "creative" || declaredEvidenceIds
         ? Promise.resolve(undefined)
         : ftrlShadowRankingForFeatures(graphRetrievalFeatures(retrievalText)).catch(() => undefined);
       // Discourse-bound evidence is explicitly bound by the turn it continues, the same standing a matched semantic
@@ -2046,9 +2070,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // turn that loses all its evidence falls through to the normal
       // insufficient_support abstention rather than any special case.
       const sealedSourceAllowlist = input.runtimeControl?.evidenceSourceAllowlist;
-      const evidencePool = sealedSourceAllowlist
-        ? unsealedEvidencePool.filter(span => sealedSourceAllowlist.includes(span.sourceVersionId))
-        : unsealedEvidencePool;
+      const evidencePool = unsealedEvidencePool.filter(span =>
+        (!declaredEvidenceIds || declaredEvidenceIds.has(String(span.id)))
+        && (!sealedSourceAllowlist || sealedSourceAllowlist.includes(span.sourceVersionId)));
       const evidence = evidenceWithGraphPreviewWindows(
         input.text,
         evidencePool,
@@ -2059,7 +2083,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ...graphSlice.evidence.map(span => String(span.id))
         ])
       );
-      const contextualQa = requestedAuthority === "creative" || deps.evaluationCondition?.flags.disableLanguageMemory
+      const contextualQa = declaredEvidenceIds || requestedAuthority === "creative" || deps.evaluationCondition?.flags.disableLanguageMemory
         ? undefined : currentContextualQa && contextualQaBindingVerified({ result: currentContextualQa, requestText: input.text,
           evidence, storage: deps.storage, hasher, generation: surfaceLanguageRuntime.revisionGeneration(), authorityContext: contextualQaAuthorityContext }) ? currentContextualQa
           : await contextualQaForRequest({ storage: deps.storage, hasher, requestText: input.text, evidence,
@@ -2431,15 +2455,36 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           !contextualQa?.patternIds.includes(pattern.id)), authorityLanguage.state.scope);
       const acquiredConversationalConstructionBundles = deps.evaluationCondition?.flags.disableLanguageMemory || requestAct.status !== "active"
         ? [] : await conversationalConstructionBundles(authorityLanguage.patterns, authorityLanguage.state.scope, requestAct.actId);
+      const requestConstructionCandidates = [
+        ...authorityLanguage.state.importedConstructionBundles, ...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles,
+        ...(contextualQa?.bundles ?? [])
+      ];
+      const requestBindingBundles = uniqueRecordsById(requestConstructionCandidates, requestConstructionCandidates.length);
+      const requestConstructionAudit = inspectLearnedRequestOmittedSlot({ bundles: requestBindingBundles }, input.text);
+      const propositionMatches = sourceConstructionRequestPropositionMatches({ audit: requestConstructionAudit,
+        requestText: input.text, graph, evidence: admissibleEvidence });
+      const propositionEvidenceIds = new Set(propositionMatches.evidenceIds);
+      const propositionEvidence = admissibleEvidence.filter(span => propositionEvidenceIds.has(String(span.id)));
+      for (const id of propositionEvidenceIds) semanticFrameBoundEvidenceIds.add(id);
+      kernelTrace({ stage: "turn.request_proposition", label: "kernel.turn",
+        counts: { participants: requestConstructionAudit.proposition?.participants.length ?? 0,
+          hyperedges: propositionMatches.hyperedgeIds.length, evidence: propositionMatches.evidenceIds.length },
+        support: { status: requestConstructionAudit.status, relationId: requestConstructionAudit.proposition?.relationId ?? null,
+          hyperedgeIds: propositionMatches.hyperedgeIds, evidenceIds: propositionMatches.evidenceIds } });
+      if (propositionMatches.hyperedgeIds.length) events.push(await append(eventFactory.create({ episodeId,
+        typeId: "RequestPropositionBound", payload: toJsonValue({ relationId: requestConstructionAudit.proposition!.relationId,
+          constructionIds: requestConstructionAudit.proposition!.constructionIds, bindingIds: requestConstructionAudit.proposition!.bindingIds,
+          hyperedgeIds: propositionMatches.hyperedgeIds, evidenceIds: propositionMatches.evidenceIds }) })));
       const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
-      const requestValueBinding = contextualQaValueDemandUnbound ? undefined : resolveRequestValueBinding({
+      const requestValueBinding = sourceSpanCompletionRequest
+        ? resolveRequestValueBinding({ requestText: input.text, evidence: admissibleEvidence,
+          resolvers: [sourceSpanCompletionValueResolver(sourceSpanCompletionRequest)] })
+        : contextualQaValueDemandUnbound
+        || requestConstructionAudit.status === "closed_proposition" && requestConstructionAudit.proposition ? undefined : resolveRequestValueBinding({
         requestText: input.text,
         evidence: admissibleEvidence,
         resolvers: [
-          sourceConstructionRequestValueResolver({ bundles: uniqueRecordsById([
-            ...authorityLanguage.state.importedConstructionBundles, ...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles,
-            ...(contextualQa?.bundles ?? [])
-          ], 1024), graph }),
+          sourceConstructionRequestValueResolver({ bundles: requestBindingBundles, graph }),
           sourceOwnedValueResolver({
             id: "resolver.evidence_temporal",
             relationId: "relation.temporal.event_time",
@@ -2448,10 +2493,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           })
         ]
       });
+      const requestedValueDemandUnbound = sourceSpanCompletionRequest ? !requestValueBinding : contextualQaValueDemandUnbound;
       const requestBoundValueEvidenceIds = new Set(requestValueBinding?.evidenceIds ?? []);
       const requestBoundEvidence = admissibleEvidence.filter(span => requestBoundValueEvidenceIds.has(String(span.id)))
         .slice(0, turnProofEvidenceLimit);
-      const supportEvidence = requestBoundEvidence.length
+      const supportEvidence = propositionEvidence.length
+        ? uniqueRecordsById([...propositionEvidence, ...rankedSupportEvidence], propositionEvidence.length + rankedSupportEvidence.length)
+        : requestBoundEvidence.length
         ? uniqueRecordsById([...requestBoundEvidence, ...(admittedTitledOpeningSpan
           ? [admittedTitledOpeningSpan, ...rankedSupportEvidence] : rankedSupportEvidence)], Math.max(2, rankedSupportEvidence.length))
         : admittedTitledOpeningSpan
@@ -2495,9 +2543,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // source expresses only as instances ("list the main characters"
       // vs. a lead that names them without ever saying "characters").
       const responseFormSentences = requirementField.responseForm?.surfaceLayout?.sentencesPerBlock;
-      let answerProposal = contextualQaValueDemandUnbound ? undefined : proposeSourceExactEvidenceAnswer({
+      let answerProposal = requestedValueDemandUnbound ? undefined : proposeSourceExactEvidenceAnswer({
         requestText: input.text,
         selectedEvidence: supportCandidates,
+        boundProposition: propositionMatches.answerBinding,
         semanticFrameBoundEvidenceIds,
         boundValues: requestValueBinding ? [requestValueBinding.value] : [],
         boundValueEvidenceIds: requestBoundValueEvidenceIds,
@@ -2556,6 +2605,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         answerProposal = proposeSourceExactEvidenceAnswer({
           requestText: input.text,
           selectedEvidence: supportCandidates,
+          boundProposition: propositionMatches.answerBinding,
           semanticFrameBoundEvidenceIds,
           boundValues: requestValueBinding ? [requestValueBinding.value] : [],
           boundValueEvidenceIds: requestBoundValueEvidenceIds,
@@ -2586,18 +2636,21 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // fix), so checking "does the evidence support this excerpt" is now
       // a real, non-tautological check, including correctly rejecting a
       // discourse-dependent or irrelevant excerpt.
-      const proofClaimText = answerProposal
+      const sourceSpanProof = sourceSpanCompletionProofProjection({ request: sourceSpanCompletionRequest,
+        binding: requestValueBinding, evidence: admissibleEvidence, hasher, createdAt: clock.now() });
+      const proofClaimText = sourceSpanProof?.claimText ?? (answerProposal
         ? localEvidenceAnswerClaimSurface(answerProposal) || input.text
-        : input.text;
+        : input.text);
+      const proofCheckNodes = sourceSpanProof ? [...proofNodes, ...sourceSpanProof.nodes] : proofNodes;
       // The proposal is checked against the rest of the admitted evidence, not only against the evidence that
       // produced it. When the claim is the proposal own excerpt, giving the proof only that excerpt hands it a
       // self-consistent subset by construction: no source that disagrees can be in the set, so no counterexample
       // can exist. Two filings that name different years for the same appointment were both admitted and only one
       // reached the proof, so the turn stated the first as fact and the disagreement was never visible.
-      const proofCandidateEvidence = answerProposal
-        ? mergeEvidenceSpans([...answerProposal.evidence, ...supportCandidates])
-        : supportCandidates;
-      const proofSourceExcerpts = answerProposal
+      const proofCandidateEvidence = sourceSpanProof
+        ? mergeEvidenceSpans([...sourceSpanProof.evidence, ...supportCandidates])
+        : answerProposal ? mergeEvidenceSpans([...answerProposal.evidence, ...supportCandidates]) : supportCandidates;
+      const proofSourceExcerpts = sourceSpanProof ? [] : answerProposal
         ? localEvidenceAnswerProofExcerpts(answerProposal)
         : [];
       kernelTrace({
@@ -2626,11 +2679,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           "proof.support-engine",
           () => {
             const entailmentStarted = Date.now();
-            const typedScope = typedProofScope({ hyperedges: graph.hyperedges, admittedEvidence: proofCandidateEvidence, claimEvidenceIds: answerProposal?.evidence.map(span => span.id) ?? [], claimText: proofClaimText, nodes: proofNodes });
+            const typedScope = sourceSpanProof?.scope ?? typedProofScope({ hyperedges: graph.hyperedges, admittedEvidence: proofCandidateEvidence, claimEvidenceIds: answerProposal?.evidence.map(span => span.id) ?? [], claimText: proofClaimText, nodes: proofCheckNodes });
             const entailmentResult = entailment.check({
               text: proofClaimText,
               evidence: proofCandidateEvidence,
-              nodes: proofNodes,
+              nodes: proofCheckNodes,
               field,
               createdAt: clock.now(),
               sourceExcerpts: proofSourceExcerpts,
@@ -2842,9 +2895,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const titledOpeningSpan = admittedTitledOpeningSpan ?? (subjectOnlyRequest || namedSubjectAnchors(input.text).length
         ? [...evidenceSelectionPool, ...promoted].find(span => Number(span.charStart ?? -1) === 0 && evidenceTitledForRequestSubject(input.text, [span]) && openingSpanAnswersRequest(span))
         : undefined);
-      let selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, titledOpeningSpan
+      const withRequestedValueOwners = (spans: EvidenceSpan[]) => mergeEvidenceSpans([
+        ...requestBoundEvidence, ...spans
+      ]);
+      let selectedEvidence = withRequestedValueOwners(runtimeEvidenceWindowsForRequest(input.text, titledOpeningSpan
         ? uniqueRecordsById([titledOpeningSpan, ...rankedForRequest], Math.max(2, rankedForRequest.length))
-        : rankedForRequest);
+        : rankedForRequest));
       kernelTrace({
         stage: "candidate.selected_evidence",
         label: "kernel.turn",
@@ -2876,7 +2932,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : [];
       const selectedTemporalEvidence = evidenceBatchFromSlice(durableTemporalEvidence, temporalCandidateIds)
         ?? selectedTemporalCandidateEvidence;
-      let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence);
+      let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult);
       // Plan item 212 (read-back): consolidation (211) was write-only until
       // now -- nothing retrieved a past consolidated episode to influence a
       // *new* turn's proposal generation. This closes that gap using the
@@ -2945,7 +3001,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }
       });
       const preferredDialogueEvidenceIds = preferredDialogueEvidenceForAdjustments(dialoguePreselection.candidates, dialogueInterpretationAdjustments);
-      if (preferredDialogueEvidenceIds) selectedEvidence = selectedEvidence.filter(span => preferredDialogueEvidenceIds.has(String(span.id)));
+      if (preferredDialogueEvidenceIds) selectedEvidence = withRequestedValueOwners(selectedEvidence.filter(span => preferredDialogueEvidenceIds.has(String(span.id))));
       kernelTrace({
         stage: "candidate.request_value_binding",
         label: "kernel.turn",
@@ -2973,8 +3029,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // pre-empt a real compound answer by default.
       // A source conflict is reported even when the proof attached no evidence of its own: the spans that disagree
       // are named by the counterexamples, and the reader is owed what each of them says rather than silence.
-      const richLocalEvidenceAnswer = contextualQaValueDemandUnbound ? undefined : localEvidenceAnswerSurface({
+      const richLocalEvidenceAnswer = requestedValueDemandUnbound ? undefined : localEvidenceAnswerSurface({
             requestText: input.text,
+        boundProposition: propositionMatches.answerBinding,
             selectedEvidence,
             boundValues: requestBoundValues,
             boundValueEvidenceIds: requestBoundValueEvidenceIds,
@@ -3048,8 +3105,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }
         : entailmentResult;
       if (longPathBasisAnswer) {
-        selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, longPathBasisAnswer.evidence);
-        earlyLearningNeeds = learningNeedsFor(input.text, answerEntailmentSeed, selectedEvidence);
+        selectedEvidence = withRequestedValueOwners(runtimeEvidenceWindowsForRequest(input.text, longPathBasisAnswer.evidence));
+        earlyLearningNeeds = learningNeedsFor(input.text, answerEntailmentSeed);
         events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateGenerated", payload: { kind: "basis-aware-answer", basis: longPathBasisAnswer.audit } })));
         kernelTrace({
           stage: "candidate.score",
@@ -3078,18 +3135,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           : evidenceOwnedLanguageClusterCached(
             evidenceSourceVersionIds,
             input.text,
-            { residentOnly: fastRuntimeBudget }
-          ).catch(() => undefined)
+            { residentOnly: false }
+          )
       ]);
-      // The global cluster set is built from a bounded profile window, so this asks whether the evidence's profiles
-      // happened to land inside it. On the live corpus they usually do not -- 22,502 profiles, a window that admits a
-      // fraction -- and no evidence cluster plus no surface cluster is exactly the condition under which hydration
-      // returns an explicitly empty language memory. The answer is realized FROM these documents, so when the window
-      // cannot name their language, ask the profiles the source versions themselves own.
+      // Exact source ownership keeps realization out of unrelated profiles in the global window.
       const windowEvidenceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
         ? undefined
         : selectLanguageProfileClusterForSourceVersions(evidenceSurfaceClusters, evidenceSourceVersionIds);
-      const evidenceSurfaceCluster = windowEvidenceCluster ?? evidenceOwnedCluster;
+      const evidenceSurfaceCluster = evidenceOwnedCluster ?? windowEvidenceCluster;
       // An evaluation condition without language memory reads none; the creative lane keeps its own contract.
       const authorityPriorSurfaceCorpusRole = deps.evaluationCondition?.flags.disableLanguageMemory && requestedAuthority !== "creative"
         ? undefined
@@ -3121,58 +3174,45 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           (bundle.creativeEvents?.length ?? 0) > 0
         )
       );
-      // Before first visibility, expensive candidate-stage hydration remains
-      // resident-only when it cannot fit the response budget. A streamed turn
-      // has already become visible, so it may finish this work while reporting
-      // progress rather than degrading its reasoning state.
-      // requiredMs is the honest worst cost: a cold durable hydrate loads
-      // whole ngram model blobs (measured 55s); admitting it on a 1.5s
-      // estimate let a 10s turn run 61s.
+      // Explicit execution budgets can defer hydration; cache warmth cannot decide answerability.
       const candidateHydrateDecision = deadlineCheckpoint("runtime.candidates.language_hydrate", 5_000);
-      // A near-duplicate turn quotes, it does not generate: no threshold can
-      // bound a 55s stage, so the quote regime skips durable hydration.
+      // An admitted exact quotation needs no additional generation state.
       const turnSequences = turnSignals.sentenceSequences;
       const nearDuplicateTurn = turnSequences.length > 0
         && selectedEvidence.some(span => spanContainsRequestNearDuplicateSentence(span, turnSequences));
-      const candidateHydrateResidentOnly = fastRuntimeBudget || nearDuplicateTurn || candidateHydrateDecision?.allowed === false;
-      const evidenceOutputLanguage = evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
+      const candidateHydrateResidentOnly = (nearDuplicateTurn && Boolean(answerProposal)) || candidateHydrateDecision?.allowed === false;
+      const evidenceOutputLanguage = evidenceSurfaceCluster
+        && (evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id || authorityLanguage.hydrationPurpose !== "realization"
+          || !authorityLanguage.state.models.length)
         ? await hydrateSurfaceLanguageMemoryCached(
           12,
           evidenceSurfaceCluster,
           "evidence-source-cluster-selected",
           undefined,
           "",
-          // This is optional output-language enrichment. Under a bounded
-          // response budget a miss must remain a read-only resident miss.
-          // Scheduling a durable "background" hydrate here still competes
-          // with this turn for the event loop and database pool (measured on
-          // r004: 4.6s of planning latency), so it is not off-path work.
+          // Resolve the exact evidence-owned population through the shared cache.
           candidateHydrateResidentOnly ? { residentOnly: true } : { residentOnly: false }
         ).catch(error => {
           if (candidateHydrateResidentOnly && isResidentRuntimeNotWarmError(error)) return undefined;
           throw error;
         })
         : undefined;
-      // Deliberately NOT residentOnly even under the fast runtime budget: a
-      // creative long-form request cannot meet the fast-first-response
-      // contract anyway (generation itself dominates), so failing the whole
-      // turn because the prose-role cluster wasn't already warm turned every
-      // first creative request on a fresh server into a 500 ("resident
-      // language-memory:creative-output-language-unresolved was not
-      // warmed") -- verified live. The first creative turn pays the durable
-      // hydration once; the cache holds it for every later one.
-      // A factual turn never hydrates durably here: a role miss measured 40s of a 52s turn while the cognition
-      // itself took under a second. The miss is served from the resident language this turn already has. The
-      // creative lane keeps paying durably, for the reason stated above.
-      // A program uses its symbolic role's population, independent of the natural-language request identity.
+      // Realization uses the learned corpus role independently of request authority.
       const roleLanguageCluster = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.softwareSymbolic
         ? undefined
         : selectedSurfaceCluster;
+      const realizationCandidates = [evidenceOutputLanguage, authorityLanguage].filter(value => value?.hydrationPurpose === "realization"
+        && value.state.models.length && value.state.scope.profileIds.length);
+      const realizationOwnerIds = [...new Set(realizationCandidates.flatMap(value => value?.state.scope.profileIds ?? []))];
+      const realizationResolver = requestLanguageId && realizationOwnerIds.length
+        ? await languageIdentityRuntime.resolver(realizationOwnerIds) : undefined;
+      const realizationLanguageReady = Boolean(requestLanguageId && realizationCandidates.some(value => value
+        && value.state.scope.profileIds.every(profileId => realizationResolver?.profile(profileId) === requestLanguageId)));
       const roleHydrationOptions = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
         ? { residentOnly: false, languageId: roleHydrationLanguageIdentityId(preferredSurfaceCorpusRole, requestLanguageId) }
         : preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.softwareSymbolic
           ? { residentOnly: false }
-          : { residentOnly: true, languageId: roleHydrationLanguageIdentityId(preferredSurfaceCorpusRole, requestLanguageId) };
+          : { residentOnly: candidateHydrateResidentOnly || realizationLanguageReady, languageId: roleHydrationLanguageIdentityId(preferredSurfaceCorpusRole, requestLanguageId) };
       const roleOutputLanguage = preferredSurfaceCorpusRole && !exactCreativeAuthorityReady
         ? await hydrateSurfaceLanguageMemoryCached(
           12,
@@ -3192,7 +3232,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           // free.
           const optionalEncyclopedicMiss = requestedAuthority === "factual"
             && preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.encyclopedic;
-          if (!optionalEncyclopedicMiss) {
+          if (!optionalEncyclopedicMiss && !realizationLanguageReady) {
             warmSurfaceLanguageMemory(
               12,
               roleLanguageCluster,
@@ -3218,7 +3258,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         label: "kernel.turn",
         durationMs: 0,
         counts: { models: roleOutputLanguage?.state.models.length ?? 0, units: roleOutputLanguage?.state.importedUnits.length ?? 0, bundles: roleOutputLanguage?.state.importedConstructionBundles.length ?? 0, scopeProfiles: roleOutputLanguage?.state.scope.profileIds.length ?? 0 },
-        support: { role: preferredSurfaceCorpusRole ?? null, authority: requestedAuthority, speaks: roleLanguageSpeaks, ready: exactCreativeAuthorityReady, scope: roleOutputLanguage?.state.scope.mode ?? null, languageId: roleOutputLanguage?.state.scope.languageId ?? null }
+        support: { role: preferredSurfaceCorpusRole ?? null, authority: requestedAuthority, speaks: roleLanguageSpeaks, ready: exactCreativeAuthorityReady,
+          realizationLanguageReady, scope: roleOutputLanguage?.state.scope.mode ?? null, languageId: roleOutputLanguage?.state.scope.languageId ?? null }
       });
       let surfaceLanguage = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
         ? exactCreativeAuthorityReady
@@ -3396,7 +3437,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           // is speaking with no learned substrate at all, which is worth reading before blaming anything upstream.
           languageScope: surfaceLanguageMemory.scope.mode,
           evidenceCluster: evidenceSurfaceCluster?.id ?? null,
-          evidenceClusterFrom: windowEvidenceCluster ? "profile-window" : evidenceOwnedCluster ? "evidence-owned" : null,
+          evidenceClusterFrom: evidenceOwnedCluster ? "evidence-owned" : windowEvidenceCluster ? "profile-window" : null,
           corpusRole: preferredSurfaceCorpusRole ?? null,
           creativeRequestFrameId: creativeRequestFrame?.id ?? null,
           creativeRequestCompilerId: creativeRequestFrame?.compilerId ?? null,
@@ -3447,7 +3488,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           payload: toJsonValue({ conflicts: correctionConflicts })
         })));
       }
-      const answerSurface = contextualQaValueDemandUnbound
+      const answerSurface = requestedValueDemandUnbound
         ? {
           answer: "",
           audit: toJsonValue({
@@ -3622,7 +3663,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       const capabilityPlanPreview = toolCognition.previewPlans({
         request: input.text,
-        capabilities: connectorGovernance.capabilities(defaultConnectorConfigs()),
+        capabilities: [...(deps.capabilities?.catalog() ?? [])],
         policy,
         evidence: selectedEvidence,
         field,
@@ -3859,19 +3900,30 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         })();
       }
       const candidateApprovalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
-      const candidateActionPlans = candidateConstructSeed.program || candidateConstructSeed.artifacts.length || programIntent
-        ? toolCognition.plan({
+      let boundCapabilityExecution: Awaited<ReturnType<typeof executeBoundCapability>> | undefined;
+      if (boundCapability && requestedAuthority === "action" && deps.capabilities) {
+        boundCapabilityExecution = await executeBoundCapability({ binding: boundCapability, requestText: input.text,
+          operationId: input.operationId, episodeId, ownerId: deps.informationAccess?.principalId ?? "scce-runtime",
+          policyVersionId: `policy_${hasher.digestHex(canonicalStringify(deps.policy ?? {}))}`, policy,
+          capabilities: deps.capabilities, approvals: deps.approvals, audit: deps.storage.capabilities,
+          idFactory, hasher, now: () => clock.now() });
+        for (const plan of boundCapabilityExecution.plans) {
+          events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityObserved", payload: toJsonValue({
+            planId: plan.id, capabilityId: plan.capabilityId,
+            executiveEpisodeId: boundCapabilityExecution.executiveEpisodeId, result: plan.result }) })));
+        }
+      }
+      const candidateActionPlans = toolCognition.plan({
           episodeId,
           request: input.text,
-          capabilities: connectorGovernance.capabilities(defaultConnectorConfigs()),
+          capabilities: [...(deps.capabilities?.catalog() ?? [])],
           policy,
           evidence: selectedEvidence,
           field,
           actionCommitment: requirementField.actionCommitment,
           temporaryOperatorGrant: { enabled: candidateApprovalPolicyPatch.dryRunByDefault === false },
           functionalGate
-        }).capabilityPlans
-        : [];
+        }).capabilityPlans;
       const cognitiveActionPlans: CognitiveActionPlan[] = candidateActionPlans.map(plan => ({
         id: String(plan.id),
         capabilityId: plan.capabilityId,
@@ -3884,6 +3936,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           executionState: "not_executed"
         })
       }));
+      const boundActionResults = boundCapabilityExecution ? toJsonValue(boundCapabilityExecution.actions) : undefined;
+      for (const plan of boundCapabilityExecution?.plans ?? []) {
+        const action = boundCapabilityExecution!.actions.find(row => row.planId === plan.id)!;
+        cognitiveActionPlans.push({ id: String(plan.id), capabilityId: plan.capabilityId,
+          phase: plan.phase, status: plan.status, actionReceiptId: action.receiptId,
+          ...(action.observation?.result !== undefined ? { resultSurface: JSON.stringify(action.observation.result) } : {}),
+          trace: toJsonValue({ source: "source_owned_capability_construction", patternIds: boundCapability?.patternIds,
+            receiptId: action.receiptId, disposition: action.disposition }) });
+      }
       const inventionPlanStarted = Date.now();
       let inventionPlanDecision: import("./invention-planner.js").InventionPlanningDecision | undefined;
       const plannedInventionCandidates = planInventions({
@@ -4147,7 +4208,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ],
         actionPlans: candidateActionPlans.map(plan => toJsonValue(plan)),
         entailment: answerEntailmentSeed,
-        evidence: contextualQaValueDemandUnbound ? [] : selectedEvidence,
+        evidence: requestedValueDemandUnbound ? [] : selectedEvidence,
         field,
         ccr: ccrResult,
         proofAnswer,
@@ -4220,11 +4281,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         let motion = inheritedRuntimeMotion;
         if (!motion) {
           const recoveryDecision = deadlineCheckpoint("runtime.replan.acquire", 5_000);
-          // The reservation protects a turn that already has an answer from spending it on a search. A turn holding
-          // no evidence at all, whose owner has already consented to the search, has no answer to protect -- and
-          // every served request runs under the fast budget, so this reservation is always refused there. Standing
-          // consent plus nothing to say is the one case where going to look IS the turn's work.
-          const consentStanding = selectedEvidence.length === 0 && searchConsentGranted(input.text);
+          // An unsatisfied claim still needs acquisition when its retrieved spans are irrelevant.
+          const consentStanding = searchConsentGranted(input.text);
           if (recoveryDecision?.allowed !== false || consentStanding) {
             motion = await learnHydrateReplan({
               ownerInput: input,
@@ -4532,6 +4590,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       await deps.storage.proofs.putProof(answerEntailment.proof);
       let answer = "";
       const capabilityPlans: CapabilityPlan[] = [];
+      capabilityPlans.push(...(boundCapabilityExecution?.plans ?? []));
       const approvalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
       let behaviorProgramIntent = programIntent;
       let construct = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailment, evidence: selectedEvidence, createdAt: clock.now(), programIntent: behaviorProgramIntent, program: candidateConstructSeed.program });
@@ -4574,36 +4633,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           }
         })()
         : undefined;
-      const toolPlan = construct.program || construct.artifacts.length
-        ? toolCognition.plan({
+      const toolPlan = toolCognition.plan({
           episodeId,
           request: input.text,
-          capabilities: connectorGovernance.capabilities(defaultConnectorConfigs()),
+          capabilities: [...(deps.capabilities?.catalog() ?? [])],
           policy,
           evidence: selectedEvidence,
           field,
           actionCommitment: requirementField.actionCommitment,
           temporaryOperatorGrant: { enabled: approvalPolicyPatch.dryRunByDefault === false },
           functionalGate
-        })
-        : {
-          id: `tool_cognition_${hasher.digestHex(`skipped:${episodeId}`).slice(0, 32)}`,
-          episodeId,
-          objectives: [],
-          scores: [],
-          capabilityPlans: [],
-          approvals: [],
-          ledger: [],
-          policyAudit: toJsonValue({ source: "tool-cognition.skipped", reason: "no_program_or_artifact" }),
-          residualNeeds: [],
-          session: {
-            operatorGrant: false,
-            maxToolCalls: policy.maxToolCalls,
-            remainingToolCalls: policy.maxToolCalls,
-            maxNetworkRequests: policy.maxNetworkRequests,
-            remainingNetworkRequests: policy.maxNetworkRequests
-          }
-        };
+        });
       for (const plan of toolPlan.capabilityPlans) {
         await deps.storage.capabilities.putPlan(plan);
         capabilityPlans.push(plan);
@@ -4651,51 +4691,29 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           // For a program request the built, tested program is the answer, so it runs.
           if (permission.allowed && !permission.dryRun) {
             events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityInvoked", payload: { capabilityId: capability.id, planId: plan.id } })));
-            const executiveDispatch = deps.executive
-              ? await dispatchBuildTestThroughExecutive({
-                deps,
-                episodeId,
-                construct,
-                capabilityId: capability.id,
-                planId: String(plan.id),
-                conversationId: dialogueConversationId,
-                operatorIds: activeOperatorIds,
-                hasher,
-                clock
-              })
-              : undefined;
-            // Plan items 215-216: mine the real, durable event ledger for a
-            // proven build/test skill (the exact same real dispatch,
-            // succeeded at least minimumSuccessCount times across real past
-            // episodes). Compilation always runs here, so item 215 is a real,
-            // observable step every time this dispatch is reached, not only
-            // when it happens to be consumed. When a skill exists and no
-            // executive dispatch already produced a result, run the real
-            // capability through executeSkill's typed program instead of a
-            // bare call -- the real capability still runs exactly once
-            // either way; this only adds proven-sequence provenance
-            // (skillId, sourceEpisodeIds) to the trace.
-            // Acceptance test B declares a first-attempt defect on the request; absent, nothing is injected.
-            const buildTestMetadata = input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? (input.metadata as Record<string, JsonValue>).buildTest : undefined;
-            const buildFaultInjection = buildTestMetadata && typeof buildTestMetadata === "object" && !Array.isArray(buildTestMetadata) && typeof (buildTestMetadata as Record<string, JsonValue>).faultInjection === "string"
-              ? String((buildTestMetadata as Record<string, JsonValue>).faultInjection)
-              : undefined;
+            const buildTestMetadata = jsonRecord(jsonRecord(input.metadata).buildTest);
+            const buildFaultInjection = typeof buildTestMetadata.faultInjection === "string" ? buildTestMetadata.faultInjection : undefined;
             const compiledBuildTestSkill = await compileBuildTestSkillFromLedger(deps.storage.events);
-            if (compiledBuildTestSkill) {
-              events.push(await append(eventFactory.create({ episodeId, typeId: "ProceduralSkillCompiled", payload: toJsonValue(compiledBuildTestSkill) })));
-            }
+            if (compiledBuildTestSkill) events.push(await append(eventFactory.create({
+              episodeId, typeId: "ProceduralSkillCompiled", payload: toJsonValue(compiledBuildTestSkill)
+            })));
+            let executiveDispatch: Awaited<ReturnType<typeof dispatchBuildTestThroughExecutive>> | undefined;
+            const executeValidatedProgram = async (run: { episodeId: EpisodeId; construct: ConstructGraph }): Promise<BuildTestResult> => {
+              executiveDispatch = await dispatchBuildTestThroughExecutive({ deps, ...run, capabilityId: capability.id,
+                planId: String(plan.id), conversationId: dialogueConversationId, operatorIds: activeOperatorIds,
+                hasher, clock, faultInjection: buildFaultInjection });
+              return executiveDispatch.buildTest;
+            };
             let proceduralSkillExecution: JsonValue | undefined;
-            if (!executiveDispatch && compiledBuildTestSkill) {
-              const skillRun = await executeBuildTestSkill({ skill: compiledBuildTestSkill, episodeId, construct, executeProgram: run => deps.buildTest.executeProgram({ ...run, faultInjection: buildFaultInjection }) });
+            if (compiledBuildTestSkill) {
+              const skillRun = await executeBuildTestSkill({ skill: compiledBuildTestSkill, episodeId, construct, executeProgram: executeValidatedProgram });
+              if (!skillRun.buildTest) throw new Error("learned build/test skill did not produce its capability result");
               buildTest = skillRun.buildTest;
-              proceduralSkillExecution = toJsonValue({
-                skillId: compiledBuildTestSkill.id,
-                sourceEpisodeIds: compiledBuildTestSkill.sourceEpisodeIds,
-                ok: skillRun.execution.ok,
-                rolledBack: skillRun.execution.rolledBack
-              });
+              proceduralSkillExecution = toJsonValue({ skillId: compiledBuildTestSkill.id,
+                sourceEpisodeIds: compiledBuildTestSkill.sourceEpisodeIds, ok: skillRun.execution.ok, rolledBack: skillRun.execution.rolledBack });
+            } else {
+              buildTest = await executeValidatedProgram({ episodeId, construct });
             }
-            buildTest = buildTest ?? executiveDispatch?.buildTest ?? await deps.buildTest.executeProgram({ episodeId, construct, faultInjection: buildFaultInjection });
             // An owner behavior test is an observed constraint, not merely a failed
             // task node. Rebuild from the selected transformation and execute that
             // new ProgramGraph once; held-out obligations remain in the generated
@@ -4746,7 +4764,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               const retryPermission = retryPlan.permission as { allowed?: boolean; dryRun?: boolean };
               if (!retryPermission.allowed || retryPermission.dryRun) return undefined;
               events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityInvoked", payload: { capabilityId: retryCapability.id, planId: String(retryPlan.id) } })));
-              return deps.buildTest.executeProgram({ episodeId, construct: candidate });
+              return (await dispatchBuildTestThroughExecutive({ deps, episodeId, construct: candidate, capabilityId: retryCapability.id,
+                planId: String(retryPlan.id), conversationId: dialogueConversationId, operatorIds: activeOperatorIds, hasher, clock })).buildTest;
             };
             if (ownerProgramFailedToBuild) {
               const priorResult = buildTest;
@@ -5025,6 +5044,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const speakInput = {
         requestText: input.text,
         requestControlPatterns: turnRequestControlPatterns,
+        requestClosedClassWords: new Set(requestClosedClassWords()),
         // Corroborated code shape, not a bare language name. "Java", "Ruby", "Swift" and "Python" are ordinary
         // words in encyclopedic prose, and a turn about the island should not reach a code lane at all -- which
         // was harmless only while that lane had no producer to reach.
@@ -5097,33 +5117,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             authority: requestedAuthority
           })
       };
-      // Plan item L10: real, measured Kneser-Ney generation cost (see
-      // runtime-cost-estimate.ts) instead of a bare literal -- strictly
-      // tightens this gate's requirement (measured ~2-4ms vs. the previous
-      // 750ms placeholder), so it can only become *more* permissive, never
-      // less, for any caller already relying on the old budget.
-      const learnedMouthDecisionByDeadline = deadlineCheckpoint("mouth.realize.learned", estimateKneserNeyGenerationCostMs(64));
-      // A request to write prefers a late answer to a prompt-echoing one, within a bound.
-      //
-      // The deadline is a latency contract for an interactive answer, and for retrieval it is the right contract:
-      // an evidence answer that arrives late is worth less than one that arrives now. Generation is not
-      // retrieval. Measured 2026-09-12: every creative turn exceeded the response deadline upstream, the learned
-      // mouth was refused, and a fallback lane stitched the request text into twelve sections. Refusing the only
-      // lane that can write, to meet a clock, produces a worse answer at every latency.
-      //
-      // Bounded by the same allowance the section realizer already honours, rather than exempted outright: an
-      // unbounded lane is how a turn becomes a hang, and "creative" must not be a way to opt out of every clock.
-      const creativeRealizationAllowed = requestedAuthority === "creative"
-        && Date.now() - turnStarted < CREATIVE_GENERATION_ALLOWANCE_MS;
-      const learnedMouthDecision = creativeRealizationAllowed ? undefined : learnedMouthDecisionByDeadline;
+      const learnedMouthDecision = deadlineCheckpoint("mouth.realize.learned", estimateKneserNeyGenerationCostMs(64));
       kernelTrace({
         stage: "mouth.realize.decision",
         label: "kernel.turn",
         support: {
           learnedMouthAllowed: learnedMouthDecision?.allowed !== false,
-          creativeRealizationExempt: requestedAuthority === "creative",
-          deadlineWouldRefuse: learnedMouthDecisionByDeadline?.allowed === false,
-          decision: toJsonValue(learnedMouthDecisionByDeadline ?? null),
+          deadlinePurpose: runtimeDeadline?.purpose ?? null,
+          decision: toJsonValue(learnedMouthDecision ?? null),
           hasSemanticConstruct: Boolean(semanticAnswerConstructFacts(spokenConstructGraph))
         }
       });
@@ -5282,7 +5283,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           session: extendedSession,
           realizeSection: async (section, _index, priorSectionTexts, conditioning) => {
             const sectionDecision = deadlineCheckpoint("runtime.mouth.extended_section", 1_000);
-            const creativeAllowance = requestedAuthority === "creative" && Date.now() - extendedGenerationStarted < CREATIVE_GENERATION_ALLOWANCE_MS;
+            const creativeAllowance = requestedAuthority === "creative" && runtimeDeadline?.purpose !== "execution"
+              && Date.now() - extendedGenerationStarted < CREATIVE_GENERATION_ALLOWANCE_MS;
             if (sectionDecision?.allowed === false && !creativeAllowance) return { text: "" };
             // The real established-facts conditioning (narrative-state.ts)
             // tells this section which cast members already appeared --
@@ -6039,6 +6041,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           cognitiveProposals: toJsonValue(cognitiveProposals),
           answerRevision: answerRevisionTrace,
           answer: emission.answer,
+          ...(boundActionResults ? { actionResults: boundActionResults } : {}),
           epistemicForce: emission.epistemicForce,
           assistantForce: emission.assistantForce,
           realizationAvailability: toJsonValue(spoken.realizationAvailability),
@@ -6196,6 +6199,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         cognitiveProposals: toJsonValue(cognitiveProposals),
         answerRevision: answerRevisionTrace,
         answer: emission.answer,
+        ...(boundActionResults ? { actionResults: boundActionResults } : {}),
         epistemicForce: emission.epistemicForce,
         assistantForce: emission.assistantForce,
           realizationAvailability: toJsonValue(spoken.realizationAvailability),
@@ -6276,116 +6280,34 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
   return { turn };
 }
 
-/**
- * Drives the local build/test capability through the durable executive
- * spine (goal -> task -> attempt -> receipt -> outcome -> learning record)
- * so every real invocation leaves a crash-recoverable, auditable trail --
- * the first real executor proving the dispatcher mechanism end to end. The
- * actual `executeProgram` call still happens exactly once, inside the
- * dispatcher's own prepare-then-invoke ordering; its full result is
- * captured via closure since the executive ledger only needs bounded
- * receipt evidence, not raw stdout/stderr.
- */
+// Build, repair, and connector operators share the same durable dispatcher and result store.
 async function dispatchBuildTestThroughExecutive(input: {
-  deps: ScceKernelDeps;
-  episodeId: EpisodeId;
-  construct: ConstructGraph;
-  capabilityId: string;
-  planId: string;
-  conversationId: string;
-  operatorIds: readonly CognitiveOperatorId[];
-  hasher: ReturnType<typeof createHasher>;
-  clock: ReturnType<typeof createClock>;
-}): Promise<{ disposition: string; attemptId?: string; receipt?: { status: string }; buildTest?: BuildTestResult } | undefined> {
-  const executive = input.deps.executive;
-  if (!executive) return undefined;
-
-  let capturedResult: BuildTestResult | undefined;
-  const executor = createBuildTestCapabilityExecutor({ buildTest: input.deps.buildTest, capabilityId: input.capabilityId, onResult: result => { capturedResult = result; } });
-
-  const ownerId = input.deps.informationAccess?.principalId ?? "scce-runtime";
-  const policyVersionId = `policy_${input.hasher.digestHex(JSON.stringify(input.deps.policy ?? {})).slice(0, 32)}`;
-  const goalId = `goal_build_test_${input.planId}`;
-  const taskId = `task_build_test_${input.planId}`;
-  const causalOperatorIds = input.operatorIds.filter(operatorId =>
-    operatorId === COGNITIVE_OPERATOR_IDS.programPlanning
-      || operatorId === COGNITIVE_OPERATOR_IDS.workspaceRepair
-      || operatorId === COGNITIVE_OPERATOR_IDS.actionPlanning
-  );
-
-  const result = await dispatchCapabilityTask(
-    {
-      executive,
-      executors: createCapabilityExecutorRegistry([executor]),
-      hasher: input.hasher,
-      now: () => input.clock.now(),
-      dialogueMemory: input.deps.storage.dialogueMemory
-    },
-    {
-      episodeId: input.episodeId,
-      ownerId,
-      policyVersionId,
-      goal: { id: goalId, goalClassId: "goal.class.build_test", objectiveRef: input.planId, requirementIds: [], ownerId },
-      task: {
-        id: taskId,
-        goalId,
-        taskClassId: "task.class.build_test",
-        requirementIds: [],
-        dependencyTaskIds: [],
-        capabilityId: input.capabilityId,
-        inputRef: input.planId,
-        policyVersionId,
-        controls: {
-          authority: {
-            authorityClassId: "authority.class.build_test",
-            subjectId: ownerId,
-            requiredScopeIds: [],
-            state: "not_required",
-            justificationRef: input.planId
-          },
-          approval: {
-            policyId: "approval.policy.build_test",
-            state: "pending",
-            approverClassIds: ["policy-gate"],
-            justificationRef: input.planId
-          }
-        },
-        rollback: {
-          mode: "not_required",
-          justificationRef: "build_test executes in an ephemeral workspace with no durable mutation to roll back"
-        }
-      },
-      approvalDecision: {
-        decisionId: `approval_${input.planId}`,
-        decision: "approved",
-        policyId: "approval.policy.build_test",
-        decidedBy: "policy-gate",
-        evidenceRefs: [input.planId]
-      },
-      payload: { episodeId: input.episodeId, construct: input.construct } as unknown as JsonValue,
-      outcomeEvidenceRefs: [],
-      ...(causalOperatorIds.length ? {
-        operatorOutcome: {
-          conversationId: input.conversationId,
-          operatorIds: causalOperatorIds,
-          typedInputState: toJsonValue({
-            constructId: input.construct.id,
-            programId: input.construct.program?.id ?? null,
-            artifacts: input.construct.artifacts.map(artifact => ({ path: artifact.path, contentHash: artifact.contentHash }))
-          }),
-          predictedDelta: toJsonValue({
-            capabilityId: input.capabilityId,
-            programId: input.construct.program?.id ?? null,
-            buildCode: 0,
-            testCode: 0,
-            passed: true
-          })
-        }
-      } : {})
-    }
-  );
-
-  return { disposition: result.disposition, attemptId: result.attemptId, receipt: result.receipt, buildTest: capturedResult };
+  deps: ScceKernelDeps; episodeId: EpisodeId; construct: ConstructGraph; capabilityId: string; planId: string;
+  conversationId: string; operatorIds: readonly CognitiveOperatorId[]; hasher: ReturnType<typeof createHasher>;
+  clock: ReturnType<typeof createClock>; faultInjection?: string;
+}): Promise<{ disposition: string; attemptId?: string; receipt?: { status: string }; buildTest: BuildTestResult }> {
+  if (!input.deps.capabilities) throw new Error("runtime capability service is unavailable");
+  const operatorIds = input.operatorIds.filter(id => id === COGNITIVE_OPERATOR_IDS.programPlanning
+    || id === COGNITIVE_OPERATOR_IDS.workspaceRepair || id === COGNITIVE_OPERATOR_IDS.actionPlanning);
+  const result = await invokeRuntimeCapability({
+    capabilities: input.deps.capabilities, episodeId: input.episodeId, taskId: `task_build_test_${input.planId}`,
+    ownerId: input.deps.informationAccess?.principalId ?? "scce-runtime",
+    policyVersionId: `policy_${input.hasher.digestHex(JSON.stringify(input.deps.policy ?? {}))}`,
+    capabilityId: input.capabilityId, approved: true,
+    payload: toJsonValue({ episodeId: input.episodeId, construct: input.construct,
+      ...(input.faultInjection ? { faultInjection: input.faultInjection } : {}) }),
+    ...(operatorIds.length ? { operatorOutcome: {
+      conversationId: input.conversationId, operatorIds,
+      typedInputState: toJsonValue({ constructId: input.construct.id, programId: input.construct.program?.id ?? null }),
+      predictedDelta: toJsonValue({ capabilityId: input.capabilityId, programId: input.construct.program?.id ?? null,
+        buildCode: 0, testCode: 0, passed: true })
+    } } : {})
+  });
+  if ((result.disposition !== "succeeded" && result.disposition !== "failed") || !result.observation?.result) {
+    throw new Error(result.observation?.error ?? `build/test dispatch produced no result (${result.disposition})`);
+  }
+  return { disposition: result.disposition, attemptId: result.attemptId, receipt: result.receipt,
+    buildTest: result.observation.result as unknown as BuildTestResult };
 }
 
 // Wikipedia teaches the language of facts, Gutenberg the language of prose, code corpora the language of code.

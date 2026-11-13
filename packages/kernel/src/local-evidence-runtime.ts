@@ -15,6 +15,7 @@ import { createStringMemo } from "./pure-memo.js";
 import { anchorSymbolUnits, codeBearingLines, featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import { hasSourceBoundSemanticRelation } from "./source-bound-semantic-fact.js";
+import { currentSourcePropositionSurfaces, type SourceBoundRequestProposition } from "./source-construction-request-binding.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
 import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceClauses, splitSurfaceSentences, surfaceContainsBoundValue, surfaceUnits, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
 import type {
@@ -580,6 +581,7 @@ function sourceOwnedSubjectUnitSet(
 export function localEvidenceAnswerSurface(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
+  boundProposition?: SourceBoundRequestProposition;
   /** Values the turn's realization contract already bound to the request's relation; a sentence supplying one leads. */
   boundValues?: readonly string[];
   /** The spans that binding was verified to occur in: the answerhood gate reads a resolution, never a coincidence. */
@@ -599,6 +601,10 @@ export function localEvidenceAnswerSurface(input: {
   if (input.translationTarget) return undefined;
   const plan = localEvidenceAnswerPlan(input);
   if (!plan) return undefined;
+  return evidenceAnswerCandidateForPlan(plan);
+}
+
+function evidenceAnswerCandidateForPlan(plan: LocalEvidenceAnswerPlan): LocalEvidenceAnswerCandidate {
   return {
     answer: "",
     evidence: plan.evidence,
@@ -617,6 +623,7 @@ export function localEvidenceAnswerSurface(input: {
 export function proposeSourceExactEvidenceAnswer(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
+  boundProposition?: SourceBoundRequestProposition;
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
   explicitContextEvidenceIds?: ReadonlySet<string>;
   boundValues?: readonly string[];
@@ -637,6 +644,10 @@ export function proposeSourceExactEvidenceAnswer(input: {
   markSourceLeadSpans(input.selectedEvidence);
   const promoted = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!promoted.length) return undefined;
+  if (input.boundProposition) {
+    const plan = boundPropositionAnswerPlan(input.boundProposition, input.requestText, promoted);
+    return plan ? evidenceAnswerCandidateForPlan(plan) : undefined;
+  }
   // A request implying a temporal counterexample (e.g. "did X invent Y?"
   // when Y's evidence-attested history predates X's lifespan) needs the
   // richer, multi-sentence temporalCounterexampleAnswerPlan in
@@ -825,10 +836,11 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const relationRequired = input.closedClassWords !== undefined;
   const covers = (row: { sentence: string; span: EvidenceSpan; nearDuplicate: boolean }) =>
     row.nearDuplicate || input.explicitContextEvidenceIds?.has(String(row.span.id)) === true
-      || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, {
+      || (!relationRequired ? evidenceTopicMatchesRequest([row.sentence], row.span, coverageUnits, input.requestText)
+      : answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, {
         relationRequired, languageClosedClassWords: input.functionSymbols,
         boundValues: input.boundValueEvidenceIds?.has(String(row.span.id)) ? input.boundValues : []
-      });
+      }));
   // A request that names its subject and asks nothing else is answered by the subject's own opening sentence when
   // a titled source has one: an encyclopedic lead predicates about its subject by construction, even when it names
   // the subject in a longer form the anchor test cannot see ("Augusta Ada King, Countess of Lovelace ... also known
@@ -979,6 +991,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
  function localEvidenceAnswerPlan(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
+  boundProposition?: SourceBoundRequestProposition;
   /** Values the turn's realization contract already bound to the request's relation; a sentence supplying one leads. */
   boundValues?: readonly string[];
   /** The spans that binding was verified to occur in: the answerhood gate reads a resolution, never a coincidence. */
@@ -995,6 +1008,9 @@ export function proposeSourceExactEvidenceAnswer(input: {
 }): LocalEvidenceAnswerPlan | undefined {
   const evidence = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!evidence.length) return undefined;
+  if (input.boundProposition && input.semanticProof?.verdict !== SEMANTIC_VERDICT.CONTRADICTED) {
+    return boundPropositionAnswerPlan(input.boundProposition, input.requestText, evidence);
+  }
   const temporalEvidence = (input.temporalEvidence ?? evidence)
     .filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   // Same near-duplicate exemption as proposeSourceExactEvidenceAnswer.
@@ -1032,6 +1048,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     functionSymbols: input.functionSymbols,
     boundValues: input.boundValues,
     boundValueEvidenceIds: input.boundValueEvidenceIds,
+    boundProposition: input.boundProposition,
     responseSentenceBudget: input.responseSentenceBudget
   });
   if (!selected) return undefined;
@@ -1048,6 +1065,17 @@ export function proposeSourceExactEvidenceAnswer(input: {
       proofAnnotation: { verdict: input.semanticProof?.verdict ?? null, contradiction }
     })
   };
+}
+
+function boundPropositionAnswerPlan(binding: SourceBoundRequestProposition, requestText: string,
+  evidence: readonly EvidenceSpan[]): LocalEvidenceAnswerPlan | undefined {
+  const surface = currentSourcePropositionSurfaces(binding, requestText, evidence)[0];
+  const owner = surface && evidence.find(span => String(span.id) === surface.evidenceId);
+  if (!surface || !owner) return undefined;
+  return { planId: "ans.plan.source_bound_proposition.v1", kindId: LOCAL_ANSWER_KIND_IDS.evidenceBoundary,
+    evidence: [owner], slotSurfaces: { [LOCAL_ANSWER_SLOT_IDS.sentence]: surface.text }, maxSentences: 1,
+    proofExcerpts: [{ text: surface.text, evidenceId: owner.id }], audit: toJsonValue({ source: "source_owned_proposition.graph_binding",
+      relationId: binding.relationId, hyperedgeIds: binding.hyperedgeIds, evidenceId: owner.id }) };
 }
 
 
@@ -1128,7 +1156,17 @@ function precedingSentenceContext(span: EvidenceSpan, answeringText: string): st
   return index > 0 ? spanSentences[index - 1]! : "";
 }
 
-/** Corpus-oriented truth: an answer must carry a third of the request's content units, in its sentences or its source title; a passage sharing none of them is a different topic, however well it scores lexically. Pure. */
+/** Topic overlap proposes evidence for inspection; only answerhood can authorize a factual surface. */
+export function evidenceTopicMatchesRequest(sentences: readonly string[], span: EvidenceSpan,
+  contentUnits: readonly string[], requestText = ""): boolean {
+  const { answerContentUnits, subjectUnits } = answerhoodRequestUnits(requestText, contentUnits);
+  if (!subjectUnits.length) return true;
+  const units = answerhoodComparisonUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
+  const matches = (unit: string) => units.some(surfaceUnit => requestUnitMatchesSurface(unit, surfaceUnit));
+  return subjectUnits.some(matches) && answerContentUnits.filter(matches).length >= Math.max(1, Math.ceil(answerContentUnits.length / 3));
+}
+
+/** Factual coverage preserves every unresolved content obligation. */
 export function answerCoversRequest(
   sentences: readonly string[],
   span: EvidenceSpan,
@@ -1165,8 +1203,7 @@ export function answerCoversRequest(
   // language (a hydrated model or the interaction corpus's request patterns). Without one, "what" and "known" are
   // indistinguishable from "commanded", and the one-third quota is the honest gate.
   if (!options.relationRequired) {
-    const covered = answerContentUnits.filter(matches).length;
-    return subjectUnits.some(subjectMatches) && covered >= Math.max(1, Math.ceil(answerContentUnits.length / 3));
+    return subjectUnits.some(subjectMatches) && answerContentUnits.length > 0 && answerContentUnits.every(matches);
   }
   // The sentence itself must name the subject it predicates about: with the title standing in, "Their son Eduard was
   // born in Zurich in July 1910" answered when Einstein was born, because the article is about Einstein and the

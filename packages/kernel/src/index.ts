@@ -139,6 +139,9 @@ export * from "./cognitive-substrate.js";
 export * from "./judge.js";
 export * from "./action-graph.js";
 export * from "./capability-dispatcher.js";
+export * from "./capability-runtime.js";
+export * from "./connector-capabilities.js";
+export * from "./capability-construction.js";
 export * from "./operator-outcome-loop.js";
 export * from "./causal-analysis-runtime.js";
 export * from "./retrieval-rank-features.js";
@@ -288,6 +291,7 @@ export { acquireContextualQaConstructions, mergeContextualQaAcquisitionResults, 
   inspectContextualQaConstructionVerification, inspectContextualQaLiteralAnswerAlignment, verifyContextualQaConstruction, type AcquiredContextualQaFamily,
   type ContextualQaAcquisitionPartition, type ContextualQaAcquisitionResult, type ContextualQaLiteralAnswerCandidate,
   type ContextualQaConstructionVerification, type ContextualQaLiteralAnswerInspection } from "./contextual-qa-acquisition.js";
+export * from "./source-owned-span-completion.js";
 export * from "./dialogue-cognitive-memory.js";
 export * from "./conversation-plan-memory.js";
 export * from "./dialogue-cognitive-shadow.js";

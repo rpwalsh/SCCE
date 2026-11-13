@@ -2,6 +2,13 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
 
+export function codePointUtf16Offsets(text: string): readonly number[] {
+  const offsets = [0];
+  let offset = 0;
+  for (const point of text) { offset += point.length; offsets.push(offset); }
+  return offsets;
+}
+
 /**
  * A supplementary, default-ignorable blank reserved for length-preserving source-role projections. One marker
  * occupies the same two UTF-16 code units and one code point as any supplementary source character. It is a

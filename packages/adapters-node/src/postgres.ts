@@ -94,6 +94,7 @@ import {
   REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
   REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE,
   REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
+  REQUEST_REQUIREMENT_PATTERN_SCHEMA,
   SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA,
   SOURCE_COMPUTATION_CONSTRUCTION_RECIPE,
   SOURCE_COMPUTATION_SOURCE_SYSTEM,
@@ -3413,52 +3414,35 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
  */
 const SPREAD_SCAN_CAP = 1500;
 
-/**
- * Measure all requested runs in one pass over the union of their canonical postings.
- *
- * The previous correlated lateral query rescanned every promoted evidence feature array once per candidate. A cold
- * threshold sample contains 400 candidates, so a 2 GB brain spent 156 seconds repeatedly detoasting the same rows.
- * The overlap predicate below gives PostgreSQL one constant GIN key set, then a hash join matches the unnested
- * postings to every candidate. Multi-unit runs still require every learned unit; only the physical traversal is
- * shared. Distinct-source counts are exact until the common saturation bound.
- */
+/** Retrieve complete indexed runs before admission filters can distort the posting lookup's cardinality. */
 async function measureCanonicalSourceSpreads(storage: PostgresStorageAdapter, runs: readonly string[]): Promise<Array<{ run: string; sources: number }>> {
   if (!runs.length) return [];
   const candidates = runs.map(run => ({
     run,
     features: uniquePostgresStrings(anchorSymbolUnits(run).map(unit => `anchor:sym:${unit}`))
   }));
-  const requestedFeatures = uniquePostgresStrings(candidates.flatMap(candidate => candidate.features));
-  if (!requestedFeatures.length) return candidates.map(candidate => ({ run: candidate.run, sources: 0 }));
-  const access = storage.informationAccessPredicate("evidence", 3);
+  if (candidates.every(candidate => !candidate.features.length)) return candidates.map(candidate => ({ run: candidate.run, sources: 0 }));
+  const access = storage.informationAccessPredicate("evidence", 2);
   return queryIndexedEvidence<{ run: string; sources: number }>(storage,
     `WITH candidate AS MATERIALIZED (
        SELECT item->>'run' AS run,
               ARRAY(SELECT jsonb_array_elements_text(item->'features')) AS features,
               ordinal
        FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS input(item, ordinal)
-     ), wanted AS MATERIALIZED (
-       SELECT candidate.run, feature.value AS feature, cardinality(candidate.features)::int AS required
-       FROM candidate CROSS JOIN LATERAL unnest(candidate.features) AS feature(value)
-     ), matching_evidence AS MATERIALIZED (
-       SELECT evidence.id, evidence.source_id, evidence.features
-       FROM ${storage.table("evidence_spans")} evidence
-       WHERE evidence.features && $2::text[]
-         AND evidence.status='promoted' AND ${access.sql}
-     ), complete AS MATERIALIZED (
-       SELECT wanted.run, evidence.id, evidence.source_id
-       FROM matching_evidence evidence
-       CROSS JOIN LATERAL unnest(evidence.features) AS observed(feature)
-       JOIN wanted ON wanted.feature=observed.feature
-       GROUP BY wanted.run, wanted.required, evidence.id, evidence.source_id
-       HAVING count(DISTINCT observed.feature)=wanted.required
-     )
-     SELECT candidate.run AS run,
-            LEAST(count(DISTINCT complete.source_id), ${SPREAD_SCAN_CAP})::int AS sources
-     FROM candidate LEFT JOIN complete ON complete.run=candidate.run
-     GROUP BY candidate.run, candidate.ordinal
+      )
+      SELECT candidate.run AS run, LEAST(measured.sources, ${SPREAD_SCAN_CAP})::int AS sources
+      FROM candidate CROSS JOIN LATERAL (
+        WITH matching_evidence AS MATERIALIZED (
+          SELECT evidence.source_id, evidence.status, evidence.information_label
+          FROM ${storage.table("evidence_spans")} evidence
+          WHERE cardinality(candidate.features)>0 AND evidence.features @> candidate.features
+        )
+        SELECT count(DISTINCT evidence.source_id) AS sources
+        FROM matching_evidence evidence
+        WHERE evidence.status='promoted' AND ${access.sql}
+      ) measured
      ORDER BY candidate.ordinal`,
-    [JSON.stringify(candidates), requestedFeatures, ...access.params]
+    [JSON.stringify(candidates), ...access.params]
   );
 }
 
@@ -3822,7 +3806,13 @@ function createConstructStore(storage: PostgresStorageAdapter): ConstructStore {
 function createCapabilityStore(storage: PostgresStorageAdapter): CapabilityAuditStore {
   return {
     async putPlan(plan) {
-      await storage.query(`INSERT INTO ${storage.table("capability_calls")}(id,episode_id,capability_id,phase,status,input_json,result_json,risk_vector,permission_json,created_at,completed_at) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,TO_TIMESTAMP($10/1000.0),$11) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status, result_json=EXCLUDED.result_json`, [plan.id, plan.episodeId, plan.capabilityId, plan.phase, plan.status, JSON.stringify(plan.input), JSON.stringify(plan.result ?? null), JSON.stringify(plan.riskVector), JSON.stringify(plan.permission), plan.createdAt, plan.completedAt ? new Date(plan.completedAt) : null]);
+      let permission = plan.permission;
+      if (plan.approvalScope) {
+        if (!permission || typeof permission !== "object" || Array.isArray(permission)) throw new Error("scoped capability approval requires an object permission");
+        validateCapabilityApprovalScope(plan.approvalScope);
+        permission = toJsonValue({ ...permission, approvalScope: plan.approvalScope });
+      }
+      await storage.query(`INSERT INTO ${storage.table("capability_calls")}(id,episode_id,capability_id,phase,status,input_json,result_json,risk_vector,permission_json,created_at,completed_at) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,TO_TIMESTAMP($10/1000.0),$11) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status, result_json=EXCLUDED.result_json`, [plan.id, plan.episodeId, plan.capabilityId, plan.phase, plan.status, JSON.stringify(plan.input), JSON.stringify(plan.result ?? null), JSON.stringify(plan.riskVector), JSON.stringify(permission), plan.createdAt, plan.completedAt ? new Date(plan.completedAt) : null]);
     },
     async listByEpisode(episodeId) {
       return (await storage.query<CapabilityRow>(`SELECT * FROM ${storage.table("capability_calls")} WHERE episode_id=$1 ORDER BY created_at`, [episodeId])).map(rowToCapability);
@@ -6266,6 +6256,22 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           `pattern.pattern_json->>'componentRecipe'='${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}'`, `pattern.source_system='${CONTEXTUAL_QA_SOURCE_SYSTEM}'`,
           `pattern.pattern_json->'contextualQaRequestFeatures' ?| $${params.length}::text[]`);
       }
+      if (query.requestRequirementFeatures !== undefined) {
+        if (!Array.isArray(query.requestRequirementFeatures)
+          || query.requestRequirementFeatures.some(feature => !feature || typeof feature.surface !== "string" || !feature.surface
+            || (feature.anchor !== "start" && feature.anchor !== "any" && feature.anchor !== "end"))) {
+          throw new Error("request requirement features must carry a nonempty surface and a valid anchor");
+        }
+        if (!query.requestRequirementFeatures.length || query.sourceComputationBindingId !== undefined
+          || query.contextualQaRequestFeatures !== undefined
+          || (query.patternSchemas && !query.patternSchemas.includes(REQUEST_REQUIREMENT_PATTERN_SCHEMA))) return [];
+        const featureKeys = new Map(query.requestRequirementFeatures.map(feature => [`${feature.anchor}\u0000${feature.surface}`, feature]));
+        const features = [...featureKeys.values()];
+        params.push(features.map(feature => feature.anchor), features.map(feature => feature.surface));
+        scopeWhere.push(`pattern.pattern_schema='${REQUEST_REQUIREMENT_PATTERN_SCHEMA}'`,
+          `(pattern.pattern_json->>'anchor',pattern.pattern_json->>'surface') IN (`
+            + `SELECT requested.anchor,requested.surface FROM unnest($${params.length - 1}::text[],$${params.length}::text[]) AS requested(anchor,surface))`);
+      }
       if (query.sourceComputationBindingId !== undefined) {
         if (typeof query.sourceComputationBindingId !== "string" || !query.sourceComputationBindingId) throw new Error("source computation binding must be a nonempty opaque ID");
         if ((query.sourceSystem !== undefined && query.sourceSystem !== SOURCE_COMPUTATION_SOURCE_SYSTEM)
@@ -6488,7 +6494,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                 WHERE evidence_owner.id=owned_evidence.source_version_id AND evidence_owner.source_id=owned_evidence.source_id)
             WHERE owned_evidence.id IS NULL)))`);
       }
-      params.push(query.limit ?? 1000);
+      const completeRequestFeatureRead = query.requestRequirementFeatures !== undefined && query.limit === undefined;
+      // LIMIT NULL is PostgreSQL's explicit unbounded form. An exact
+      // request-feature read must be complete: silently sampling its learned
+      // controls changes the interpretation of the request.
+      params.push(completeRequestFeatureRead ? null : query.limit ?? 1000);
       const limitParam = params.length;
       // Ranked on the narrow indexed columns first. The previous shape materialised pattern_json for every
       // matching row before ranking: a construction pattern's bundle averages 700KB, so a corpus with 14,784
@@ -6598,7 +6608,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            FROM ranked_pool ranked CROSS JOIN category_counts
            -- Each pattern kind gets an even share of the row budget, ranked by its own support within that share --
            -- fair representation across kinds, not a hardcoded per-kind quota.
-           WHERE ${query.patternIds ? "TRUE" : `ranked.category_rank <= CEIL($${limitParam}::numeric / category_counts.n)`}
+           WHERE ${query.patternIds || completeRequestFeatureRead ? "TRUE" : `ranked.category_rank <= CEIL($${limitParam}::numeric / category_counts.n)`}
            ORDER BY ${order("ranked")}
            LIMIT $${limitParam}
          ),
@@ -8785,7 +8795,24 @@ interface ProofRow { id: string; claim_id: string; verdict: string; confidence_j
 function rowToProof(row: ProofRow): SemanticProof { return { id: row.id as ProofId, claimId: row.claim_id as never, verdict: row.verdict as never, confidence: row.confidence_json, proofGraph: row.proof_graph_json, evidenceIds: row.evidence_ids as EvidenceId[], transformIds: row.transform_ids, scores: row.scores_json, validatorVersion: row.validator_version, createdAt: row.created_at.getTime() }; }
 
 interface CapabilityRow { id: string; episode_id: string; capability_id: string; phase: CapabilityPlan["phase"]; status: CapabilityPlan["status"]; input_json: JsonValue; result_json: JsonValue | null; risk_vector: JsonValue; permission_json: JsonValue; created_at: Date; completed_at: Date | null }
-function rowToCapability(row: CapabilityRow): CapabilityPlan { return { id: row.id as never, episodeId: row.episode_id as EpisodeId, capabilityId: row.capability_id, phase: row.phase, status: row.status, input: row.input_json, result: row.result_json ?? undefined, riskVector: row.risk_vector, permission: row.permission_json, createdAt: row.created_at.getTime(), completedAt: row.completed_at?.getTime() }; }
+function rowToCapability(row: CapabilityRow): CapabilityPlan {
+  let permission = row.permission_json;
+  let approvalScope: CapabilityPlan["approvalScope"];
+  if (permission && typeof permission === "object" && !Array.isArray(permission) && Object.hasOwn(permission, "approvalScope")) {
+    validateCapabilityApprovalScope(permission.approvalScope);
+    approvalScope = permission.approvalScope;
+    const { approvalScope: _scope, ...original } = permission;
+    permission = original;
+  }
+  return { id: row.id as never, episodeId: row.episode_id as EpisodeId, capabilityId: row.capability_id, phase: row.phase, status: row.status, input: row.input_json,
+    ...(approvalScope ? { approvalScope } : {}), result: row.result_json ?? undefined, riskVector: row.risk_vector, permission,
+    createdAt: row.created_at.getTime(), completedAt: row.completed_at?.getTime() };
+}
+
+function validateCapabilityApprovalScope(value: unknown): asserts value is NonNullable<CapabilityPlan["approvalScope"]> {
+  const scope = value as CapabilityPlan["approvalScope"];
+  if (!scope || [scope.episodeId, scope.goalId, scope.taskId, scope.inputRef].some(field => typeof field !== "string" || !field)) throw new Error("capability approval scope requires exact execution identities");
+}
 
 interface ForecastRow { id: string; episode_id: string | null; t: string; state_vector: number[]; alpha_surface_json: AlphaTrace["surfaces"]; spectrum_json: ForecastState["spectrum"] }
 function rowToForecast(row: ForecastRow): ForecastState { return { id: row.id as never, episodeId: row.episode_id ? row.episode_id as EpisodeId : undefined, t: Number(row.t), stateVector: row.state_vector.map(Number), alphaSurface: row.alpha_surface_json, spectrum: row.spectrum_json }; }

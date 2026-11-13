@@ -105,15 +105,14 @@ export const TURN_LEARNING_NEED_IDS = {
 
 export function learningNeedsFor(
   text: string,
-  entailment: TurnResult["entailment"],
-  evidence: EvidenceSpan[]
+  entailment: TurnResult["entailment"]
 ): TurnLearningNeed[] {
   // The condition id plus the subject it was measured over. No wording: a surface renders the id and the data.
   const needs: TurnLearningNeed[] = [];
-  if (evidence.length < 2 || entailment.faithfulnessLcb < 0.2) {
+  if (entailment.verdict === "unknown" || entailment.verdict === "underdetermined") {
     needs.push({ needId: TURN_LEARNING_NEED_IDS.evidence, subject: text.slice(0, 180) });
   }
-  if (entailment.contradiction > 0.2) {
+  if (entailment.verdict === "contradicted" || entailment.contradiction > 0.2) {
     needs.push({ needId: TURN_LEARNING_NEED_IDS.contradiction, subject: entailment.claim.normalized.slice(0, 180) });
   }
   return needs;

@@ -16,6 +16,7 @@ const pattern = (surface: string, copies: Record<string, number>, anchor = "any"
   id: `${surface}:${anchor}`, profileId: "request.corpus", patternKind: "semantic_role", support: 1, entropy: 0,
   evidenceIds: ["request.corpus.evidence" as never], updatedAt: 1, patternJson: {
     schema: "scce.request_requirement_pattern.v1", selectedAuthority: "factual", requestSpanRole: "control", surface, anchor,
+    responseMatchCut: 0.5,
     requestUnitResponseCopyRecipe: "scce.request_unit_response_copy.v1", requestUnitResponseCopyAuthority: "factual",
     requestUnitResponseCopy: Object.entries(copies).map(([unit, copiedPairs]) => ({ unit, copiedPairs, supportedPairs: 6 }))
   }
@@ -64,4 +65,15 @@ it("uses only source-observed matching request frames and preserves opaque norma
   const unrelated = pattern("where does", { where: 6, does: 6 }, "start");
   expect(requestScaffoldingConstructions([...patterns, unrelated], "factual", request)).toEqual([{ parts: [{ kind: "literal", surface: "where" }] }]);
   expect(requestScaffoldingConstructions([pattern("\u03c8 \u03bc", { "\u03c8": 0, "\u03bc": 6 })], "factual", "\u03c8 \u03bc \u03bb?")).toEqual([{ parts: [{ kind: "literal", surface: "\u03c8" }] }]);
+});
+
+it("uses the matching corpus copy-rate split instead of letting one copied witness veto a learned control", () => {
+  const learned = [
+    pattern("what does", { what: 0, does: 0 }, "start"),
+    pattern("what does the", { what: 1, does: 0, the: 6 }, "start"),
+    pattern("say about", { say: 0, about: 0 }),
+    pattern("the", { the: 6 })
+  ];
+  expect(requestScaffoldingConstructions(learned, "factual", "What does the source say about request branches master?"))
+    .toEqual(["what", "does", "say", "about"].map(surface => ({ parts: [{ kind: "literal", surface }] })));
 });

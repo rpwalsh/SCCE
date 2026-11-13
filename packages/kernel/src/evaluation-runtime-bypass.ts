@@ -30,6 +30,7 @@ import type {
 } from "./types.js";
 
 export function emptySurfaceLanguageMemory(): {
+  hydrationPurpose: "disabled";
   models: never[];
   observations: never[];
   units: never[];
@@ -60,6 +61,7 @@ export function emptySurfaceLanguageMemory(): {
     localizationReliability: 0
   };
   return {
+    hydrationPurpose: "disabled",
     measuredHeapBytes: 0,
     models: [],
     observations: [],

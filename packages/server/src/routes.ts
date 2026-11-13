@@ -1,14 +1,15 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import http from "node:http";
-import { encodeProgramArtifactWire, SourceLearningApplication as SharedSourceLearningApplication } from "@scce/kernel";
+import { encodeProgramArtifactWire, restoreFetchedCapabilityResult, sourceSpanCompletionRequestFromMetadata, SourceLearningApplication as SharedSourceLearningApplication } from "@scce/kernel";
+import { connectorOperationIdentity, executeConnectorOperation } from "@scce/adapters-node";
 import {pendingProgramValidationApproval} from "./program-validation-approval.js";
 import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createWorkspaceCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID, validateStructuredPatchValidationPolicy, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
+import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createWorkspaceCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID, validateStructuredPatchValidationPolicy, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspaceCodingPatchPlanningResult, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, StorageStatusOptions, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
@@ -562,7 +563,8 @@ async function executeVscodeWorkspacePatch(context: ApiContext, value: unknown):
     return { ok: false, pendingApproval: pending, session: context.runtime.approvals.snapshot() };
   }
   return executeWorkspacePatchApiRequest({ request, workspace, allowedRoots: context.config.runtime.allowedRoots, policy, provider,
-    executive: context.runtime.executive, ownerId: context.config.security?.informationAccess?.principalId, events: context.runtime.storage.events });
+    executive: context.runtime.executive, ownerId: context.config.security?.informationAccess?.principalId, events: context.runtime.storage.events,
+    refreshWorkspace: () => createWorkspaceRuntime(context).ingest(workspace.rootPath) });
 }
 
 async function executeVscodeCodeEdit(context: ApiContext, value: Record<string, unknown>): Promise<unknown> {
@@ -805,12 +807,12 @@ async function dispatch(
   if (req.method === "POST" && url.pathname === "/api/connectors/search") {
     requirePublicNetworkAcquisition();
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["query"]);
-    return json(await context.runtime.connectors.search(String(body.query), Number(body.limit ?? 10)));
+    return json(await connectorOperation(context, req, "network.search", { query: String(body.query), limit: Number(body.limit ?? 10) }));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/fetch") {
     requirePublicNetworkAcquisition();
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["uri"]);
-    const fetched = await context.runtime.connectors.fetch(String(body.uri));
+    const fetched = await restoreFetchedCapabilityResult(await connectorOperation(context, req, "network.fetch", { uri: String(body.uri) }), context.runtime.storage.blobs);
     const derivative = fetched.evidenceDerivative;
     return json({
       uri: fetched.uri,
@@ -834,85 +836,73 @@ async function dispatch(
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/search") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["query"]);
-    return json(await context.runtime.connectors.outlookSearch(String(body.query), Number(body.limit ?? 25)));
+    return json(await connectorOperation(context, req, "outlook.search_mail", { query: String(body.query), limit: Number(body.limit ?? 25) }));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/read") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["messageId"]);
-    return json(await context.runtime.connectors.outlookReadMessage(String(body.messageId)));
+    return json(await connectorOperation(context, req, "outlook.read_mail", { messageId: String(body.messageId) }));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/draft") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["to", "subject", "body"]);
-    const input = { to: stringArray(body.to), subject: String(body.subject), body: String(body.body), cc: body.cc ? stringArray(body.cc) : undefined };
+    const input = { to: stringArray(body.to), subject: String(body.subject), body: String(body.body), ...(body.cc ? { cc: stringArray(body.cc) } : {}) };
     if (!approved(context, "outlook.create_draft", input)) return pendingApproval(context, "outlook.create_draft", input);
-    const ownerId = context.config.security?.informationAccess?.principalId ?? "scce-server";
-    const result = context.runtime.executive
-      ? await dispatchOutlookDraftCreateThroughExecutive({ executive: context.runtime.executive, connectors: context.runtime.connectors, draft: input, ownerId })
-      : await context.runtime.connectors.outlookCreateDraft({ ...input, approved: true });
-    return json(result);
+    return json(await connectorOperation(context, req, "outlook.create_draft", toJsonValue(input)));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/send") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["messageId"]);
     const input = { messageId: String(body.messageId) };
     if (!approved(context, "outlook.send_mail", input)) return pendingApproval(context, "outlook.send_mail", input);
-    const sendOwnerId = context.config.security?.informationAccess?.principalId ?? "scce-server";
-    const result = context.runtime.executive
-      ? await dispatchOutlookSendDraftThroughExecutive({ executive: context.runtime.executive, connectors: context.runtime.connectors, messageId: input.messageId, ownerId: sendOwnerId })
-      : await context.runtime.connectors.outlookSendDraft(input.messageId, true);
-    return json(result);
+    return json(await connectorOperation(context, req, "outlook.send_mail", input));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/calendar") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["start", "end"]);
-    return json(await context.runtime.connectors.outlookReadCalendar({ start: String(body.start), end: String(body.end) }));
+    return json(await connectorOperation(context, req, "outlook.read_calendar", { start: String(body.start), end: String(body.end) }));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/calendar/create") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["subject", "start", "end"]);
-    const input = { subject: String(body.subject), start: String(body.start), end: String(body.end), attendees: body.attendees ? stringArray(body.attendees) : undefined, body: body.body ? String(body.body) : undefined };
+    const input = { subject: String(body.subject), start: String(body.start), end: String(body.end), ...(body.attendees ? { attendees: stringArray(body.attendees) } : {}), ...(body.body ? { body: String(body.body) } : {}) };
     if (!approved(context, "outlook.create_calendar_event", input)) return pendingApproval(context, "outlook.create_calendar_event", input);
-    const calendarOwnerId = context.config.security?.informationAccess?.principalId ?? "scce-server";
-    const result = context.runtime.executive
-      ? await dispatchOutlookCalendarEventCreateThroughExecutive({ executive: context.runtime.executive, connectors: context.runtime.connectors, event: input, ownerId: calendarOwnerId })
-      : await context.runtime.connectors.outlookCreateCalendarEvent({ ...input, approved: true });
-    return json(result);
+    return json(await connectorOperation(context, req, "outlook.create_calendar_event", toJsonValue(input)));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/calendar/rollback") {
     // Creating the event was durable and reversible on paper: the executive records the attempt and the rollback
     // path was written with it. Nothing exposed the rollback, so the one mutating calendar action had no undo.
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["subject", "start", "end"]);
-    const input = { subject: String(body.subject), start: String(body.start), end: String(body.end), attendees: body.attendees ? stringArray(body.attendees) : undefined, body: body.body ? String(body.body) : undefined };
+    const input = { subject: String(body.subject), start: String(body.start), end: String(body.end), ...(body.attendees ? { attendees: stringArray(body.attendees) } : {}), ...(body.body ? { body: String(body.body) } : {}) };
     if (!approved(context, "outlook.create_calendar_event", input)) return pendingApproval(context, "outlook.create_calendar_event", input);
-    if (!context.runtime.executive) throw new HttpError(409, "calendar rollback requires the durable executive; this deployment created the event without one");
-    return json(await dispatchOutlookCalendarEventRollback({ executive: context.runtime.executive, connectors: context.runtime.connectors, event: input }));
+    const ownerId = context.config.security!.informationAccess!.principalId;
+    const operationKey = req.headers["idempotency-key"];
+    const operationId = typeof operationKey === "string" && operationKey.trim() ? operationKey : createHasher().digestHex(canonicalStringify(toJsonValue(input)));
+    const identity = connectorOperationIdentity({ ownerId, operationId, capabilityId: "outlook.create_calendar_event" });
+    const result = await context.runtime.capabilities.rollback(identity);
+    return json({ disposition: result.disposition });
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/contacts") {
     const body = await readBody(req, context.maxBodyBytes);
     if (!isRecord(body)) throw new HttpError(400, "contacts body must be an object");
-    return json(await context.runtime.connectors.outlookReadContacts(typeof body.query === "string" ? body.query : undefined));
+    return json(await connectorOperation(context, req, "outlook.read_contacts", typeof body.query === "string" ? { query: body.query } : {}));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/youtube/search") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["query"]);
-    return json(await context.runtime.connectors.youtubeSearch(String(body.query), Number(body.limit ?? 10)));
+    return json(await connectorOperation(context, req, "youtube.search", { query: String(body.query), limit: Number(body.limit ?? 10) }));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/youtube/video") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["videoId"]);
-    return json(await context.runtime.connectors.youtubeVideo(String(body.videoId)));
+    return json(await connectorOperation(context, req, "youtube.read_video_metadata", { videoId: String(body.videoId) }));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/youtube/channel") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["channelId"]);
-    return json(await context.runtime.connectors.youtubeChannel(String(body.channelId)));
+    return json(await connectorOperation(context, req, "youtube.read_channel_metadata", { channelId: String(body.channelId) }));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/youtube/comments") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["videoId"]);
-    return json(await context.runtime.connectors.youtubeComments(String(body.videoId), Number(body.limit ?? 50)));
+    return json(await connectorOperation(context, req, "youtube.read_comments", { videoId: String(body.videoId), limit: Number(body.limit ?? 50) }));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/telephone/call") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["to", "twiml"]);
     const input = { to: String(body.to), twiml: String(body.twiml) };
     if (!approved(context, "telephone.call", input)) return pendingApproval(context, "telephone.call", input);
-    const callOwnerId = context.config.security?.informationAccess?.principalId ?? "scce-server";
-    const result = context.runtime.executive
-      ? await dispatchTelephoneCallThroughExecutive({ executive: context.runtime.executive, connectors: context.runtime.connectors, call: input, ownerId: callOwnerId })
-      : await context.runtime.connectors.telephoneCall(input.to, input.twiml, true);
-    return json(result);
+    return json(await connectorOperation(context, req, "telephone.call", input));
   }
   if (req.method === "GET" && url.pathname === "/api/config/public") return json(publicConfig(context.config));
   if (req.method === "POST" && url.pathname === "/api/ingest") {
@@ -1084,7 +1074,8 @@ async function dispatch(
       provider,
       executive: context.runtime.executive,
       ownerId: context.config.security?.informationAccess?.principalId,
-      events: context.runtime.storage.events
+      events: context.runtime.storage.events,
+      refreshWorkspace: () => createWorkspaceRuntime(context).ingest(workspace.rootPath)
     }));
   }
   if (req.method === "GET" && url.pathname.startsWith("/api/project/")) {
@@ -1716,6 +1707,9 @@ export async function executeApplicationTurn(
         turn.text,
         { resolveValidationPolicy: id => resolveWorkspacePatchValidationPolicy(context, id) }
       );
+      const workspaceCodingPlanningInput = workspaceCodingInput
+        ? workspaceCodingPlanInput(workspaceCodingInput)
+        : undefined;
       const sessionId = conversationSessionId(body);
       const conversationId = dialogueConversationId(body, sessionId);
       // A response's dialogue shadow is queued so the first visible frame stays
@@ -1739,10 +1733,10 @@ export async function executeApplicationTurn(
           ? context.runtime.storage.conversation.listTurns({ sessionId, limit: conversationContextLimit(body) })
           : Promise.resolve([]),
         hydratedRuntimeForTurn(context),
-        workspaceCodingInput
+        workspaceCodingPlanningInput
           ? planWorkspaceCodingPatchApiRequest(context, {
             schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
-            input: workspaceCodingInput
+            input: workspaceCodingPlanningInput
           })
           : Promise.resolve(undefined),
         latestDialogueStyleProfile(context.runtime.storage.dialogueMemory, conversationId),
@@ -1762,9 +1756,9 @@ export async function executeApplicationTurn(
         // named for coding-patch planning -- never a repo-wide scan, and
         // any failure here silently yields no repo context rather than
         // failing the turn.
-        workspaceCodingInput?.requestedPaths.length
+        workspaceCodingPlanningInput?.requestedPaths.length
           ? createWorkspaceRuntime(context).resolveRoot()
-            .then(root => collectRepoFilesForCognition(root, workspaceCodingInput.requestedPaths))
+            .then(root => collectRepoFilesForCognition(root, workspaceCodingPlanningInput.requestedPaths))
             .catch(() => [])
           : Promise.resolve([])
       ]);
@@ -1850,7 +1844,7 @@ export async function executeApplicationTurn(
         } : {})
       });
       traceEvent(trace, { stage: "turn.kernel.returned", label: "api.turn", durationMs: Date.now() - turnStarted, counts: { evidence: result.evidence.length } });
-      const programReadiness = (result.requestedAuthority === "program" || turn.requestedAuthority === "program") && !workspaceCodingInput
+      const programReadiness = (result.requestedAuthority === "program" || turn.requestedAuthority === "program") && !workspaceCodingPlanningInput
         ? programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest,construct:result.constructGraph })
         : undefined;
       if (programReadiness && programReadiness.status !== "ready") {
@@ -1866,9 +1860,9 @@ export async function executeApplicationTurn(
       }
       // A verified program artifact can answer without a separate prose realization.
       const programProposalTurn = programReadiness?.status === "ready"
-        || Boolean(result.constructGraph.program && workspaceCodingInput);
+        || Boolean(result.constructGraph.program && workspaceCodingPlanningInput);
       // The decline carries the turn's own typed withholding record, so a surface renders a reason instead of "".
-      if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn) {
+      if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn && !(Array.isArray(result.actionResults) && result.actionResults.length)) {
         const withheld = result.withheld ?? withheldSurfaceForTurn(result);
         // The decline's typed reason, in the trace: a warning string cannot say which stage withheld.
         traceEvent(trace, {
@@ -1894,8 +1888,8 @@ export async function executeApplicationTurn(
         });
         throw new HttpError(422, "runtime.declined.no_admissible_surface", toJsonValue(withheld ?? null));
       }
-      const turnProgramCodingInput = workspaceCodingInput
-        ? workspaceCodingInputForProgramGraph(workspaceCodingInput, result.constructGraph.program)
+      const turnProgramCodingInput = workspaceCodingPlanningInput
+        ? workspaceCodingInputForProgramGraph(workspaceCodingPlanningInput, result.constructGraph.program)
         : undefined;
       const completedWorkspaceCoding = turnProgramCodingInput
         ? await planWorkspaceCodingPatchApiRequest(context, {
@@ -1903,6 +1897,9 @@ export async function executeApplicationTurn(
           input: turnProgramCodingInput
         })
         : workspaceCoding;
+      const workspaceExecution = workspaceCodingInput?.execution === "apply" && completedWorkspaceCoding
+        ? await executeWorkspaceCodingTurnPlan(context, workspaceCodingPlanningInput!, completedWorkspaceCoding)
+        : undefined;
       const calibrationStarted = Date.now();
       const calibrationCache = calibrationModelsCache(context);
       const calibrationModels = await calibrationCache.get();
@@ -2069,10 +2066,14 @@ export async function executeApplicationTurn(
             }
           } : {})
         },
-        ...(completedWorkspaceCoding ? { workspaceCoding: toJsonValue(completedWorkspaceCoding) } : {})
+        ...(completedWorkspaceCoding ? { workspaceCoding: toJsonValue(completedWorkspaceCoding) } : {}),
+        ...(workspaceExecution ? { workspaceExecution: toJsonValue(workspaceExecution) } : {})
       };
-      const response=webLearning ? { ...baseResponse, webLearning } : baseResponse;
-      return json(full?response:encodeProgramArtifactWire(response));
+      const actionPlanIds = new Set(Array.isArray(result.actionResults) ? result.actionResults.flatMap(row => isRecord(row) && typeof row.planId === "string" ? [row.planId] : []) : []);
+      const pendingAction = actionPlanIds.size ? context.runtime.approvals.snapshot().pending.find(plan => actionPlanIds.has(plan.planId)) : undefined;
+      const response = { ...baseResponse, ...(webLearning ? { webLearning } : {}),
+        ...(pendingAction ? { pendingApproval: pendingAction, session: context.runtime.approvals.snapshot() } : {}) };
+      return json(full?response:encodeProgramArtifactWire(response), pendingAction || workspaceExecution?.state === "awaiting_approval" ? 202 : 200);
     } catch (error) {
       traceEvent(trace, { stage: "turn.error", label: "api.turn", durationMs: Date.now() - turnStarted, warnings: [String(error)] });
       throw error;
@@ -2084,10 +2085,15 @@ function validateTurn(value: unknown): OwnerInput {
   if (value.requestedAuthority !== undefined && !isRequestedAuthority(value.requestedAuthority)) {
     throw new HttpError(400, "turn requestedAuthority is invalid");
   }
+  const text = boundedString(value.text, "text", 20000);
+  const metadata = value.metadata === undefined ? undefined : validateJsonValue(value.metadata, "metadata");
+  try { sourceSpanCompletionRequestFromMetadata(metadata, text); }
+  catch (error) { throw new HttpError(400, error instanceof Error ? error.message : String(error)); }
   return {
-    text: boundedString(value.text, "text", 20000),
+    text,
+    ...(value.operationId === undefined ? {} : { operationId: boundedString(value.operationId, "operationId", 256) }),
     ...(value.requestedAuthority ? { requestedAuthority: value.requestedAuthority } : {}),
-    metadata: value.metadata === undefined ? undefined : validateJsonValue(value.metadata, "metadata")
+    metadata
   };
 }
 
@@ -2773,6 +2779,20 @@ export interface WorkspaceValidationPolicySelection {
   readonly resolveValidationPolicy?: (policyId: string) => StructuredPatchValidationPolicy;
 }
 
+export type WorkspaceCodingTurnPlanningInput = WorkspaceCodingPatchPlanningInput & {
+  /**
+   * `plan` preserves the review-only transport. `apply` asks the same turn to
+   * continue through the already-governed workspace transaction after the
+   * exact plan and validation binding have been approved.
+   */
+  readonly execution: "plan" | "apply";
+};
+
+function workspaceCodingPlanInput(input: WorkspaceCodingTurnPlanningInput): WorkspaceCodingPatchPlanningInput {
+  const { execution: _execution, ...planning } = input;
+  return planning;
+}
+
 /**
  * Parses the optional chat-side compiler selector. The turn text is supplied
  * by the server and cannot be replaced by the nested request. The selector is
@@ -2782,9 +2802,9 @@ export function parseTurnWorkspaceCodingRequest(
   value: unknown,
   requestText: string,
   options: WorkspaceValidationPolicySelection = {}
-): WorkspaceCodingPatchPlanningInput | undefined {
+): WorkspaceCodingTurnPlanningInput | undefined {
   if (value === undefined) return undefined;
-  const body = exactRecord(value, "workspace coding turn request", [
+  const body = exactRecordWithOptional(value, "workspace coding turn request", [
     "schemaVersion",
     "workspaceId",
     "expectedWorkspaceUpdatedAt",
@@ -2792,15 +2812,21 @@ export function parseTurnWorkspaceCodingRequest(
     "requestedPaths",
     "diagnosticCodes",
     "validationPlan"
-  ]);
+  ], ["execution"]);
   if (body.schemaVersion !== WORKSPACE_CODING_TURN_REQUEST_SCHEMA) {
     throw new HttpError(400, `unsupported workspace coding turn request schema: ${String(body.schemaVersion)}`);
   }
-  return parseWorkspaceCodingPatchPlanRequest({
-    ...body,
+  const execution = body.execution === undefined ? "plan" : body.execution;
+  if (execution !== "plan" && execution !== "apply") {
+    throw new HttpError(400, "workspace coding turn execution must be plan or apply");
+  }
+  const { execution: _execution, ...planningBody } = body;
+  const input = parseWorkspaceCodingPatchPlanRequest({
+    ...planningBody,
     schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
     requestText
   }, { ...options, allowEmptyRequestedPaths: true }).input;
+  return { ...input, execution };
 }
 
 export async function awaitDialoguePersistence(conversationId: string): Promise<void> {
@@ -3028,6 +3054,84 @@ export async function planWorkspaceCodingPatchApiRequest(context: ApiContext, re
   }
 }
 
+type WorkspaceCodingTurnExecution =
+  | {
+      readonly state: "awaiting_approval";
+      readonly capabilityId: "workspace.patch.apply";
+      readonly planHash: string;
+      readonly pendingApproval: ReturnType<ApiContext["runtime"]["approvals"]["requestApproval"]>;
+      readonly session: ReturnType<ApiContext["runtime"]["approvals"]["snapshot"]>;
+    }
+  | {
+      readonly state: "not_executable";
+      readonly reason: string;
+    }
+  | ({ readonly state: "applied" } & WorkspacePatchApiResponse);
+
+/**
+ * Completes the programming turn through the same exact-byte transaction used
+ * by the standalone patch API. Planning never gains mutation authority: the
+ * exact plan hash and the complete validation binding remain the approval
+ * identity, and a retry of the same turn resumes here after that approval.
+ */
+async function executeWorkspaceCodingTurnPlan(
+  context: ApiContext,
+  input: WorkspaceCodingPatchPlanningInput,
+  result: WorkspaceCodingPatchPlanningResult
+): Promise<WorkspaceCodingTurnExecution> {
+  if (context.config.policy.allowMutation !== true) {
+    throw new HttpError(403, "workspace engineering execution is disabled by config.policy.allowMutation");
+  }
+  const plans = verifiedCompilerPlansForTurn(result);
+  if (plans.length !== 1 || !plans[0]) {
+    return { state: "not_executable", reason: "the cognitive turn did not produce one verified workspace patch plan" };
+  }
+  const plan = plans[0];
+  const workspace = await context.runtime.storage.workspace.latestWorkspace();
+  if (!workspace || workspace.id !== input.workspaceId) {
+    throw new HttpError(409, "workspace engineering requires the same latest workspace revision used by planning");
+  }
+  const policy = resolveWorkspacePatchValidationPolicy(context, input.validationPlan.validatorId);
+  const provider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
+  const approvalInput = {
+    workspaceId: input.workspaceId,
+    planHash: plan.planHash,
+    validationPolicyId: policy.id,
+    validationBinding: workspacePatchValidationApprovalBinding(policy, provider)
+  };
+  if (!approved(context, "workspace.patch.apply", approvalInput)) {
+    const pendingApproval = context.runtime.approvals.requestApproval({
+      capabilityId: "workspace.patch.apply",
+      input: toJsonValue(approvalInput),
+      reason: "operator-approval-required"
+    });
+    return {
+      state: "awaiting_approval",
+      capabilityId: "workspace.patch.apply",
+      planHash: String(plan.planHash),
+      pendingApproval,
+      session: context.runtime.approvals.snapshot()
+    };
+  }
+  const applied = await executeWorkspacePatchApiRequest({
+    request: {
+      schemaVersion: WORKSPACE_PATCH_REQUEST_SCHEMA,
+      workspaceId: input.workspaceId,
+      plan,
+      validationPolicyId: policy.id
+    },
+    workspace,
+    allowedRoots: context.config.runtime.allowedRoots,
+    policy,
+    provider,
+    executive: context.runtime.executive,
+    ownerId: context.config.security?.informationAccess?.principalId,
+    events: context.runtime.storage.events,
+    refreshWorkspace: () => createWorkspaceRuntime(context).ingest(workspace.rootPath)
+  });
+  return { state: "applied", ...applied };
+}
+
 function parseWorkspaceValidationPlan(value: unknown, options: WorkspaceValidationPolicySelection): WorkspaceCodingPatchPlanningInput["validationPlan"] {
   const validationBody = exactRecord(value, "validationPlan", ["validatorId", "checks"]);
   const validatorId = boundedString(validationBody.validatorId, "validationPlan.validatorId", 128);
@@ -3162,6 +3266,17 @@ export interface WorkspacePatchApiResponse {
     | { readonly state: "recorded"; readonly supportIds: readonly string[] }
     | { readonly state: "not_applicable" }
     | { readonly state: "persistence_failed"; readonly reason: string };
+  readonly workspaceRefresh?:
+    | {
+        readonly state: "refreshed";
+        readonly updatedAt: number;
+        readonly ingested: number;
+        readonly unchanged: number;
+        readonly changed: number;
+        readonly missing: number;
+        readonly failed: number;
+      }
+    | { readonly state: "failed"; readonly reason: string };
 }
 
 export function parseWorkspacePatchRequest(value: unknown): WorkspacePatchApiRequest {
@@ -3944,6 +4059,15 @@ export async function executeWorkspacePatchApiRequest(input: {
   readonly ownerId?: string;
   /** Existing durable event ledger used to join server-authored plan bindings to real receipts. */
   readonly events?: EventLedger;
+  /** Reconciles the durable workspace revision after a successful commit. */
+  readonly refreshWorkspace?: () => Promise<{
+    readonly workspace: { readonly updatedAt: number };
+    readonly ingested: number;
+    readonly unchanged: number;
+    readonly changed: number;
+    readonly missing: number;
+    readonly failed: number;
+  }>;
 }): Promise<WorkspacePatchApiResponse> {
   if (input.workspace.id !== input.request.workspaceId) throw new HttpError(409, "workspaceId does not identify the selected workspace");
   if (input.policy.id !== input.request.validationPolicyId) throw new HttpError(400, "validationPolicyId is not registered for this request");
@@ -3985,12 +4109,33 @@ export async function executeWorkspacePatchApiRequest(input: {
       input.provider ?? trustedHostPatchValidationProvider,
       receipt
     );
+    let workspaceRefresh: WorkspacePatchApiResponse["workspaceRefresh"];
+    if (input.refreshWorkspace) {
+      try {
+        const refreshed = await input.refreshWorkspace();
+        workspaceRefresh = {
+          state: "refreshed",
+          updatedAt: refreshed.workspace.updatedAt,
+          ingested: refreshed.ingested,
+          unchanged: refreshed.unchanged,
+          changed: refreshed.changed,
+          missing: refreshed.missing,
+          failed: refreshed.failed
+        };
+      } catch (error) {
+        // The validated transaction is already committed. Report reconciliation
+        // failure explicitly so a client never retries the mutation as though it
+        // had rolled back.
+        workspaceRefresh = { state: "failed", reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
     return {
       schemaVersion: WORKSPACE_PATCH_RESPONSE_SCHEMA,
       workspaceId: input.request.workspaceId,
       validationPolicyId: input.request.validationPolicyId,
       receipt,
-      ...(behaviorLearning ? { behaviorLearning } : {})
+      ...(behaviorLearning ? { behaviorLearning } : {}),
+      ...(workspaceRefresh ? { workspaceRefresh } : {})
     };
   } catch (error) {
     if (!(error instanceof WorkspacePatchTransactionError)) throw error;
@@ -4312,6 +4457,7 @@ export function compactTurnResult(result: TurnResult): Record<string, unknown> {
     episodeId: result.episodeId,
     answer: result.answer,
     epistemicForce: result.epistemicForce,
+    ...(result.actionResults === undefined ? {} : { actionResults: result.actionResults }),
     responseView: { schema: "scce.turn_response.v1", detail: "receipt", fullQuery: "full=1" },
     realizationAvailability: result.realizationAvailability,
     withheld: result.withheld,
@@ -5005,6 +5151,16 @@ function pendingApproval(context: ApiContext, capabilityId: string, input: unkno
 
 function approved(context: ApiContext, capabilityId: string, input: unknown): boolean {
   return context.runtime.approvals.isApproved({ capabilityId, input: toJsonValue(input) });
+}
+
+function connectorOperation(context: ApiContext, req: http.IncomingMessage, capabilityId: string, payload: JsonValue): Promise<JsonValue> {
+  const capability = context.runtime.capabilities.catalog().find(row => row.id === capabilityId);
+  const operationKey = req.headers["idempotency-key"];
+  const operationId = typeof operationKey === "string" && operationKey.trim()
+    ? operationKey : capability?.mutates ? createHasher().digestHex(canonicalStringify(payload)) : randomUUID();
+  return executeConnectorOperation({ capabilities: context.runtime.capabilities, approvals: context.runtime.approvals,
+    ownerId: context.config.security!.informationAccess!.principalId, policy: context.config.policy,
+    operationId, capabilityId, payload });
 }
 
 function send(res: http.ServerResponse, status: number, body: string, type: string, meta: { requestId: string; started: number }): void {

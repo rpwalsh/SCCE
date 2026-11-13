@@ -45,9 +45,25 @@ function humanTranscript() {
   }
   return { schema: "scce.dialogue_transcript.v1", text, turns, sourceMetadata: { originalTrainingSha256: human.sha256, split: "train", authorship: "human_authored" } };
 }
-async function fixture() {
+async function fixture(splitCohorts = false) {
   const root = await mkdtemp(path.join(tmpdir(), "scce-stored-qa-")); roots.push(root);
-  const transcript = humanTranscript(); await writeFile(path.join(root, "human.json"), JSON.stringify(transcript));
+  const transcript = humanTranscript();
+  if (splitCohorts) {
+    for (const reply of transcript.turns.filter(turn => turn.replyToTurnIndex !== undefined)) {
+      const request = transcript.turns.find(turn => turn.index === reply.replyToTurnIndex)!, start = request.startCodePoint;
+      const end = reply.supportingSourceRanges![0]!.endCodePoint, text = [...transcript.text].slice(start, end).join("");
+      const turns = [request, reply].map((turn, index) => ({ ...turn, index,
+        startCodePoint: turn.startCodePoint - start, endCodePoint: turn.endCodePoint - start,
+        ...(turn.replyToTurnIndex !== undefined ? { replyToTurnIndex: 0 } : {}),
+        ...(turn.supportingSourceRanges ? { supportingSourceRanges: turn.supportingSourceRanges.map(range => ({ ...range,
+          startCodePoint: range.startCodePoint - start, endCodePoint: range.endCodePoint - start,
+          answerRange: { startCodePoint: range.answerRange!.startCodePoint - start, endCodePoint: range.answerRange!.endCodePoint - start } })) } : {})
+      }));
+      await writeFile(path.join(root, String(reply.index).padStart(3, "0") + ".json"), JSON.stringify({
+        ...transcript, text, turns, sourceMetadata: { ...transcript.sourceMetadata, layout: "retained-record-cohorts.v1" }
+      }));
+    }
+  } else await writeFile(path.join(root, "human.json"), JSON.stringify(transcript));
   const clock = createClock({ fixedTime: 1000, stepMs: 1 }), hasher = createHasher(), evidence: EvidenceSpan[] = [];
   const { storage } = storageFixtureForEvaluation({ evidence, clockNow: () => clock.now() });
   const languageIdentity: LanguageIdentityRecord = {
@@ -114,7 +130,7 @@ async function fixture() {
   const kernel = () => createScceKernel({ storage, clock, idFactory: ids, deterministicReplay: true, sourceInformationLabel: label,
     informationAccess: { tenantId: label.tenantId, principalId: label.principals[0]!, compartments: [], maximumExportClass: "restricted" },
     files: { streamPath: async function* () {} }, buildTest: { executeProgram: async () => { throw Error("not code"); } } });
-  const train = () => trainDialogueCorpus({ storage, rootPath: root, informationLabel: label, authorship: "human_authored", ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 64 });
+  const train = (selection: { startFileIndex?: number; maxFilesPerRun?: number } = {}) => trainDialogueCorpus({ storage, rootPath: root, informationLabel: label, authorship: "human_authored", ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 64, ...selection });
   const replay = (contextualQaOnly = false) => trainStoredCorpusConstructions({ storage, sourceSystem: "dialogue", minArticleBytes: 0,
     maxArticleBytes: 2 * 1024 * 1024, maxTotalBytes: 2 * 1024 * 1024, contextualQaOnly });
   return { root, transcript, storage, sources, blobs, evidence, checkpoints, train, replay, kernel };
@@ -157,6 +173,76 @@ it("recompiles genuine human QA from canonical archives after files are removed,
   expect((await f.kernel().turn({ text: request, requestedAuthority: "factual" })).answer).toBe("V\u00eblora");
   expect((await f.kernel().turn({ text: request.replace("route", "invert"), requestedAuthority: "factual" })).answer).toBe("");
 });
+it("joins explicitly selected retained cohorts, persists a real human construction and answers a fresh cold factual turn", async () => {
+  const f = await fixture(true);
+  for (let index = 0; index < 5; index++) await f.train({ startFileIndex: index, maxFilesPerRun: 1 });
+  const ids = [...f.sources.keys()].sort();
+  expect(ids).toHaveLength(5);
+  await rm(f.root, { recursive: true });
+  const compiler = vi.spyOn(kernelModule, "compileLanguageTrainingBatch");
+  const publication = () => trainStoredCorpusConstructions({ storage: f.storage, sourceSystem: "dialogue", contextualQaOnly: true,
+    minArticleBytes: 0, maxArticleBytes: 2 * 1024 * 1024, maxTotalBytes: 2 * 1024 * 1024,
+    contextualQaJointPool: { rootUri: "fixture://joint-human-records", sourceVersionIds: ids } });
+  const before = await f.storage.languageMemory.listLanguagePatterns({ patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA] });
+  expect(before.filter(pattern => jsonRecord(pattern.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE)).toEqual([]);
+  const report = await publication();
+  expect(report.contextualQa?.deferred).toEqual([]);
+  expect(report.contextualQa?.reports).toHaveLength(1);
+  expect(report.contextualQa?.reports[0]).toMatchObject({ qualifiedFamilies: 1, patternsPersisted: 1 });
+  expect(compiler).not.toHaveBeenCalled();
+  expect((await publication()).contextualQa?.reports[0]?.unchanged).toBe(true);
+  await f.kernel().ingest({ uri: "fixture://joint-fresh-fact", content: "Vëlora stations route glyphs for Neralis_港🧭.",
+    namespace: "workspace", mediaType: "text/plain", informationLabel: label,
+    sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
+    sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1,
+      independenceGroup: "joint-fresh", accessScope: "owner_private", licenseStatus: "owner_authorized" } });
+  expect((await f.kernel().turn({ text: "What type of stations route glyphs for Neralis_港🧭?" })).answer).toBe("Vëlora");
+  expect((await f.kernel().turn({ text: "What type of stations invert glyphs for Neralis_港🧭?", requestedAuthority: "factual" })).answer).toBe("");
+});
+
+it("preserves reverified active knowledge when the new joint acquisition has no additional families", async () => {
+  const f = await fixture(); await f.train();
+  const original = (await f.storage.languageMemory.listLanguagePatterns()).filter(pattern =>
+    jsonRecord(pattern.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE);
+  expect(original).toHaveLength(1);
+  vi.spyOn(kernelModule, "acquireContextualQaConstructions").mockReturnValue({ families: [], pairs: 5, rejected: [] });
+  const report = await trainStoredCorpusConstructions({ storage: f.storage, sourceSystem: "dialogue", contextualQaOnly: true,
+    minArticleBytes: 0, maxArticleBytes: 2 * 1024 * 1024, maxTotalBytes: 2 * 1024 * 1024,
+    contextualQaJointPool: { rootUri: "fixture://preserve-joint", sourceVersionIds: [...f.sources.keys()] } });
+  expect(report.contextualQa?.reports[0]).toMatchObject({ qualifiedFamilies: 0, patternsPersisted: 1 });
+  const current = await f.storage.languageMemory.listLanguagePatterns({ patternIds: original.map(pattern => pattern.id) });
+  expect(current).toEqual(original);
+  const source = f.evidence.find(span => original[0]!.evidenceIds.includes(span.id))!;
+  const projection = await f.storage.languageMemory.getLanguagePatternProjection!({ profileId: original[0]!.profileId,
+    sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, sourceSystem: "dialogue",
+    patternSchema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, componentRecipe: CONTEXTUAL_QA_CONSTRUCTION_RECIPE, informationLabel: label });
+  expect(projection?.sourceDependencies?.flatMap(dependency => dependency.evidenceIds).sort()).toEqual([...original[0]!.evidenceIds].sort());
+});
+
+it("refuses to preserve a changed active construction without publishing a replacement", async () => {
+  const f = await fixture(); await f.train();
+  const pattern = (await f.storage.languageMemory.listLanguagePatterns()).find(candidate =>
+    jsonRecord(candidate.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE)!;
+  await f.storage.languageMemory.putLanguagePattern({ ...pattern, patternJson: { ...jsonRecord(pattern.patternJson), compilerFingerprint: "foreign" } });
+  const replace = vi.spyOn(f.storage.languageMemory, "replaceLanguagePatternProjection");
+  const report = await trainStoredCorpusConstructions({ storage: f.storage, sourceSystem: "dialogue", contextualQaOnly: true,
+    minArticleBytes: 0, maxArticleBytes: 2 * 1024 * 1024, maxTotalBytes: 2 * 1024 * 1024,
+    contextualQaJointPool: { rootUri: "fixture://changed-preserved-joint", sourceVersionIds: [...f.sources.keys()] } });
+  expect(report.contextualQa?.deferred.some(row => row.reason.includes("invalid active construction"))).toBe(true);
+  expect(replace).not.toHaveBeenCalled();
+});
+
+it("does not publish an incomplete explicitly selected joint pool", async () => {
+  const f = await fixture(); await f.train();
+  const write = vi.spyOn(f.storage.languageMemory, "replaceLanguagePatternProjection");
+  const report = await trainStoredCorpusConstructions({ storage: f.storage, sourceSystem: "dialogue", contextualQaOnly: true,
+    minArticleBytes: 0, maxArticleBytes: 2 * 1024 * 1024, maxTotalBytes: 2 * 1024 * 1024,
+    contextualQaJointPool: { rootUri: "fixture://incomplete-joint", sourceVersionIds: [...f.sources.keys(), "source.missing"] } });
+  expect(report.contextualQa?.reports).toEqual([]);
+  expect(report.contextualQa?.deferred.some(row => row.reason === "incomplete_declared_joint_pool")).toBe(true);
+  expect(write).not.toHaveBeenCalled();
+});
+
 it("defers absent or invalid declared archives instead of publishing a partial owner pool", async () => {
   const f = await fixture(); await f.train();
   const source = [...f.sources.values()][0]!, original = structuredClone(source), patterns = createHasher().digestHex(JSON.stringify(await f.storage.languageMemory.listLanguagePatterns()));

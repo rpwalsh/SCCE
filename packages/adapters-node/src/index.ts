@@ -45,6 +45,7 @@ export * from "./tree-sitter-code-mouth-ports.js";
 export * from "./workspace-code-mouth-ports.js";
 export * from "./repo-cognition-files.js";
 export * from "./connectors.js";
+export * from "./connector-application.js";
 export * from "./connector-policy.js";
 export * from "./secrets.js";
 export * from "./approval-session.js";

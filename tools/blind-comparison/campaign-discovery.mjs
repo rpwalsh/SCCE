@@ -72,7 +72,7 @@ export async function discoverCampaign(options, dependencies = {}) {
   return { config, model, tools, finalization, publicSnapshot: { schema: 'scce.blind-local-discovery.v1', model, referenceRuntime: { version: host.ollama?.version ?? null }, host: { node: host.node, os: host.os }, candidate: { server: config.server, schema: config.schema, publicConfigHash: config.publicConfigHash, readinessHash: hash(ready), finalizationDigest: hash(finalization) }, hardwarePolicy: { requestedDevice: options.device, threads: options.threads ?? os.availableParallelism() }, limitations: 'Trusted-host process collection; no automatic OS, network, CPU/RAM/GPU isolation or source-admission equivalence certification.' } };
 }
 export async function implementationFiles(root = REPOSITORY_ROOT) {
-  const { stdout } = await exec('git', ['ls-files', '-z'], { cwd: root, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+  const { stdout } = await exec('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
   const tracked = stdout.split('\0').filter(Boolean).map(name => path.join(root, name));
   const built = [];
   async function walk(dir) {

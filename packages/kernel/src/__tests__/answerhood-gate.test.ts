@@ -82,10 +82,11 @@ describe("answerhood gate", () => {
     expect(answerCoversRequest([eduardSentence], article, units, "When was Albert Einstein born?", { relationRequired: true })).toBe(false);
   });
 
-  it("keeps the quota when no learned closed class can tell scaffolding from relation", () => {
+  it("keeps unresolved content obligations when no learned closed class identifies scaffolding", () => {
     const vega = span("evidence:vega", "Armand Vega", "unused");
     const sentence = "The calculating apparatus was designed and refined by the pioneering mathematician Armand Vega.";
-    expect(answerCoversRequest([sentence], vega, ["what", "armand", "vega", "known"], "What was Armand Vega known for?")).toBe(true);
+    expect(answerCoversRequest([sentence], vega, ["what", "armand", "vega", "known"], "What was Armand Vega known for?")).toBe(false);
+    expect(answerCoversRequest([sentence], vega, ["armand", "vega", "apparatus"], "Armand Vega apparatus?")).toBe(true);
   });
 
   it("tolerates inflection when matching the relation", () => {

@@ -3,7 +3,8 @@
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EvidenceDerivative } from "@scce/kernel";
+import { createCapabilityRegistry, createConnectorCapabilityOperations, createRuntimeCapabilities, DEFAULT_POLICY, type ConnectorPort, type EvidenceDerivative } from "@scce/kernel";
+import { capabilityRuntimeFixture } from "../../../kernel/src/__tests__/fixtures/capability-runtime.js";
 import { handleRequest, type ApiContext } from "../routes.js";
 
 const raw = Buffer.from("%PDF-1.7\noriginal binary source");
@@ -18,9 +19,13 @@ function fetchedFixture() {
 }
 
 async function postFetch(fetched: ReturnType<typeof fetchedFixture>): Promise<Response> {
+  const durable = capabilityRuntimeFixture();
+  const connectors = { fetch: async () => fetched } as unknown as ConnectorPort;
+  const capabilities = createRuntimeCapabilities({ executive: durable.executive(), blobs: durable.blobs,
+    operations: createConnectorCapabilityOperations({ connectors, blobs: durable.blobs, capabilities: createCapabilityRegistry({ network: true }).all() }) });
   const context = {
-    runtime: { connectors: { fetch: async () => fetched } },
-    config: { server: { url: "http://127.0.0.1:0" }, security: {} }
+    runtime: { connectors, capabilities, storage: { blobs: durable.blobs }, approvals: { isApproved: () => true } },
+    config: { server: { url: "http://127.0.0.1:0" }, policy: DEFAULT_POLICY, security: { informationAccess: { principalId: "owner.test" } } }
   } as unknown as ApiContext;
   const server = createServer((request, response) => { void handleRequest(request, response, context); });
   try {
@@ -48,8 +53,8 @@ describe("connector fetch inspection response", () => {
     const fetched = fetchedFixture();
     const derivative = fetched.evidenceDerivative;
     const response = await postFetch(fetched);
-    expect(response.status).toBe(200);
     const encoded = await response.text();
+    expect(response.status, encoded).toBe(200);
     expect(Buffer.byteLength(encoded)).toBeLessThan(16000);
     const body = JSON.parse(encoded);
     expect(body.uri).toBe(fetched.uri);

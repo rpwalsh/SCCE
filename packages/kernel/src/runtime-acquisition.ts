@@ -1,6 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { createCapabilityExecutorRegistry, dispatchCapabilityTask, type CapabilityExecutor, type CapabilityDispatchDisposition } from "./capability-dispatcher.js";
+import type { CapabilityDispatchDisposition } from "./capability-dispatcher.js";
+import { invokeRuntimeCapability, requireCapabilityResult } from "./capability-runtime.js";
+import { restoreFetchedCapabilityResult } from "./connector-capabilities.js";
 import { createEventFactory } from "./events.js";
 import { uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { assertSearchLeadIsNotEvidence, searchLeadToFetchPlan, type SearchResultLead } from "./ingestion-lanes.js";
@@ -74,109 +76,25 @@ function fetchedExtractorMetadata(value: JsonValue | undefined): Record<string, 
   return out;
 }
 
-/**
- * Routes the read-only web-search connector call through the executive
- * dispatcher (Part A finding 9's dispatcher work, plan item 43: one
- * real, low-risk connector capability end to end). Deliberately
- * fail-open on the ledger, never on execution -- matching
- * dispatchBuildTestThroughExecutive's pattern: if deps.executive is
- * absent or dispatch itself throws, the caller falls back to calling
- * deps.connectors.search directly, so durable attestation can never
- * prevent a real search from happening.
- */
-async function dispatchWebSearchThroughExecutive(input: {
-  deps: ScceKernelDeps;
-  episodeId: EpisodeId;
-  queryHash: string;
-  query: string;
-  limit: number;
-  hasher: ReturnType<typeof createHasher>;
-}): Promise<Awaited<ReturnType<NonNullable<ScceKernelDeps["connectors"]>["search"]>> | undefined> {
-  const executive = input.deps.executive;
-  const connectors = input.deps.connectors;
-  if (!executive || !connectors) return undefined;
-
-  let capturedRows: Awaited<ReturnType<typeof connectors.search>> | undefined;
-  const executor: CapabilityExecutor = {
-    // A read query has no durable effect to duplicate, so retrying it
-    // is inherently as safe as if the provider deduplicated by key --
-    // the closest fit among the three declared contracts.
-    descriptor: { capabilityId: WEB_SEARCH_CAPABILITY_ID, idempotency: "provider-enforced", rollback: "unavailable" },
-    execute: async request => {
-      const payload = request.payload as unknown as { query: string; limit: number };
-      const rows = await connectors.search(payload.query, payload.limit);
-      capturedRows = rows;
-      return {
-        status: "succeeded",
-        outputRefs: rows.map(row => row.uri),
-        evidenceRefs: [`web_search.results.${rows.length}`],
-        attestationRef: `web_search.${request.invocation.idempotencyKey}`
-      };
-    }
-  };
-
-  const ownerId = input.deps.informationAccess?.principalId ?? "scce-runtime";
-  const policyVersionId = `policy_${input.hasher.digestHex(JSON.stringify(input.deps.policy ?? {})).slice(0, 32)}`;
-  const goalId = `goal_web_search_${input.queryHash}`;
-  const taskId = `task_web_search_${input.queryHash}`;
-
-  try {
-    const dispatched = await dispatchCapabilityTask(
-      { executive, executors: createCapabilityExecutorRegistry([executor]), hasher: input.hasher, now: () => Date.now() },
-      {
-        episodeId: input.episodeId,
-        ownerId,
-        policyVersionId,
-        goal: { id: goalId, goalClassId: "goal.class.web_search", objectiveRef: input.queryHash, requirementIds: [], ownerId },
-        task: {
-          id: taskId,
-          goalId,
-          taskClassId: "task.class.web_search",
-          requirementIds: [],
-          dependencyTaskIds: [],
-          capabilityId: WEB_SEARCH_CAPABILITY_ID,
-          inputRef: input.queryHash,
-          policyVersionId,
-          controls: {
-            authority: {
-              authorityClassId: "authority.class.web_search",
-              subjectId: ownerId,
-              requiredScopeIds: [],
-              state: "not_required",
-              justificationRef: input.queryHash
-            },
-            approval: {
-              policyId: "approval.policy.web_search",
-              state: "not_required",
-              approverClassIds: [],
-              justificationRef: input.queryHash
-            }
-          },
-          rollback: {
-            mode: "not_required",
-            justificationRef: "read-only web search has no durable effect to roll back"
-          }
-        },
-        payload: { query: input.query, limit: input.limit } as unknown as JsonValue,
-        outcomeEvidenceRefs: []
-      }
-    );
-    if (input.deps.storage.policyEvolution) {
-      await recordConnectorDispatchPolicyEvaluation({
-        deps: input.deps,
-        hasher: input.hasher,
-        disposition: dispatched.disposition,
-        windowRef: dispatched.receipt?.id ?? dispatched.attemptId ?? input.queryHash,
-        createdAt: Date.now()
-      });
-    }
-  } catch {
-    // Fail-open: an executive/journal error must never block the real
-    // search. If the executor already ran and captured rows, those are
-    // still used below; if not, the caller's own try/catch around this
-    // whole helper falls back to calling connectors.search directly.
-  }
-  return capturedRows;
+// Acquisition has already verified the owner's search consent before dispatching these read operations.
+async function dispatchAcquisitionCapability(input: {
+  deps: ScceKernelDeps; episodeId: EpisodeId; capabilityId: "network.search" | "network.fetch";
+  payload: JsonValue; hasher: ReturnType<typeof createHasher>;
+}): Promise<JsonValue> {
+  if (!input.deps.capabilities) throw new Error("runtime capability service is unavailable");
+  const inputHash = input.hasher.digestHex(canonicalStringify(input.payload));
+  const dispatched = await invokeRuntimeCapability({
+    capabilities: input.deps.capabilities, episodeId: input.episodeId,
+    taskId: `task_${input.capabilityId}_${inputHash}`,
+    ownerId: input.deps.informationAccess?.principalId ?? "scce-runtime",
+    policyVersionId: `policy_${input.hasher.digestHex(canonicalStringify(input.deps.policy ?? {}))}`,
+    capabilityId: input.capabilityId, payload: input.payload, approved: true
+  });
+  if (input.deps.storage.policyEvolution) await recordConnectorDispatchPolicyEvaluation({
+    deps: input.deps, hasher: input.hasher, disposition: dispatched.disposition,
+    windowRef: dispatched.receipt?.id ?? dispatched.attemptId ?? inputHash, createdAt: Date.now()
+  });
+  return requireCapabilityResult(dispatched);
 }
 
 /**
@@ -374,10 +292,8 @@ export function createRuntimeAcquisition(options: {
     if (deps.connectors && consentGranted) {
       let searchRows: Awaited<ReturnType<typeof deps.connectors.search>> = [];
       try {
-        const dispatched = deps.executive
-          ? await dispatchWebSearchThroughExecutive({ deps, episodeId: input.episodeId, queryHash, query: input.ownerInput.text, limit: RUNTIME_ACQUISITION_SEARCH_LIMIT, hasher })
-          : undefined;
-        searchRows = dispatched ?? await deps.connectors.search(input.ownerInput.text, RUNTIME_ACQUISITION_SEARCH_LIMIT);
+        searchRows = await dispatchAcquisitionCapability({ deps, episodeId: input.episodeId, capabilityId: "network.search",
+          payload: { query: input.ownerInput.text, limit: RUNTIME_ACQUISITION_SEARCH_LIMIT }, hasher }) as unknown as typeof searchRows;
         searchResultCount = searchRows.length;
         sourceSurfaces.push(...searchRows.flatMap(row => [row.title, row.snippet])
           .map(surface => sourceTextSurface(surface, 320))
@@ -430,7 +346,8 @@ export function createRuntimeAcquisition(options: {
         }));
         emitProgress("runtime.acquisition.primary.fetch", toJsonValue({ uriHash: hasher.digestHex(canonicalSearchUri).slice(0, 24), leadRank: searchLeadsExamined }));
         try {
-          const fetched = await deps.connectors.fetch(searchUri);
+          const fetched = await restoreFetchedCapabilityResult(await dispatchAcquisitionCapability({ deps, episodeId: input.episodeId,
+            capabilityId: "network.fetch", payload: { uri: searchUri }, hasher }), deps.storage.blobs);
           if (fetched.bytes.byteLength === 0) {
             motionFailures.push(`fetch returned zero bytes: ${redactSecrets(searchUri)}`);
             continue;
@@ -543,10 +460,8 @@ export function createRuntimeAcquisition(options: {
         if (distinctQuery) {
           emitProgress("runtime.acquisition.adversarial.search", toJsonValue({ querySurfaceHash: adversarialQueryHash.slice(0, 24), originalQueryHash: queryHash.slice(0, 24), intentId: input.adversarialSearch.intentId ?? null }));
           try {
-            const dispatched = deps.executive
-              ? await dispatchWebSearchThroughExecutive({ deps, episodeId: input.episodeId, queryHash: adversarialQueryHash, query: adversarialQuery, limit: RUNTIME_ACQUISITION_SEARCH_LIMIT, hasher })
-              : undefined;
-            adversarialRows = dispatched ?? await deps.connectors.search(adversarialQuery, RUNTIME_ACQUISITION_SEARCH_LIMIT);
+            adversarialRows = await dispatchAcquisitionCapability({ deps, episodeId: input.episodeId, capabilityId: "network.search",
+              payload: { query: adversarialQuery, limit: RUNTIME_ACQUISITION_SEARCH_LIMIT }, hasher }) as unknown as typeof adversarialRows;
           } catch (error) {
             adversarialFailures.push(runtimeMotionFailure("adversarial_search", error));
           }
@@ -573,7 +488,8 @@ export function createRuntimeAcquisition(options: {
           seenCanonicalUris.add(canonicalSearchUri);
           emitProgress("runtime.acquisition.adversarial.fetch", toJsonValue({ uriHash: hasher.digestHex(canonicalSearchUri).slice(0, 24), leadRank: searchLeadsExamined }));
           try {
-            const fetched = await deps.connectors.fetch(searchUri);
+            const fetched = await restoreFetchedCapabilityResult(await dispatchAcquisitionCapability({ deps, episodeId: input.episodeId,
+              capabilityId: "network.fetch", payload: { uri: searchUri }, hasher }), deps.storage.blobs);
             if (fetched.bytes.byteLength === 0) {
               adversarialFailures.push(`adversarial fetch returned zero bytes: ${redactSecrets(searchUri)}`);
               continue;

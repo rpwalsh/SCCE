@@ -930,7 +930,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       setSending(true); showTyping('');
       log('POST /api/turn?stream=1');
       try {
-        const r = await postTurnStream('/api/turn?stream=1', { text, sessionId, conversationId: sessionId }, frame => {
+        const r = await postTurnStream('/api/turn?stream=1', { text, operationId: crypto.randomUUID(), sessionId, conversationId: sessionId }, frame => {
           if (frame.taskId) runningTaskId = String(frame.taskId);
           if (frame.type === 'progress') showTyping(frame.phase);
           // The extension shows the answer the moment the kernel settles it; the workbench dropped that frame and waited.

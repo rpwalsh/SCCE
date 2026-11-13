@@ -2,14 +2,11 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
+import { createCapabilityRegistry, createConnectorCapabilityOperations, createRuntimeCapabilities, DEFAULT_POLICY, type ConnectorPort } from "@scce/kernel";
+import { capabilityRuntimeFixture } from "../../../kernel/src/__tests__/fixtures/capability-runtime.js";
 import { handleRequest, type ApiContext } from "../routes.js";
 
-// Proves the approval gate in front of the telephone/call route actually
-// blocks the real connector call when not approved, and only lets it
-// through once approved -- same pattern as
-// outlook-mutating-routes-authorization.test.ts (plan item 208), applied
-// to the one connector route that stayed direct-call while Outlook's
-// mutating routes were wired through the executive dispatcher.
+// Route consent and durable dispatch must both precede the provider effect.
 
 const servers: ReturnType<typeof createServer>[] = [];
 
@@ -26,13 +23,19 @@ function fakeApprovals(approvedCapabilityIds: Set<string>) {
 }
 
 async function startFixture(input: { approvedCapabilityIds?: Set<string>; connectors: Record<string, (...args: never[]) => Promise<unknown>> }): Promise<string> {
+  const durable = capabilityRuntimeFixture();
+  const executive = durable.executive();
+  const capabilities = createRuntimeCapabilities({ executive, blobs: durable.blobs,
+    operations: createConnectorCapabilityOperations({ connectors: input.connectors as unknown as ConnectorPort, blobs: durable.blobs,
+      capabilities: createCapabilityRegistry({ telephone: true }).all() }) });
   const context = {
     runtime: {
       approvals: fakeApprovals(input.approvedCapabilityIds ?? new Set()),
       connectors: input.connectors,
-      executive: undefined
+      executive,
+      capabilities
     },
-    config: { server: { url: "http://127.0.0.1:0" }, security: {} },
+    config: { server: { url: "http://127.0.0.1:0" }, policy: DEFAULT_POLICY, security: { informationAccess: { principalId: "owner.test" } } },
     startupReadiness: { snapshot: () => ({ phase: "ready" as const, complete: true }) }
   } as unknown as ApiContext;
   const server = createServer((request, response) => {
@@ -71,7 +74,7 @@ describe("telephone call route fails closed on authorization denial", () => {
 
     const approvedUrl = await startFixture({ connectors, approvedCapabilityIds: new Set(["telephone.call"]) });
     const allowed = await post(approvedUrl, "/api/connectors/telephone/call", body);
-    expect(allowed.status).toBe(200);
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
     expect(calls).toBe(1);
   });
 });

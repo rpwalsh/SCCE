@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { hasSourceBoundSemanticRelation } from "./source-bound-semantic-fact.js";
+import { sourceSpanCompletionRangeFromJson, type SourceSpanCompletionRange } from "./source-owned-span-completion.js";
 import type { SpeakInput } from "./mouth-contracts.js";
 import {
   collapseWhitespace,
@@ -29,6 +30,7 @@ export interface SemanticAnswerFact {
   contradiction?: number;
   sourceVersionId?: string;
   evidenceIds?: string[];
+  sourceSpan?: SourceSpanCompletionRange;
   roleId?: string;
   alphaRhetoricalCentrality?: number;
   pathScore?: number;
@@ -403,7 +405,8 @@ function semanticAnswerFactFromJson(value: Record<string, JsonValue>): SemanticA
   const subject = stringFromJson(value.subject);
   const predicate = stringFromJson(value.predicate);
   const object = stringFromJson(value.object);
-  if (!subject || !object || !hasSourceBoundSemanticRelation({ ...value, predicate })) return undefined;
+  const sourceSpan = sourceSpanCompletionRangeFromJson(value.sourceSpan);
+  if (!subject || !object || !hasSourceBoundSemanticRelation({ ...value, predicate }) || value.sourceSpan !== undefined && !sourceSpan) return undefined;
   return {
     subject,
     predicate,
@@ -419,6 +422,7 @@ function semanticAnswerFactFromJson(value: Record<string, JsonValue>): SemanticA
     contradiction: optionalNumberFromJson(value.contradiction),
     sourceVersionId: stringFromJson(value.sourceVersionId) || undefined,
     evidenceIds: stringArrayFromJson(value.evidenceIds),
+    ...(sourceSpan ? { sourceSpan } : {}),
     roleId: stringFromJson(value.roleId) || undefined,
     alphaRhetoricalCentrality: optionalNumberFromJson(value.alphaRhetoricalCentrality),
     pathScore: optionalNumberFromJson(value.pathScore),

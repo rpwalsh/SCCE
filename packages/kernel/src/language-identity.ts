@@ -26,7 +26,7 @@ import type { Hasher, InformationLabel, JsonValue, LanguageProfile } from "./typ
  */
 
 export const LANGUAGE_IDENTITY_SCHEMA = "scce.language_identity.v2" as const;
-export const LANGUAGE_IDENTITY_DISCOVERY_RECIPE = "scce.language_identity_discovery.v3";
+export const LANGUAGE_IDENTITY_DISCOVERY_RECIPE = "scce.language_identity_discovery.v4";
 
 export interface LanguageIdentityRecord {
   schema: typeof LANGUAGE_IDENTITY_SCHEMA;
@@ -339,7 +339,6 @@ export function discoverLanguageIdentities(input: {
       for (const draft of drafts) {
         const exactSignatureMatch = draft.signatureSets.has(signatureSet);
         if (exactSignatureMatch) { joined = draft; joinedPresence = 1; break; }
-        if (draft.families.has(family)) continue;
         const presence = median(documents.map(document => closedClassPresence(document, draft.closedSet)));
         const cut = otsuThreshold(uniqueProfileSignatures(pool)
           .map(document => closedClassPresence(document, draft.closedSet)));

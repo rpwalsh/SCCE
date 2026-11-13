@@ -51,6 +51,7 @@ export interface StoredCorpusConstructionTrainingOptions {
   languageOnly?: boolean;
   /** Publish contextual-QA constructions from retained dialogue archives without invoking corpus training. */
   contextualQaOnly?: boolean;
+  contextualQaJointPool?: { rootUri: string; sourceVersionIds: readonly string[] };
   includeUriPrefixes?: readonly string[];
   signal?: AbortSignal;
 }
@@ -120,6 +121,14 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   if (contextualQaOnly && sourceSystem !== CORPUS_SOURCE_SYSTEM_IDS.dialogue) {
     throw new Error("contextual-QA-only publication requires the dialogue source system");
   }
+  const jointPool = input.contextualQaJointPool;
+  if (jointPool && (!contextualQaOnly || !jointPool.rootUri.trim() || !jointPool.sourceVersionIds.length
+    || jointPool.sourceVersionIds.some(id => !id.trim()) || new Set(jointPool.sourceVersionIds).size !== jointPool.sourceVersionIds.length
+    || input.afterSourceVersionId !== undefined || startBatchIndex > 0
+    || input.sourceVersionIds && canonicalStringify([...input.sourceVersionIds].sort()) !== canonicalStringify([...jointPool.sourceVersionIds].sort()))) {
+    throw new Error("joint contextual QA publication requires one complete declared source selection");
+  }
+  const selectedVersions = jointPool?.sourceVersionIds ?? input.sourceVersionIds;
   const compiler = input.creativeEventCompiler ?? createUniversalCreativeEventConstructionCompiler();
   if (input.afterSourceVersionId !== undefined && startBatchIndex > 0) throw new Error("choose a source cursor or a legacy batch cursor, not both");
   const sourcePageSize = Math.max(1, Math.min(1024, Math.floor(input.sourcePageSize ?? 128)));
@@ -130,7 +139,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
     sourceSystems: [sourceSystem, corpusSourceAlias(sourceSystem)],
     excludeUriPrefixes: input.excludeUriPrefixes ?? [],
     ...(input.includeUriPrefixes?.length ? { includeUriPrefixes: input.includeUriPrefixes } : {}),
-    ...(input.sourceVersionIds?.length ? { sourceVersionIds: input.sourceVersionIds } : {}),
+    ...(selectedVersions?.length ? { sourceVersionIds: selectedVersions } : {}),
     ...(input.afterSourceVersionId !== undefined ? { afterSourceVersionId: input.afterSourceVersionId } : {}),
     minByteLength: minArticleBytes, maxByteLength: maxArticleBytes,
     orderBySourceVersionId: true, excludeTrainingDerived: true, limit: sourcePageSize
@@ -284,6 +293,15 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   const nextBatchIndex = batchIndex + (exhausted && currentBatchBytes > 0 ? 1 : 0);
   // Publish compact, explicitly qualified cohorts before broad dialogue priors. This keeps one large
   // exploratory pool from monopolizing the bounded worker reservation and makes completion resumable.
+  if (jointPool) {
+    const retained = [...qaPools.values()].flatMap(pool => pool.sources.map(source => source.sourceVersionId)).sort();
+    if (!exhausted || canonicalStringify(retained) !== canonicalStringify([...jointPool.sourceVersionIds].sort())
+      || sourcesSkipped.length || batchesFailed.length || stoppedByHeapSafetyBound || stoppedByInterruption) {
+      for (const pool of qaPools.values()) pool.deferred.push(...pool.sources.map(source => ({
+        sourceVersionId: source.sourceVersionId, reason: "incomplete_declared_joint_pool"
+      })));
+    }
+  }
   const orderedQaPools = [...qaPools.values()].sort((left, right) =>
     left.sources.reduce((sum, source) => sum + Buffer.byteLength(source.text, "utf8"), 0)
       - right.sources.reduce((sum, source) => sum + Buffer.byteLength(source.text, "utf8"), 0)
@@ -296,7 +314,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
     if (pool.sources.length) {
       try { contextualQa.reports.push(await persistDialogueContextualQaComponent({ storage: input.storage, rootUri: pool.rootUri,
         informationLabel: pool.informationLabel, authorship: pool.authorship, sources: pool.sources,
-        contextualQaExecution: input.contextualQaExecution, signal: input.signal })); }
+        contextualQaExecution: input.contextualQaExecution, signal: input.signal, preserveExisting: Boolean(jointPool) })); }
       catch (error) {
         contextualQa.deferred.push(...pool.sources.map(source => ({ sourceVersionId: source.sourceVersionId, reason: errorText(error) })));
         if (markStorageFailure(error, pool.sources[0]!.sourceVersionId)) batchesFailed.push({ batchIndex,
@@ -326,7 +344,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   return result;
 
   function qaPool(source: SourceVersion, informationLabel: InformationLabel) {
-    const prefix = storedContextualQaPoolRoot(source, input.includeUriPrefixes);
+    const prefix = jointPool?.rootUri ?? storedContextualQaPoolRoot(source, input.includeUriPrefixes);
     const authorship = recordOf(source.metadata).authorship;
     const key = canonicalStringify({ prefix, informationLabel, authorship });
     let pool = qaPools.get(key);

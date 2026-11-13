@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { hasSourceBoundSemanticRelation } from "./source-bound-semantic-fact.js";
+import { sourceSpanCompletionRangeCurrent, sourceSpanCompletionRangeFromJson, type SourceSpanCompletionRange } from "./source-owned-span-completion.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, Hasher, JsonValue } from "./types.js";
 import type { SemanticAtom } from "./semantic-proof-types.js";
 import { atomizeText } from "./semantic-proof-system.js";
@@ -25,6 +26,7 @@ export interface SemanticAnswerConstructFact {
   contradiction?: number;
   sourceVersionId?: string;
   evidenceIds?: string[];
+  sourceSpan?: SourceSpanCompletionRange;
   roleId?: string;
   alphaRhetoricalCentrality?: number;
   pathScore?: number;
@@ -101,6 +103,7 @@ export interface RequestValueBinding {
   value: string;
   resolverId: string;
   relationId?: string;
+  sourceSpan?: SourceSpanCompletionRange;
   /** The admitted spans the value was verified to occur in -- not every span of the turn. */
   evidenceIds: readonly string[];
 }
@@ -112,6 +115,7 @@ export interface RequestValueResolver {
 }
 
 export interface ResolvedRequestValue {
+  sourceSpan?: SourceSpanCompletionRange;
   value: string;
   evidenceIds: readonly string[];
   subject?: string;
@@ -136,11 +140,14 @@ export function resolveRequestValueBinding(input: {
     if (!resolved) continue;
     const value = typeof resolved === "string" ? resolved : resolved.value;
     if (!value) continue;
-    const evidenceIds = input.evidence
-      .filter(span => typeof resolved === "string" || resolved.evidenceIds.includes(String(span.id)))
-      .filter(span => surfaceContainsBoundValue(String(span.text || span.textPreview || ""), value))
+    const owners = input.evidence.filter(span => typeof resolved === "string" || resolved.evidenceIds.includes(String(span.id)));
+    const typed = typeof resolved !== "string" && resolved.relationId && resolved.requestedRoleId && resolved.subject;
+    const evidenceIds = owners.filter(span => typed || surfaceContainsBoundValue(String(span.text || span.textPreview || ""), value))
       .map(span => String(span.id));
-    if (!evidenceIds.length) continue;
+    const valueCurrent = typeof resolved !== "string" && resolved.sourceSpan
+      ? sourceSpanCompletionRangeCurrent({ ...resolved, subject: resolved.subject ?? "" }, owners)
+      : owners.some(span => surfaceContainsBoundValue(String(span.text || span.textPreview || ""), value));
+    if (!evidenceIds.length || !valueCurrent || typed && new Set(evidenceIds).size !== new Set(resolved.evidenceIds).size) continue;
     const relation = typeof resolved === "string" ? undefined : resolved.relation;
     const requestedRoleId = typeof resolved === "string" ? undefined : resolved.requestedRoleId;
     return {
@@ -150,6 +157,7 @@ export function resolveRequestValueBinding(input: {
       ...(typeof resolved !== "string" && resolved.relationId ? { relationId: resolved.relationId } : {}),
       value,
       resolverId: resolver.id,
+      ...(typeof resolved !== "string" && resolved.sourceSpan ? { sourceSpan: resolved.sourceSpan } : {}),
       evidenceIds
     };
   }
@@ -309,7 +317,8 @@ function factFromJson(value: JsonValue): SemanticAnswerConstructFact | undefined
   const subject = stringField(record.subject);
   const predicate = stringField(record.predicate);
   const object = stringField(record.object);
-  if (!subject || !object || !hasSourceBoundSemanticRelation({ ...record, predicate })) return undefined;
+  const sourceSpan = sourceSpanCompletionRangeFromJson(record.sourceSpan);
+  if (!subject || !object || !hasSourceBoundSemanticRelation({ ...record, predicate }) || record.sourceSpan !== undefined && !sourceSpan) return undefined;
   return {
     subject,
     predicate,
@@ -325,6 +334,7 @@ function factFromJson(value: JsonValue): SemanticAnswerConstructFact | undefined
     contradiction: record.contradiction ? numberField(record.contradiction) : undefined,
     sourceVersionId: record.sourceVersionId ? stringField(record.sourceVersionId) : undefined,
     evidenceIds: record.evidenceIds ? stringArrayField(record.evidenceIds) : undefined,
+    ...(sourceSpan ? { sourceSpan } : {}),
     relationRoleId: record.relationRoleId ? stringField(record.relationRoleId) : undefined,
     requestedSlotId: record.requestedSlotId ? stringField(record.requestedSlotId) : undefined,
     questionSlotId: record.questionSlotId ? stringField(record.questionSlotId) : undefined,

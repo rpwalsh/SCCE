@@ -6,10 +6,32 @@ import {
   CREATIVE_EVENT_COMPATIBILITY_CORPUS_SCHEMA,
   compileCreativeEventCompatibilityCorpus,
   createLanguageMemoryRuntime,
-  parseCreativeEventCompatibilityCorpus
+  parseCreativeEventCompatibilityCorpus,
+  compileCreativeRequestFrameFromCompatibilityModels,
+  createHasher
 } from "../index.js";
 
 describe("persisted creative-event compatibility", () => {
+  it("converts persisted code-point request roles before interpreting supplementary characters", () => {
+    const requestText = "λ «𝒜» ω «한국어»";
+    const row = (partition: "train" | "calibration") => ({ ...example(partition, true), requestText,
+      roleBindings: [
+        { requestRoleId: "role.first", eventRoleId: "scce.role.patient", accepted: true, requestSpan: { charStart: 3, charEnd: 4 } },
+        { requestRoleId: "role.second", eventRoleId: "scce.role.complement", accepted: true, requestSpan: { charStart: 9, charEnd: 12 } }
+      ] });
+    const corpus = parseCreativeEventCompatibilityCorpus(JSON.stringify({ schema: CREATIVE_EVENT_COMPATIBILITY_CORPUS_SCHEMA,
+      calibrationId: "fixture.supplementary", minimumAdmissiblePosterior: 1, minimumRolePosterior: 1,
+      minimumTrainingSupport: 1, minimumCalibrationSupport: 1, examples: [row("train"), row("calibration")] }))!;
+    const hasher = createHasher();
+    const compiled = compileCreativeEventCompatibilityCorpus({ corpus, profileId: "profile.supplementary",
+      evidenceIds: ["evidence.supplementary" as never], updatedAt: 1, makeId: value => hasher.digestHex(JSON.stringify(value)) });
+    const state = createLanguageMemoryRuntime().hydrate({ models: [], patterns: JSON.parse(JSON.stringify(compiled.patterns)) });
+    const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: "λ «𐐀𐐁» ω «ગુજરાતી»", models: state.creativeEventCompatibilityModels, hasher });
+    expect(frame?.arguments.map(role => ({ role: role.roleId, text: role.span.text, start: role.span.charStart, end: role.span.charEnd }))).toEqual([
+      { role: "role.first", text: "𐐀𐐁", start: 3, end: 5 },
+      { role: "role.second", text: "ગુજરાતી", start: 10, end: 17 }
+    ]);
+  });
   it("compiles held-out outcomes into a hydrated calibrated model", () => {
     const corpus = parseCreativeEventCompatibilityCorpus(JSON.stringify({
       schema: CREATIVE_EVENT_COMPATIBILITY_CORPUS_SCHEMA,

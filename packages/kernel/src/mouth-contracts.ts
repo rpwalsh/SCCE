@@ -101,6 +101,8 @@ export interface SpeakInput {
   requestText?: string;
   /** Source-owned request controls guide coverage and never enter generative memory. */
   requestControlPatterns?: readonly LanguagePatternRecord[];
+  /** Request-language function words and witnessed controls, captured before realization-profile selection. */
+  requestClosedClassWords?: ReadonlySet<string>;
   programBehaviorRequirements?: readonly import("./types.js").ProgramBehaviorRequirement[];
   codeFunctionPatterns?: readonly LanguagePatternRecord[];
   construct: ConstructGraph;

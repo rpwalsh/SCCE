@@ -24,6 +24,7 @@ describe("runtime deadline admission", () => {
       }
     }, () => now);
     expect(deadline).toBeDefined();
+    expect(deadline!.purpose).toBe("execution");
     expect(deadline!.checkpoint("small", 100).allowed).toBe(true);
     expect(deadline!.checkpoint("too-large", 4_001)).toMatchObject({
       allowed: false,
@@ -64,6 +65,7 @@ describe("runtime deadline admission", () => {
       }
     }, () => now);
     expect(deadline).toBeDefined();
+    expect(deadline!.purpose).toBe("initial_response");
     expect(deadline!.checkpoint("small", 100).allowed).toBe(true);
     now = 6_001;
     expect(deadline!.checkpoint("elapsed", 0)).toMatchObject({

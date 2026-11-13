@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceSpan } from "./types.js";
+import { sourceSpanCompletionRangeCurrent } from "./source-owned-span-completion.js";
 import type { RequestValueBinding, RequestValueResolver, SemanticAnswerConstructFact, SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { splitSurfaceSentences, surfaceContainsBoundValue, surfaceWords } from "./surface-linguistics.js";
 
@@ -91,16 +92,21 @@ export function requestValueBindingConstructFact(binding: RequestValueBinding | 
   if (!binding?.value || !binding.subject || !binding.relationId || !binding.requestedRoleId) return undefined;
   const ids = new Set(binding.evidenceIds);
   const owners = evidence.filter(span => ids.has(String(span.id)) && span.status === "promoted");
-  if (!ids.size || owners.length !== ids.size || !owners.every(span => surfaceContainsBoundValue(span.text, binding.value))) return undefined;
+  const valueCurrent = binding.sourceSpan ? sourceSpanCompletionRangeCurrent(binding, owners)
+    : owners.some(span => surfaceContainsBoundValue(span.text, binding.value))
+      && owners.every(span => surfaceContainsBoundValue(span.text, binding.value) || surfaceContainsBoundValue(span.text, binding.subject));
+  if (!ids.size || owners.length !== ids.size || new Set(owners.map(span => String(span.sourceVersionId))).size !== 1 || !valueCurrent) return undefined;
   const predicate = binding.relation ?? "";
-  if (!predicate && (!binding.relationId || !binding.requestedRoleId
-    || !owners.some(span => surfaceContainsBoundValue(span.text, binding.subject)))) return undefined;
+  // A declared source range may begin or end inside a word; its exact range proof owns the context.
+  const subjectCurrent = binding.sourceSpan ? valueCurrent : owners.some(span => surfaceContainsBoundValue(span.text, binding.subject));
+  if (!predicate && (!binding.relationId || !binding.requestedRoleId || !subjectCurrent)) return undefined;
   return {
     subject: binding.subject, predicate, object: binding.value,
     sourceNodeId: "", targetNodeId: "",
     relationId: binding.relationId ?? `local:temporal:relation:${predicate}`,
     forceClass: "direct_evidence", score: 1, activation: 1, overlap: 1, support: 1,
     evidenceIds: [...ids], sourceVersionId: String(owners[0]!.sourceVersionId),
+    ...(binding.sourceSpan ? { sourceSpan: binding.sourceSpan } : {}),
     ...(binding.requestedRoleId ? { relationRoleId: binding.requestedRoleId, requestedSlotId: binding.requestedRoleId } : {}),
     questionSlotImportance: "core", answerGrade: true, finalQuestionFit: 1,
     certificationPower: 1, semanticQuality: 1, questionSlotScore: 1
@@ -118,7 +124,8 @@ export function currentSourceBoundRoleValueFact(input: {
     || input.text.trim() !== fact.object.trim()) return undefined;
   const identity = (row: SemanticAnswerConstructFact) => JSON.stringify([
     row.subject, row.predicate, row.object, row.relationId, row.relationRoleId, row.requestedSlotId, row.sourceVersionId, row.forceClass,
-    [...new Set(row.evidenceIds ?? [])].sort()
+    [...new Set(row.evidenceIds ?? [])].sort(), row.sourceSpan ? [row.sourceSpan.evidenceId,
+      row.sourceSpan.contextStartCodePoint, row.sourceSpan.contextEndCodePoint, row.sourceSpan.valueStartCodePoint, row.sourceSpan.valueEndCodePoint] : null
   ]);
   if (!input.facts.some(selected => identity(selected) === identity(fact))) return undefined;
   const ids = new Set(fact.evidenceIds ?? []);
@@ -126,6 +133,10 @@ export function currentSourceBoundRoleValueFact(input: {
     || Object.keys(contract.boundValues).length !== 1 || contract.boundValues[fact.requestedSlotId!] !== fact.object) return undefined;
   const owners = input.evidence.filter(span => ids.has(String(span.id)) && span.status === "promoted"
     && String(span.sourceVersionId) === fact.sourceVersionId);
-  return owners.length === ids.size && owners.every(span => surfaceContainsBoundValue(span.text, fact.object))
-    && owners.some(span => surfaceContainsBoundValue(span.text, fact.subject)) ? fact : undefined;
+  const valueCurrent = fact.sourceSpan ? sourceSpanCompletionRangeCurrent({ ...fact, value: fact.object,
+    requestedRoleId: fact.relationRoleId, evidenceIds: fact.evidenceIds ?? [] }, owners)
+    : owners.some(span => surfaceContainsBoundValue(span.text, fact.object))
+      && owners.every(span => surfaceContainsBoundValue(span.text, fact.object) || surfaceContainsBoundValue(span.text, fact.subject))
+      && owners.some(span => surfaceContainsBoundValue(span.text, fact.subject));
+  return owners.length === ids.size && valueCurrent ? fact : undefined;
 }

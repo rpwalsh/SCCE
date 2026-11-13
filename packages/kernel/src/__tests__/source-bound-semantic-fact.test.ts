@@ -42,6 +42,27 @@ it("preserves a typed role-only projection through attachment, both readers and 
   for (const input of cases) expect(currentSourceBoundRoleValueFact(input)).toBeUndefined();
 });
 
+it("retains complete split participant owners through resolution, projection and realization", () => {
+  const subject = { ...source, id: "evidence.subject" as EvidenceSpan["id"], text: "Neralis observatory." };
+  const answer = { ...source, id: "evidence.answer" as EvidenceSpan["id"], text: "Pelora island." };
+  const evidence = [subject, answer];
+  const resolved = resolveRequestValueBinding({ requestText: "Where is Neralis observatory located?", evidence,
+    resolvers: [{ id: binding.resolverId, resolve: () => ({ ...binding, evidenceIds: evidence.map(span => String(span.id)) }) }] })!;
+  expect(resolved.evidenceIds).toEqual(evidence.map(span => String(span.id)));
+  const fact = requestValueBindingConstructFact(resolved, evidence)!;
+  expect(fact.evidenceIds).toHaveLength(2);
+  const graph = attachSourceBoundAnswerConstruct({ construct, requestText: "Where is Neralis observatory located?",
+    hasher, brainMarker: {}, facts: [fact], evidence });
+  const contract = compileRealizationContract("Where is Neralis observatory located?", fact);
+  const facts = semanticAnswerConstructFacts(graph)!.facts;
+  expect(currentSourceBoundRoleValueFact({ text: binding.value, contract, facts, evidence })).toBeDefined();
+  for (const changed of [[subject], [answer], [subject, { ...answer, sourceVersionId: "source.foreign" as EvidenceSpan["sourceVersionId"] }],
+    [subject, { ...answer, status: "quarantined" as const }]]) {
+    expect(requestValueBindingConstructFact(resolved, changed)).toBeUndefined();
+    expect(currentSourceBoundRoleValueFact({ text: binding.value, contract, facts, evidence: changed })).toBeUndefined();
+  }
+});
+
 it("keeps ordinary predicate projections and rejects unowned or incomplete typed roles", () => {
   expect(requestValueBindingConstructFact({ ...binding, relation: "directs", value: "Mira Venn", requestedRoleId: "role.director" }, [source]))
     .toMatchObject({ predicate: "directs", object: "Mira Venn", relationRoleId: "role.director" });

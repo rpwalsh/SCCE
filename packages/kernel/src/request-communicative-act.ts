@@ -230,7 +230,10 @@ export function classifyRequestCommunicativeAct(
     scores.set(actId, score);
   }
   const neutralScore = scores.get(DIALOGUE_ACT_IDS.neutral)!;
-  const winner = classIds.reduce((best, actId) => scores.get(actId)! > scores.get(best)! ? actId : best, DIALOGUE_ACT_IDS.neutral as DialogueActId);
+  // Smoothing estimates likelihoods within an observed class; it cannot supply the first witness that a request means that act.
+  const promotable = classIds.filter(actId => actId === DIALOGUE_ACT_IDS.neutral
+    || matched.some(key => (model.features.get(key)!.counts[actId] ?? 0) > 0));
+  const winner = promotable.reduce((best, actId) => scores.get(actId)! > scores.get(best)! ? actId : best, DIALOGUE_ACT_IDS.neutral as DialogueActId);
   // Cost bound on the traced id list.
   const matchedPatternIds = matched.slice(0, 64);
   return {

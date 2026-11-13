@@ -9,7 +9,10 @@ import {
   assembleTurnConstruct,
   type TurnConstructAssemblyInput
 } from "../turn-construct-assembly.js";
-import type { ConstructGraph, TurnResult } from "../types.js";
+import type { ConstructGraph, EvidenceSpan, GraphSnapshot, TurnResult } from "../types.js";
+import { attachLearnedGraphPriorConstruct } from "../learned-graph-prior-runtime.js";
+import { semanticAnswerConstructFacts, compileRealizationContract } from "../semantic-answer-construct.js";
+import { requestValueBindingConstructFact, currentSourceBoundRoleValueFact } from "../source-bound-semantic-fact.js";
 
 function baseConstruct(): ConstructGraph {
   return {
@@ -92,7 +95,60 @@ function motion(): RuntimeReplanMotion {
   };
 }
 
+function sourceBoundPriorFixture() {
+  const source = { id: "evidence.neralis", sourceVersionId: "source.neralis", status: "promoted",
+    text: "Neralis observatory is located on Pelora island near the old harbor." } as EvidenceSpan;
+  const graph = {
+    nodes: ["Neralis observatory", "Pelora island near the old harbor"].map((label, index) => ({
+      id: `node.${index}`, typeId: "entity", representation: { label }, features: [], alpha: 1,
+      evidenceIds: [source.id], metadata: {}, createdAt: 1, updatedAt: 1
+    })),
+    edges: [{ id: "edge.topic", source: "node.0", target: "node.1", relationId: "relation.identity",
+      alpha: 1, weight: 1, evidenceIds: [source.id], metadata: {
+        relation: { subject: "Neralis observatory", predicate: "is located on", object: "Pelora island near the old harbor", confidence: 1 }
+      }, createdAt: 1, updatedAt: 1 }], hyperedges: []
+  } as unknown as GraphSnapshot;
+  const field = { active: graph.nodes.map(node => ({ nodeId: node.id, activation: 1 })), ppf: [], seeds: [], causalMass: [], alphaTrace: { surfaces: { contradiction: 0 } } } as unknown as TurnResult["field"];
+  const fact = requestValueBindingConstructFact({ subject: "Neralis observatory", value: "Pelora island",
+    relationId: "relation.location", requestedRoleId: "role.place", resolverId: "resolver.acquired_source_construction",
+    evidenceIds: [String(source.id)] }, [source])!;
+  return { source, graph, field, fact };
+}
+
 describe("turn construct assembly", () => {
+  it("preserves a current typed role answer without a quote plan through a competing topical prior", () => {
+    const { source, graph, field, fact } = sourceBoundPriorFixture();
+    const input = baseInput({ requestText: "Where is Neralis observatory located?", boundFact: fact,
+      boundFactEvidence: [source], learnedPrior: { graph, field, selectedEvidence: [source] } });
+    const competing = attachLearnedGraphPriorConstruct({ construct: input.baseConstruct, requestText: input.requestText,
+      graph, field, selectedEvidence: [source], brainMarker: {}, hasher: input.hasher });
+    expect(semanticAnswerConstructFacts(competing)?.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subject: "Neralis observatory", predicate: "is located on", object: "Pelora island near the old harbor" })
+    ]));
+    const result = assembleTurnConstruct(input).construct;
+    expect(result.nodes.find(node => node.kind === "construct:semantic_answer")?.metadata).not.toHaveProperty("localEvidenceAnswer");
+    const facts = semanticAnswerConstructFacts(result)!.facts;
+    expect(facts).toHaveLength(1);
+    expect(facts).toMatchObject([{ subject: fact.subject, predicate: "", object: fact.object, relationId: fact.relationId,
+      relationRoleId: fact.relationRoleId, requestedSlotId: fact.requestedSlotId, evidenceIds: fact.evidenceIds, sourceVersionId: fact.sourceVersionId }]);
+    expect(currentSourceBoundRoleValueFact({ text: fact.object, contract: compileRealizationContract(input.requestText, fact),
+      facts, evidence: [source] })).toEqual(fact);
+  });
+
+  it.each(["missing", "quarantined", "foreign_version"] as const)("does not authorize a typed answer with %s current owners", invalid => {
+    const { source, graph, field, fact } = sourceBoundPriorFixture();
+    const owners = invalid === "missing" ? [] : [{ ...source, ...(invalid === "quarantined" ? { status: "quarantined" as const }
+      : { sourceVersionId: "source.foreign" as EvidenceSpan["sourceVersionId"] }) }];
+    const input = baseInput({ requestText: "Where is Neralis observatory located?", boundFact: fact, boundFactEvidence: [source],
+      learnedPrior: { graph, field, selectedEvidence: owners } });
+    const facts = semanticAnswerConstructFacts(assembleTurnConstruct(input).construct)?.facts ?? [];
+    expect(currentSourceBoundRoleValueFact({ text: fact.object, contract: compileRealizationContract(input.requestText, fact),
+      facts, evidence: owners })).toBeUndefined();
+    if (owners.length) expect(facts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ relationId: fact.relationId, relationRoleId: fact.relationRoleId, object: fact.object, predicate: "" })
+    ]));
+  });
+
   it("returns the original construct when no activated optional attachment applies", () => {
     const input = baseInput();
     expect(assembleTurnConstruct(input).construct).toBe(input.baseConstruct);

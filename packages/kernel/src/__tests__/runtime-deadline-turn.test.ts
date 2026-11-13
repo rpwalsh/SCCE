@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  acquireContextualQaConstructions,
   createClock,
   createHasher,
   createIdFactory,
   createScceKernel,
   PRODUCTION_INITIAL_VISIBLE_RESPONSE_SCHEMA,
+  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
   type AlphaTrace,
   type BuildTestResult,
   type DocumentGenerationSessionRecord,
@@ -28,6 +30,7 @@ import {
 import type { EventRangeQuery } from "../storage.js";
 import type { EpisodeId } from "../types.js";
 import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
+import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
 
 /**
  * Plan item L9: proves a turn whose deadline has ALREADY elapsed by the time
@@ -190,7 +193,7 @@ describe("runtime deadline integration with a real turn", () => {
 });
 
 function zephyrCalibrationEvidence(): EvidenceSpan {
-  const text = "The Zephyr valve was calibrated at 14:20 UTC on 2026-11-05.";
+  const text = "The calibration time for the Zephyr valve was 14:20 UTC on 2026-11-05.";
   return {
     id: "evidence.zephyr.calibration",
     sourceId: "source.zephyr.maintenance-log",
@@ -206,7 +209,7 @@ function zephyrCalibrationEvidence(): EvidenceSpan {
     textPreview: text,
     languageHints: { language: "en" },
     scriptHints: { script: "Latn" },
-    trustVector: { trust: 0.94, sourceTrust: 0.94, structuralConfidence: 0.94, forceClass: "direct_evidence" },
+    trustVector: { trust: 0.94, sourceTrust: 0.94, structuralConfidence: 0.94, forceClass: "direct_evidence", admission: { disposition: "promote" } },
     provenance: {
       namespace: "owner-local",
       source: "fixture-maintenance-log",
@@ -228,6 +231,29 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
   storage: ScceStorage;
   events: ScceEvent[];
 } {
+  const language = sourceOwnedAnswerhoodLanguage();
+  const hasher = createHasher();
+  const documents = [["Aster", "01:10"], ["Beryl", "02:20"], ["Cobalt", "03:30"], ["Dahlia", "04:40"]].map(([name, time], index) => {
+    const request = `Tell me the calibration time for the ${name} valve.`, context = `The calibration time for the ${name} valve was ${time} UTC.`;
+    const text = request + "\n" + time + "\n" + context, replyStart = [...request].length + 1;
+    const contextStart = replyStart + [...time!].length + 1, answerStart = contextStart + [...context.slice(0, context.indexOf(time!))].length;
+    const sourceVersionId = `source_version.deadline.lesson.${index}`, sourceId = `source.deadline.lesson.${index}`;
+    const span = { ...zephyrCalibrationEvidence(), id: `evidence.deadline.lesson.${index}`, sourceId, sourceVersionId,
+      contentHash: `sha256_${hasher.digestHex(text)}`, text, textPreview: text, byteEnd: Buffer.byteLength(text), charEnd: [...text].length,
+      provenance: { namespace: "fixture", title: `${name} valve`, uri: `fixture://deadline/lesson/${index}`, sourceVersionId,
+        byteRange: [0, Buffer.byteLength(text)], charRange: [0, [...text].length] } } as unknown as EvidenceSpan;
+    return { sourceVersionId, profileId: `profile.deadline.lesson.${index}`, languageIdentityId: "language.deadline.fixture",
+      languageIdentityDigest: hasher.digestHex("deadline fixture assignment"), spans: [span], transcriptTurns: [
+        { index: 0, speakerId: "human.question", sourceRecordId: `deadline.lesson.${index}`, surface: request, startCodePoint: 0, endCodePoint: replyStart - 1 },
+        { index: 1, speakerId: "human.answer", sourceRecordId: `deadline.lesson.${index}`, surface: time!, startCodePoint: replyStart,
+          endCodePoint: contextStart - 1, replyToTurnIndex: 0, commitmentScope: "external" as const,
+          supportingSourceRanges: [{ surface: context, startCodePoint: contextStart, endCodePoint: [...text].length,
+            answerRange: { startCodePoint: answerStart, endCodePoint: answerStart + [...time!].length } }] }
+      ] };
+  });
+  const learned = acquireContextualQaConstructions({ documents, hasher, updatedAt: 1, authorship: "human_authored" });
+  expect(learned.families, JSON.stringify(learned.rejected)).toHaveLength(1);
+  const ownedEvidence = () => [...input.evidence, ...language.evidence, ...documents.flatMap(document => document.spans)];
   const events: ScceEvent[] = [];
   const currentGraph = () => graphSlice(input.evidence);
   const storage = {
@@ -254,8 +280,8 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
       putSourceVersion: async () => undefined,
       putEvidenceSpan: async () => undefined,
       promoteEvidence: async (ids: EvidenceId[]) => ids.length,
-      getEvidence: async (id: EvidenceId) => input.evidence.find(span => String(span.id) === String(id)) ?? null,
-      getEvidenceBatch: async (ids: EvidenceId[]) => input.evidence.filter(span => ids.map(String).includes(String(span.id))),
+      getEvidence: async (id: EvidenceId) => ownedEvidence().find(span => String(span.id) === String(id)) ?? null,
+      getEvidenceBatch: async (ids: EvidenceId[]) => ownedEvidence().filter(span => ids.map(String).includes(String(span.id))),
       searchEvidence: async () => input.evidence.map(span => ({ span, score: span.alpha, reason: "fixture" })),
       sourceVersionsForEvidence: async () => []
     },
@@ -269,7 +295,7 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
       readModel: async (): Promise<ModelState> => ({ languageProfiles: [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }),
       writeModel: async () => undefined,
       putLanguageProfile: async () => undefined,
-      listLanguageProfiles: async () => []
+      listLanguageProfiles: language.readProfiles
     },
     languageMemory: {
       putNgramObservation: async () => undefined,
@@ -281,10 +307,14 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
       putLanguagePattern: async () => undefined,
       putSemanticFrame: async () => undefined,
       putTranslationAlignment: async () => undefined,
-      listNgramModels: async () => [],
+      listNgramModels: language.readModels,
       listNgramObservations: async () => [],
       listLanguageUnits: async () => [],
-      listLanguagePatterns: async () => [],
+      listLanguagePatterns: async (query?: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => [...await language.readPatterns(query), ...learned.families.map(family => family.pattern)
+        .filter(pattern => (!query?.patternIds || query.patternIds.includes(pattern.id))
+          && (!query?.profileIds || query.profileIds.includes(pattern.profileId))
+          && (!query?.sourceSystem || query.sourceSystem === "dialogue")
+          && (!query?.patternSchemas || query.patternSchemas.includes(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA)))],
       listSemanticFrames: async () => [],
       listTranslationAlignments: async () => []
     },

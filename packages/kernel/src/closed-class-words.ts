@@ -23,8 +23,7 @@ export function requestScaffoldingConstructions(
   requestText?: string
 ): Array<{ parts: Array<{ kind: "literal"; surface: string }> }> {
   const observed = requestText?.trim() ? new Set(requestFeatures(requestText).map(row => `${row.anchor}\u0000${row.surface}`)) : undefined;
-  const candidates = new Set<string>();
-  const copied = new Set<string>();
+  const observations = new Map<string, { supported: number; copied: number; cuts: number[] }>();
   for (const pattern of patterns) {
     if (!isRequestRequirementPattern(pattern)) continue;
     const record = jsonRecord(pattern.patternJson);
@@ -43,11 +42,26 @@ export function requestScaffoldingConstructions(
       if (typeof unit !== "string" || !units.has(unit) || typeof supportedPairs !== "number" || typeof copiedPairs !== "number"
         || !Number.isSafeInteger(supportedPairs) || supportedPairs <= 0
         || !Number.isSafeInteger(copiedPairs) || copiedPairs < 0 || copiedPairs > supportedPairs) continue;
-      if (copiedPairs > 0) copied.add(unit);
-      else if (record.requestSpanRole === "control") candidates.add(unit);
+      if (record.requestSpanRole !== "control") continue;
+      const current = observations.get(unit) ?? { supported: 0, copied: 0, cuts: [] };
+      current.supported += supportedPairs;
+      current.copied += copiedPairs;
+      if (typeof record.responseMatchCut === "number" && Number.isFinite(record.responseMatchCut)
+        && record.responseMatchCut >= 0 && record.responseMatchCut <= 1) current.cuts.push(record.responseMatchCut);
+      observations.set(unit, current);
     }
   }
-  return [...candidates].filter(unit => !copied.has(unit)).map(surface => ({ parts: [{ kind: "literal" as const, surface }] }));
+  return [...observations]
+    .filter(([, value]) => {
+      const rate = value.copied / value.supported;
+      // The compiler persisted the corpus-derived Otsu boundary that decided
+      // control versus content.  Aggregate all matching witnesses, then use
+      // the most conservative learned boundary.  Hand-authored/old records
+      // without that measurement may discount only a never-copied unit.
+      const learnedCut = value.cuts.length ? Math.min(...value.cuts) : undefined;
+      return learnedCut === undefined ? rate === 0 : rate < learnedCut;
+    })
+    .map(([surface]) => ({ parts: [{ kind: "literal" as const, surface }] }));
 }
 
 /**

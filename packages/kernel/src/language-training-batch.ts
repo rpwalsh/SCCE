@@ -1069,8 +1069,10 @@ function uniqueConstructionSets(
       byBindingId.set(set.bindingId, set);
       continue;
     }
+    if (current.requestMode !== set.requestMode) throw new Error(`construction binding ${set.bindingId} has conflicting request modes`);
     byBindingId.set(set.bindingId, {
       bindingId: set.bindingId,
+      ...(current.requestMode ? { requestMode: current.requestMode } : {}),
       observations: [...current.observations, ...set.observations].slice(0, 256),
       alignmentSummary: current.alignmentSummary ?? set.alignmentSummary
     });

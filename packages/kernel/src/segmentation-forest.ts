@@ -197,7 +197,7 @@ const DEFAULT_LIMITS: SegmentationForestLimits = {
   maxConstructionDepth: 256
 };
 
-function prepareSegmentationForest(input: SegmentationForestBuildInput) {
+function prepareSegmentationArcs(input: SegmentationForestBuildInput) {
   const hasher = input.hasher ?? createHasher();
   const normalizationContractId = input.normalizationContractId
     ?? canonicalNormalizationContract(hasher).id;
@@ -238,6 +238,13 @@ function prepareSegmentationForest(input: SegmentationForestBuildInput) {
   }
   for (const bucket of allArcsByStart.values()) bucket.sort(compareArcs);
 
+  return { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart, boundaryRecords, interiorCostPrefix };
+}
+
+function prepareSegmentationForest(input: SegmentationForestBuildInput) {
+  const prepared = prepareSegmentationArcs(input);
+  const { graphemeCount, allArcsByStart } = prepared;
+
   const fullForward = forwardPartition(allArcsByStart, graphemeCount);
   const fullPartitionLogZ = fullForward[graphemeCount]!;
   const fullBackward = backwardPartition(allArcsByStart, graphemeCount);
@@ -249,8 +256,21 @@ function prepareSegmentationForest(input: SegmentationForestBuildInput) {
     graphemeCount
   });
 
-  return { hasher, normalizationContractId, graphemeCount, requestedPathLimit, limits, allArcsByStart,
-    fullPartitionLogZ, boundaryMarginals, boundaryRecords, interiorCostPrefix };
+  return { ...prepared, fullPartitionLogZ, boundaryMarginals };
+}
+
+function segmentationAdjacencyMeasure(allArcsByStart: ReadonlyMap<number, readonly WeightedArc[]>, graphemeCount: number) {
+  const factorArcs = [...allArcsByStart.entries()].sort(([left], [right]) => left - right).flatMap(([, arcs]) => arcs);
+  const factors: SegmentationAdjacencyFactors = Object.freeze({ schema: SEGMENTATION_ADJACENCY_FACTORS_SCHEMA,
+    nodeCount: graphemeCount + 1,
+    arcs: Object.freeze(factorArcs.map(arc => Object.freeze([arc.unit.graphemeStart, arc.unit.graphemeEnd, arc.energy] as const))) });
+  return { factorArcs, factors };
+}
+
+/** Export the same scored full DAG without materializing paths or marginal distributions. */
+export function buildSegmentationAdjacencyFactors(input: SegmentationForestBuildInput): SegmentationAdjacencyFactors {
+  const { allArcsByStart, graphemeCount } = prepareSegmentationArcs(input);
+  return segmentationAdjacencyMeasure(allArcsByStart, graphemeCount).factors;
 }
 
 export function measureSegmentationBoundaries(input: SegmentationForestBuildInput): SegmentationBoundaryMeasurement {
@@ -395,10 +415,7 @@ export function buildSegmentationForest(input: SegmentationForestBuildInput): Su
       completion
     })
   };
-  const factorArcs = [...allArcsByStart.entries()].sort(([left], [right]) => left - right).flatMap(([, arcs]) => arcs);
-  const factors: SegmentationAdjacencyFactors = Object.freeze({ schema: SEGMENTATION_ADJACENCY_FACTORS_SCHEMA,
-    nodeCount: graphemeCount + 1,
-    arcs: Object.freeze(factorArcs.map(arc => Object.freeze([arc.unit.graphemeStart, arc.unit.graphemeEnd, arc.energy] as const))) });
+  const { factorArcs, factors } = segmentationAdjacencyMeasure(allArcsByStart, graphemeCount);
   let scoreRecipe: SegmentationScoreFactors | undefined;
   if (input.captureScoreFactors) {
     try { scoreRecipe = captureSegmentationScoreFactors({ graph: factors, arcs: factorArcs.map(arc => arc.scoreInput!),

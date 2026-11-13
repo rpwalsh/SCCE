@@ -44,7 +44,8 @@ import {
   type QuestionEdgeDecisionId
 } from "./question-routing-ids.js";
 import { planQuestionSlots, type QuestionSlotAssignment, type QuestionSlotPlan } from "./question-slot-planner.js";
-import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
+import { compileRealizationContract, semanticAnswerConstructFacts, type SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
+import { currentSourceBoundRoleValueFact } from "./source-bound-semantic-fact.js";
 import type {
   ConstructGraph,
   EvidenceSpan,
@@ -302,16 +303,20 @@ export function attachLearnedGraphPriorConstruct(input: {
   brainMarker: JsonValue;
   hasher: { digestHex(input: string | Uint8Array): string };
 }): ConstructGraph {
-  // A learned prior does not overrule admitted source evidence. This runs after attachLocalEvidenceAnswerConstruct
-  // and both write construct:semantic_answer by filtering the other's node out, so whichever ran last simply won --
-  // and this one runs last. Measured on "Who was Charles Babbage?": the evidence lane selected, verified and bound
-  // "Charles Babbage and Ada Lovelace conceived the first programmable computer", and the prior replaced it with
-  // three sentences of unrelated trivia from the same article, which is the surface the turn actually spoke. Source-
-  // bound cognition is the whole doctrine here, so the evidence-backed node stands and the prior adds nothing.
-  if (input.construct.nodes.some(node => node.kind === "construct:semantic_answer"
-    && Boolean(jsonRecord(node.metadata).localEvidenceAnswer))) {
-    return input.construct;
-  }
+  // Current source-owned answers outrank topical priors, including role values without a quote plan.
+  if (input.construct.nodes.some(node => {
+    if (node.kind !== "construct:semantic_answer") return false;
+    const metadata = jsonRecord(node.metadata);
+    if (metadata.localEvidenceAnswer) return true;
+    if (metadata.schema !== "scce.semantic_answer_construct.v1"
+      || metadata.forceId !== "output.force.source_bound_answer"
+      || metadata.boundaryId !== "output.force.source_bound") return false;
+    const facts = semanticAnswerConstructFacts({ ...input.construct, nodes: [node] })?.facts ?? [];
+    return facts.length > 0 && facts.every(fact => currentSourceBoundRoleValueFact({
+      text: fact.object, contract: compileRealizationContract(input.requestText, fact),
+      facts, evidence: input.selectedEvidence
+    }) !== undefined);
+  })) return input.construct;
   const state = learnedGraphPriorConstructState(input);
   if (!state) {
     const nodeAnswer = graphNodeAnswerConstructState(input);

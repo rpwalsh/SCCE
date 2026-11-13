@@ -23,8 +23,10 @@ import {
   requestCommunicativeActIdForSignature,
   requestCommunicativeActModelFromPatterns,
   requestCommunicativeActPatterns,
+  type RequestCommunicativeActModel,
   type RequestCommunicativeActObservation
 } from "../request-communicative-act.js";
+import { requestFeatures } from "../request-requirement-learning.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
 
 // Invented tokens: the classifier must learn from outcomes, not from any language it already knows.
@@ -36,6 +38,43 @@ const OBSERVATIONS: RequestCommunicativeActObservation[] = [
 const EVIDENCE_FREE_ACT = requestCommunicativeActIdForSignature({ accepted: true, evidenceBearing: false });
 
 describe("request-level communicative act", () => {
+  it.each(["velora", "한국어", "مرحبا", "𐐀𐐁"])("does not promote an unobserved act from pseudocounts alone: %s", surface => {
+    const unsupported = "actshape.a20db32b";
+    // Exact measured r004 class/feature counts, with the public surface replaced by opaque/multilingual units.
+    const counts = {
+      start: { "actshape.cb0810e5": 19, "actshape.3d30dbe2": 1, "actshape.b651af12": 1 },
+      end: { "actshape.3d30dbe2": 1, "actshape.cb0810e5": 1 },
+      any: { "actshape.cb0810e5": 28, [DIALOGUE_ACT_IDS.neutral]: 2, "actshape.3d30dbe2": 1, "actshape.b651af12": 2 }
+    };
+    const model: RequestCommunicativeActModel = { schema: "scce.request_communicative_act_model.v1",
+      classCounts: { [DIALOGUE_ACT_IDS.neutral]: 11788, "actshape.3d30dbe2": 567, "actshape.cb0810e5": 4992,
+        "actshape.b651af12": 68, [unsupported]: 6 },
+      features: new Map(requestFeatures(surface).map(feature => [feature.key, { surface: feature.surface, anchor: feature.anchor,
+        counts: counts[feature.anchor as keyof typeof counts] }])) };
+    const result = classifyRequestCommunicativeAct(surface, model);
+    expect(result.status).toBe("active");
+    expect(result.actId).not.toBe(unsupported);
+    expect(result.matchedPatternIds.some(key => (model.features.get(key)?.counts[result.actId] ?? 0) > 0)).toBe(true);
+    expect(result.logOddsOverNeutral).toBeGreaterThanOrEqual(0);
+  });
+
+  it("keeps a single positive matched witness sufficient and leaves an exact tie at the neutral baseline", () => {
+    const supported = "actshape.single_witness", surface = "zulora";
+    const features = requestFeatures(surface);
+    const model: RequestCommunicativeActModel = { schema: "scce.request_communicative_act_model.v1",
+      classCounts: { [DIALOGUE_ACT_IDS.neutral]: 1000, [supported]: 1 },
+      features: new Map(features.map(feature => [feature.key, { surface: feature.surface, anchor: feature.anchor,
+        counts: { [supported]: feature.key === features[0]!.key ? 1 : 0,
+          [DIALOGUE_ACT_IDS.neutral]: feature.key === features[0]!.key ? 0 : 1 } }])) };
+    expect(classifyRequestCommunicativeAct(surface, model).actId).toBe(supported);
+    const tied: RequestCommunicativeActModel = { schema: model.schema,
+      classCounts: { [DIALOGUE_ACT_IDS.neutral]: 1, [supported]: 1 },
+      features: new Map(features.map(feature => [feature.key, { surface: feature.surface, anchor: feature.anchor,
+        counts: { [DIALOGUE_ACT_IDS.neutral]: 1, [supported]: 1 } }])) };
+    expect(classifyRequestCommunicativeAct(surface, tied)).toMatchObject({ status: "active", actId: DIALOGUE_ACT_IDS.neutral, logOddsOverNeutral: 0 });
+    expect(classifyRequestCommunicativeAct("unobserved", tied)).toMatchObject({ status: "bypassed_not_applicable", actId: DIALOGUE_ACT_IDS.neutral });
+  });
+
   it("induces act classes from accepted-outcome signatures and round-trips through persisted patterns", () => {
     const model = compileRequestCommunicativeActModel(OBSERVATIONS);
     expect(model.classCounts).toEqual({ [EVIDENCE_FREE_ACT]: 4, [DIALOGUE_ACT_IDS.neutral]: 4 });

@@ -13,13 +13,14 @@ import { admitReference } from './campaign-reference-admission.mjs';
 import { verifyCandidateFinalization } from './candidate-finalization.mjs';
 import { resolveProcessPolicy } from './process-resources.mjs';
 import { defaultInventory, coverageGaps, createDefaultPool, CATEGORY_GROUPS } from './providers/default/cases.mjs';
+import { loadRetainedCorpus, createRetainedPool } from './providers/retained-cases.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url));
 const providerDir = path.join(here, 'providers', 'default');
 export function campaignOptions(overrides = {}) {
   const diagnostic = overrides.diagnostic === true;
-  const options = { diagnostic, count: diagnostic ? 2 : 12, attempts: 2, hiddenVectors: 12, toolCalls: 8, device: 'auto', contextTokens: 32768, outputTokens: 4096, seed: 0, budgets: { timeMs: 180000, outputBytes: 2 * 1024 * 1024, caseBytes: 4 * 1024 * 1024, artifactBytes: 2 * 1024 * 1024, maxSteps: 4 }, ...overrides };
-  if (!Number.isSafeInteger(options.count) || options.count < 2 || options.count % 2) throw new Error('Preregister an even per-cell count >=2 for balanced factual controls');
+  const options = { diagnostic, count: overrides.retainedCorpusFile ? 5 : diagnostic ? 2 : 12, attempts: 2, hiddenVectors: 12, toolCalls: 8, device: 'auto', contextTokens: 32768, outputTokens: 4096, seed: 0, budgets: { timeMs: 180000, outputBytes: 2 * 1024 * 1024, caseBytes: 4 * 1024 * 1024, artifactBytes: 2 * 1024 * 1024, maxSteps: 4 }, ...overrides };
+  if (options.retainedCorpusFile ? !Number.isSafeInteger(options.count) || options.count < 1 : !Number.isSafeInteger(options.count) || options.count < 2 || options.count % 2) throw new Error('Preregister a positive retained cloze count, or an even default per-cell count >=2');
   for (const key of ['attempts', 'hiddenVectors', 'toolCalls', 'contextTokens', 'outputTokens']) if (!Number.isSafeInteger(options[key]) || options[key] < 1) throw new Error(`Invalid campaign setting: ${key}`);
   for (const key of ['threads', 'maxReferenceModelBytes']) if (options[key] !== undefined && (!Number.isSafeInteger(options[key]) || options[key] < 1)) throw new Error(`Invalid campaign resource setting: ${key}`);
   return options;
@@ -39,12 +40,13 @@ export async function prepareCampaign(raw, dependencies = {}) {
   if (!admittedFiles.length) try { await access(automaticInventory); admittedFiles.push(automaticInventory); } catch {}
   const admitted = [];
   for (const file of admittedFiles) admitted.push(await readJson(file));
-  const inventory = defaultInventory(capabilities, admitted), gaps = coverageGaps(inventory, discovery.tools);
+  const retainedCorpus = options.retainedCorpusFile ? await loadRetainedCorpus(options.retainedCorpusFile) : undefined;
+  const inventory = retainedCorpus?.inventory ?? defaultInventory(capabilities, admitted), gaps = retainedCorpus ? [] : coverageGaps(inventory, discovery.tools);
   if (gaps.length && !options.diagnostic) {
     await writeJson(path.join(out, 'coverage-blockers.json'), signed({ inventory, gaps, claim: 'Not evaluated; missing providers/toolchains block the campaign. Diagnostic mode retains blocking cells and never establishes superiority.' }));
     throw new Error(`Missing coverage blocks heldout collection. See ${path.join(out, 'coverage-blockers.json')}`);
   }
-  const settings = { schema: 'scce.blind-default-settings.v1', count: options.count, attempts: options.attempts, hiddenVectors: options.hiddenVectors, toolCalls: options.toolCalls, budgets: options.budgets, allowMissingCoverage: options.diagnostic, inventory, tools: discovery.tools };
+  const settings = { schema: 'scce.blind-default-settings.v1', ...(retainedCorpus ? { retainedCorpusFile: retainedCorpus.manifestFile } : {}), count: options.count, attempts: options.attempts, hiddenVectors: options.hiddenVectors, toolCalls: options.toolCalls, budgets: options.budgets, allowMissingCoverage: options.diagnostic, inventory, tools: discovery.tools };
   const publicPins = path.join(out, 'preparation');
   await mkdir(publicPins, { recursive: true });
   await writeJson(path.join(publicPins, 'discovery.json'), discovery.publicSnapshot);
@@ -64,7 +66,7 @@ export async function prepareCampaign(raw, dependencies = {}) {
   for (let i = 0; i < admitted.length; i++) { const file = path.join(publicPins, `admitted-public-${i}.json`); await writeJson(file, admitted[i]); admittedSnapshots.push(file); }
   const custodyStatement = { mode: options.seedFile ? 'operator-supplied-external-seed' : 'automated-custodian-on-trusted-operator-host', independence: 'No independent-custodian attestation is invented. Use a separate custodian and independently record commitments for true independent custody.', factoryHash: await fileHash(path.join(providerDir, 'cases.mjs')), seedTiming: 'Generate/read seed only after freeze succeeds and all pinned artifacts verify.' };
   await writeJson(path.join(publicPins, 'custody.json'), custodyStatement);
-  const publicPreparation = { publicInputs: 'Identical concrete case sources, files, specifications and public check policy are sealed after factory freeze and delivered to both systems.', candidate: 'Official current-step source/workspace ingestion then ordinary production route; prior corpus is declared by admitted public inventories, not inferred from script identity.', reference: 'Same ordered public inputs in context plus the same bounded workspace/public-check tools.', limitations: 'No claim of equal latent pretraining, source-admission audit completeness or hard resource containment is fabricated.' };
+  const publicPreparation = { publicInputs: 'Identical concrete case sources, files, specifications and public check policy are sealed after factory freeze and delivered to both systems.', candidate: retainedCorpus ? 'Read-only canonical source/hash/promoted-evidence verification then ordinary factual turn; no ingestion. Coverage is retained-source cloze only.' : 'Official current-step source/workspace ingestion then ordinary production route; prior corpus is declared by admitted public inventories, not inferred from script identity.', reference: 'Same ordered public inputs in context plus the same bounded workspace/public-check tools.', limitations: 'No claim of equal latent pretraining, source-admission audit completeness or hard resource containment is fabricated.' };
   await writeJson(path.join(publicPins, 'candidate-preparation.json'), publicPreparation);
   await writeJson(path.join(publicPins, 'reference-preparation.json'), publicPreparation);
   const sourceFiles = await (dependencies.files ?? implementationFiles)();
@@ -77,6 +79,10 @@ export async function prepareCampaign(raw, dependencies = {}) {
   add('reference-admission', 'preparation', path.join(publicPins, 'reference-admission.json'));
   add('scorer', 'scorer', path.join(here, 'grading.mjs'));
   add('public-authored-source-declaration', 'corpus', path.join(providerDir, 'PRIVATE-CUSTODY.md'));
+  if (retainedCorpus) {
+    add('retained-source-manifest', 'corpus', retainedCorpus.manifestFile);
+    for (const [index, document] of retainedCorpus.documents.entries()) add(`retained-source-${index}`, 'corpus', document.file);
+  }
   add('capabilities', 'coverage', path.join(providerDir, 'capabilities.json'));
   add('inventory', 'coverage', path.join(publicPins, 'inventory.json'));
   add('settings', 'implementation', path.join(publicPins, 'settings.json'));
@@ -133,7 +139,8 @@ export async function custodianCampaign({ preparedFile, freezeDigest, privateRoo
   const seed = seedFile ? (await readFile(seedFile, 'utf8')).trim() : randomBytes(32).toString('hex');
   const privateSeed = path.join(privateRoot, 'selection-seed.txt');
   await writeFile(privateSeed, `${seed}\n`, { flag: 'wx' });
-  const pool = await createDefaultPool({ ...settings, privateRoot, seed });
+  if (settings.retainedCorpusFile && path.resolve(settings.retainedCorpusFile) !== frozen.plan.artifacts.find(artifact => artifact.id === 'retained-source-manifest')?.path) throw new Error('Retained corpus is not the frozen public artifact');
+  const pool = await (settings.retainedCorpusFile ? createRetainedPool : createDefaultPool)({ ...settings, privateRoot, seed });
   const bundle = await seal({ freezeFile: prepared.freezeFile, freezeDigest: frozen.digest, poolFile: pool.poolFile, seedFile: privateSeed, outDir: path.join(privateRoot, 'sealed') });
   return signed({ schema: 'scce.blind-default-custody.v1', freezeDigest: frozen.digest, bundleDigest: bundle.digest, publicBundleRoot: path.join(privateRoot, 'sealed/public'), privateKeyFile: path.join(privateRoot, 'sealed/private/key.json'), privateRoot: path.resolve(privateRoot), custodyMode: seedFile ? 'operator-supplied-external-seed' : 'automated-custodian-on-trusted-operator-host', independentCustodianAttested: false, cases: pool.cases, familyCountsHash: hash(pool.familyCounts) });
 }
@@ -212,7 +219,7 @@ async function main() {
   else if (command === 'resume') result = await resumeCampaign({ out: need('out'), shardCount: Number(args.get('shard-count') ?? 1), shardIndex: Number(args.get('shard-index') ?? 0) });
   else {
     const resourceOptions = Object.fromEntries([['threads', 'threads'], ['max-reference-model-bytes', 'maxReferenceModelBytes'], ['context-tokens', 'contextTokens'], ['output-tokens', 'outputTokens']].filter(([flag]) => args.has(flag)).map(([flag, name]) => [name, Number(args.get(flag))]));
-    const options = campaignOptions({ out: need('out'), diagnostic: args.has('diagnostic'), configFile: args.get('config'), processPolicyFile: args.get('process-policy'), admittedManifests: args.has('admitted-public-manifest') ? [args.get('admitted-public-manifest')] : [], seedFile: args.get('seed-file'), privateRoot: args.get('private-root'), ...(args.has('count') ? { count: Number(args.get('count')) } : {}), ...(args.has('device') ? { device: args.get('device') } : {}), ...resourceOptions, ...(args.has('shard-count') ? { shardCount: Number(args.get('shard-count')), shardIndex: Number(args.get('shard-index') ?? 0) } : {}) });
+    const options = campaignOptions({ out: need('out'), diagnostic: args.has('diagnostic'), configFile: args.get('config'), retainedCorpusFile: args.get('retained-corpus'), processPolicyFile: args.get('process-policy'), admittedManifests: args.has('admitted-public-manifest') ? [args.get('admitted-public-manifest')] : [], seedFile: args.get('seed-file'), privateRoot: args.get('private-root'), ...(args.has('count') ? { count: Number(args.get('count')) } : {}), ...(args.has('device') ? { device: args.get('device') } : {}), ...resourceOptions, ...(args.has('shard-count') ? { shardCount: Number(args.get('shard-count')), shardIndex: Number(args.get('shard-index') ?? 0) } : {}) });
     result = command === 'run' ? await runCampaign(options) : (await prepareCampaign(options)).prepared;
   }
   process.stdout.write(`${canonical(result)}\n`);

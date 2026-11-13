@@ -6,6 +6,7 @@ import { createHasher, validateLanguageSegmentationWitness, LANGUAGE_SEGMENTATIO
   encodeSyntaxSourceReplay, decodeSyntaxSourceReplay, syntaxSourceReplayBindingSetReference,
   encodeSemanticSourceReplay, decodeSemanticSourceReplay, semanticSourceReplayBindingSetReference,
   captureSourceTextReplayBindings, resolveSourceTextReplayBindingSet,
+  sourceTextReplayViewsFromSegmentationWitness,
   validateSourceTextReplayBindingSet, validateSourceTextReplayBindingSetReference,
   sourceTextReplayJson as exact, sourceTextReplayRecord as record,
   type LanguageInductionDocument, type LanguageSegmentationWitness, type SemanticInductionFactors,
@@ -118,13 +119,16 @@ export function createSourceTextReplayStore(host: SourceTextReplayStorageHost) {
         const ids = [...new Set(documents.map(document => document.ownerDocumentId))];
         const loaded = await host.getOwnerDocuments(ids);
         if (loaded.size !== ids.length || ids.some(id => !loaded.has(id))) return fail();
+        const views = sourceTextReplayViewsFromSegmentationWitness(witness);
         for (const document of documents) {
           const owner = loaded.get(document.ownerDocumentId)!;
           if (typeof owner.text !== "string" || !owner.sourceVersionId
             || document.sourceVersionId !== undefined && document.sourceVersionId !== owner.sourceVersionId
-            || owner.text.slice(document.sourceUtf16Start, document.sourceUtf16End) !== document.text) return fail();
+            || document.sourceUtf16End > owner.text.length
+            || document.text.length !== document.sourceUtf16End - document.sourceUtf16Start) return fail();
         }
-        return { hasher, owners: new Map([...loaded].map(([id, owner]) => [id, { text: owner.text, sourceVersionId: owner.sourceVersionId as SourceVersionId }])) };
+        return { hasher, views, owners: new Map([...loaded].map(([id, owner]) =>
+          [id, { text: owner.text, sourceVersionId: owner.sourceVersionId as SourceVersionId }])) };
       })(); ownerCache.set(key, pending); }
       return pending;
     };

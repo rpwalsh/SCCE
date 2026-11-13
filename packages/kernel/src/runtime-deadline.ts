@@ -5,26 +5,7 @@ import type { JsonValue } from "./types.js";
 export const RUNTIME_DEADLINE_SCHEMA = "scce.runtime_deadline.v1" as const;
 export const RUNTIME_DEADLINE_DECISION_SCHEMA = "scce.runtime_deadline_decision.v1" as const;
 export const DEFAULT_RUNTIME_RESPONSE_RESERVE_MS = 1_000;
-/**
- * The production server (`packages/server/src/routes.ts`'s
- * `productionTurnDeadlineMetadata`) authors the real per-request deadline
- * under `metadata.runtime.initialResponseDeadline` with this schema, not
- * under `runtime.deadline`/`RUNTIME_DEADLINE_SCHEMA` -- confirmed the only
- * production writer of this metadata, and `runtime.deadline` is deliberately
- * treated as untrusted client input and stripped
- * (`turn-session-projection.test.ts` asserts `runtime` never carries a
- * `deadline` property after server processing). Plan item L7 found every
- * real `/api/turn` request was silently running with no deadline object at
- * all -- `executableRuntimeDeadlineFromMetadata` only ever recognized the
- * `runtime.deadline` shape, so it returned `undefined` for every production
- * request and all 16 `deadlineCheckpoint` call sites in
- * `production-turn-runtime.ts` were unconditionally admitted. Recognizing
- * this shape too (kept as a plain literal, not a cross-package import, since
- * `runtime-deadline.ts` is kernel-side and must not depend on the server
- * package) is what actually makes those checkpoints load-bearing in
- * production; `runtime.deadline` stays supported for direct kernel callers
- * (already covered by `runtime-deadline.test.ts`).
- */
+/** Visibility is measured separately from a caller's execution limit. */
 export const PRODUCTION_INITIAL_VISIBLE_RESPONSE_SCHEMA = "scce.initial_visible_response.v1" as const;
 
 export interface RuntimeDeadlineMetadata {
@@ -51,24 +32,23 @@ export interface RuntimeDeadlineDecision {
 }
 
 export interface ExecutableRuntimeDeadline {
+  readonly purpose: "execution" | "initial_response";
   readonly metadata: RuntimeDeadlineMetadata;
   checkpoint(phase: string, requiredMs?: number): RuntimeDeadlineDecision;
   remainingMs(): number;
   computeRemainingMs(): number;
 }
 
-/**
- * Turns server-authored monotonic deadline metadata into an executable kernel
- * guard. The server removes request-authored deadline data before attaching
- * this record, so the kernel never extends its own budget from owner input.
- */
+/** Preserve deadline purpose when evaluating the server's monotonic contract. */
 export function executableRuntimeDeadlineFromMetadata(
   metadata: JsonValue | undefined,
   now: () => number = () => performance.now()
 ): ExecutableRuntimeDeadline | undefined {
   const parsed = runtimeDeadlineMetadataFromJson(metadata);
   if (!parsed) return undefined;
+  const runtime = jsonRecord(jsonRecord(metadata).runtime);
   return {
+    purpose: jsonRecord(runtime.deadline).schema === RUNTIME_DEADLINE_SCHEMA ? "execution" : "initial_response",
     metadata: parsed,
     checkpoint(phase, requiredMs = 0) {
       const observedAtMonotonicMs = now();

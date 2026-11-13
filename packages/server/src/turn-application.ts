@@ -6,6 +6,7 @@ import { TurnTaskRegistry, type TurnTaskSnapshot } from "./turn-task-registry.js
 
 export interface ApplicationTurnInput {
   text: string;
+  operationId?: string;
   sessionId?: string;
   conversationId?: string;
   requestedAuthority?: RequestedAuthority;
@@ -52,7 +53,7 @@ export class TurnApplication {
 
   async start(taskId: string, input: ApplicationTurnInput): Promise<TurnTaskSnapshot> {
     validateInput(input);
-    input = Object.freeze({ text: input.text,
+    input = Object.freeze({ text: input.text, operationId: taskId,
       ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
       ...(input.requestedAuthority === undefined ? {} : { requestedAuthority: input.requestedAuthority }) });
