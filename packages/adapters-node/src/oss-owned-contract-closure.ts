@@ -18,13 +18,15 @@ export interface OssContractClosureReport {
   readonly roots: readonly { readonly path: string; readonly status: "not_test" | "compiled" | "current" | "incomplete" | "deferred"; readonly reasons: readonly string[]; readonly contracts?: number; readonly digest?: string }[];
 }
 interface OwnedFile { readonly file: OwnedContractSnapshotFile; readonly original: SourceVersion; readonly source: SourceVersion; readonly evidence: readonly EvidenceSpan[] }
-const bounds = { maxFiles: 127, maxTotalBytes: 8 * 1024 * 1024, maxCandidates: 32 } as const;
+export const OSS_CONTRACT_CLOSURE_BOUNDS = { maxFiles: 127, maxTotalBytes: 8 * 1024 * 1024, maxCandidates: 32 } as const;
+const bounds = OSS_CONTRACT_CLOSURE_BOUNDS;
 
 /** Continues a bounded canonical project component after ordinary source commits. */
 export async function publishOssOwnedContractClosures(input: {
   readonly storage: ScceStorage; readonly root: string; readonly inventory: readonly ContractClosureInventoryFile[];
   readonly sourceUriBase: string; readonly snapshotHash: string; readonly snapshotComplete: boolean;
   readonly maxFileBytes: number; readonly informationLabel: InformationLabel;
+  readonly priorityTestPaths?: readonly string[];
 }): Promise<OssContractClosureReport> {
   const storage = input.storage, hasher = createHasher(), ids = createIdFactory({ clock: createClock(), hasher });
   const candidates = input.inventory.filter(file => /\.[cm]?[jt]sx?$/u.test(file.path)).sort((a, b) => a.path.localeCompare(b.path));
@@ -42,6 +44,9 @@ export async function publishOssOwnedContractClosures(input: {
   let round = typeof previous.round === "number" && Number.isSafeInteger(previous.round) && previous.round >= 0 ? previous.round : 0;
   let incomplete = cursor > 0 && typeof previous.incompleteInRound === "number" && Number.isSafeInteger(previous.incompleteInRound) && previous.incompleteInRound >= 0 ? previous.incompleteInRound : 0;
   const roots: Array<OssContractClosureReport["roots"][number]> = [], owners = new Map<string, OwnedFile>();
+  const priorityPaths = new Set(input.priorityTestPaths ?? []);
+  const priority = candidates.filter(file => priorityPaths.has(file.path));
+  const visited = new Set<string>();
   let publicationBytesPrepared=0;
   const chargePublication=(value:unknown)=>{const bytes=canonicalJsonByteLength(value,bounds.maxTotalBytes-publicationBytesPrepared);if(bytes>bounds.maxTotalBytes-publicationBytesPrepared)throw new Error("max_publication_bytes");publicationBytesPrepared+=bytes;};
   const budget: ContractClosureBudget = { ...bounds, maxFileBytes: input.maxFileBytes, files: new Map(), usedBytes: 0 };
@@ -95,7 +100,11 @@ export async function publishOssOwnedContractClosures(input: {
   };
   let wrapped = candidates.length === 0, attempted = 0;
   while (attempted < bounds.maxCandidates && !wrapped) {
-    const candidate = candidates[cursor]!, beforeBytes = budget.usedBytes;
+    while (!wrapped && visited.has(candidates[cursor]!.path)) {
+      cursor++; if (cursor >= candidates.length) { cursor = 0; wrapped = true; }
+    }
+    if (wrapped) break;
+    const candidate = priority.find(file => !visited.has(file.path)) ?? candidates[cursor]!, beforeBytes = budget.usedBytes;
     let entry: OssContractClosureReport["roots"][number];
     try {
     if (!input.snapshotComplete) entry = { path: candidate.path, status: "incomplete", reasons: ["repository_inventory_incomplete"] };
@@ -175,7 +184,10 @@ export async function publishOssOwnedContractClosures(input: {
     }
     } catch (error) { entry = {path:candidate.path,status:"incomplete",reasons:[`compilation_or_publication_failed:${error instanceof Error ? error.message : String(error)}`]}; }
     roots.push(entry); if (entry.status === "incomplete") incomplete++;
-    cursor++; attempted++; if (cursor >= candidates.length) { cursor = 0; wrapped = true; }
+    visited.add(candidate.path); attempted++;
+    if (candidate.path === candidates[cursor]!.path) {
+      cursor++; if (cursor >= candidates.length) { cursor = 0; wrapped = true; }
+    }
   }
   const complete = wrapped && incomplete === 0 && input.snapshotComplete;
   const unchangedComplete = complete && previous.complete === true && roots.every(root=>root.status==="current"||root.status==="not_test");

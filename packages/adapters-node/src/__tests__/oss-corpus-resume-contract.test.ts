@@ -105,6 +105,17 @@ describe("OSS corpus resume contract", () => {
     expect(report.codeTrained + report.docsTrained).toBe(0);
   });
 
+  it("does not call an inventory complete when a configured depth bound hides project context", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "scce-oss-depth-")); roots.push(root);
+    await mkdir(path.join(root, "nested", "project"), { recursive: true });
+    await writeFile(path.join(root, "nested", "project", "tsconfig.json"), "{}\n");
+    const report = await trainOssCorpus({ storage: {} as ScceStorage, rootPath: root, maxFiles: 10, maxDepth: 1 });
+    expect(report.filesSkipped).toContainEqual({ path: "nested/project", reason: "max_depth" });
+    expect(report.inspectionTruncated).toBe(true);
+    expect(report.snapshotComplete).toBe(false);
+    expect(report.trainingComplete).toBe(false);
+  });
+
   it("invokes the source-brain completion hook only with the assembled bounded report", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "scce-oss-completion-hook-"));
     roots.push(root);

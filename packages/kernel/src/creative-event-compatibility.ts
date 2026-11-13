@@ -792,19 +792,22 @@ function compatibilityModelFromRecord(
     : [];
   const sourceObserved = value.reliability === "source_observed";
   if (!sourceObserved && value.sourceObservations !== undefined) return undefined;
-  if (sourceObserved && (!context || value.version !== CREATIVE_SOURCE_CORRESPONDENCE_RECIPE || value.requestCompilerId !== CREATIVE_SOURCE_CORRESPONDENCE_RECIPE
-    || value.id !== `creative.observed.compatibility.${context.hasher.digestHex(canonicalStringify(toJsonValue({
+  if (sourceObserved && (!context || value.version !== CREATIVE_SOURCE_CORRESPONDENCE_RECIPE
+    || value.requestCompilerId !== CREATIVE_SOURCE_CORRESPONDENCE_RECIPE)) return undefined;
+  if (sourceObserved && (value.calibrationId !== undefined || value.minimumAdmissiblePosterior !== undefined || value.minimumRolePosterior !== undefined
+    || value.surfaceBindingRecipe !== undefined && value.surfaceBindingRecipe !== CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID
+    || !Array.isArray(value.eventCompatibilities) || value.eventCompatibilities.length !== 0 || !Array.isArray(value.roleCompatibilities) || value.roleCompatibilities.length !== 0)) return undefined;
+  const sourceObservations = sourceObserved && context && Array.isArray(value.sourceObservations)
+    ? value.sourceObservations.filter((row): row is CreativeSourceCorrespondence => sourceVerification?.verify(row as CreativeSourceCorrespondence, evidenceIds) === true) : [];
+  // No observed model is admissible without a current source observation; reject before hashing its full population.
+  if (sourceObserved && (!sourceObservations.length
+    || value.id !== `creative.observed.compatibility.${context!.hasher.digestHex(canonicalStringify(toJsonValue({
       schema: value.schema, version: value.version, requestCompilerId: value.requestCompilerId, eventCompilerId: value.eventCompilerId,
       reliability: value.reliability, eventCompatibilities: value.eventCompatibilities, roleCompatibilities: value.roleCompatibilities,
       sourceObservations: value.sourceObservations, requestFrameAnchors: value.requestFrameAnchors,
       ...(value.surfaceBindingRecipe !== undefined ? { surfaceBindingRecipe: value.surfaceBindingRecipe } : {}),
       ...(value.sourceReferencePatternIds !== undefined ? { sourceReferencePatternIds: value.sourceReferencePatternIds } : {})
     })))}`)) return undefined;
-  if (sourceObserved && (value.calibrationId !== undefined || value.minimumAdmissiblePosterior !== undefined || value.minimumRolePosterior !== undefined
-    || value.surfaceBindingRecipe !== undefined && value.surfaceBindingRecipe !== CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID
-    || !Array.isArray(value.eventCompatibilities) || value.eventCompatibilities.length !== 0 || !Array.isArray(value.roleCompatibilities) || value.roleCompatibilities.length !== 0)) return undefined;
-  const sourceObservations = sourceObserved && context && Array.isArray(value.sourceObservations)
-    ? value.sourceObservations.filter((row): row is CreativeSourceCorrespondence => sourceVerification?.verify(row as CreativeSourceCorrespondence, evidenceIds) === true) : [];
   if (sourceObserved) requestFrameAnchors = requestFrameAnchors.filter(anchor => anchor.requestCompilerId === value.requestCompilerId && sourceAnchorOwned(anchor, sourceObservations));
   const identity: CreativeEventCompatibilityModelIdentity = {
     schema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,

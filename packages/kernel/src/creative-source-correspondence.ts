@@ -295,13 +295,14 @@ function verifyCreativeSourceCorrespondenceIndexed(row: CreativeSourceCorrespond
     || row.bindings.some(binding => !binding || typeof binding !== "object" || typeof binding.requestRoleId !== "string"
       || !Number.isSafeInteger(binding.requestStart) || !Number.isSafeInteger(binding.requestEnd)
       || !Number.isSafeInteger(binding.eventStart) || !Number.isSafeInteger(binding.eventEnd))) return false;
-  const { id, ...material } = row;
-  if (id !== deriveCreativeSourceCorrespondence(material, context.hasher).id || row.reply.commitmentScope !== "conversation"
+  if (row.reply.commitmentScope !== "conversation"
     || row.reply.replyToTurnIndex !== row.request.turnIndex || row.request.turnIndex >= row.reply.turnIndex) return false;
   const request = evidenceById.get(row.request.evidenceId);
   const reply = evidenceById.get(row.reply.evidenceId);
   if (!request || !reply || String(request.id) !== row.request.evidenceId || String(reply.id) !== row.reply.evidenceId
-    || !owners.includes(String(request.id)) || !owners.includes(String(reply.id))
+    || !owners.includes(String(request.id)) || !owners.includes(String(reply.id))) return false;
+  const { id, ...material } = row;
+  if (id !== deriveCreativeSourceCorrespondence(material, context.hasher).id
     || !validWitness(request, row.request, row, context.hasher, points) || !validWitness(reply, row.reply, row, context.hasher, points)
     || sourceTextPointSlice(request.text, row.request.start, row.request.end, points) !== row.request.surface
     || request.charStart + row.request.end > reply.charStart + row.reply.start) return false;

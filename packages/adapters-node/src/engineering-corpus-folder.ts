@@ -541,6 +541,7 @@ async function walkFiles(root: string, limits: Required<EngineeringCorpusFolderO
       entries = await readdir(dir, { withFileTypes: true });
     } catch (error) {
       warnings.push(`cannot read ${dir}: ${messageOf(error)}`);
+      skipped.push({ path: relative(root, dir), reason: "unreadable_directory" });
       return;
     }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {

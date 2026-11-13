@@ -223,3 +223,58 @@ test("a code projection failure cannot advance its cursor or accept a new snapsh
   assert.equal(state.lanes.code.snapshotHash, null);
   assert.deepEqual(state.reports, []);
 });
+
+function codeBatchFixture(report) {
+  const state = { lanes: { code: { cursor: report.nextFileIndex, exhausted: false, snapshotHash: "snapshot" } }, reports: [] };
+  const api = { storage: {}, settings: {}, adapters: { trainOssCorpus: async () => ({
+    reports: [], snapshotHash: "snapshot", snapshotComplete: true, codeTrained: 0, docsTrained: 0,
+    filesSkipped: [], stoppedByHeapSafetyBound: false, ...report
+  }) } };
+  return { state, api };
+}
+
+test("a short code batch does not exhaust a fully inventoried but partially acquired project", async () => {
+  const { state, api } = codeBatchFixture({ nextFileIndex: 1, filesTotal: 20, trainingComplete: false });
+  state.lanes.code.cursor = 0;
+  const result = await trainCodeBatch({ codeRoot: "C:/repos" }, state, api, 50);
+  assert.equal(state.lanes.code.exhausted, false);
+  assert.equal(state.lanes.code.acquisitionComplete, false);
+  assert.equal(result.progressed, true);
+});
+
+test("EOF code closure work continues without file cursor advancement and stops after an unresolved full sweep", async () => {
+  const closure = { recipe: "closure", candidateCount: 4, nextCandidateIndex: 2, round: 0, complete: false, incompleteInRound: 1, roots: [] };
+  const report = { nextFileIndex: 20, filesTotal: 20, trainingComplete: false, sourceContractClosure: closure };
+  const { state, api } = codeBatchFixture(report);
+  let result = await trainCodeBatch({ codeRoot: "C:/repos" }, state, api, 50);
+  assert.equal(result.progressed, true);
+  assert.equal(state.lanes.code.exhausted, false);
+  closure.nextCandidateIndex = 0; closure.round = 1;
+  result = await trainCodeBatch({ codeRoot: "C:/repos" }, state, api, 50);
+  assert.equal(result.progressed, true);
+  closure.nextCandidateIndex = 2;
+  result = await trainCodeBatch({ codeRoot: "C:/repos" }, state, api, 50);
+  assert.equal(result.progressed, false);
+  assert.equal(state.lanes.code.exhausted, false);
+  assert.equal(state.lanes.code.trainingComplete, false);
+  assert.equal(state.lanes.code.projectClosure.incompleteInRound, 1);
+});
+
+test("code exhaustion follows completed acquisition and project closure", async () => {
+  const { state, api } = codeBatchFixture({ nextFileIndex: 20, filesTotal: 20, trainingComplete: true,
+    sourceContractClosure: { recipe: "closure", candidateCount: 4, nextCandidateIndex: 0, round: 1, complete: true, incompleteInRound: 0, roots: [] } });
+  await trainCodeBatch({ codeRoot: "C:/repos" }, state, api, 50);
+  assert.equal(state.lanes.code.acquisitionComplete, true);
+  assert.equal(state.lanes.code.trainingComplete, true);
+  assert.equal(state.lanes.code.exhausted, true);
+});
+
+test("a heap checkpoint retains dependency acquisition progress before the selected file advances", async () => {
+  const { state, api } = codeBatchFixture({ nextFileIndex: 3, filesTotal: 20, trainingComplete: false,
+    stoppedByHeapSafetyBound: true, contextAcquisition: { roots: [], preacquiredPaths: ["tsconfig.json"] } });
+  const result = await trainCodeBatch({ codeRoot: "C:/repos" }, state, api, 50);
+  assert.equal(result.progressed, true);
+  assert.equal(state.lanes.code.cursor, 3);
+  assert.equal(state.lanes.code.exhausted, false);
+  assert.deepEqual(result.details.contextAcquisition.preacquiredPaths, ["tsconfig.json"]);
+});

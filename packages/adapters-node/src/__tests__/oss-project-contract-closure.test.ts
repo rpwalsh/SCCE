@@ -8,7 +8,9 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createClock,sourceOwnedProgramBehaviorFromDocumentation,searchProgramTransformations,evaluateProgramExpression,type JsonValue, type EvidenceSpan, type SourceVersion, type IngestionCheckpoint } from "@scce/kernel";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
-import { trainOssCorpus } from "../oss-corpus.js";
+import { createCapabilityTestKernel } from "../../../kernel/src/__tests__/fixtures/capability-runtime.js";
+import { trainOssCorpus, ingestMaterialSnapshot } from "../oss-corpus.js";
+import { inspectEngineeringCorpusFolder } from "../engineering-corpus-folder.js";
 import { collectTypeScriptContractClosure, type ContractClosureBudget } from "../typescript-contract-closure.js";
 import * as kernel from "@scce/kernel";
 import { NodeBuildTestAdapter } from "../process.js";
@@ -81,7 +83,7 @@ it("composes two formally requested source-owned structural operations in an ord
     taskResumption:{putSnapshot:async()=>undefined,getLatestSnapshot:async()=>null},
     documentGeneration:{putSession:async()=>undefined,getSession:async()=>null,compareAndPutSession:async()=>({stored:true,currentUpdatedAt:null})}};
   const approvals=createApprovalSession();
-  const runtime=kernel.createScceKernel({storage:runtimeStorage,clock,idFactory:kernel.createIdFactory({clock,hasher:kernel.createHasher(),deterministicReplay:true}),deterministicReplay:true,
+  const runtime=createCapabilityTestKernel({storage:runtimeStorage,clock,idFactory:kernel.createIdFactory({clock,hasher:kernel.createHasher(),deterministicReplay:true}),deterministicReplay:true,
     approvals,functionalCognitionAuthorizeCapabilities:true,policy:{allowMutation:false,dryRunByDefault:true,requireTwoPhaseCommit:true},
     files:{streamPath:async function*(){}},buildTest:{executeProgram:async input=>{const result=await native.executeProgram(input);executions.push(result);return result;}}});
   let turn=await runtime.turn({text,requestedAuthority:"program"});
@@ -150,6 +152,71 @@ it("crosses one-file ingestion windows with original bytes, extends, aliases, re
   expect(final.sourceContractClosure!.filesLoaded).toBeLessThanOrEqual(127); expect(final.sourceContractClosure!.bytesLoaded).toBeLessThanOrEqual(8 * 1024 * 1024);
 });
 
+it("acquires an encountered test's pinned project context before the linear cursor reaches its dependencies", async () => {
+  const files = {
+    ...entries,
+    "src/index.ts": "export {add,divide} from './value.js';\n",
+    "src/value.ts": "import type {Scalar} from '../types/value.js';export function add(a:Scalar,b:Scalar):Scalar{return a+b;}export function divide(a:Scalar,b:Scalar):Scalar{return a/b;}\n",
+    "spec/first.spec.ts": "import {test,expect} from 'vitest';import {add,divide} from '@owned/index.js';test('arithmetic',()=>{expect(add(10,5)).toBe(15);expect(add(3,7)).toBe(10);expect(add(10,-5)).toBe(5);expect(add(6,-1)).toBe(5);expect(divide(12,3)).toBe(4);expect(divide(20,4)).toBe(5);expect(divide(30,6)).toBe(5);expect(divide(15,5)).toBe(3);});\n",
+    "spec/second.spec.ts": "export const untouched = 1;\n"
+  };
+  for (let index = 0; index < 32; index++) Object.assign(files, { [`a/${String(index).padStart(2, "0")}.ts`]: `export const value=${index};\n` });
+  const f = await fixture(files);
+  const inspection = await inspectEngineeringCorpusFolder(f.root, { maxFiles: 100, maxFileBytes: 1_000_000, includeUnsupported: false });
+  const inventory = inspection.files.filter(file => file.importable);
+  const startFileIndex = inventory.findIndex(file => file.path === "spec/first.spec.ts");
+  const report = await trainOssCorpus({ ...f.options, startFileIndex, expectedSnapshotHash: ingestMaterialSnapshot(inventory).snapshotHash });
+  expect(report.nextFileIndex).toBe(startFileIndex + 1);
+  expect(report.filesConsidered).toBe(1);
+  expect(report.filesTotal).toBe(inventory.length);
+  expect(report.trainingComplete).toBe(false);
+  expect(report.contextAcquisition?.roots).toEqual([{ path: "spec/first.spec.ts", status: "acquired", reasons: [],
+    dependencyPaths: ["00-base.json", "package.json", "src/index.ts", "src/value.ts", "tsconfig.json", "types/value.d.ts"] }]);
+  expect(report.contextAcquisition?.preacquiredPaths).toEqual(report.contextAcquisition?.roots[0]?.dependencyPaths);
+  const patterns = await f.storage.languageMemory.listLanguagePatterns({ patternKind: "source_code_assertion_contract" });
+  expect(patterns, JSON.stringify(report.sourceContractClosure)).toHaveLength(2);
+  expect(report.sourceContractClosure?.roots.find(root => root.path === "spec/first.spec.ts")).toMatchObject({ status: "compiled", contracts: 2 });
+  expect(report.sourceContractClosure?.nextCandidateIndex).toBe(31);
+  expect(report.sourceContractClosure?.complete).toBe(false);
+  expect([...f.versions.values()].some(owner => owner.canonicalUri.endsWith("#path=a%2F00.ts"))).toBe(false);
+  for (const owner of f.versions.values()) {
+    const name = decodeURIComponent(owner.canonicalUri.split("#path=")[1]!);
+    expect(owner.contentHash).toBe(`sha256_${createHash("sha256").update(files[name as keyof typeof files]!).digest("hex")}`);
+  }
+  const body = patterns[0]!.patternJson as { repositoryFamily: string; sourceHash: string };
+  const behavior = sourceOwnedProgramBehaviorFromDocumentation({ requestText: "TypeScript add divide", ownerCallableIds: ["add", "divide"],
+    intent: { languageId: "typescript", symbols: [], references: [{ sourceFamily: body.repositoryFamily, relativePath: "src/value.ts", sourceHash: body.sourceHash, score: 1 }], audit: null }, patterns });
+  expect(behavior.behaviorRequirements).toHaveLength(8);
+  const selected = searchProgramTransformations(behavior.behaviorRequirements).selected;
+  expect(selected).toHaveLength(2);
+  expect(selected.map(row => evaluateProgramExpression(row.producedIr, [21, 7])).sort((a, b) => Number(a) - Number(b)), JSON.stringify(selected)).toEqual([3, 28]);
+  const writes = vi.spyOn(f.storage.evidence, "putSourceVersion");
+  const next = await trainOssCorpus({ ...f.options, startFileIndex: report.nextFileIndex, expectedSnapshotHash: report.snapshotHash });
+  expect(next.nextFileIndex).toBe(report.nextFileIndex + 1);
+  expect(writes).toHaveBeenCalled();
+  expect((await f.storage.languageMemory.listLanguagePatterns({ patternKind: "source_code_assertion_contract" })).map(row => row.id).sort()).toEqual(patterns.map(row => row.id).sort());
+  writes.mockClear();
+  const alreadyAcquiredIndex = inventory.findIndex(file => file.path === "src/value.ts");
+  const replay = await trainOssCorpus({ ...f.options, startFileIndex: alreadyAcquiredIndex, expectedSnapshotHash: report.snapshotHash });
+  expect(replay.nextFileIndex).toBe(alreadyAcquiredIndex + 1);
+  expect(writes).not.toHaveBeenCalled();
+});
+
+it("reports an unresolved dependency without promoting a partially collected context as owned", async () => {
+  const f = await fixture({ ...entries, "src/value.ts": "import {missing} from '../absent.js';export function measured(value:number){return missing(value);}\n" });
+  const inspection = await inspectEngineeringCorpusFolder(f.root, { maxFiles: 100, maxFileBytes: 1_000_000, includeUnsupported: false });
+  const inventory = inspection.files.filter(file => file.importable);
+  const startFileIndex = inventory.findIndex(file => file.path === "spec/first.spec.ts");
+  const report = await trainOssCorpus({ ...f.options, startFileIndex, expectedSnapshotHash: ingestMaterialSnapshot(inventory).snapshotHash });
+  expect(report.contextAcquisition?.preacquiredPaths).toEqual([]);
+  const context = report.contextAcquisition?.roots[0];
+  expect(context).toMatchObject({ path: "spec/first.spec.ts", status: "incomplete", dependencyPaths: [] });
+  expect(context?.reasons).toContain("module_dependency_unavailable:src/value.ts:../absent.js");
+  expect([...f.versions.values()].every(owner => owner.canonicalUri.endsWith("#path=spec%2Ffirst.spec.ts"))).toBe(true);
+  expect(await f.storage.languageMemory.listLanguagePatterns({ patternKind: "source_code_assertion_contract" })).toEqual([]);
+  expect(report.trainingComplete).toBe(false);
+});
+
 it("publishes the native smoke's mixed Node and Vitest roots through the same canonical closure", async () => {
   const f=await fixture({...entries,"spec/first.spec.ts":"import {test} from 'node:test';import {strictEqual} from 'node:assert';import {f0 as observed} from '@owned/index.js';test('first',()=>{strictEqual(observed(2),6);strictEqual(observed(4),20);});\n"});
   const report=await trainOssCorpus({...f.options,maxFilesPerRun:100});
@@ -174,8 +241,9 @@ it("continues beyond the first 32 candidates and never calls a wrapped unavailab
     "z/check.spec.ts":"import {test,expect} from 'vitest';import {f0} from '../value.js';test('late',()=>{expect(f0(2)).toBe(6);expect(f0(4)).toBe(20);});\n"};
   for(let index=0;index<32;index++) files[`a/${String(index).padStart(2,"0")}.ts`]=`export const value=${index};\n`;
   const f=await fixture(files), first=await trainOssCorpus({...f.options,maxFilesPerRun:100});
-  expect(first.sourceContractClosure).toMatchObject({candidateCount:34,nextCandidateIndex:32,complete:false});
-  expect(await f.storage.languageMemory.listLanguagePatterns({patternKind:"source_code_assertion_contract"})).toEqual([]);
+  expect(first.sourceContractClosure).toMatchObject({candidateCount:34,nextCandidateIndex:31,complete:false});
+  expect(first.sourceContractClosure!.roots).toHaveLength(32);
+  expect(await f.storage.languageMemory.listLanguagePatterns({patternKind:"source_code_assertion_contract"})).toHaveLength(1);
   const sourceWrite=vi.spyOn(f.storage.evidence,"putSourceVersion");
   const tail=await trainOssCorpus({...f.options,startFileIndex:first.nextFileIndex,expectedSnapshotHash:first.snapshotHash});
   expect(tail.sourceContractClosure).toMatchObject({nextCandidateIndex:0,complete:true});

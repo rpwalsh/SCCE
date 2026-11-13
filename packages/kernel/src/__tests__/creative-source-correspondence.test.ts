@@ -6,14 +6,14 @@ import { compileLanguageTrainingBatch } from "../language-training-batch.js";
 import { createLanguageMemoryRuntime, scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
 import { compileCreativeRequestFrameFromCompatibilityModels, creativeEventCompatibilityDecision, creativeEventRoleDecision, creativeEventCompatibilityModelsFromPatterns } from "../creative-event-compatibility.js";
 import { createLanguageAcquisitionEngine } from "../language.js";
-import { createClock, createHasher } from "../primitives.js";
+import { canonicalStringify, createClock, createHasher, toJsonValue } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import { createAlphaFieldEngine } from "../field.js";
 import { planInventions } from "../invention-planner.js";
 import { updateDialogueState } from "../dialogue-pragmatics.js";
 import { compileCreativeSourceCorrespondences } from "../creative-source-correspondence.js";
 import { segmentUnicodeSurfaceV2 } from "../unicode-segmentation-v2.js";
-import type { EvidenceSpan } from "../types.js";
+import type { EvidenceSpan, JsonValue } from "../types.js";
 import type { TranscriptTurn } from "../dialogue-communicative-act-learning.js";
 import type { CreativeEventCompatibilityModel } from "../creative-event-compatibility.js";
 import { createMouth } from "../mouth.js";
@@ -52,6 +52,38 @@ describe("declared human creative source correspondence", () => {
     const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: humanPair.text, createdAt: 1 });
     patterns = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://human", sourceSystem: "dialogue", profile, sourceVersionId,
       text: humanPair.text, evidence, transcriptTurns: humanPair.turns as TranscriptTurn[], createdAt: 1, retainNgramObservations: false } }).patterns;
+  });
+
+  it("rejects unavailable owners before whole-model hashing while retaining every admitted model digest check", () => {
+    const state = restart(), expected = state.creativeEventCompatibilityModels;
+    const events = state.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? []);
+    const observed = patterns.filter(pattern => (pattern.patternJson as { reliability?: string }).reliability === "source_observed");
+    const populationInputs = observed.map(pattern => {
+      const value = jsonRecord(pattern.patternJson);
+      return canonicalStringify(toJsonValue({ schema: value.schema, version: value.version,
+        requestCompilerId: value.requestCompilerId, eventCompilerId: value.eventCompilerId, reliability: value.reliability,
+        eventCompatibilities: value.eventCompatibilities, roleCompatibilities: value.roleCompatibilities,
+        sourceObservations: value.sourceObservations, requestFrameAnchors: value.requestFrameAnchors,
+        ...(value.surfaceBindingRecipe !== undefined ? { surfaceBindingRecipe: value.surfaceBindingRecipe } : {}),
+        ...(value.sourceReferencePatternIds !== undefined ? { sourceReferencePatternIds: value.sourceReferencePatternIds } : {}) }));
+    });
+    const digestHex = vi.fn((value: Parameters<typeof hasher.digestHex>[0]) => hasher.digestHex(value));
+    const counted = { ...hasher, digestHex };
+    expect(expected.length).toBeGreaterThan(0);
+    expect(creativeEventCompatibilityModelsFromPatterns(observed, { evidence, events, hasher: counted })).toEqual(expected);
+    expect(populationInputs.every(input => digestHex.mock.calls.some(([value]) => value === input))).toBe(true);
+    for (const owners of [[], evidence.map(span => ({ ...span, status: "quarantined" as const })),
+      evidence.map(span => ({ ...span, sourceVersionId: "source.foreign" as never }))]) {
+      digestHex.mockClear();
+      expect(creativeEventCompatibilityModelsFromPatterns(observed, { evidence: owners, events, hasher: counted })).toEqual([]);
+      expect(digestHex.mock.calls.some(([value]) => populationInputs.includes(String(value)))).toBe(false);
+      if (!owners.length) expect(digestHex).not.toHaveBeenCalled();
+    }
+    const tampered = observed.map(pattern => {
+      const value = jsonRecord(pattern.patternJson), rows = value.sourceObservations as Array<Record<string, JsonValue>>;
+      return { ...pattern, patternJson: toJsonValue({ ...value, sourceObservations: [...rows, { ...rows[0], id: "forged.observation" }] }) };
+    });
+    expect(creativeEventCompatibilityModelsFromPatterns(tampered, { evidence, events, hasher: counted })).toEqual([]);
   });
 
   it("reads each source once for all correspondence witnesses and rechecks changed source text", () => {

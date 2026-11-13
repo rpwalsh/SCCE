@@ -261,7 +261,8 @@ export async function buildFiveGbMulticorpusBrain(options) {
         coldVerifiedPatternIds: retainedQa.result.coldVerifiedPatternIds
       } },
       corpora: Object.fromEntries(Object.entries(state.lanes).map(([name, lane]) => [name, {
-        batches: lane.batches, trainedReports: lane.trainedReports, exhausted: lane.exhausted
+        batches: lane.batches, trainedReports: lane.trainedReports, exhausted: lane.exhausted,
+        ...(name === "code" ? codeTrainingReadiness(lane) : {})
       }]))
     };
     const sourceId = `multicorpus-5gb:${state.databaseName}`;
@@ -375,15 +376,53 @@ export async function trainCodeBatch(options, state, api, maxFilesPerRun) {
     startFileIndex: lane.cursor, maxFilesPerRun, maxFilesPerRepo: 100_000, includeDocs: true, includeSource: true,
     ...(lane.snapshotHash ? { expectedSnapshotHash: lane.snapshotHash } : {}), ...api.settings });
   assertCorpusSkipsAdmissible("code", report.filesSkipped);
+  if (!Number.isSafeInteger(report.filesTotal) || report.filesTotal < 0
+    || !Number.isSafeInteger(report.nextFileIndex) || report.nextFileIndex < lane.cursor || report.nextFileIndex > report.filesTotal) {
+    throw new Error("Code corpus report has an invalid pinned acquisition cursor");
+  }
+  const acquisitionComplete = report.snapshotComplete === true && report.inspectionTruncated !== true
+    && report.nextFileIndex === report.filesTotal;
+  if (report.trainingComplete === true && (!acquisitionComplete || report.stoppedByHeapSafetyBound
+    || report.sourceContractClosure?.complete !== true)) throw new Error("Code training completion lacks complete acquisition and project closure");
   lane.snapshotHash ??= report.snapshotHash;
   if (lane.snapshotHash !== report.snapshotHash) throw new Error("Code corpus snapshot changed during the build");
   state.reports.push(...report.reports);
   const advanced = report.nextFileIndex - lane.cursor;
+  const dependencyProgress = (report.contextAcquisition?.preacquiredPaths.length ?? 0) > 0;
+  const previousClosure = lane.projectClosure;
+  const closure = report.sourceContractClosure;
   lane.cursor = report.nextFileIndex;
-  lane.exhausted = advanced < maxFilesPerRun && !report.stoppedByHeapSafetyBound;
-  if (report.stoppedByHeapSafetyBound && advanced === 0) throw new Error("Code heap checkpoint made no progress");
-  return { progressed: advanced > 0, included: report.reports.some(item => item.sourceSystem === "oss_code"), details: { cursor: lane.cursor, codeTrained: report.codeTrained,
-    docsTrained: report.docsTrained, filesSkipped: report.filesSkipped, stoppedByHeapSafetyBound: report.stoppedByHeapSafetyBound } };
+  lane.acquisitionComplete = acquisitionComplete;
+  lane.trainingComplete = report.trainingComplete === true;
+  lane.exhausted = lane.trainingComplete;
+  if (advanced > 0 || dependencyProgress) delete lane.closureSweepStart;
+  let closureProgress = false;
+  if (closure) {
+    const published = closure.roots.some(root => root.status === "compiled");
+    if (published) delete lane.closureSweepStart;
+    if (acquisitionComplete && !closure.complete) {
+      lane.closureSweepStart ??= { round: closure.round, cursor: closure.nextCandidateIndex };
+      const start = lane.closureSweepStart;
+      const swept = closure.round > start.round + 1
+        || closure.round > start.round && closure.nextCandidateIndex >= start.cursor;
+      closureProgress = !swept && (closure.round !== (previousClosure?.round ?? 0)
+        || closure.nextCandidateIndex !== (previousClosure?.nextCandidateIndex ?? 0));
+    }
+    closureProgress ||= published;
+    lane.projectClosure = structuredClone(closure);
+  }
+  if (report.stoppedByHeapSafetyBound && advanced === 0 && !dependencyProgress && !report.reports.length) {
+    throw new Error("Code heap checkpoint made no progress");
+  }
+  return { progressed: advanced > 0 || dependencyProgress || closureProgress, included: report.reports.some(item => item.sourceSystem === "oss_code"), details: { cursor: lane.cursor,
+    ...codeTrainingReadiness(lane), codeTrained: report.codeTrained,
+    docsTrained: report.docsTrained, filesSkipped: report.filesSkipped, stoppedByHeapSafetyBound: report.stoppedByHeapSafetyBound,
+    contextAcquisition: report.contextAcquisition ?? null } };
+}
+
+function codeTrainingReadiness(lane) {
+  return { acquisitionComplete: lane.acquisitionComplete ?? false, trainingComplete: lane.trainingComplete ?? false,
+    projectClosure: lane.projectClosure ?? null };
 }
 
 async function trainWikipediaBatch(options, state, api, maxPages) {
@@ -649,6 +688,7 @@ function publicReceipt(state, measurement, selectedItems) {
     sourceBytes, amplification: sourceBytes ? (measurement.databaseBytes / sourceBytes) : null,
     lanes: Object.fromEntries(Object.entries(state.lanes).map(([name, lane]) => [name, {
       included: lane.included, exhausted: lane.exhausted, batches: lane.batches, trainedReports: lane.trainedReports,
+      ...(name === "code" ? codeTrainingReadiness(lane) : {}),
       ...(name === "wikipedia" ? { pages: lane.pages, sources: lane.sources } : {})
     }])), trainedReports: state.reports.length, batches: state.batches.length,
     largestTables: measurement?.largestTables ?? [], sourceBrain: state.sourceBrain ?? null,

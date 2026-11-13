@@ -24,12 +24,13 @@ import {
   type ScceStorage
 } from "@scce/kernel";
 import { extractNodeSourceCodeFacts, measureExhibitedContent } from "./code-graph.js";
-import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
+import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions, type EngineeringCorpusFileInspection } from "./engineering-corpus-folder.js";
 import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
 import { compileSourceCodeFunctionsAsync } from "./source-code-function-learning.js";
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult, type SourceBrainFileAdmission } from "./source-brain-build.js";
-import { publishOssOwnedContractClosures, type OssContractClosureReport } from "./oss-owned-contract-closure.js";
+import { publishOssOwnedContractClosures, OSS_CONTRACT_CLOSURE_BOUNDS, type OssContractClosureReport } from "./oss-owned-contract-closure.js";
+import { collectTypeScriptContractClosure, hasSourceOwnedTestImport, type ContractClosureBudget } from "./typescript-contract-closure.js";
 import {compileSourceOwnedContracts} from "./source-owned-contract-compiler.js";
 import { type GrammarContractFile } from "./grammar-source-owned-test-contracts.js";
 
@@ -96,6 +97,11 @@ export interface OssCorpusTrainReport {
   startFileIndex: number;
   nextFileIndex: number;
   filesConsidered: number;
+  /** Total pinned importable inventory, independent of this run's bounded linear window. */
+  filesTotal?: number;
+  /** Acquisition and requested canonical project contracts are both complete. */
+  trainingComplete?: boolean;
+  contextAcquisition?: { roots: Array<{ path: string; status: "acquired" | "incomplete" | "deferred"; reasons: string[]; dependencyPaths: string[] }>; preacquiredPaths: string[] };
   heapCheckpointMb: number;
   docsTrained: number;
   codeTrained: number;
@@ -176,7 +182,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     includeUnsupported: false
   });
   const importable = inspection.files.filter(file => file.importable);
-  const inspectionTruncated = inspection.skipped.some(item => item.reason === "max_files");
+  const inspectionTruncated = inspection.skipped.some(item => item.reason === "max_files" || item.reason === "max_depth" || item.reason === "unreadable_directory");
   const ingestMaterial = ingestMaterialSnapshot(importable);
   const snapshotHash = input.repositoryProvenance?.snapshotHash ?? ingestMaterial.snapshotHash;
   const snapshotKind: OssSnapshotKind = input.repositoryProvenance ? "git_snapshot" : "ingest_material";
@@ -230,24 +236,16 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   const ids = createIdFactory({ clock: createClock(), hasher });
   const sourceOwnedContractsByPath = await ingestSourceOwnedTestContracts({ root, window, knownPaths: importable.map(file=>normalizeRelative(file.path)), snapshotComplete: !inspectionTruncated, sourceUriBase, ids, hasher, maxFileBytes: input.maxFileBytes ?? 1_000_000 });
 
-  for (const file of window) {
-    if (heapMiB() >= heapCheckpointMb) {
-      stoppedByHeapSafetyBound = true;
-      break;
-    }
-    const fileOffset = filesConsidered;
-    filesConsidered += 1;
+  const completedFiles = new Set<string>();
+  const trainFile = async (file: EngineeringCorpusFileInspection): Promise<boolean> => {
+    if (completedFiles.has(file.path)) return true;
     const sourceSystem = sourceSystemForPath(file.path);
     if (!sourceSystem) {
       skipped.push({ path: file.path, reason: "not_language_training_material", byteLength: file.byteLength });
-      continue;
+      return true;
     }
-    if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs && !includeDocs) {
-      continue;
-    }
-    if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode && !includeSource) {
-      continue;
-    }
+    if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs && !includeDocs) return true;
+    if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode && !includeSource) return true;
 
     const rawBytes = await readFile(file.absolutePath);
     if (file.contentHash && sha256Bytes(rawBytes) !== file.contentHash.replace(/^sha256[:_]/u, "")) throw new Error(`OSS source changed after snapshot inspection: ${file.path}`);
@@ -256,7 +254,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     // source-brain publication binds every report to positive canonical bytes.
     if (rawBytes.byteLength === 0) {
       skipped.push({ path: file.path, reason: "empty_language_training_projection", byteLength: file.byteLength });
-      continue;
+      return true;
     }
     const raw = rawBytes.toString("utf8");
     const artifactRole = await roles.roleFor(file.absolutePath);
@@ -398,17 +396,63 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     }
     if (!trainedAnyProjection) {
       skipped.push({ path: file.path, reason: "empty_language_training_projection", byteLength: file.byteLength });
-      continue;
+      return true;
     }
-    if (!fileCompleted) {
+    if (fileCompleted) completedFiles.add(file.path);
+    return fileCompleted;
+  };
+
+  const contextAcquisition: NonNullable<OssCorpusTrainReport["contextAcquisition"]> = { roots: [], preacquiredPaths: [] };
+  const contextBudget: ContractClosureBudget = { ...OSS_CONTRACT_CLOSURE_BOUNDS, maxFileBytes: input.maxFileBytes ?? 1_000_000, files: new Map(), usedBytes: 0 };
+  const inventory = new Map(importable.map(file => [file.path, file]));
+  const loadContext = async (name: string) => {
+    const file = inventory.get(name);
+    if (!file?.contentHash) return undefined;
+    const bytes = await readFile(file.absolutePath);
+    if (bytes.byteLength !== file.byteLength || sha256Bytes(bytes) !== file.contentHash.replace(/^sha256[:_]/u, "")) throw new Error(`OSS source changed after snapshot inspection: ${name}`);
+    if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) return undefined;
+    return { path: name, bytes, sourceHash: file.contentHash };
+  };
+  for (const file of window) {
+    if (heapMiB() >= heapCheckpointMb) { stoppedByHeapSafetyBound = true; break; }
+    const fileOffset = filesConsidered++;
+    let context: NonNullable<OssCorpusTrainReport["contextAcquisition"]>["roots"][number] | undefined;
+    const languageId = codeLanguageForPath(file.path);
+    if (includeSource && (languageId === "typescript" || languageId === "javascript")) {
+      const source = await loadContext(file.path);
+      if (source && hasSourceOwnedTestImport(Buffer.from(source.bytes).toString("utf8"), file.path)) {
+        context = { path: file.path, status: "incomplete", reasons: [], dependencyPaths: [] };
+        contextAcquisition.roots.push(context);
+        if (contextAcquisition.roots.length > OSS_CONTRACT_CLOSURE_BOUNDS.maxCandidates) {
+          context.status = "deferred"; context.reasons = ["workunit_candidate_budget_exhausted"];
+        } else if (inspectionTruncated) context.reasons = ["repository_inventory_incomplete"];
+        else {
+          const closure = await collectTypeScriptContractClosure({ root, testPath: file.path, inventory: importable, budget: contextBudget, load: loadContext });
+          context.reasons = [...closure.reasons];
+          if (closure.complete) {
+            context.status = "acquired";
+            context.dependencyPaths = closure.files.map(owner => owner.path).filter(name => name !== file.path);
+            // Planning reads pinned bytes; ordinary source commits establish every dependency's canonical owner.
+            for (const name of context.dependencyPaths) {
+              if (completedFiles.has(name)) continue;
+              if (heapMiB() >= heapCheckpointMb) { stoppedByHeapSafetyBound = true; context.status = "deferred"; context.reasons.push("heap_safety_bound"); break; }
+              if (!await trainFile(inventory.get(name)!)) { context.status = "incomplete"; context.reasons.push(`dependency_training_failed:${name}`); break; }
+              contextAcquisition.preacquiredPaths.push(name);
+            }
+          }
+        }
+      }
+    }
+    if (stoppedByHeapSafetyBound) { firstIncompleteFileOffset ??= fileOffset; break; }
+    if (!await trainFile(file) || context?.reasons.some(reason => reason.startsWith("dependency_training_failed:"))) {
       firstIncompleteFileOffset ??= fileOffset;
-      continue;
+      if (context?.status === "acquired") { context.status = "incomplete"; context.reasons.push("test_root_training_failed"); }
     }
   }
-
   const nextFileIndex = startFileIndex + (firstIncompleteFileOffset ?? filesConsidered);
   const sourceContractClosure = includeSource ? await publishOssOwnedContractClosures({ storage: input.storage, root, inventory: importable, sourceUriBase, snapshotHash,
-    snapshotComplete: !inspectionTruncated, maxFileBytes: input.maxFileBytes ?? 1_000_000, informationLabel: OSS_CORPUS_INFORMATION_LABEL }) : undefined;
+    snapshotComplete: !inspectionTruncated, maxFileBytes: input.maxFileBytes ?? 1_000_000, informationLabel: OSS_CORPUS_INFORMATION_LABEL,
+    priorityTestPaths: contextAcquisition.roots.filter(context => context.status === "acquired").map(context => context.path) }) : undefined;
   const report: OssCorpusTrainReport = {
     schema: "scce.ossCorpusTrainReport.v1",
     ...(sourceContractClosure ? { sourceContractClosure } : {}),
@@ -421,6 +465,10 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     startFileIndex,
     nextFileIndex,
     filesConsidered,
+    filesTotal: importable.length,
+    trainingComplete: !inspectionTruncated && nextFileIndex === importable.length && !stoppedByHeapSafetyBound
+      && firstIncompleteFileOffset === undefined && (!includeSource || sourceContractClosure?.complete === true),
+    contextAcquisition,
     heapCheckpointMb,
     docsTrained: reports.filter(report => report.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossDocs).length,
     codeTrained: reports.filter(report => report.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossCode).length,
