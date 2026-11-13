@@ -340,6 +340,8 @@ interface DuplicateUnit {
   category: "fragment" | "slot";
   key: string;
   occurrenceIds: string[];
+  start?: number;
+  end?: number;
 }
 
 export function induceLearnedConstructions(input: {
@@ -536,6 +538,7 @@ export function realizeLearnedSurface(input: {
       text: candidate.candidate.text,
       trace: candidate.candidate.trace,
       intentionalRepetitions: preparedPlan.intentionalRepetitions,
+      construction,
       hasher: input.hasher
     });
     if (duplicateFingerprints.length > 0) {
@@ -1193,6 +1196,7 @@ function duplicateFragmentFingerprints(input: {
   text: string;
   trace: readonly LearnedRealizationTracePart[];
   intentionalRepetitions: readonly SurfaceIntentionalRepetition[];
+  construction: LearnedConstruction;
   hasher: Hasher;
 }): string[] {
   const allowed = new Set(input.intentionalRepetitions.map(item => (
@@ -1235,6 +1239,7 @@ function duplicateFragmentFingerprints(input: {
     if (group.length < 2) continue;
     const occurrenceIds = uniqueSorted(group.flatMap(unit => unit.occurrenceIds));
     if (occurrenceIds.length >= 2 && allowed.has(canonicalStringify(occurrenceIds))) continue;
+    if (sourceObservedLiteralRecurrence(group, input.trace, input.construction)) continue;
     const unit = group[0];
     if (unit) fingerprints.push(stableId(input.hasher, "surface.fragment", unit.key));
   }
@@ -1256,7 +1261,45 @@ function appendDuplicateUnit(
       && part.outputStart < end
       && part.outputEnd > start)
     .flatMap(part => part.occurrenceId ? [part.occurrenceId] : []));
-  units.push({ category: "fragment", key, occurrenceIds });
+  units.push({ category: "fragment", key, occurrenceIds, start, end });
+}
+
+/** Fixed recurrence needs ordered distinct origins in one example; slot recurrence still needs semantic intent. */
+function sourceObservedLiteralRecurrence(units: readonly DuplicateUnit[], trace: readonly LearnedRealizationTracePart[], construction: LearnedConstruction): boolean {
+  const sourceIds = new Set(construction.sourceExampleIds.filter(id => construction.provenance.sourceExampleIds.includes(id)));
+  const evidenceIds = new Set(construction.patternEvidenceIds.filter(id => construction.provenance.evidenceIds.includes(id)));
+  const witnesses = units.map(unit => {
+    const ranges = new Map<string, { start: number; end: number }>();
+    if (unit.category !== "fragment" || unit.occurrenceIds.length || unit.start === undefined || unit.end === undefined) return ranges;
+    const pieces = trace.flatMap((part, index) => part.outputStart < unit.end! && part.outputEnd > unit.start!
+      ? [{ part, source: construction.sequence[index], start: Math.max(unit.start!, part.outputStart), end: Math.min(unit.end!, part.outputEnd) }] : []);
+    if (!pieces.length || pieces.some(piece => piece.part.kind !== "literal" || piece.source?.kind !== "literal" || piece.source.surface !== piece.part.surface)) return ranges;
+    const candidates = uniqueSorted(pieces[0]!.source!.origins.map(origin => origin.sourceExampleId)).filter(id => sourceIds.has(id));
+    for (const sourceId of candidates) {
+      let start: number | undefined, end: number | undefined, complete = true;
+      for (const piece of pieces) {
+        const origins = piece.source!.origins.filter(origin => origin.sourceExampleId === sourceId);
+        if (origins.length !== 1 || origins[0]!.end - origins[0]!.start !== piece.part.surface.length
+          || !origins[0]!.evidenceIds.every(id => piece.source!.evidenceIds.includes(id) && evidenceIds.has(id))) { complete = false; break; }
+        const origin = origins[0]!, currentStart = origin.start + piece.start - piece.part.outputStart,
+          currentEnd = origin.start + piece.end - piece.part.outputStart;
+        if (currentEnd > origin.end || end !== undefined && currentStart !== end) { complete = false; break; }
+        start ??= currentStart; end = currentEnd;
+      }
+      if (complete && start !== undefined && end !== undefined) ranges.set(sourceId, { start, end });
+    }
+    return ranges;
+  });
+  for (const sourceId of witnesses[0]?.keys() ?? []) {
+    let previousEnd: number | undefined, complete = true;
+    for (const witness of witnesses) {
+      const range = witness.get(sourceId);
+      if (!range || range.end <= range.start || previousEnd !== undefined && range.start < previousEnd) { complete = false; break; }
+      previousEnd = range.end;
+    }
+    if (complete) return true;
+  }
+  return false;
 }
 
 function normalizeFragment(fragment: string): string {
