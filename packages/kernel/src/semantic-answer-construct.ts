@@ -10,6 +10,7 @@ import { jsonRecord, namedSubjectAnchors, normalizePriorKey, splitPriorUnits } f
 import { requestContentEvidenceUnits, requestUnitSharesStem } from "./local-evidence-runtime.js";
 import { factualRoundTripGate } from "./semantic-round-trip.js";
 import { surfaceContainsBoundValue, surfaceWords } from "./surface-linguistics.js";
+import { sourceRequestEditResponseForContract, type SourceRequestEditResponseProgram } from "./source-request-edit-program.js";
 
 export interface SemanticAnswerConstructFact {
   subject: string;
@@ -72,6 +73,7 @@ export type RealizationEpistemicForce = "observed" | "certified" | "inferred";
  * reject a genuinely correct answer.
  */
 export interface SemanticRealizationContract {
+  responseProgram?: SourceRequestEditResponseProgram;
   sourceFact: SemanticAnswerConstructFact;
   requestedSlotId?: string;
   requiredAtoms: SemanticAtom[];
@@ -243,6 +245,13 @@ export function candidateSurvivesRealizationContract(
   contract: SemanticRealizationContract,
   hasher?: Hasher
 ): RealizationSurvivalResult {
+  if (contract.responseProgram) {
+    const expected = sourceRequestEditResponseForContract(contract), cycle = factualRoundTripGate({ intendedText: contract.sourceFact.subject,
+      realizedText: candidateText, requireComplete: true, ...(hasher ? { hasher } : {}) }), survives = expected !== undefined && candidateText === expected && cycle.accepted;
+    return { survives, reason: survives ? undefined : "source_owned_response_program_mismatch", requiredAtomCount: contract.requiredAtoms.length,
+      addedUnsupportedAtomCount: cycle.cycleTrace.distance.added.length, requiredRelationUnitCount: contract.requiredRelationUnits.length,
+      missingRelationUnitCount: survives ? 0 : contract.requiredRelationUnits.length, requestedSlotSatisfied: survives };
+  }
   const fact = contract.sourceFact;
   const factText = [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ").trim();
   const fabricationCheck = factualRoundTripGate({ intendedText: factText, realizedText: candidateText, ...(hasher ? { hasher } : {}) });
@@ -292,6 +301,7 @@ export function candidateSurvivesRealizationContract(
  * object cannot assert anything beyond that fact by construction.
  */
 export function candidateIsVerifiedBoundValue(candidateText: string, contract: SemanticRealizationContract): boolean {
+  if (contract.responseProgram) return false;
   const trimmed = candidateText.trim();
   const object = contract.sourceFact.object.trim();
   return Boolean(trimmed && object && trimmed === object);

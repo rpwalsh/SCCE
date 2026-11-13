@@ -19,6 +19,7 @@ import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText, type Langu
 import { readSourceTranscriptArchive } from "./source-transcript-archive.js";
 import { prepareLanguageTrainingSegmentationInput, type LanguageTrainingSegmentationDeclaration, type PreparedLanguageTrainingSegmentation } from "./language-training-segmentation.js";
 import { persistDialogueContextualQaComponent, type DialogueContextualQaReport } from "./dialogue-contextual-qa-component.js";
+import { persistDialogueRequestEditComponent } from "./dialogue-request-edit-component.js";
 import { canonicalStringify, createHasher, type InformationLabel, type TranscriptTurn } from "@scce/kernel";
 
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
@@ -314,7 +315,9 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
     if (pool.sources.length) {
       try { contextualQa.reports.push(await persistDialogueContextualQaComponent({ storage: input.storage, rootUri: pool.rootUri,
         informationLabel: pool.informationLabel, authorship: pool.authorship, sources: pool.sources,
-        contextualQaExecution: input.contextualQaExecution, signal: input.signal, preserveExisting: Boolean(jointPool) })); }
+        contextualQaExecution: input.contextualQaExecution, signal: input.signal, preserveExisting: Boolean(jointPool) }));
+        await persistDialogueRequestEditComponent({ storage: input.storage, rootUri: pool.rootUri, informationLabel: pool.informationLabel,
+          authorship: pool.authorship, sources: pool.sources }); }
       catch (error) {
         contextualQa.deferred.push(...pool.sources.map(source => ({ sourceVersionId: source.sourceVersionId, reason: errorText(error) })));
         if (markStorageFailure(error, pool.sources[0]!.sourceVersionId)) batchesFailed.push({ batchIndex,

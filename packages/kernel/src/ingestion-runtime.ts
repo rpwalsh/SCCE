@@ -2,6 +2,8 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createSourceAdmissionController } from "./admission.js";
 import { compileCapabilityDemonstrations, CAPABILITY_CONSTRUCTION_PUBLICATION } from "./capability-construction.js";
+import { SOURCE_REQUEST_EDIT_PUBLICATION, sourceRequestEditDependencies } from "./source-request-edit-program.js";
+import { validateDeclaredTranscriptSource } from "./dialogue-communicative-act-learning.js";
 import {
   compileCreativeEventCompatibilityCorpus,
   creativeEventCompatibilityCorpusLanguageText,
@@ -499,7 +501,7 @@ export function createIngestionRuntime(options: {
           events.push(await append(eventFactory.create({ episodeId, typeId: "GraphUpdated", payload: { typedIngest: typedProjection.diagnostics } })));
         }
 
-        const languageTrainingText = jsonRecord(sourceMetadata).sourceReferenceBindings
+        const languageTrainingText = jsonRecord(sourceMetadata).sourceReferenceBindings || Array.isArray(jsonRecord(sourceMetadata).transcriptTurns)
           ? sourceText
           : requestRequirementCorpus
           ? requestRequirementCorpusLanguageText(requestRequirementCorpus)
@@ -543,6 +545,9 @@ export function createIngestionRuntime(options: {
             canonicalSource: { sourceId, contentHash: source.contentHash },
             text: languageTrainingText,
             evidence: admittedSpans,
+            ...(Array.isArray(jsonRecord(sourceMetadata).transcriptTurns) ? { transcriptTurns: validateDeclaredTranscriptSource({
+              schema: "scce.dialogue_transcript.v1", text: languageTrainingText, turns: jsonRecord(sourceMetadata).transcriptTurns }).turns } : {}),
+            ...(typeof jsonRecord(sourceMetadata).authorship === "string" ? { sourceAuthorship: String(jsonRecord(sourceMetadata).authorship) } : {}),
             ...(jsonRecord(sourceMetadata).sourceReferenceBindings ? {
               sourceReferenceBindings: jsonRecord(sourceMetadata).sourceReferenceBindings as unknown as SourceReferenceBindingDeclaration
             } : {}),
@@ -641,7 +646,10 @@ export function createIngestionRuntime(options: {
         await publishCompiledLanguagePatterns({ store: deps.storage.languageMemory,
           owner: { sourceId, sourceVersionId, contentHash: source.contentHash }, profileId: profile.id, sourceSystem, informationLabel,
           patterns: patternsToPersist, projections: [LANGUAGE_CONSTRUCTION_PUBLICATION,
-            ...(capabilityPatterns.length ? [CAPABILITY_CONSTRUCTION_PUBLICATION] : [])] });
+            ...(capabilityPatterns.length ? [CAPABILITY_CONSTRUCTION_PUBLICATION] : []),
+            ...(Array.isArray(jsonRecord(sourceMetadata).transcriptTurns)
+              && (jsonRecord(sourceMetadata).transcriptTurns as JsonValue[]).some(turn => jsonRecord(turn).replyToTurnIndex !== undefined)
+              ? [{ ...SOURCE_REQUEST_EDIT_PUBLICATION, sourceDependencies: sourceRequestEditDependencies(patternsToPersist) }] : [])] });
         if (deps.storage.languageMemory.putSemanticFrames) await deps.storage.languageMemory.putSemanticFrames(semanticFrames);
         else for (const frame of semanticFrames) await deps.storage.languageMemory.putSemanticFrame(frame);
         events.push(await append(eventFactory.create({

@@ -6,7 +6,7 @@ import { LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTIO
 import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS } from "./language-induction-memory.js";
 import { canonicalStringify, toJsonValue } from "./primitives.js";
 import { isCanonicalSegmentationArchiveSchema, type SourceCompilationOwner } from "./source-language-compilation.js";
-import type { LanguageMemoryStore, LanguagePatternRecord } from "./storage.js";
+import type { LanguageMemoryStore, LanguagePatternRecord, LanguagePatternProjection } from "./storage.js";
 import type { InformationLabel } from "./types.js";
 
 export const LANGUAGE_CONSTRUCTION_PUBLICATION = {
@@ -26,7 +26,7 @@ export async function publishCompiledLanguagePatterns(input: {
   sourceSystem: string;
   informationLabel: InformationLabel;
   patterns: readonly LanguagePatternRecord[];
-  projections: readonly { patternSchema: string; componentRecipe: string }[];
+  projections: readonly { patternSchema: string; componentRecipe: string; sourceDependencies?: LanguagePatternProjection["sourceDependencies"] }[];
 }): Promise<void> {
   const sourceSystem = corpusSourceAlias(input.sourceSystem);
   const schemas = new Set(input.projections.map(scope => scope.patternSchema));

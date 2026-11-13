@@ -6,6 +6,7 @@ import { candidateSurvivesRealizationContract, type SemanticRealizationContract 
 import { languageGenerationFramesFromContract } from "./semantic-realization-frames.js";
 import { toJsonValue } from "./primitives.js";
 import { ensureSurfaceSentence } from "./surface-linguistics.js";
+import { sourceRequestEditResponseForContract } from "./source-request-edit-program.js";
 
 export interface RealizedConstructSurface {
   text: string;
@@ -49,6 +50,13 @@ export function attemptConstructRealization(
     attestedSeedText?: string;
   }
 ): RealizationAttempt {
+  if (contract.responseProgram) {
+    const text = sourceRequestEditResponseForContract(contract), diagnostic = toJsonValue({ schema: "scce.answer_realization.v1",
+      producer: "source_owned_request_edit_construction", patternIds: contract.responseProgram.patternIds,
+      rejected: text ? null : "source_owned_response_program_unavailable" });
+    return text ? { accepted: true, surface: { text, evidenceIds: contract.evidenceIds, realizationOrigin: "learned_generation", audit: diagnostic }, diagnostic }
+      : { accepted: false, diagnostic };
+  }
   const fact = contract.sourceFact;
   const claimText = opts.attestedSeedText?.trim() || [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ");
   const frames = languageGenerationFramesFromContract(contract, {

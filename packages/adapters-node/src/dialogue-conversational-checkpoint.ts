@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { canonicalStringify, createHasher, toJsonValue, type ContentHash, type InformationLabel, type LanguagePatternProjection, type ScceStorage, type TranscriptTurn, SOURCE_COMPUTATION_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_COMPILER_FINGERPRINT } from "@scce/kernel";
+import { canonicalStringify, createHasher, toJsonValue, type ContentHash, type InformationLabel, type LanguagePatternProjection, type ScceStorage, type TranscriptTurn, SOURCE_COMPUTATION_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_COMPILER_FINGERPRINT, SOURCE_REQUEST_EDIT_RECIPE } from "@scce/kernel";
 
 /** Changes only the conversational auxiliary component, never immutable source or base compilation identity. */
 export const DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID = "scce.dialogue_conversational_construction.v2";
@@ -37,6 +37,9 @@ export function runDialogueComputationComponent<T, Prepared = undefined>(input:D
 }
 export function runDialogueContextualQaComponent<T, Prepared = undefined>(input:DialogueSourceComponentInput<T, Prepared>):Promise<T>{
   return runDialogueSourceComponent(input,CONTEXTUAL_QA_CONSTRUCTION_RECIPE,"scce.dialogue_contextual_qa_compilation.v1","dialogue_contextual_qa_compilation",CONTEXTUAL_QA_COMPILER_FINGERPRINT,true);
+}
+export function runDialogueRequestEditComponent<T, Prepared = undefined>(input:DialogueSourceComponentInput<T, Prepared>):Promise<T>{
+  return runDialogueSourceComponent(input,SOURCE_REQUEST_EDIT_RECIPE,"scce.dialogue_request_edit_compilation.v1","dialogue_request_edit_compilation");
 }
 async function runDialogueSourceComponent<T, Prepared = undefined>(input:DialogueSourceComponentInput<T, Prepared>,recipe:string,schema:string,idPrefix:string,compilerFingerprint=recipe,requirePublishedPattern=false):Promise<T>{
   if (!input.sources.length) return input.unchanged();

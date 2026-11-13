@@ -287,6 +287,9 @@ export { measureRequestCorpusSubject, type RequestCorpusSubject } from "./corpus
 export { CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_COMPILER_FINGERPRINT, CONTEXTUAL_QA_SOURCE_SYSTEM,
   CONTEXTUAL_QA_DERIVED_ALIGNMENT_METHOD, CONTEXTUAL_QA_ALIGNMENT_SEGMENTATION_RECIPE,
   type ContextualQaRequestForm, type ContextualQaWitness } from "./source-owned-contextual-qa.js";
+export { acquireSourceRequestEditPrograms, learnedSourceRequestEditForText, SOURCE_REQUEST_EDIT_PUBLICATION,
+  SOURCE_REQUEST_EDIT_SCHEMA, SOURCE_REQUEST_EDIT_RECIPE, sourceRequestEditDependencies, inspectSourceRequestEditAlignment,
+  type SourceRequestEditAcquisition, type LearnedSourceRequestEdit } from "./source-request-edit-program.js";
 export { acquireContextualQaConstructions, mergeContextualQaAcquisitionResults, contextualQaRequestFeatures, contextualQaRequestMatches,
   inspectContextualQaConstructionVerification, inspectContextualQaLiteralAnswerAlignment, verifyContextualQaConstruction, type AcquiredContextualQaFamily,
   type ContextualQaAcquisitionPartition, type ContextualQaAcquisitionResult, type ContextualQaLiteralAnswerCandidate,

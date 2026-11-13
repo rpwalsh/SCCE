@@ -17,6 +17,7 @@ import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, 
 import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
 import { requestValueBindingConstructFact, sourceOwnedValueResolver } from "./source-bound-semantic-fact.js";
 import { sourceSpanCompletionProofProjection, sourceSpanCompletionRequestFromMetadata, sourceSpanCompletionValueResolver } from "./source-owned-span-completion.js";
+import { bindSourceRequestEditResponse, learnedSourceRequestEditForText } from "./source-request-edit-program.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, resolveRequestValueBinding, semanticAnswerConstructFacts } from "./semantic-answer-construct.js";
 import { inspectLearnedRequestOmittedSlot, sourceConstructionRequestPropositionMatches, sourceConstructionRequestValueResolver } from "./source-construction-request-binding.js";
 import { learnedEntitySurfacesFromLanguageMemory, namedSubjectAnchors } from "./kernel-answer-primitives.js";
@@ -1327,7 +1328,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const runtimeDiagnosticRequested = explicitRuntimeDiagnosticRequest(input.metadata);
       const inheritedRuntimeMotion = acquisitionContinuation
         ?? runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
-      const sourceSpanCompletionRequest = sourceSpanCompletionRequestFromMetadata(input.metadata, input.text);
+      const declaredSourceSpanCompletionRequest = sourceSpanCompletionRequestFromMetadata(input.metadata, input.text);
+      const learnedRequestEdit = !declaredSourceSpanCompletionRequest && !deps.evaluationCondition?.flags.disableLanguageMemory
+        && !deps.evaluationCondition?.flags.disableLearnedSemantics
+        ? await learnedSourceRequestEditForText({ storage: deps.storage, requestText: input.text }) : undefined;
+      const sourceSpanCompletionRequest = declaredSourceSpanCompletionRequest ?? learnedRequestEdit?.request;
       const declaredEvidenceScope = sourceSpanCompletionRequest?.evidenceIds;
       const declaredEvidenceIds = declaredEvidenceScope === undefined ? undefined : new Set(declaredEvidenceScope);
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget)
@@ -3632,6 +3637,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const realizationContract = realizationSourceFact
         ? compileRealizationContract(input.text, realizationSourceFact, boundConstructFacts?.certificationBoundary, requestClosedClassWords())
         : undefined;
+      if (realizationContract && learnedRequestEdit) realizationContract.responseProgram = bindSourceRequestEditResponse(
+        learnedRequestEdit, realizationContract.sourceFact, admissibleEvidence);
       kernelTrace({
         stage: "candidate.realization_contract",
         label: "kernel.turn",

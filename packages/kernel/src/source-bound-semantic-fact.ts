@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceSpan } from "./types.js";
 import { sourceSpanCompletionRangeCurrent } from "./source-owned-span-completion.js";
+import { sourceRequestEditResponseForContract } from "./source-request-edit-program.js";
 import type { RequestValueBinding, RequestValueResolver, SemanticAnswerConstructFact, SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { splitSurfaceSentences, surfaceContainsBoundValue, surfaceWords } from "./surface-linguistics.js";
 
@@ -121,7 +122,8 @@ export function currentSourceBoundRoleValueFact(input: {
   const fact = contract?.sourceFact;
   if (!contract || !fact || fact.predicate !== "" || !hasSourceBoundSemanticRelation(fact)
     || fact.requestedSlotId !== fact.relationRoleId || contract.requestedSlotId !== fact.requestedSlotId
-    || input.text.trim() !== fact.object.trim()) return undefined;
+    || (contract.responseProgram ? input.text !== sourceRequestEditResponseForContract(contract, input.evidence)
+      : input.text.trim() !== fact.object.trim())) return undefined;
   const identity = (row: SemanticAnswerConstructFact) => JSON.stringify([
     row.subject, row.predicate, row.object, row.relationId, row.relationRoleId, row.requestedSlotId, row.sourceVersionId, row.forceClass,
     [...new Set(row.evidenceIds ?? [])].sort(), row.sourceSpan ? [row.sourceSpan.evidenceId,

@@ -15,6 +15,7 @@ import { compileCreativeSourceUtterancePatterns } from "./creative-source-uttera
 import { compileCreativeEventSpeechGrammarPatterns } from "./creative-event-speech-grammar.js";
 import { compileSourceReferenceBindingPattern, type SourceReferenceBindingDeclaration } from "./source-reference-bindings.js";
 import type { TranscriptTurn } from "./dialogue-communicative-act-learning.js";
+import { acquireSourceRequestEditPrograms } from "./source-request-edit-program.js";
 import type { SourceInductionBatchExecution } from "./source-induction-execution.js";
 import type { CorpusSegmentationBatchLoader } from "./corpus-segmentation-cursor.js";
 import {
@@ -160,6 +161,7 @@ export interface LanguageTrainingBatch {
   text: string;
   evidence: EvidenceSpan[];
   transcriptTurns?: readonly TranscriptTurn[];
+  sourceAuthorship?: string;
   sourceReferenceBindings?: SourceReferenceBindingDeclaration;
   createdAt: number;
   maxOrder?: number;
@@ -728,6 +730,10 @@ export function compileLanguageTrainingBatch(input: {
     ? compileSourceReferenceBindingPattern({ declaration: batch.sourceReferenceBindings, text: batch.text, profileId: batch.profile.id,
       evidence: batch.evidence, hasher: input.hasher, updatedAt: batch.createdAt }) : undefined;
   warnings.push(...(sourceReferences?.issues.map(issue => issue.code) ?? []));
+  const sourceRequestEdits = !batch.languageOnly && batch.transcriptTurns && batch.sourceAuthorship === "human_authored"
+    ? acquireSourceRequestEditPrograms({ documents: [{ sourceVersionId: String(batch.sourceVersionId), profileId: batch.profile.id,
+      spans: batch.evidence, transcriptTurns: batch.transcriptTurns }], authorship: batch.sourceAuthorship, hasher: input.hasher, updatedAt: batch.createdAt })
+    : undefined;
   const referenceBindings = sourceReferences?.bindings ? [sourceReferences.bindings] : [];
   const sourceCorrespondencePatterns = batch.transcriptTurns && creativeEventCompilation?.status === "compiled"
     ? compileCreativeSourceCorrespondences({ turns: batch.transcriptTurns, profileId: batch.profile.id, updatedAt: batch.createdAt,
@@ -756,6 +762,7 @@ export function compileLanguageTrainingBatch(input: {
     ...memories.flatMap(memory => memory.patterns), ...inducedLanguagePatterns, ...constructionPatterns, ...reversibleConstructionPatterns,
     ...pairedAntiUnifiedConstructionPatterns, ...optionalNullRealizationPatterns, ...(batch.additionalPatterns ?? []), ...sourceCorrespondencePatterns,
     ...(sourceReferences?.pattern ? [sourceReferences.pattern] : []),
+    ...(sourceRequestEdits?.families.map(family => family.pattern) ?? []),
     ...(sourceCorrespondencePatterns.length ? [{
       id: `source_creative_surface_${input.hasher.digestHex(canonicalStringify([batch.profile.id, batch.sourceVersionId, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID]))}`,
       profileId: batch.profile.id, patternKind: "source_compilation" as const, support: sourceCorrespondencePatterns.length, entropy: 0,

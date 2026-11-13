@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_SOURCE_SYSTEM,
-  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, REQUEST_REQUIREMENT_PATTERN_SCHEMA, type InformationAccessContext } from "@scce/kernel";
+  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, REQUEST_REQUIREMENT_PATTERN_SCHEMA, SOURCE_REQUEST_EDIT_SCHEMA, SOURCE_REQUEST_EDIT_RECIPE, type InformationAccessContext } from "@scce/kernel";
 import { evidenceTextReferenceSchemaStatements } from "./evidence-text-reference-schema.js";
 import { canonicalBlobSchemaStatements } from "./canonical-evidence-text.js";
 import { LANGUAGE_PATTERN_SELECTION_HEADERS, languagePatternSelectionHeaderStatement } from "./postgres-language-pattern-headers.js";
@@ -745,6 +745,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_request_requirement_feature_lookup ON ${q}.language_patterns(source_system,(pattern_json->>'anchor'),(pattern_json->>'surface'),support DESC,updated_at DESC,id) WHERE pattern_schema='${REQUEST_REQUIREMENT_PATTERN_SCHEMA}'`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_source_computation_binding_lookup ON ${q}.language_patterns(source_system,(pattern_json->>'bindingId'),support DESC,updated_at DESC,id) WHERE pattern_json->>'schema'='${SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA}'`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_contextual_qa_request_lookup ON ${q}.language_patterns USING GIN ((pattern_json->'contextualQaRequestFeatures')) WHERE pattern_kind='semantic_role' AND pattern_json->>'schema'='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}' AND pattern_json->>'componentRecipe'='${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}' AND source_system='${CONTEXTUAL_QA_SOURCE_SYSTEM}'`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_source_request_edit_lookup ON ${q}.language_patterns USING GIN ((pattern_json->'sourceEditRequestFeatures')) WHERE pattern_kind='semantic_role' AND pattern_json->>'schema'='${SOURCE_REQUEST_EDIT_SCHEMA}' AND pattern_json->>'componentRecipe'='${SOURCE_REQUEST_EDIT_RECIPE}'`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_system_rank ON ${q}.semantic_frames((frame_json->>'sourceSystem'), alpha DESC, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_profile_rank ON ${q}.semantic_frames((frame_json->>'profileId'),alpha DESC,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_version_rank ON ${q}.semantic_frames((frame_json->>'sourceVersionId'),alpha DESC,created_at DESC)`,

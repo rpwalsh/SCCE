@@ -42,6 +42,7 @@ import {
   sourceCodeFunctionPatternId,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
+  SOURCE_REQUEST_EDIT_PUBLICATION, sourceRequestEditDependencies,
   publishCompiledLanguagePatterns,
   prepareLanguageTrainingInduction,
   prepareLanguageTrainingInductionFromCorpus,
@@ -1141,6 +1142,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       text,
       evidence,
       ...(input.transcriptTurns ? { transcriptTurns: input.transcriptTurns } : {}),
+      ...(typeof jsonRecord(input.corpusMetadata).authorship === "string" ? { sourceAuthorship: String(jsonRecord(input.corpusMetadata).authorship) } : {}),
       ...(jsonRecord(jsonRecord(input.corpusMetadata).sourceMetadata).sourceReferenceBindings ? {
         sourceReferenceBindings: jsonRecord(jsonRecord(input.corpusMetadata).sourceMetadata).sourceReferenceBindings as unknown as SourceReferenceBindingDeclaration
       } : {}),
@@ -1444,6 +1446,8 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     owner: { sourceId: prepared.sourceId, sourceVersionId: prepared.sourceVersionId, contentHash: blobContentHash(prepared.bytes) },
     profileId: String(prepared.profile.id), sourceSystem: prepared.sourceSystem, informationLabel: prepared.informationLabel,
     patterns: prepared.patterns, projections: [
+      ...(!input.languageOnly && input.transcriptTurns ? [{ ...SOURCE_REQUEST_EDIT_PUBLICATION,
+        sourceDependencies: sourceRequestEditDependencies(prepared.patterns) }] : []),
       ...(patternProjectionRecipe ? [{ patternSchema, componentRecipe: patternProjectionRecipe }] : []),
       ...(componentRecipes.inducedLanguageMemory ? INDUCED_LANGUAGE_MEMORY_PUBLICATIONS : []),
       ...(!input.languageOnly && prepared.models.length && componentRecipes.sourceConstructionProjection
