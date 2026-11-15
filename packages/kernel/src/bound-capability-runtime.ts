@@ -11,6 +11,8 @@ import type { CapabilityApprovalScope, CapabilityPlan, EpisodeId, Hasher, Policy
 export async function executeBoundCapability(input: {
   binding: VerifiedCapabilityBinding;
   requestText: string;
+  workspaceContext?: import("./types.js").JsonValue;
+  maxCalls?: number;
   operationId?: string;
   episodeId: EpisodeId;
   ownerId: string;
@@ -26,6 +28,13 @@ export async function executeBoundCapability(input: {
   if (!capabilityBindingVerified(input.binding, input.requestText)) throw new Error("capability construction binding is not verified");
   const steps: RuntimeCapabilityPlanStep[] = structuredClone(input.binding.steps ?? [{ id: "action", capabilityId: input.binding.capabilityId,
     payload: input.binding.payload, dependencyStepIds: [] }]);
+  if (input.workspaceContext) for (const step of steps) {
+    const schema = input.capabilities.operations().find(row => row.capability.id === step.capabilityId)?.inputSchema;
+    if (schema && typeof schema === "object" && !Array.isArray(schema) && schema.workspaceContext === "object") {
+      if (!step.payload || typeof step.payload !== "object" || Array.isArray(step.payload)) throw new Error("workspace capability payload must be an object");
+      step.payload = { ...step.payload, workspaceContext: structuredClone(input.workspaceContext) };
+    }
+  }
   const requirementIds = [...input.binding.patternIds];
   const ownerId = input.ownerId;
   const policyVersionId = input.policyVersionId;
@@ -37,7 +46,7 @@ export async function executeBoundCapability(input: {
   const approvals: Array<{ taskId: string; inputRef: string }> = [];
   const plans = new Map<string, CapabilityPlan>();
   const policy = structuredClone({ ...input.policy, ...input.approvals?.policyPatch?.() });
-  let remaining = policy.maxToolCalls;
+  let remaining = Math.min(policy.maxToolCalls, input.maxCalls ?? policy.maxToolCalls);
   let networkCalls = 0;
   const accounted = new Set<string>();
   const run = () => invokeRuntimeCapabilityPlan({ capabilities: input.capabilities, episodeId: executiveEpisodeId, goalId,

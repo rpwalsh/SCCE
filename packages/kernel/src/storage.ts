@@ -1217,6 +1217,8 @@ export interface SelfRewriteStore {
 
 export interface WorkspaceStore {
   putWorkspace(record: WorkspaceRecord): Promise<void>;
+  registerActionPolicy?(input: { workspaceId: string; expectedWorkspaceUpdatedAt: number; policyId: string; policy: JsonValue }): Promise<boolean>;
+  claimActionCall?(input: { workspaceId: string; expectedWorkspaceUpdatedAt: number; policyId: string; maxCalls: number }): Promise<boolean>;
   getWorkspace(id: string): Promise<WorkspaceRecord | null>;
   latestWorkspace(): Promise<WorkspaceRecord | null>;
   putSourceFile(record: WorkspaceSourceFileRecord): Promise<void>;

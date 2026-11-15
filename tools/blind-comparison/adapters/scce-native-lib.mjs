@@ -5,6 +5,7 @@ import { canonical, hash } from '../protocol.mjs';
 import { sha256Text, sha256Bytes } from '../../sealed-eval/harness/lib/util.mjs';
 import { execute } from '../runner.mjs';
 import { nativeProgramApprovalAllowed } from './native-program-approval.mjs';
+import {publicWorkspaceActionPolicy,publicWorkspacePolicyId,workspaceActionApprovalAllowed} from './workspace-action-policy.mjs';
 import { verifyConfiguredRetainedSources, retainedAnswerProvenanceMatches } from './retained-sources.mjs';
 import { nativeContract, currentPrompt, failure, containedFile, validateArtifacts, publicFilesGuard, runPublicChecks, typedFactualAbstention, publicContextReceipt } from './native-contract.mjs';
 
@@ -34,29 +35,31 @@ async function scceNativeOperation(input, config, dependencies) {
     const bytes = Buffer.concat(chunks);
     return { status: response.status, body: JSON.parse(bytes.toString('utf8')), rawResponseHash: sha256Bytes(bytes) };
   });
+  let workspaceActionContext,workspaceActionPolicy;
   async function call(route, body, capability) {
     let result = await request(route, body);
     trace.push({ route, requestHash: hash(body), status: result.status, responseHash: hash(result.body), rawResponseHash: result.rawResponseHash ?? hash(result.body) });
     const seenApprovals=new Set();
     while (result.status === 202 && result.body?.pendingApproval) {
       const pending = result.body.pendingApproval;
-      if (!capability || pending.capabilityId !== capability || !contract.approvals.includes(capability) || typeof pending.planId !== 'string') return result;
+      const workspaceAction=route==='/api/turn'&&workspaceActionContext&&await workspaceActionApprovalAllowed({pending,context:workspaceActionContext,policy:workspaceActionPolicy,cwd});
+      if (!workspaceAction&&(!capability || pending.capabilityId !== capability || !contract.approvals.includes(capability)) || typeof pending.planId !== 'string') return result;
       const nativeProgram=contract.operation==='code_generation'&&capability==='process.build_test';
-      if(nativeProgram&&(!nativeProgramApprovalAllowed({input,contract,pending})||seenApprovals.has(pending.fingerprint)||seenApprovals.size>=input.budgets.maxSteps)) {
+      if((nativeProgram||workspaceAction)&&((nativeProgram&&!nativeProgramApprovalAllowed({input,contract,pending}))||seenApprovals.has(pending.fingerprint)||seenApprovals.size>=input.budgets.maxSteps)) {
         trace.push({route:'approval:refused',planId:pending.planId,reason:'public_native_validation_scope_mismatch'});return result;
       }
-      if(nativeProgram)seenApprovals.add(pending.fingerprint);
+      if(nativeProgram||workspaceAction)seenApprovals.add(pending.fingerprint);
       const approvalStarted=performance.now();
       const approved = await request('/api/session/approve', { planId: pending.planId });
       trace.push({ route: '/api/session/approve', capability, planId: pending.planId, fingerprint:pending.fingerprint??null, durationMs:performance.now()-approvalStarted,status: approved.status, responseHash: hash(approved.body) });
       if (approved.status !== 200) return approved;
-      if(nativeProgram&&(approved.body?.approved?.planId!==pending.planId||approved.body.approved.fingerprint!==pending.fingerprint||canonical(approved.body.approved.input)!==canonical(pending.input))) {
+      if((nativeProgram||workspaceAction)&&(approved.body?.approved?.planId!==pending.planId||approved.body.approved.fingerprint!==pending.fingerprint||canonical(approved.body.approved.input)!==canonical(pending.input)||canonical(approved.body.approved.approvalScope??null)!==canonical(pending.approvalScope??null))) {
         trace.push({route:'approval:refused',planId:pending.planId,reason:'approval_record_changed'});return {status:422,body:{reason:'approval_record_changed'}};
       }
       const retryStarted=performance.now();
       result = await request(route, body);
       trace.push({ route, requestHash: hash(body), status: result.status,durationMs:performance.now()-retryStarted,approvalRetry:true, responseHash: hash(result.body), rawResponseHash: result.rawResponseHash ?? hash(result.body) });
-      if(!nativeProgram)break;
+      if(!nativeProgram&&!workspaceAction)break;
     }
     return result;
   }
@@ -85,7 +88,7 @@ async function scceNativeOperation(input, config, dependencies) {
     trace.push({ retainedSourceVerification: retainedVerification });
   } else if (!await ingestPublicSources()) return failure('public_source_ingestion_rejected', trace);
   let workspaceProgramContext;
-  if (contract.prepareWorkspace === true) {
+  if (contract.prepareWorkspace === true || contract.toolPolicy) {
     const prepared = await call('/api/workspace/ingest', { path: cwd });
     if (prepared.status !== 200 || prepared.body?.failed > 0) return failure('public_workspace_ingestion_rejected', trace);
     const workspace = prepared.body?.workspace;
@@ -120,7 +123,14 @@ async function scceNativeOperation(input, config, dependencies) {
     return complete(canonical({ disposition: result.body.disposition }), {}, { executiveReceiptHash: hash(result.body) });
   }
   const body = { text: prompt, conversationId, ...(contract.requestedAuthority ? { requestedAuthority: contract.requestedAuthority } : {}) };
-  if (contract.toolPolicy) body.metadata = { evaluationPublicWorkspace: { rootPath: cwd, toolPolicy: contract.toolPolicy, publicChecks: contract.publicChecks } };
+  if (contract.toolPolicy) {
+    if(!workspaceProgramContext)return failure('public_workspace_identity_unavailable',trace);
+    workspaceActionPolicy=await publicWorkspaceActionPolicy(input,contract);
+    const registered=await call('/api/workspace/actions/register',{workspaceId:workspaceProgramContext.workspaceId,expectedWorkspaceUpdatedAt:workspaceProgramContext.expectedWorkspaceUpdatedAt,policy:workspaceActionPolicy});
+    workspaceActionContext=registered.body?.workspaceActionContext;
+    if(registered.status!==200||workspaceActionContext?.schema!=='scce.workspace.action-context.v1'||workspaceActionContext.workspaceId!==workspaceProgramContext.workspaceId||workspaceActionContext.expectedWorkspaceUpdatedAt!==workspaceProgramContext.expectedWorkspaceUpdatedAt||workspaceActionContext.policyId!==publicWorkspacePolicyId(workspaceActionPolicy))return failure('public_workspace_action_registration_rejected',trace);
+    body.metadata={workspaceActionContext};
+  }
   if (contract.operation === 'code_generation' && contract.programMode !== 'verified_artifacts') {
     const initialized = await call('/api/workspace/init', { path: cwd });
     if (initialized.status !== 200 || !initialized.body?.id || !Number.isFinite(initialized.body.updatedAt)) return failure('workspace_initialization_rejected', trace);
@@ -165,8 +175,15 @@ async function scceNativeOperation(input, config, dependencies) {
     const events = resolvedTurn.events ?? [];
     const succeeded = events.filter(e => e.typeId === 'CapabilitySucceeded');
     const failed = events.filter(e => e.typeId === 'CapabilityFailed');
-    if (!succeeded.length || failed.length || contract.requiredCapabilityIds?.some(id => !succeeded.some(e => e.payload?.capabilityId === id))) return failure('no_successful_native_tool_receipt', trace);
-    if (contract.toolPolicy && succeeded.length + failed.length + contract.publicChecks.length > contract.toolPolicy.maxCalls) return failure('product_tool_call_budget_exceeded', trace);
+    const actions=Array.isArray(resolvedTurn.actionResults)?resolvedTurn.actionResults:[];
+    if(workspaceActionPolicy){
+      const successful=actions.filter(action=>action.status==='succeeded'&&action.disposition==='succeeded'&&typeof action.receiptId==='string'&&action.observation?.schema==='scce.capability_observation.v1'&&action.observation.capabilityId===action.capabilityId&&/^[a-f0-9]{64}$/u.test(action.observation.inputRef));
+      if(successful.length!==actions.length||workspaceActionPolicy.capabilityIds.some(id=>!successful.some(action=>action.capabilityId===id))||successful.some(action=>!workspaceActionPolicy.capabilityIds.includes(action.capabilityId)))return failure('no_successful_native_tool_receipt',trace);
+      const checks=successful.filter(action=>action.capabilityId==='workspace.check');
+      if(checks.some(action=>action.observation.result?.passed!==true||action.observation.result?.evidence?.policyId!==workspaceActionContext.policyId))return failure('workspace_native_check_receipt_mismatch',trace);
+      if(actions.length+contract.publicChecks.length>contract.toolPolicy.maxCalls)return failure('product_tool_call_budget_exceeded',trace);
+      trace.push({workspaceActions:successful});
+    }else if (!succeeded.length || failed.length || contract.requiredCapabilityIds?.some(id => !succeeded.some(e => e.payload?.capabilityId === id))) return failure('no_successful_native_tool_receipt', trace);
     trace.push({ capabilityEvents: succeeded });
     const executionArtifacts = resolvedTurn.buildTest?.artifacts ?? [];
     const emitted = executionArtifacts.filter(a => contract.writablePaths.includes(a.path));

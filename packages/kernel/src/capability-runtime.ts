@@ -13,7 +13,7 @@ export interface CapabilityOperation {
   phase: "read" | "prepare" | "commit";
   inputSchema: JsonValue;
   validate(payload: JsonValue): void;
-  execute(payload: JsonValue): Promise<JsonValue>;
+  execute(payload: JsonValue, execution?: Pick<import("./executive-episode.js").CapabilityInvocationEnvelope, "attemptKind">): Promise<JsonValue>;
   partialResult?(error: unknown): JsonValue | undefined;
   outputRefs?(result: JsonValue): string[];
   evidenceRefs?(result: JsonValue): string[];
@@ -82,7 +82,7 @@ export function createRuntimeCapabilities(input: {
     let status: "succeeded" | "failed" | "indeterminate";
     let outputRefs: string[] = [];
     try {
-      observation.result = await operation.execute(request.payload);
+      observation.result = await operation.execute(request.payload, { attemptKind: request.invocation.attemptKind });
       status = operation.succeeded?.(observation.result) === false ? "failed" : "succeeded";
       outputRefs = operation.outputRefs?.(observation.result) ?? [];
     } catch (error) {

@@ -33,6 +33,7 @@ import { createClipVisualEmbedder, registerVisualEmbedder } from "./visual-inges
 import { createApprovalSession, type ApprovalSession } from "./approval-session.js";
 import { createNodePostgresGovernanceProbe } from "./governance-probe.js";
 import { corpusRegistryEntriesFromConfig } from "./config.js";
+import { createWorkspaceCapabilityOperations } from "./workspace-capability-operations.js";
 
 export interface NodeScceRuntime {
   storage: ScceStorage;
@@ -112,12 +113,12 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     maxConflictRetries: 5
   });
   const capabilities = createRuntimeCapabilities({ executive, blobs: storage.blobs,
-    operations: createConnectorCapabilityOperations({ connectors, blobs: storage.blobs, buildTest,
+    operations: [...createConnectorCapabilityOperations({ connectors, blobs: storage.blobs, buildTest,
       capabilities: [...createCapabilityRegistry({ process: true,
         network: config.connectors.web?.enabled === true,
         outlook: config.connectors.outlook?.enabled === true,
         youtube: config.connectors.youtube?.enabled === true,
-        telephone: config.connectors.telephone?.enabled === true }).all(), createProgramLocalValidationCapability(true)] }),
+        telephone: config.connectors.telephone?.enabled === true }).all(), createProgramLocalValidationCapability(true)] }), ...createWorkspaceCapabilityOperations({ storage, config })],
     now: () => options.clock?.now() ?? Date.now(), dialogueMemory: storage.dialogueMemory });
   // Declared, config-gated visual embedder (Phase 3): registered for document extraction and
   // handed to the kernel only as a text->visual-space query function.

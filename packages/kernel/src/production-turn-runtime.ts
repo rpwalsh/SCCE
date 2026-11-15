@@ -4013,7 +4013,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const candidateApprovalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
       let boundCapabilityExecution: Awaited<ReturnType<typeof executeBoundCapability>> | undefined;
       if (boundCapability && requestedAuthority === "action" && deps.capabilities) {
+        const workspaceActionScope = jsonRecord(jsonRecord(jsonRecord(input.metadata).runtime).workspaceActionScope);
         boundCapabilityExecution = await executeBoundCapability({ binding: boundCapability, requestText: input.text,
+          ...(workspaceActionScope.context ? { workspaceContext: workspaceActionScope.context } : {}),
+          ...(typeof workspaceActionScope.maxCalls === "number" ? { maxCalls: workspaceActionScope.maxCalls } : {}),
           operationId: input.operationId, episodeId, ownerId: deps.informationAccess?.principalId ?? "scce-runtime",
           policyVersionId: `policy_${hasher.digestHex(canonicalStringify(deps.policy ?? {}))}`, policy,
           capabilities: deps.capabilities, approvals: deps.approvals, audit: deps.storage.capabilities,

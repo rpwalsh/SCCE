@@ -1,3 +1,4 @@
+import {workspaceCapabilityId} from './workspace-action-policy.mjs';
 function object(properties, required = Object.keys(properties)) {
   return { type: 'object', properties, required, additionalProperties: false };
 }
@@ -11,9 +12,10 @@ export function nativeResponseSchema(input, contract, remainingToolCalls) {
   if (contract.operation === 'tool_use' && !contract.executiveGoal && contract.toolPolicy) {
     const readable = [...new Set([...input.steps.flatMap(step => Object.keys(step.files)), ...contract.writablePaths])];
     const choices = [];
-    if (contract.toolPolicy.tools.includes('workspace.read') && readable.length) choices.push(object({ tool: { const: 'workspace.read' }, path: { type: 'string', enum: readable } }));
-    if (contract.toolPolicy.tools.includes('workspace.write') && contract.writablePaths.length) choices.push(object({ tool: { const: 'workspace.write' }, path: { type: 'string', enum: contract.writablePaths }, content: { type: 'string' } }));
-    if (contract.toolPolicy.tools.includes('public.check') && contract.publicChecks.length) choices.push(object({ tool: { const: 'public.check' }, index: { type: 'integer', enum: contract.publicChecks.map((_, i) => i) } }));
+    const toolFor=id=>contract.toolPolicy.tools.find(name=>workspaceCapabilityId(name)===id);
+    if (toolFor('filesystem.read') && readable.length) choices.push(object({ tool: { const: toolFor('filesystem.read') }, path: { type: 'string', enum: readable } }));
+    if (toolFor('filesystem.write') && contract.writablePaths.length) choices.push(object({ tool: { const: toolFor('filesystem.write') }, path: { type: 'string', enum: contract.writablePaths }, content: { type: 'string' } }));
+    if (toolFor('workspace.check') && contract.publicChecks.length) choices.push(object({ tool: { const: toolFor('workspace.check') }, index: { type: 'integer', enum: contract.publicChecks.map((_, i) => i) } }));
     return object({ answer: { type: 'string' }, artifacts: object({}), complete: { type: 'boolean' }, toolCalls: { type: 'array', minItems: 1, maxItems: remainingToolCalls ?? contract.toolPolicy.maxCalls, items: { oneOf: choices } } });
   }
   if (['code_repair', 'code_generation'].includes(contract.operation)) return object({ answer: { type: 'string' }, artifacts: artifacts(contract) });

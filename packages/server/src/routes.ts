@@ -22,6 +22,7 @@ import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, 
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
+import { registerWorkspaceActionPolicy, resolveWorkspaceActionContext, type WorkspaceActionPolicy } from "@scce/adapters-node";
 import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 import { compactIngestResult, compactWorkspaceIngestResult } from "./ingestion-response.js";
 import { programResponseReadiness, unsupportedProgramResponseReadiness } from "./program-response-readiness.js";
@@ -165,6 +166,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/codebase/ingest", label: "codebase ingest", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/init", label: "workspace initialize", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/ingest", label: "workspace ingest", mutates: true, requiresDb: true },
+  { method: "POST", path: "/api/workspace/actions/register", label: "register bounded workspace actions", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/workspace/sources", label: "workspace sources", mutates: false, requiresDb: true },
   { method: "POST", path: "/api/workspace/ask", label: "workspace ask", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/outcome", label: "workspace answer outcome", mutates: true, requiresDb: true },
@@ -954,6 +956,15 @@ async function dispatch(
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["path"]);
     return json(await createWorkspaceRuntime(context).init(String(body.path), workspaceOptions(body)));
   }
+  if (req.method === "POST" && url.pathname === "/api/workspace/actions/register") {
+    const body = exactRecord(await readBody(req, context.maxBodyBytes), "workspace action registration", ["workspaceId", "expectedWorkspaceUpdatedAt", "policy"]);
+    const registered = await registerWorkspaceActionPolicy({ storage: context.runtime.storage, config: context.config }, {
+      workspaceId: boundedString(body.workspaceId, "workspaceId", 256),
+      expectedWorkspaceUpdatedAt: strictInteger(body.expectedWorkspaceUpdatedAt, "expectedWorkspaceUpdatedAt", 0, Number.MAX_SAFE_INTEGER),
+      policy: body.policy as unknown as WorkspaceActionPolicy
+    });
+    return json({ workspaceActionContext: registered });
+  }
   if (req.method === "POST" && url.pathname === "/api/workspace/ingest") {
     const body = await readBody(req, context.maxBodyBytes);
     if (!isRecord(body)) throw new HttpError(400, "workspace ingest body must be an object");
@@ -1700,6 +1711,8 @@ export async function executeApplicationTurn(
       const turn = validateTurn(body);
       const originalMetadata = isRecord(turn.metadata) ? turn.metadata as Record<string, JsonValue> : {};
       const originalRuntime = isRecord(originalMetadata.runtime) ? originalMetadata.runtime as Record<string, JsonValue> : {};
+      const workspaceActionScope = originalMetadata.workspaceActionContext === undefined ? undefined
+        : await resolveWorkspaceActionContext({ storage: context.runtime.storage, config: context.config }, originalMetadata.workspaceActionContext);
       const productionDeadline = createProductionTurnDeadline(requestTiming.startedMonotonicMs);
       const productionDeadlineRuntime = productionTurnDeadlineMetadata(productionDeadline);
       const workspaceCodingInput = parseTurnWorkspaceCodingRequest(
@@ -1795,6 +1808,7 @@ export async function executeApplicationTurn(
       traceEvent(trace, { stage: "turn.runtime.start", label: "api.turn" });
       const {
         workspacePlans: _untrustedWorkspacePlans,
+        workspaceActionScope: _untrustedWorkspaceActionScope,
         deadline: _untrustedDeadline,
         initialResponseDeadline: _untrustedInitialResponseDeadline,
         ...trustedOriginalRuntime
@@ -1819,7 +1833,8 @@ export async function executeApplicationTurn(
             productionBoundedAnswer: true,
             initialResponseDeadline: productionDeadlineRuntime,
             ...(sparseSessionFollowup ? { sessionContextEvidence: true } : {}),
-            workspacePlans: workspacePlans.map(plan => toJsonValue(plan))
+            workspacePlans: workspacePlans.map(plan => toJsonValue(plan)),
+            ...(workspaceActionScope ? { workspaceActionScope: toJsonValue(workspaceActionScope) } : {})
           },
           runtimeEvidenceIds,
           dialogue: {

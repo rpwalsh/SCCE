@@ -1,3 +1,4 @@
+import {workspaceCapabilityId} from './workspace-action-policy.mjs';
 import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { retainedSourceBindings } from './retained-sources.mjs';
 import path from 'node:path';
@@ -31,7 +32,7 @@ export function nativeContract(input) {
   if (contract.operation === 'code_generation' && contract.programMode !== 'verified_artifacts' && (!contract.validationPolicyId || !Array.isArray(contract.targetPaths) || !Array.isArray(contract.validationChecks))) throw new Error('Workspace generation requires registered public policy and requested paths');
   if (contract.programMode !== undefined && !['verified_artifacts', 'workspace_plan'].includes(contract.programMode)) throw new Error('Invalid explicit program mode');
   if (contract.operation === 'tool_use' && contract.executiveGoal && contract.maxPublicAttempts !== 1) throw new Error('Explicit executive goals execute once');
-  if (contract.toolPolicy && (!Number.isSafeInteger(contract.toolPolicy.maxCalls) || contract.toolPolicy.maxCalls < 1 || !Array.isArray(contract.toolPolicy.tools) || contract.toolPolicy.tools.some(t => !['workspace.read', 'workspace.write', 'public.check'].includes(t)))) throw new Error('Invalid shared bounded workspace tool policy');
+  if (contract.toolPolicy && (!Number.isSafeInteger(contract.toolPolicy.maxCalls) || contract.toolPolicy.maxCalls < 1 || !Array.isArray(contract.toolPolicy.tools) || contract.toolPolicy.tools.some(t => !workspaceCapabilityId(t)) || new Set(contract.toolPolicy.tools.map(workspaceCapabilityId)).size !== contract.toolPolicy.tools.length)) throw new Error('Invalid shared bounded workspace tool policy');
   if (contract.answerMode !== undefined && (contract.answerMode !== 'answer_or_abstain' || !['turn', 'learning_update'].includes(contract.operation) || contract.requestedAuthority !== 'factual')) throw new Error('Answer-or-abstain requires an explicit factual turn contract');
   if (input.category === 'math_reasoning' && (contract.operation !== 'turn' || contract.requestedAuthority !== undefined || contract.answerMode !== undefined
     || contract.publicChecks.length || contract.writablePaths.length || contract.approvals.length || input.steps.some(step => step.sources.length || Object.keys(step.files).length))) throw new Error('Arithmetic comparison requires an ordinary source-free turn');

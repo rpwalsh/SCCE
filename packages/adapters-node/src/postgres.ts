@@ -7923,6 +7923,24 @@ function createSelfRewriteStore(storage: PostgresStorageAdapter): SelfRewriteSto
 
 function createWorkspaceStore(storage: PostgresStorageAdapter): WorkspaceStore {
   return {
+    async registerActionPolicy(input) {
+      const rows = await storage.query<{ id: string }>(
+        `UPDATE ${storage.table("workspaces")} SET metadata_json=jsonb_set(metadata_json,'{actionPolicies}',COALESCE(metadata_json->'actionPolicies','{}'::jsonb)||jsonb_build_object($3::text,$4::jsonb),true)
+         WHERE id=$1 AND updated_at=TO_TIMESTAMP($2/1000.0) AND (metadata_json->'actionPolicies'->$3::text IS NULL OR metadata_json->'actionPolicies'->$3::text=$4::jsonb) RETURNING id`,
+        [input.workspaceId, input.expectedWorkspaceUpdatedAt, input.policyId, JSON.stringify(input.policy)]
+      );
+      return rows.length === 1;
+    },
+    async claimActionCall(input) {
+      const key = `${input.policyId}:${input.expectedWorkspaceUpdatedAt}`;
+      const rows = await storage.query<{ id: string }>(
+        `UPDATE ${storage.table("workspaces")} SET metadata_json=jsonb_set(metadata_json,'{actionPolicyUsage}',COALESCE(metadata_json->'actionPolicyUsage','{}'::jsonb)||jsonb_build_object($4::text,COALESCE((metadata_json#>>ARRAY['actionPolicyUsage',$4::text])::bigint,0)+1),true)
+         WHERE id=$1 AND updated_at=TO_TIMESTAMP($2/1000.0) AND (metadata_json->'actionPolicies'->$3::text->>'maxCalls')::bigint=$5
+         AND COALESCE((metadata_json#>>ARRAY['actionPolicyUsage',$4::text])::bigint,0)<$5 RETURNING id`,
+        [input.workspaceId, input.expectedWorkspaceUpdatedAt, input.policyId, key, input.maxCalls]
+      );
+      return rows.length === 1;
+    },
     async putWorkspace(record) {
       await storage.query(
         `INSERT INTO ${storage.table("workspaces")}(id,root_path,root_uri,corpus_id,status,metadata_json,created_at,updated_at)

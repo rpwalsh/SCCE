@@ -130,18 +130,25 @@ test('autonomous reference selects and executes bounded public read/write/check 
   const data = JSON.parse(row.public.steps[0].files['input.json']), sums = new Map();
   for (const r of data) sums.set(r.group, (sums.get(r.group) ?? 0) + r.value);
   const report = [...sums].sort(([a], [b]) => a.localeCompare(b)).map(([group, total]) => ({ group, total }));
-  const result = await runReferenceNative(input, { cwd }, { ask: async () => ({ status: 'ok', modelDigest: 'a'.repeat(64), answer: canonical({ answer: '', artifacts: {}, complete: true, toolCalls: [{ tool: 'workspace.read', path: 'input.json' }, { tool: 'workspace.write', path: 'report.json', content: canonical(report) }, { tool: 'public.check', index: 0 }] }) }) });
+  const result = await runReferenceNative(input, { cwd }, { ask: async () => ({ status: 'ok', modelDigest: 'a'.repeat(64), answer: canonical({ answer: '', artifacts: {}, complete: true, toolCalls: [{ tool: 'filesystem.read', path: 'input.json' }, { tool: 'filesystem.write', path: 'report.json', content: canonical(report) }, { tool: 'workspace.check', index: 0 }] }) }) });
   assert.equal(result.identity.productOutcome, 'completed');
   assert.equal(result.identity.trace.at(-1).publicToolReceipts.length, 3);
   assert.deepEqual(JSON.parse(result.artifacts['report.json']), report);
-  const noPlan = await runReferenceNative(input, { cwd }, { ask: async () => ({ status: 'ok', modelDigest: 'a'.repeat(64), answer: canonical({ answer: 'Done.', artifacts: {}, complete: true, toolCalls: [{ tool: 'workspace.read', path: '../private/key.json' }] }) }) });
+  const noPlan = await runReferenceNative(input, { cwd }, { ask: async () => ({ status: 'ok', modelDigest: 'a'.repeat(64), answer: canonical({ answer: 'Done.', artifacts: {}, complete: true, toolCalls: [{ tool: 'filesystem.read', path: '../private/key.json' }] }) }) });
   assert.equal(noPlan.identity.productOutcome, 'failed');
   await rm(path.join(cwd, 'report.json'));
-  const native = await runScceNative(input, { cwd }, { request: async route => {
+  let actionContext;
+  const native = await runScceNative(input, { cwd }, { request: async (route,body) => {
     if (route === '/api/workspace/ingest') return { status: 200, body: { failed: 0, workspace: { id: 'workspace.autonomous.fixture', updatedAt: 1 } } };
+    if(route==='/api/workspace/actions/register'){
+      actionContext={schema:'scce.workspace.action-context.v1',workspaceId:body.workspaceId,expectedWorkspaceUpdatedAt:body.expectedWorkspaceUpdatedAt,policyId:`workspace_action_${hash(body.policy)}`};
+      assert.deepEqual(body.policy.capabilityIds,['filesystem.read','filesystem.write','workspace.check']);
+      return {status:200,body:{workspaceActionContext:actionContext}};
+    }
+    assert.deepEqual(body.metadata,{workspaceActionContext:actionContext});
     await writeFile(path.join(cwd, 'report.json'), canonical(report));
     const temporaryHelper = 'console.log("real executor helper");';
-    return { status: 200, body: { answer: 'Actual native execution.', events: [{ typeId: 'CapabilitySucceeded', payload: { capabilityId: 'process.build_test' } }], buildTest: { artifacts: [{ artifactId: 'temporary.helper', path: 'main.mjs', content: temporaryHelper, contentHash: `sha256_${sha256Text(temporaryHelper)}` }] } } };
+    return { status: 200, body: { answer: 'Actual native execution.', actionResults:['filesystem.read','filesystem.write','workspace.check'].map((capabilityId,index)=>({capabilityId,status:'succeeded',disposition:'succeeded',receiptId:`fixture.receipt.${index}`,observation:{schema:'scce.capability_observation.v1',capabilityId,inputRef:hash({capabilityId}),result:capabilityId==='workspace.check'?{passed:true,evidence:{policyId:actionContext.policyId}}:{}}})), buildTest: { artifacts: [{ artifactId: 'temporary.helper', path: 'main.mjs', content: temporaryHelper, contentHash: `sha256_${sha256Text(temporaryHelper)}` }] } } };
   } });
   assert.equal(native.identity.productOutcome, 'completed');
   assert.equal(Object.hasOwn(native.artifacts, 'main.mjs'), false);
