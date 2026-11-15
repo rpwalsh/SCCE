@@ -15,7 +15,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { productionReadinessFailures } from "./production-live-question-contract.mjs";
-import { compactAcceptanceEvidence, evidenceMatchesSourceBinding } from "./lib/multicorpus-live-acceptance-contract.mjs";
+import { acceptanceRequestedAuthority, acceptanceTurnInput, compactAcceptanceEvidence, evidenceMatchesSourceBinding } from "./lib/multicorpus-live-acceptance-contract.mjs";
 
 const RECEIPT_SCHEMA = "scce.multicorpus_live_acceptance.v1";
 const CASES_SCHEMA = "scce.multicorpus_acceptance_cases.v1";
@@ -225,20 +225,10 @@ async function runCase({ testCase, index, serverUrl: base, headers: requestHeade
       method: "POST",
       headers: requestHeaders,
       timeoutMs,
-      body: JSON.stringify({
-        text: testCase.question,
-        requestedAuthority: testCase.requestedAuthority,
+      body: JSON.stringify(acceptanceTurnInput(testCase, {
         sessionId: `multicorpus-acceptance-${randomUUID()}`,
-        conversationId: `multicorpus-acceptance-${testCase.id}-${randomUUID()}`,
-        metadata: {
-          evaluation: {
-            schema: "scce.multicorpus_acceptance_case.v1",
-            caseId: testCase.id,
-            corpus: testCase.corpus,
-            sourceBindings: testCase.sourceBindings
-          }
-        }
-      })
+        conversationId: `multicorpus-acceptance-${testCase.id}-${randomUUID()}`
+      }))
     });
     body = response.value;
   } catch (error) {
@@ -359,9 +349,8 @@ function validateCases(document) {
     const corpus = requiredString(raw.corpus, `${id}.corpus`, 64).toLocaleLowerCase();
     const question = requiredString(raw.question ?? raw.prompt, `${id}.question`, 20_000);
     const requestedAuthority = raw.requestedAuthority ?? "factual";
-    if (!["factual", "reasoned", "creative", "translation", "program", "action"].includes(requestedAuthority)) {
-      throw new Error(`${id}.requestedAuthority is invalid`);
-    }
+    try { acceptanceRequestedAuthority(requestedAuthority); }
+    catch { throw new Error(`${id}.requestedAuthority is invalid`); }
     const sourceBindings = normalizeSourceBindings(raw.sourceBindings ?? raw.expectedSources ?? raw.expectedSourceIds, id);
     if (!sourceBindings.length) throw new Error(`${id} requires at least one source binding from the committed build`);
     return {
@@ -471,6 +460,7 @@ function helpText() {
     "",
     "Each case requires id, corpus, question (or prompt), and at least one exact source binding.",
     "Optional expectedAnswerTerms are all required; expectedAnyAnswerTerms require at least one match.",
+    "Set requestedAuthority to auto to test ordinary routing without sending an authority override.",
     "The runner resolves the local bearer token only in memory and never writes it to the receipt.",
     ""
   ].join("\n");

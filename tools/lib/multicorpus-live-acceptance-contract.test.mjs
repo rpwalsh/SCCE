@@ -2,9 +2,22 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactAcceptanceEvidence, evidenceMatchesSourceBinding } from "./multicorpus-live-acceptance-contract.mjs";
+import { acceptanceRequestedAuthority, acceptanceTurnInput, compactAcceptanceEvidence, evidenceMatchesSourceBinding } from "./multicorpus-live-acceptance-contract.mjs";
 
 const binding = { sourceId: "source.one", sourceVersionId: "version.one", contentHash: "sha256_source" };
+
+test("automatic corpus requests reach the ordinary transport without a forced authority or answer expectations", () => {
+  const testCase = { id: "case.one", corpus: "wikipedia", question: "What is albedo?",
+    requestedAuthority: "auto", sourceBindings: [binding], expectedAnswerTerms: ["reflected"] };
+  const identity = { sessionId: "session.one", conversationId: "conversation.one" };
+  const input = JSON.parse(JSON.stringify(acceptanceTurnInput(testCase, identity)));
+  assert.equal(Object.hasOwn(input, "requestedAuthority"), false);
+  assert.equal(input.text, testCase.question);
+  assert.deepEqual(input.metadata.evaluation.sourceBindings, [binding]);
+  assert.equal(JSON.stringify(input).includes("reflected"), false);
+  assert.equal(acceptanceTurnInput({ ...testCase, requestedAuthority: "factual" }, identity).requestedAuthority, "factual");
+  assert.throws(() => acceptanceRequestedAuthority("unknown"), /requestedAuthority/u);
+});
 
 test("a cited chunk binds to its exact source version without comparing unlike hashes", () => {
   const evidence = compactAcceptanceEvidence({

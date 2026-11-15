@@ -14,6 +14,28 @@ function preview(value, limit) {
   return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
+export function acceptanceRequestedAuthority(value) {
+  if (value === "auto") return undefined;
+  if (!["factual", "reasoned", "creative", "translation", "program", "action"].includes(value)) {
+    throw new Error("requestedAuthority is invalid");
+  }
+  return value;
+}
+
+export function acceptanceTurnInput(testCase, identity) {
+  const authority = acceptanceRequestedAuthority(testCase.requestedAuthority);
+  return {
+    text: testCase.question,
+    ...(authority === undefined ? {} : { requestedAuthority: authority }),
+    sessionId: identity.sessionId,
+    conversationId: identity.conversationId,
+    metadata: { evaluation: {
+      schema: "scce.multicorpus_acceptance_case.v1", caseId: testCase.id,
+      corpus: testCase.corpus, sourceBindings: testCase.sourceBindings
+    } }
+  };
+}
+
 export function compactAcceptanceEvidence(span) {
   if (!isRecord(span)) return { sourceId: null };
   return {
