@@ -7,6 +7,18 @@ import { parseReviewedPatchPlan } from "../patch-protocol.js";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
+it("omits an absent code target from the registered VS Code operation while preserving its declared policy", async () => {
+  const inputs: Record<string, unknown>[] = [];
+  const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1000 }, registeredTransport(request => {
+    inputs.push(request.variables.input as Record<string, unknown>);
+    return { outcome: "no_proposal", attempts: 0, finalDiagnostics: [] };
+  }));
+  expect(await client.editCode(undefined, "Repair project", 3, "owner-project-policy")).toMatchObject({ outcome: "no_proposal" });
+  expect(inputs).toHaveLength(1);
+  expect(inputs[0]).not.toHaveProperty("path");
+  expect(inputs[0]).toMatchObject({ request: "Repair project", attempts: 3, validationPolicyId: "owner-project-policy" });
+});
+
 interface RecordedRequest {
   input: string;
   init: RequestInit;

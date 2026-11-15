@@ -145,6 +145,18 @@ export class TurnTaskRegistry {
     return true;
   }
 
+  /** A completed wait is the only replay-safe continuation boundary. This claim is local to the registry. */
+  resume(taskId: string, inputDigest: string, approvalFrameSequence: number): boolean {
+    const task = this.#tasks.get(taskId);
+    const frame = task?.frames.at(-1);
+    const original = task?.frames.find(row => row.phase === "application.turn.claimed")?.cognition;
+    if (!task || task.persistenceFailed || task.durableSequence !== task.frames.length
+      || frame?.sequence !== approvalFrameSequence || !isTurnTaskApprovalWait(frame)
+      || !original || typeof original !== "object" || Array.isArray(original) || original.inputDigest !== inputDigest) return false;
+    this.append(taskId, { type: "progress", phase: "application.turn.resumed", cognition: { inputDigest, approvalFrameSequence } });
+    return true;
+  }
+
   append(
     taskId: string,
     frame: Omit<TurnTaskFrame, "schema" | "taskId" | "sequence" | "observedAt">
@@ -164,7 +176,8 @@ export class TurnTaskRegistry {
     const next = JSON.parse(frameJsonText) as TurnTaskFrame;
     task.frames.push(next);
     task.updatedAt = next.observedAt;
-    if (next.type === "result") task.status = "succeeded";
+    if (isTurnTaskApprovalWait(next)) task.status = "running";
+    else if (next.type === "result") task.status = "succeeded";
     else if (next.type === "error") task.status = "failed";
     else if (next.type === "cancelled") task.status = "cancelled";
     else if (task.status === "accepted" && next.type === "progress") task.status = "running";
@@ -192,13 +205,26 @@ export class TurnTaskRegistry {
       throw new Error("invalid persisted turn task frame sequence");
     }
     const last = frames.at(-1)!;
-    const status: TurnTaskStatus = last.type === "result"
+    const waiting = isTurnTaskApprovalWait(last);
+    const status: TurnTaskStatus = waiting ? "running" : last.type === "result"
       ? "succeeded"
       : last.type === "error"
         ? "failed"
         : last.type === "cancelled"
           ? "cancelled"
           : "interrupted";
+    if (waiting) {
+      // A process may resume an explicitly completed approval wait, never an in-flight execution intent.
+      // Recheck after the asynchronous read so simultaneous cold lookups cannot replace a claimed live task.
+      const concurrent = this.#tasks.get(taskId);
+      if (concurrent) return snapshot(concurrent);
+      const lastEvent = events.find(event => frameFromEvent(event)?.sequence === last.sequence);
+      this.#tasks.set(taskId, {
+        taskId, episodeId: taskId as EpisodeId, status, createdAt: frames[0]!.observedAt, updatedAt: last.observedAt,
+        frames, controller: new AbortController(), subscribers: new Set(), persistenceTail: Promise.resolve(),
+        durableSequence: last.sequence, persistenceFailed: false, lastEvent
+      });
+    }
     return {
       schema: "scce.turn_task.v1",
       taskId,
@@ -273,6 +299,15 @@ export class TurnTaskRegistry {
       this.#tasks.delete(task.taskId);
     }
   }
+}
+
+/** A 202 alone is not an approval checkpoint. The application must have returned a structured approval receipt. */
+export function isTurnTaskApprovalWait(frame: Pick<TurnTaskFrame, "type" | "phase" | "status" | "value"> | undefined): boolean {
+  if (!frame || frame.status !== 202 || !(frame.type === "result" || frame.type === "progress" && frame.phase === "application.turn.awaiting_approval")
+    || !frame.value || typeof frame.value !== "object" || Array.isArray(frame.value)) return false;
+  const pending = frame.value.pendingApproval;
+  return Boolean(pending && typeof pending === "object" && !Array.isArray(pending)
+    && [pending.planId, pending.capabilityId, pending.fingerprint].every(value => typeof value === "string" && value.length > 0));
 }
 
 function snapshot(task: LiveTurnTask): TurnTaskSnapshot {

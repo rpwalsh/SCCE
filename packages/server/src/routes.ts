@@ -9,7 +9,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createWorkspaceCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID, validateStructuredPatchValidationPolicy, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspaceCodingPatchPlanningResult, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
+import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, prepareWorkspaceCodeCommand, runWorkspaceCodeCommand, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID, validateStructuredPatchValidationPolicy, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspaceCodingPatchPlanningResult, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, StorageStatusOptions, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
@@ -378,7 +378,7 @@ function createVscodeApplication(context: ApiContext): VscodeApplication {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(operationId)) {
       throw new HttpError(400, "operationId must be a UUIDv4 generated once for this command");
     }
-    const digest = createHash("sha256").update(JSON.stringify([name, input])).digest("hex");
+    const digest = createHash("sha256").update(canonicalStringify(toJsonValue([name, input]))).digest("hex");
     const prior = executions.get(operationId);
     if (prior) {
       if (prior.name !== name || prior.digest !== digest) throw new HttpError(409, "operationId is already bound to another command");
@@ -400,6 +400,8 @@ function createVscodeApplication(context: ApiContext): VscodeApplication {
     models: () => queryVscodeModels(context),
     codeValidationPolicies: () => queryVscodeCodeValidationPolicies(context),
     workspaceInitialize: (operationId, path) => command("vscodeWorkspaceInitialize", operationId, { path }, () => executeVscodeWorkspaceInitialize(context, path)),
+    registerWorkspaceActionPolicy: (operationId, input) => command("registerWorkspaceActionPolicy", operationId, input,
+      () => executeWorkspaceActionPolicyRegistration(context, input)),
     workspaceIngest: (operationId, path) => command("vscodeWorkspaceIngest", operationId, { path }, () => executeVscodeWorkspaceIngest(context, path)),
     workspaceAsk: (operationId, path, question) => command("vscodeWorkspaceAsk", operationId, { path, question }, () => executeVscodeWorkspaceAsk(context, path, question)),
     workspaceCodingPatchPlan: (operationId, value) => command("vscodeWorkspaceCodingPatchPlan", operationId, { value }, () => executeVscodeWorkspaceCodingPatchPlan(context, value)),
@@ -411,8 +413,17 @@ function createVscodeApplication(context: ApiContext): VscodeApplication {
     updateSetting: (operationId, key, value) => command("vscodeUpdateSetting", operationId, { key, value }, () => executeVscodeUpdateSetting(context, key, value)),
     downloadModel: (operationId, modelId) => command("vscodeDownloadModel", operationId, { modelId }, () => executeVscodeDownloadModel(context, modelId)),
     removeModel: (operationId, modelId) => command("vscodeRemoveModel", operationId, { modelId }, () => executeVscodeRemoveModel(context, modelId)),
-    editCode: (operationId, input) => command("vscodeEditCode", operationId, input, () => executeVscodeCodeEdit(context, input))
+    editCode: (operationId, input) => command("vscodeEditCode", operationId, input, () => executeWorkspaceCodeEdit(context, input))
   };
+}
+
+async function executeWorkspaceActionPolicyRegistration(context: ApiContext, value: unknown) {
+  const body = exactRecord(value, "workspace action registration", ["workspaceId", "expectedWorkspaceUpdatedAt", "policy"]);
+  return registerWorkspaceActionPolicy({ storage: context.runtime.storage, config: context.config }, {
+    workspaceId: boundedString(body.workspaceId, "workspaceId", 256),
+    expectedWorkspaceUpdatedAt: strictInteger(body.expectedWorkspaceUpdatedAt, "expectedWorkspaceUpdatedAt", 0, Number.MAX_SAFE_INTEGER),
+    policy: body.policy as unknown as WorkspaceActionPolicy
+  });
 }
 
 async function queryVscodeReady(context: ApiContext) {
@@ -569,40 +580,44 @@ async function executeVscodeWorkspacePatch(context: ApiContext, value: unknown):
     refreshWorkspace: () => createWorkspaceRuntime(context).ingest(workspace.rootPath) });
 }
 
-async function executeVscodeCodeEdit(context: ApiContext, value: Record<string, unknown>): Promise<unknown> {
+async function executeWorkspaceCodeEdit(context: ApiContext, value: Record<string, unknown>): Promise<unknown> {
   if (context.config.policy.allowMutation !== true) throw new HttpError(403, "code editing is disabled by config.policy.allowMutation");
-  const body = exactRecordWithOptional(value, "workspace code request", ["path", "request"], ["attempts", "validationPolicyId"]);
+  const body = exactRecordWithOptional(value, "workspace code request", ["request"], ["path", "attempts", "validationPolicyId"]);
   const targetPath = typeof body.path === "string" ? body.path.trim() : "";
   const request = typeof body.request === "string" ? body.request.trim() : "";
-  if (!targetPath || !request) throw new HttpError(400, "workspace code requires path and request");
+  if (!request || (body.path !== undefined && !targetPath)) throw new HttpError(400, "workspace code requires a request and any supplied path must be nonempty");
   const validationPolicyId = body.validationPolicyId === undefined ? undefined : boundedString(body.validationPolicyId, "validationPolicyId", 128);
   const validationPolicy = validationPolicyId ? resolveWorkspacePatchValidationPolicy(context, validationPolicyId) : undefined;
   const validationProvider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
-  const approvalInput = { path: targetPath, request, ...(validationPolicy ? { validationPolicyId,
-    validationBinding: workspacePatchValidationApprovalBinding(validationPolicy, validationProvider) } : {}) };
+  if (!targetPath && !validationPolicy) throw new HttpError(400, "automatic localization requires validationPolicyId");
+  const workspaceRoot = targetPath ? context.config.runtime.workspaceRoot : await createWorkspaceRuntime(context).resolveRoot();
+  const attempts = Number.isFinite(Number(body.attempts)) ? Math.max(1, Math.min(5, Math.trunc(Number(body.attempts)))) : 3;
+  const command = { storage: context.runtime.storage, workspaceRoot, ...(targetPath ? { targetPath } : {}), request,
+    maxAttempts: attempts, informationAccess: context.config.security?.informationAccess,
+    ...(validationPolicy ? { projectValidation: { policy: validationPolicy, provider: validationProvider } } : {}) };
+  const prepared = await prepareWorkspaceCodeCommand(command);
+  const approvalInput = { ...(targetPath ? { path: targetPath } : { workspaceScope: prepared.scope }), request,
+    ...(validationPolicy ? { validationPolicyId, validationBinding: workspacePatchValidationApprovalBinding(validationPolicy, validationProvider) } : {}) };
   if (!approved(context, "workspace.code", approvalInput)) {
     const pending = context.runtime.approvals.requestApproval({ capabilityId: "workspace.code", input: toJsonValue(approvalInput), reason: "operator-approval-required" });
     return { ok: false, pendingApproval: pending, session: context.runtime.approvals.snapshot() };
   }
-  const attempts = Number.isFinite(Number(body.attempts)) ? Math.max(1, Math.min(5, Number(body.attempts))) : 3;
-  const codePorts = createWorkspaceCodeMouthPorts({ workspaceRoot: context.config.runtime.workspaceRoot, targetPath,
-    learnedProposer: createLearnedCodeProposer({ storage: context.runtime.storage, workspaceRoot: context.config.runtime.workspaceRoot }),
-    ...(validationPolicy ? { projectValidation: { policy: validationPolicy, provider: validationProvider } } : {}) });
-  const codeResult = await runCodeMouth({ request, targetPath, maxAttempts: attempts, ports: codePorts });
-  if (codeResult.outcome === "resolved") {
+  const execution = await runWorkspaceCodeCommand({ ...command, prepared });
+  const codeResult = execution.result;
+  if (codeResult.outcome === "resolved" && codeResult.appliedOperations.length > 0) {
     const clock = createClock(), hasher = createHasher(), idFactory = createIdFactory({ clock, hasher });
     const events = createEventFactory({ idFactory, clock, hasher });
     await context.runtime.storage.events.append(events.create({ episodeId: idFactory.episodeId(), typeId: "CodePatchApplied", payload: {
-      schema: "scce.code_patch_applied.v1", path: targetPath, request, attempts: codeResult.attempts, provedBy: codeResult.reason,
-      verification: toJsonValue(codeResult.verification), corpusAvailability: toJsonValue(codePorts.corpusAvailability() ?? null),
+      schema: "scce.code_patch_applied.v1", path: execution.targetPath!, request, attempts: codeResult.attempts, provedBy: codeResult.reason,
+      verification: toJsonValue(codeResult.verification), corpusAvailability: toJsonValue(execution.corpusAvailability ?? null),
       ...(codeResult.proposalAudits ? { proposalAudits: toJsonValue(codeResult.proposalAudits) } : {}),
-      ...(codePorts.projectVerification() ? { projectVerification: toJsonValue(codePorts.projectVerification()) } : {}),
+      ...(execution.projectVerification ? { projectVerification: toJsonValue(execution.projectVerification) } : {}),
       operations: codeResult.appliedOperations.map(operation => ({ kind: operation.kind, path: operation.path, reason: operation.reason })),
       remainingDiagnostics: codeResult.finalDiagnostics.length
     } })).catch(() => undefined);
   }
-  return { ...codeResult, corpusAvailability: codePorts.corpusAvailability() ?? null,
-    ...(codePorts.projectVerification() ? { projectVerification: codePorts.projectVerification() } : {}) };
+  return { ...codeResult, localization: execution.localization, initialVerification: execution.initialVerification, targetPath: execution.targetPath, corpusAvailability: execution.corpusAvailability ?? null,
+    ...(execution.projectVerification ? { projectVerification: execution.projectVerification } : {}) };
 }
 
 function assertAuthorizedRequest(req: http.IncomingMessage, url: URL, context: ApiContext): void {
@@ -957,12 +972,7 @@ async function dispatch(
     return json(await createWorkspaceRuntime(context).init(String(body.path), workspaceOptions(body)));
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/actions/register") {
-    const body = exactRecord(await readBody(req, context.maxBodyBytes), "workspace action registration", ["workspaceId", "expectedWorkspaceUpdatedAt", "policy"]);
-    const registered = await registerWorkspaceActionPolicy({ storage: context.runtime.storage, config: context.config }, {
-      workspaceId: boundedString(body.workspaceId, "workspaceId", 256),
-      expectedWorkspaceUpdatedAt: strictInteger(body.expectedWorkspaceUpdatedAt, "expectedWorkspaceUpdatedAt", 0, Number.MAX_SAFE_INTEGER),
-      policy: body.policy as unknown as WorkspaceActionPolicy
-    });
+    const registered = await executeWorkspaceActionPolicyRegistration(context, await readBody(req, context.maxBodyBytes));
     return json({ workspaceActionContext: registered });
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/ingest") {
@@ -1001,58 +1011,8 @@ async function dispatch(
     return json({ policies, provider: context.config.runtime.patchValidation?.provider ?? "trusted-host" });
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/code") {
-    if (context.config.policy.allowMutation !== true) throw new HttpError(403, "code editing is disabled by config.policy.allowMutation");
-    const body = exactRecordWithOptional(await readBody(req, context.maxBodyBytes), "workspace code request", ["path", "request"], ["attempts", "validationPolicyId"]);
-    const targetPath = typeof body.path === "string" ? body.path.trim() : "";
-    const request = typeof body.request === "string" ? body.request.trim() : "";
-    if (!targetPath || !request) throw new HttpError(400, "workspace code requires path and request");
-    const validationPolicyId = body.validationPolicyId === undefined ? undefined : boundedString(body.validationPolicyId, "validationPolicyId", 128);
-    const validationPolicy = validationPolicyId ? resolveWorkspacePatchValidationPolicy(context, validationPolicyId) : undefined;
-    const validationProvider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
-    const approvalInput = { path: targetPath, request, ...(validationPolicy ? { validationPolicyId,
-      validationBinding: workspacePatchValidationApprovalBinding(validationPolicy, validationProvider) } : {}) };
-    if (!approved(context, "workspace.code", approvalInput)) return pendingApproval(context, "workspace.code", approvalInput);
-    const attempts = Number.isFinite(Number(body.attempts)) ? Math.max(1, Math.min(5, Number(body.attempts))) : 3;
-    // The compiler decides: the mouth keeps only a patch its gate accepted, and rolls back everything else.
-    const codePorts = createWorkspaceCodeMouthPorts({
-      workspaceRoot: context.config.runtime.workspaceRoot,
-      targetPath,
-      learnedProposer: createLearnedCodeProposer({ storage: context.runtime.storage, workspaceRoot: context.config.runtime.workspaceRoot }),
-      ...(validationPolicy ? { projectValidation: { policy: validationPolicy, provider: validationProvider } } : {})
-    });
-    const codeResult = await runCodeMouth({
-      request,
-      targetPath,
-      maxAttempts: attempts,
-      ports: codePorts
-    });
-    // A repair that is forgotten cannot be learned from: every accepted patch enters the ledger with what
-    // it answered and how it was proven, so the same request can be recognised again later.
-    if (codeResult.outcome === "resolved") {
-      const clock = createClock();
-      const hasher = createHasher();
-      const idFactory = createIdFactory({ clock, hasher });
-      const events = createEventFactory({ idFactory, clock, hasher });
-      await context.runtime.storage.events.append(events.create({
-        episodeId: idFactory.episodeId(),
-        typeId: "CodePatchApplied",
-        payload: {
-          schema: "scce.code_patch_applied.v1",
-          path: targetPath,
-          request,
-          attempts: codeResult.attempts,
-          provedBy: codeResult.reason,
-          verification: toJsonValue(codeResult.verification),
-          corpusAvailability: toJsonValue(codePorts.corpusAvailability() ?? null),
-          ...(codeResult.proposalAudits ? { proposalAudits: toJsonValue(codeResult.proposalAudits) } : {}),
-          ...(codePorts.projectVerification() ? { projectVerification: toJsonValue(codePorts.projectVerification()) } : {}),
-          operations: codeResult.appliedOperations.map(operation => ({ kind: operation.kind, path: operation.path, reason: operation.reason })),
-          remainingDiagnostics: codeResult.finalDiagnostics.length
-        }
-      })).catch(() => undefined);
-    }
-    return json({ ...codeResult, corpusAvailability: codePorts.corpusAvailability() ?? null,
-      ...(codePorts.projectVerification() ? { projectVerification: codePorts.projectVerification() } : {}) } as unknown as JsonValue);
+    const result = await executeWorkspaceCodeEdit(context, jsonRecord(await readBody(req, context.maxBodyBytes)));
+    return json(result as JsonValue, result && typeof result === "object" && "pendingApproval" in result ? 202 : 200);
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/patch/plan") {
     const request = parseWorkspacePatchPlanRequest(await readBody(req, context.maxBodyBytes), { resolveValidationPolicy: id => resolveWorkspacePatchValidationPolicy(context, id) });

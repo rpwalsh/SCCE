@@ -232,3 +232,31 @@ it("still reads original version-one task events without rewriting their payload
  await storage.events.append({id:"legacy-event",episodeId:"legacy-task",typeId:"TurnTaskCompleted",t:10,parents:[],hash:"untouched-original",payload:{schema:"scce.turn_task_event.v1",frame}} as never);
  const recovered=await new TurnTaskRegistry(storage).get("legacy-task");expect(recovered?.frames).toEqual([frame]);expect((await storage.events.readEpisode("legacy-task" as EpisodeId))[0]!.hash).toBe("untouched-original");
 });
+
+it("cold-recovers a legacy approval result, claims its wait once, and appends through the original event parent", async () => {
+  const storage = storageFixture(), original = new TurnTaskRegistry(storage), task = original.create({ requestId: "legacy-approval" });
+  original.claim(task.taskId, "bound-input");
+  original.append(task.taskId, { type: "result", status: 202, value: { pendingApproval: { planId: "write", capabilityId: "filesystem.write", fingerprint: "exact-scope" } } });
+  await original.drain(task.taskId);
+  const before = structuredClone(await storage.events.readEpisode(task.taskId as EpisodeId));
+  const cold = new TurnTaskRegistry(storage);
+  const loaded = await Promise.all(Array.from({ length: 8 }, () => cold.get(task.taskId)));
+  expect(loaded.every(row => row?.status === "running" && row.persistence === "durable")).toBe(true);
+  expect(cold.resume(task.taskId, "changed-input", 3)).toBe(false);
+  const claims = await Promise.all(Array.from({ length: 8 }, async () => cold.resume(task.taskId, "bound-input", 3)));
+  expect(claims.filter(Boolean)).toHaveLength(1);
+  await cold.drain(task.taskId);
+  const after = await storage.events.readEpisode(task.taskId as EpisodeId);
+  expect(after.slice(0, before.length)).toEqual(before);
+  expect(after.at(-1)?.parents).toEqual([before.at(-1)!.id]);
+  cold.cancel(task.taskId); await cold.drain(task.taskId);
+  expect(cold.resume(task.taskId, "bound-input", 3)).toBe(false);
+  expect((await new TurnTaskRegistry(storage).get(task.taskId))?.status).toBe("cancelled");
+});
+
+it.each([null, { pendingApproval: { planId: "write", capabilityId: "filesystem.write" } }])("does not reinterpret an unbound 202 value as an approval continuation: %j", async value => {
+  const storage = storageFixture(), registry = new TurnTaskRegistry(storage), task = registry.create({ requestId: "not-an-approval" });
+  registry.claim(task.taskId, "input"); registry.append(task.taskId, { type: "result", status: 202, value }); await registry.drain(task.taskId);
+  expect((await new TurnTaskRegistry(storage).get(task.taskId))?.status).toBe("succeeded");
+  expect(registry.resume(task.taskId, "input", 3)).toBe(false);
+});

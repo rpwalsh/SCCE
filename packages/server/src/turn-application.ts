@@ -2,7 +2,8 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash, randomUUID } from "node:crypto";
 import type { JsonValue, RequestedAuthority } from "@scce/kernel";
-import { TurnTaskRegistry, type TurnTaskSnapshot } from "./turn-task-registry.js";
+import type { WorkspaceActionContext } from "@scce/adapters-node";
+import { isTurnTaskApprovalWait, TurnTaskRegistry, type TurnTaskSnapshot } from "./turn-task-registry.js";
 
 export interface ApplicationTurnInput {
   text: string;
@@ -10,6 +11,7 @@ export interface ApplicationTurnInput {
   sessionId?: string;
   conversationId?: string;
   requestedAuthority?: RequestedAuthority;
+  metadata?: { workspaceActionContext: WorkspaceActionContext };
 }
 
 export interface TurnApplicationPorts {
@@ -56,22 +58,29 @@ export class TurnApplication {
     input = Object.freeze({ text: input.text, operationId: taskId,
       ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
-      ...(input.requestedAuthority === undefined ? {} : { requestedAuthority: input.requestedAuthority }) });
+      ...(input.requestedAuthority === undefined ? {} : { requestedAuthority: input.requestedAuthority }),
+      ...(input.metadata === undefined ? {} : { metadata: Object.freeze({ workspaceActionContext: Object.freeze({
+        schema: input.metadata.workspaceActionContext.schema, workspaceId: input.metadata.workspaceActionContext.workspaceId,
+        expectedWorkspaceUpdatedAt: input.metadata.workspaceActionContext.expectedWorkspaceUpdatedAt, policyId: input.metadata.workspaceActionContext.policyId
+      }) }) }) });
     const task = await this.get(taskId);
     if (!task) throw new ApplicationError("NOT_FOUND", "unknown local turn operation");
     const digest = createHash("sha256").update(JSON.stringify([
-      input.text, input.sessionId ?? null, input.conversationId ?? null, input.requestedAuthority ?? null
+      input.text, input.sessionId ?? null, input.conversationId ?? null, input.requestedAuthority ?? null,
+      ...(input.metadata === undefined ? [] : [input.metadata])
     ])).digest("hex");
     const persisted = task.frames.find(frame => frame.phase === "application.turn.claimed")?.cognition as Record<string, JsonValue> | undefined;
     const previous = persisted?.inputDigest;
     if (previous !== undefined) {
       if (previous !== digest) throw new ApplicationError("CONFLICT", "operation was already bound to another request");
-      return this.#durable(taskId);
+      if (!isTurnTaskApprovalWait(task.frames.at(-1))) return this.#durable(taskId);
     }
-    if (task.status !== "accepted") throw new ApplicationError("CONFLICT", `operation is ${task.status}`);
+    else if (task.status !== "accepted") throw new ApplicationError("CONFLICT", `operation is ${task.status}`);
     if (this.#active >= 4) throw new ApplicationError("RESOURCE_LIMIT", "four turns are already active");
     // No await between checking and claiming: concurrent retries share this single coordinator.
-    if (!this.#ports.registry.claim(taskId, digest)) return this.start(taskId, input);
+    const claimedIntent = previous === undefined ? this.#ports.registry.claim(taskId, digest)
+      : this.#ports.registry.resume(taskId, digest, task.latestSequence);
+    if (!claimedIntent) return this.#durable(taskId);
     this.#reservations.delete(taskId);
     this.#active++;
     try {
@@ -142,8 +151,10 @@ export class TurnApplication {
             ...(progress.cognition === undefined ? {} : { cognition: progress.cognition }) });
         }
       });
-      registry.append(taskId, { type: result.status >= 200 && result.status < 300 ? "result" : "error",
-        status: result.status, value: result.value });
+      const frame = { type: "result" as const, status: result.status, value: result.value };
+      registry.append(taskId, isTurnTaskApprovalWait(frame)
+        ? { type: "progress", phase: "application.turn.awaiting_approval", status: result.status, value: result.value }
+        : { ...frame, type: result.status >= 200 && result.status < 300 ? "result" : "error" });
     } catch (error) {
       const typed = error && typeof error === "object" ? error as { status?: number; detail?: JsonValue } : {};
       registry.append(taskId, { type: "error", status: typed.status ?? 500,
@@ -161,6 +172,16 @@ function terminal(status: TurnTaskSnapshot["status"]): boolean {
 }
 
 function validateInput(input: ApplicationTurnInput): void {
+  if (input.metadata !== undefined) {
+    const metadata = input.metadata, context = metadata?.workspaceActionContext;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) || Object.keys(metadata).some(key => key !== "workspaceActionContext")
+      || !context || typeof context !== "object" || Array.isArray(context)
+      || Object.keys(context).some(key => !["schema", "workspaceId", "expectedWorkspaceUpdatedAt", "policyId"].includes(key))
+      || context.schema !== "scce.workspace.action-context.v1" || !Number.isSafeInteger(context.expectedWorkspaceUpdatedAt) || context.expectedWorkspaceUpdatedAt < 0
+      || [context.workspaceId, context.policyId].some(value => typeof value !== "string" || !value.trim() || value.length > 256)) {
+      throw new ApplicationError("BAD_INPUT", "invalid typed workspace action context");
+    }
+  }
   if (typeof input.text !== "string" || !input.text.trim() || input.text.length > 20_000) {
     throw new ApplicationError("BAD_INPUT", "turn text must contain between 1 and 20000 characters");
   }

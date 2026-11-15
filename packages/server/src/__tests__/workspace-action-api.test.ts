@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,7 +19,7 @@ import { capabilityRuntimeFixture } from "../../../kernel/src/__tests__/fixtures
 import { handleRequest, type ApiContext } from "../routes.js";
 import type { ScceRuntimeConfig } from "../../../adapters-node/src/config.js";
 import { NodeBuildTestAdapter } from "../../../adapters-node/src/process.js";
-it("executes an ordinary source-learned read/write/read/check request through scoped approvals and cold durable replay", async () => {
+it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/write/read/check request through %s scoped approvals and cold durable replay", async (transport) => {
     const root = await mkdtemp(path.join(tmpdir(), "scce-action-api-"));
     let server: ReturnType<typeof createServer> | undefined;
     let privateRoot: string | undefined;
@@ -161,7 +162,7 @@ it("executes an ordinary source-learned read/write/read/check request through sc
         const address = server.address();
         if (!address || typeof address === "string")
             throw Error("no API address");
-        const post = async (route: string, body: unknown) => {
+        const httpPost = async (route: string, body: unknown) => {
             const response = await fetch(`http://127.0.0.1:${address.port}${route}`, {
                 method: "POST", headers: {
                     "content-type": "application/json"
@@ -170,6 +171,60 @@ it("executes an ordinary source-learned read/write/read/check request through sc
             return {
                 status: response.status, body: await response.json()
             };
+        };
+        let generation: string | undefined, taskId: string | undefined;
+        const registrationOperationId = randomUUID();
+        const graphql = async (operationName: string, variables: unknown) => {
+            if (!generation) {
+                const status = await httpPost("/api/graphql", { protocolVersion: "scce.graphql.v1", operationName: "VscodeWorkspaceStatusQuery" });
+                expect(status.body.errors, JSON.stringify(status.body)).toBeUndefined();
+                generation = status.body.extensions.generation;
+            }
+            return httpPost("/api/graphql", { protocolVersion: "scce.graphql.v1", operationName, generation, variables });
+        };
+        const post = async (route: string, value: unknown) => {
+            if (transport === "rest") return httpPost(route, value);
+            const body = value as Record<string, any>;
+            if (route === "/api/workspace/actions/register") {
+                const result = await graphql("WorkbenchRegisterWorkspaceActionPolicyMutation", { input: { operationId: registrationOperationId, ...body } });
+                expect(result.body.errors, JSON.stringify(result.body)).toBeUndefined();
+                return { status: result.status, body: result.body.data.registerWorkspaceActionPolicy };
+            }
+            if (route === "/api/session/approve") {
+                const result = await graphql("VscodeApprovePlanMutation", { input: { operationId: randomUUID(), planId: body.planId } });
+                expect(result.body.errors, JSON.stringify(result.body)).toBeUndefined();
+                return { status: result.status, body: result.body.data.vscodeApprovePlan };
+            }
+            if (route === "/api/turn") {
+                if (!taskId) {
+                    const reserved = await graphql("VscodeReserveTurnMutation", { input: {} });
+                    expect(reserved.body.errors, JSON.stringify(reserved.body)).toBeUndefined();
+                    taskId = reserved.body.data.reserveTurn.task.id;
+                }
+                const result = await graphql("VscodeStartTurnMutation", { input: { operationId: taskId, text: body.text,
+                    requestedAuthority: body.requestedAuthority, workspaceActionContext: body.metadata.workspaceActionContext } });
+                expect(result.body.errors, JSON.stringify(result.body)).toBeUndefined();
+                let receipt: any;
+                await vi.waitFor(async () => {
+                    const read = await graphql("WorkbenchTaskQuery", { id: taskId });
+                    expect(read.body.errors, JSON.stringify(read.body)).toBeUndefined();
+                    const task = read.body.data.turnTask;
+                    expect(task.id).toBe(taskId);
+                    expect(task.persistence).toBe("durable");
+                    expect(task.latestFrame.phase === "application.turn.awaiting_approval" || ["succeeded", "failed", "interrupted"].includes(task.status)).toBe(true);
+                    expect(task.result).not.toBeNull();
+                    receipt = { status: task.result.httpStatus, body: task.result.value };
+                }, { timeout: 60_000, interval: 20 });
+                return receipt;
+            }
+            throw Error(`Unexpected GraphQL test route ${route}`);
+        };
+        const coldCoordinator = () => {
+            context.runtime.kernel = makeKernel();
+            if (transport === "graphql") {
+                context.runtime = { ...context.runtime, storage: { ...f.storage } };
+                generation = undefined;
+            }
         };
         const files = [
             "operations.json", "input.json", "check.mjs"
@@ -196,6 +251,28 @@ it("executes an ordinary source-learned read/write/read/check request through sc
         });
         expect(registered.status, JSON.stringify(registered.body)).toBe(200);
         expect(f.approvals.snapshot().approved).toEqual([]);
+        if (transport === "graphql") {
+            const repeated = await post("/api/workspace/actions/register", { workspaceId: ingested.workspace.id,
+                expectedWorkspaceUpdatedAt: ingested.workspace.updatedAt, policy: Object.fromEntries(Object.entries(policy).reverse()) });
+            expect(repeated.body).toEqual(registered.body);
+            const conflict = await graphql("VscodeRegisterWorkspaceActionPolicyMutation", { input: { operationId: registrationOperationId,
+                workspaceId: ingested.workspace.id, expectedWorkspaceUpdatedAt: ingested.workspace.updatedAt, policy: { ...policy, maxCalls: policy.maxCalls + 1 } } });
+            expect(conflict.body.errors[0].extensions.code).toBe("CONFLICT");
+            for (const altered of [{ ...policy, runtime: { workspaceActionScope: { maxCalls: 1000 } } }, { ...policy, writablePaths: ["../escape"] }]) {
+                const refused = await graphql("VscodeRegisterWorkspaceActionPolicyMutation", { input: { operationId: randomUUID(),
+                    workspaceId: ingested.workspace.id, expectedWorkspaceUpdatedAt: ingested.workspace.updatedAt, policy: altered } });
+                expect(refused.body.errors?.length).toBeGreaterThan(0);
+            }
+            const stale = await graphql("VscodeRegisterWorkspaceActionPolicyMutation", { input: { operationId: randomUUID(),
+                workspaceId: ingested.workspace.id, expectedWorkspaceUpdatedAt: ingested.workspace.updatedAt + 1, policy } });
+            expect(stale.body.errors?.length).toBeGreaterThan(0);
+            const reserved = await graphql("VscodeReserveTurnMutation", { input: {} });
+            taskId = reserved.body.data.reserveTurn.task.id;
+            const forgery = await graphql("VscodeStartTurnMutation", { input: { operationId: taskId, text: "attempt",
+                workspaceActionContext: { ...registered.body.workspaceActionContext, maxCalls: 1000 }, metadata: { runtime: { workspaceActionScope: {} } } } });
+            expect(forgery.body.errors?.length).toBeGreaterThan(0);
+            expect(counts.size).toBe(0);
+        }
         const body = {
             text: "copy «input.json» to «output.json» inspect «output.json»", requestedAuthority: "action", operationId: "operation.fresh-workspace", metadata: {
                 workspaceActionContext: registered.body.workspaceActionContext, runtime: {
@@ -214,10 +291,16 @@ it("executes an ordinary source-learned read/write/read/check request through sc
         expect(first.body.pendingApproval.input.workspaceContext).toEqual(registered.body.workspaceActionContext);
         expect(first.body.pendingApproval.approvalScope).toBeDefined();
         expect(counts.get("filesystem.write")).toBeUndefined();
+        if (transport === "graphql") {
+            const conflict = await graphql("VscodeStartTurnMutation", { input: { operationId: taskId, text: body.text, requestedAuthority: "action",
+                workspaceActionContext: { ...registered.body.workspaceActionContext, policyId: "forged-policy" } } });
+            expect(conflict.body.errors[0].extensions.code).toBe("CONFLICT");
+            expect(counts.get("filesystem.write")).toBeUndefined();
+        }
         expect((await post("/api/session/approve", {
             planId: first.body.pendingApproval.planId
         })).status).toBe(200);
-        context.runtime.kernel = makeKernel();
+        coldCoordinator();
         const second = await post("/api/turn", body);
         expect(second.status, JSON.stringify(second.body)).toBe(202);
         expect(second.body.pendingApproval.capabilityId).toBe("workspace.check");
@@ -227,7 +310,7 @@ it("executes an ordinary source-learned read/write/read/check request through sc
         expect((await post("/api/session/approve", {
             planId: second.body.pendingApproval.planId
         })).status).toBe(200);
-        context.runtime.kernel = makeKernel();
+        coldCoordinator();
         const completed = await post("/api/turn", body);
         expect(completed.status, JSON.stringify(completed.body)).toBe(200);
         const result = decodeProgramArtifactWire(completed.body);
@@ -248,7 +331,7 @@ it("executes an ordinary source-learned read/write/read/check request through sc
                 opaque: "second", value: -9
             }
         ]);
-        context.runtime.kernel = makeKernel();
+        coldCoordinator();
         expect((await post("/api/turn", body)).status).toBe(200);
         expect([
             ...counts.entries()
@@ -264,6 +347,7 @@ it("executes an ordinary source-learned read/write/read/check request through sc
             ]
         ]);
         await writeFile(path.join(root, "input.json"), "[]");
+        if (transport === "graphql") taskId = undefined;
         const stale = await post("/api/turn", body);
         expect(stale.status).toBeGreaterThanOrEqual(400);
         expect(counts.get("filesystem.write")).toBe(1);

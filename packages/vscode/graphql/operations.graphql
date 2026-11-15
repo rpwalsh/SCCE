@@ -31,6 +31,13 @@ mutation VscodeStartTurnMutation($input: StartTurnInput!) {
   }
 }
 
+mutation VscodeRegisterWorkspaceActionPolicyMutation($input: RegisterWorkspaceActionPolicyInput!) {
+  registerWorkspaceActionPolicy(input: $input) {
+    clientMutationId
+    workspaceActionContext { schema workspaceId expectedWorkspaceUpdatedAt policyId }
+  }
+}
+
 mutation VscodeCancelTurnMutation($input: CancelTurnInput!) {
   cancelTurn(input: $input) {
     clientMutationId

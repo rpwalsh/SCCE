@@ -99,9 +99,36 @@ input StartTurnInput {
   sessionId: String
   conversationId: String
   requestedAuthority: RequestedAuthority
+  workspaceActionContext: WorkspaceActionContextInput
   clientMutationId: String
 }
 input ReserveTurnInput { clientMutationId: String }
+input WorkspaceActionContextInput { schema: String!, workspaceId: ID!, expectedWorkspaceUpdatedAt: Float!, policyId: ID! }
+type WorkspaceActionContext { schema: String!, workspaceId: ID!, expectedWorkspaceUpdatedAt: Float!, policyId: ID! }
+input WorkspaceActionProtectedFileInput { path: String!, sha256: String! }
+input WorkspaceActionCheckInput { executable: String!, executableSha256: String!, argv: [String!]!, cwd: String! }
+input WorkspaceActionPolicyInput {
+  schema: String!
+  capabilityIds: [String!]!
+  readablePaths: [String!]!
+  writablePaths: [String!]!
+  protectedFiles: [WorkspaceActionProtectedFileInput!]!
+  checks: [WorkspaceActionCheckInput!]!
+  maxFileBytes: Float!
+  maxWorkspaceFiles: Float!
+  maxWorkspaceBytes: Float!
+  timeoutMs: Float!
+  maxOutputBytes: Float!
+  maxCalls: Float!
+}
+input RegisterWorkspaceActionPolicyInput {
+  operationId: String!
+  workspaceId: ID!
+  expectedWorkspaceUpdatedAt: Float!
+  policy: WorkspaceActionPolicyInput!
+  clientMutationId: String
+}
+type RegisterWorkspaceActionPolicyPayload { workspaceActionContext: WorkspaceActionContext!, clientMutationId: String }
 input CancelTurnInput { taskId: ID!, clientMutationId: String }
 type TurnTaskPayload { task: TurnTask!, clientMutationId: String }
 input LearnSourceInput {
@@ -159,8 +186,9 @@ enum VscodeReviewDecision { promoted rejected }
 input VscodeReviewCommandInput { operationId: String!, id: String!, decision: VscodeReviewDecision!, clientMutationId: String }
 input VscodeSettingCommandInput { operationId: String!, key: String!, value: JSON!, clientMutationId: String }
 input VscodeModelCommandInput { operationId: String!, modelId: String!, clientMutationId: String }
-input VscodeCodeCommandInput { operationId: String!, path: String!, request: String!, attempts: Int, validationPolicyId: String, clientMutationId: String }
+input VscodeCodeCommandInput { operationId: String!, path: String, request: String!, attempts: Int, validationPolicyId: String, clientMutationId: String }
 type Mutation {
+  registerWorkspaceActionPolicy(input: RegisterWorkspaceActionPolicyInput!): RegisterWorkspaceActionPolicyPayload!
   reserveTurn(input: ReserveTurnInput!): TurnTaskPayload!
   startTurn(input: StartTurnInput!): TurnTaskPayload!
   cancelTurn(input: CancelTurnInput!): TurnTaskPayload!

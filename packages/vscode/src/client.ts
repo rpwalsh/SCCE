@@ -384,8 +384,8 @@ export class ScceClient {
   }
 
   /** Edits through the workspace build gate and the selected server-owned policy. */
-  async editCode(targetPath: string, request: string, attempts?: number, validationPolicyId?: string): Promise<CodeEditAttempt> {
-    return this.vscodeMutation("VscodeEditCodeMutation", "vscodeEditCode", { path: targetPath, request,
+  async editCode(targetPath: string | undefined, request: string, attempts?: number, validationPolicyId?: string): Promise<CodeEditAttempt> {
+    return this.vscodeMutation("VscodeEditCodeMutation", "vscodeEditCode", { ...(targetPath === undefined ? {} : { path: targetPath }), request,
       ...(attempts === undefined ? {} : { attempts }),
       ...(validationPolicyId === undefined ? {} : { validationPolicyId: requireNonEmpty(validationPolicyId, "validation policy id") })
     }, value => parseCodeEditAttempt(graphqlJsonPayloadValue(value, "vscodeEditCode")));

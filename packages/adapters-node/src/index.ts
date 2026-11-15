@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export * from "./config.js";
 export * from "./workspace-capability-operations.js";
+export * from "./workspace-code-command.js";
 export * from "./postgres.js";
 export * from "./files.js";
 export * from "./path-glob.js";

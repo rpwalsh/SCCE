@@ -194,20 +194,21 @@ async function main(): Promise<void> {
       case "code": {
         const target = parsed.args.find(arg => arg.startsWith("--path="))?.slice(7);
         const request = parsed.args.filter(arg => !arg.startsWith("--")).join(" ").trim();
-        if (!target || !request) return usage("scce code --path=<workspace-file> [--root=<dir>] [--validation-policy=<json>] <request>");
+        if (!request) return usage("scce code [--path=<workspace-file>] [--root=<dir>] [--validation-policy=<json>] <request>");
         // Which project to repair. Without this the command always read config.runtime.workspaceRoot, so a caller
         // pointing it at another checkout got diagnostics for THIS repository and a target file the compiler had
         // never seen -- it declined every time, correctly, about a file it was never shown. The code-repair
         // benchmark passes a temporary workspace and scored 0 of 7 repairs on exactly that: a measurement of an
         // ignored argument rather than of the repair engine.
         const workspaceRoot = parsed.args.find(arg => arg.startsWith("--root="))?.slice(7)
-          ?? config.runtime.workspaceRoot;
+          ?? (target ? config.runtime.workspaceRoot : await createWorkspaceRuntime({ runtime, config }).resolveRoot());
         const log = (message: string) => process.stderr.write(`[code-mouth] ${message}\n`);
         const validationPolicyPath = parsed.args.find(arg => arg.startsWith("--validation-policy="))?.slice(20);
         const projectValidation = validationPolicyPath
           ? { policy: JSON.parse(await readFile(path.resolve(validationPolicyPath), "utf8")) as StructuredPatchValidationPolicy }
           : undefined;
         const report = await runCodeCommand({ storage: runtime.storage, workspaceRoot, targetPath: target, request,
+          informationAccess: config.security?.informationAccess,
           maxAttempts: Number(parsed.args.find(arg => arg.startsWith("--attempts="))?.slice(11) ?? 3), log,
           ...(projectValidation ? { projectValidation } : {}) });
         printJson(report);

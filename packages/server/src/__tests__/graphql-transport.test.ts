@@ -6,7 +6,7 @@ import { SourceLearningApplication, type EpisodeId, type LearnSourceCommand, typ
 import { createLocalGraphqlHandler, compileLocalOperations } from "../graphql-transport.js";
 import { localNodeId, type LocalGraphqlServices } from "../graphql-schema.js";
 import { TurnTaskRegistry } from "../turn-task-registry.js";
-import { TurnApplication } from "../turn-application.js";
+import { TurnApplication, type ApplicationTurnInput } from "../turn-application.js";
 import { handleRequest, type ApiContext } from "../routes.js";
 import { SourceApplication } from "../source-application.js";
 
@@ -22,6 +22,7 @@ const documents = {
   VscodeRead: "query VscodeRead { vscodeWorkspaceStatus { workspace { id rootPath updatedAt } sources { path } } }",
   VscodeWrite: "mutation VscodeWrite($input: VscodePathCommandInput!) { vscodeWorkspaceInitialize(input: $input) { workspace { id rootPath updatedAt } clientMutationId } }",
   VscodeTypedWrite: "mutation VscodeTypedWrite($input: VscodePathCommandInput!) { vscodeWorkspaceIngest(input: $input) { schema importBatchId ingested unchanged changed missing failed unsupported clientMutationId } }",
+  ContextStart: "mutation ContextStart($input: StartTurnInput!) { startTurn(input: $input) { task { id status latestSequence } } }",
   Updates: "subscription Updates($id: ID!, $after: Int!) { turnTaskUpdated(id: $id, afterSequence: $after) { id status frames(first: 50) { edges { node { id sequence } } } result { id answer } } }"
 };
 const servers: Server[] = [];
@@ -37,7 +38,7 @@ async function fixture() {
     listEvidenceBackedSourceVersions: vi.fn(async ({ afterSourceVersionId, limit }: { afterSourceVersionId?: string; limit: number }) => ["a", "b", "c"].filter(id => !afterSourceVersionId || id > afterSourceVersionId).slice(0, limit).map((id, index) => ({ sourceVersionId: id, contentHash: `hash:${id}`, canonicalUri: `local:${id}`, byteLength: 12, maxAlpha: 0.9 - index * 0.1, promotedSpanCount: index + 1 })))
   } } as unknown as ScceStorage;
   const registry = new TurnTaskRegistry(storage);
-  const execute = vi.fn(async () => ({ status: 200, value: { answer: "한국어 🧭",
+  const execute = vi.fn(async (_input: ApplicationTurnInput) => ({ status: 200, value: { answer: "한국어 🧭",
     evidence: [{ id: "evidence-1", sourceId: "source-1", textPreview: "proof", provenance: { byteStart: 4 } }],
     guardFlags: { sourceBacked: true } } }));
   const learnSource = vi.fn(async (command: LearnSourceCommand): Promise<LearnSourceResult> => ({
@@ -53,6 +54,7 @@ async function fixture() {
       learningCurriculum: async () => ({}), heldSources: async () => ({}), settings: async () => ({}), models: async () => ({}),
       codeValidationPolicies: async () => ({}),
       workspaceInitialize: vi.fn(async () => ({ id: "workspace.test", rootPath: "C:\\repo", updatedAt: 1 })),
+      registerWorkspaceActionPolicy: vi.fn(async () => ({ schema: "scce.workspace.action-context.v1" as const, workspaceId: "workspace.test", expectedWorkspaceUpdatedAt: 1, policyId: "policy.test" })),
       workspaceIngest: vi.fn(async () => ({ schema: "scce.workspace.ingest.v1", importBatchId: "batch-1", ingested: 3,
         unchanged: 2, changed: 1, missing: 0, failed: 0, unsupported: 0, workspace: {}, project: {} })),
       workspaceAsk: async () => ({}), workspaceCodingPatchPlan: async () => ({}),
@@ -75,6 +77,26 @@ async function fixture() {
   return { call, services, registry, execute, learnSource, storage, url };
 }
 describe("registered local GraphQL transport", () => {
+  it("forwards only typed workspace context and binds replay to that exact workspace and policy", async () => {
+    const { call, execute } = await fixture();
+    const reserved = await call("Reserve"), id = reserved.value.data.reserveTurn.task.id;
+    const context = { schema: "scce.workspace.action-context.v1", workspaceId: "workspace.test", expectedWorkspaceUpdatedAt: 1, policyId: "policy.exact" };
+    const input = { operationId: id, text: "perform the admitted operation", requestedAuthority: "action", workspaceActionContext: context };
+    const [first, replay] = await Promise.all([call("ContextStart", { input }), call("ContextStart", { input })]);
+    expect(first.value.errors).toBeUndefined(); expect(replay.value.errors).toBeUndefined();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({ metadata: { workspaceActionContext: context } });
+    const conflict = await call("ContextStart", { input: { ...input, workspaceActionContext: { ...context, policyId: "different" } } });
+    expect(conflict.value.errors[0].extensions.code).toBe("CONFLICT");
+    for (const forged of [{ ...input, metadata: { runtime: { workspaceActionScope: { maxCalls: 1000 } } } },
+      { ...input, workspaceActionContext: { ...context, maxCalls: 1000 } }]) {
+      expect((await call("ContextStart", { input: forged })).value.errors?.length).toBeGreaterThan(0);
+    }
+    const fresh = (await call("Reserve")).value.data.reserveTurn.task.id;
+    const fractional = await call("ContextStart", { input: { ...input, operationId: fresh, workspaceActionContext: { ...context, expectedWorkspaceUpdatedAt: 1.5 } } });
+    expect(fractional.value.errors[0].extensions.code).toBe("BAD_INPUT");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
   it("retains the native origin, JSON-body, byte and loopback-host boundary", async () => {
     const context = { runtime: {}, config: { security: {} }, maxBodyBytes: 128 } as unknown as ApiContext;
     const server = createServer((req, res) => { void handleRequest(req, res, context); });

@@ -1,5 +1,5 @@
 /**
- * @generated SignedSource<<f1c62e345c2c19194e5f54310248b69f>>
+ * @generated SignedSource<<ed6c74739b928399d88299bb7f23f7bc>>
  * @lightSyntaxTransform
  */
 
@@ -16,6 +16,13 @@ export type StartTurnInput = {
   requestedAuthority?: RequestedAuthority | null | undefined;
   sessionId?: string | null | undefined;
   text: string;
+  workspaceActionContext?: WorkspaceActionContextInput | null | undefined;
+};
+export type WorkspaceActionContextInput = {
+  expectedWorkspaceUpdatedAt: number;
+  policyId: string;
+  schema: string;
+  workspaceId: string;
 };
 export type WorkbenchStartMutation$variables = {
   input: StartTurnInput;

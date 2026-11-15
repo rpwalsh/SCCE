@@ -5,6 +5,7 @@ import type { EvidenceId, EvidenceSpan, JsonValue, ScceStorage } from "@scce/ker
 import { ApplicationError, TurnApplication, type ApplicationTurnInput } from "./turn-application.js";
 import type { TurnTaskFrame, TurnTaskSnapshot } from "./turn-task-registry.js";
 import { SourceApplication, type SourceVersionSummary } from "./source-application.js";
+import type { WorkspaceActionPolicy, WorkspaceActionContext } from "@scce/adapters-node";
 
 export interface LocalGraphqlServices {
   scope: string;
@@ -25,6 +26,7 @@ export interface VscodeApplication {
   models(): Promise<unknown>;
   codeValidationPolicies(): Promise<unknown>;
   workspaceInitialize(operationId: string, path: string): Promise<unknown>;
+  registerWorkspaceActionPolicy(operationId: string, input: { workspaceId: string; expectedWorkspaceUpdatedAt: number; policy: WorkspaceActionPolicy }): Promise<WorkspaceActionContext>;
   workspaceIngest(operationId: string, path: string): Promise<unknown>;
   workspaceAsk(operationId: string, path: string, question: string): Promise<unknown>;
   workspaceCodingPatchPlan(operationId: string, value: unknown): Promise<unknown>;
@@ -36,7 +38,7 @@ export interface VscodeApplication {
   updateSetting(operationId: string, key: string, value: unknown): Promise<unknown>;
   downloadModel(operationId: string, modelId: string): Promise<unknown>;
   removeModel(operationId: string, modelId: string): Promise<unknown>;
-  editCode(operationId: string, input: { path: string; request: string; attempts?: number; validationPolicyId?: string }): Promise<unknown>;
+  editCode(operationId: string, input: { path?: string; request: string; attempts?: number; validationPolicyId?: string }): Promise<unknown>;
 }
 export interface LocalGraphqlContext { services: LocalGraphqlServices; signal: AbortSignal; nodes: Map<string, Promise<unknown>> }
 const nodeTypes = ["TurnTask", "TurnResult", "TurnFrame", "SourceVersion", "EvidenceSpan"];
@@ -96,7 +98,7 @@ export function taskNode(services: LocalGraphqlServices, task: TurnTaskSnapshot)
   return { ...task, __typename: "TurnTask", id: localNodeId(services.scope, "TurnTask", task.taskId) };
 }
 function resultNode(services: LocalGraphqlServices, task: TurnTaskSnapshot) {
-  const frame = task.frames.filter(frame => ["result", "error", "cancelled"].includes(frame.type)).at(-1);
+  const frame = task.frames.filter(frame => ["result", "error", "cancelled"].includes(frame.type) || frame.phase === "application.turn.awaiting_approval").at(-1);
   if (!frame) return null;
   const value = frame.value && typeof frame.value === "object" && !Array.isArray(frame.value)
     ? frame.value as Record<string, JsonValue> : {};
@@ -204,6 +206,11 @@ export const localFieldResolver: GraphQLFieldResolver<any, LocalGraphqlContext> 
         };
       }
       const { operationId, clientMutationId } = input;
+      if (info.fieldName === "registerWorkspaceActionPolicy") {
+        return { workspaceActionContext: await services.vscode.registerWorkspaceActionPolicy(operationId, {
+          workspaceId: input.workspaceId, expectedWorkspaceUpdatedAt: input.expectedWorkspaceUpdatedAt, policy: input.policy
+        }), clientMutationId };
+      }
       if (info.fieldName === "vscodeWorkspaceInitialize") {
         return { workspace: await services.vscode.workspaceInitialize(operationId, input.path), clientMutationId };
       }
@@ -242,7 +249,7 @@ export const localFieldResolver: GraphQLFieldResolver<any, LocalGraphqlContext> 
       }
       if (info.fieldName === "vscodeEditCode") {
         return { value: await services.vscode.editCode(operationId, {
-          path: input.path, request: input.request,
+          ...(input.path == null ? {} : { path: input.path }), request: input.request,
           ...(input.attempts == null ? {} : { attempts: input.attempts }),
           ...(input.validationPolicyId == null ? {} : { validationPolicyId: input.validationPolicyId })
         }), clientMutationId };
@@ -257,6 +264,7 @@ export const localFieldResolver: GraphQLFieldResolver<any, LocalGraphqlContext> 
             ...(input.sessionId == null ? {} : { sessionId: input.sessionId }),
             ...(input.conversationId == null ? {} : { conversationId: input.conversationId }),
             ...(input.requestedAuthority == null ? {} : { requestedAuthority: input.requestedAuthority }) };
+          if (input.workspaceActionContext != null) turn.metadata = { workspaceActionContext: input.workspaceActionContext };
           task = await services.turns.start(key, turn);
         }
       }

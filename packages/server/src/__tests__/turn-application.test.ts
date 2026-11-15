@@ -136,3 +136,69 @@ describe("local turn application", () => {
     pending.resolve({ status: 200, value: null });
   });
 });
+
+const approvalValue = (planId: string) => ({ ok: false, pendingApproval: { planId, capabilityId: "filesystem.write", fingerprint: `scope:${planId}`, input: { exact: planId } } });
+
+it("keeps approval receipts nonterminal and continues the same operation through two approval checkpoints exactly once per concurrent retry", async () => {
+  const { storage } = taskStorage();
+  let writeApproved = false, checkApproved = false, writes = 0, checks = 0;
+  const operationIds: Array<string | undefined> = [];
+  const execute = vi.fn(async (input: { operationId?: string }) => {
+    operationIds.push(input.operationId);
+    if (!writeApproved) return { status: 202, value: approvalValue("write") };
+    if (!writes) writes++;
+    if (!checkApproved) return { status: 202, value: approvalValue("check") };
+    checks++;
+    return { status: 200, value: { answer: "verified", writes, checks } };
+  });
+  const registry = new TurnTaskRegistry(storage), app = new TurnApplication({ registry, scope: "owner", execute });
+  const reserved = await app.reserve(), input = { text: "copy and validate", sessionId: "session", requestedAuthority: "action" as const };
+  await app.start(reserved.taskId, input);
+  await vi.waitFor(async () => expect((await app.get(reserved.taskId))?.frames.at(-1)).toMatchObject({ type: "progress", phase: "application.turn.awaiting_approval", status: 202, value: approvalValue("write") }));
+  expect((await app.get(reserved.taskId))?.status).toBe("running");
+  await expect(app.start(reserved.taskId, { ...input, text: "different" })).rejects.toMatchObject({ code: "CONFLICT" });
+  writeApproved = true;
+  await Promise.all(Array.from({ length: 8 }, () => app.start(reserved.taskId, input)));
+  await vi.waitFor(async () => expect((await app.get(reserved.taskId))?.frames.at(-1)).toMatchObject({ phase: "application.turn.awaiting_approval", value: approvalValue("check") }));
+  expect(execute).toHaveBeenCalledTimes(2); expect(writes).toBe(1); expect(checks).toBe(0);
+  checkApproved = true;
+  await Promise.all(Array.from({ length: 8 }, () => app.start(reserved.taskId, input)));
+  await vi.waitFor(async () => expect((await app.get(reserved.taskId))?.status).toBe("succeeded"));
+  expect(execute).toHaveBeenCalledTimes(3); expect(writes).toBe(1); expect(checks).toBe(1);
+  expect(new Set(operationIds)).toEqual(new Set([reserved.taskId]));
+  const replay = await app.start(reserved.taskId, input); expect(replay.frames.at(-1)?.value).toEqual({ answer: "verified", writes: 1, checks: 1 });
+  expect(execute).toHaveBeenCalledTimes(3);
+  const frames = replay.frames; expect(frames.filter(frame => frame.phase === "application.turn.claimed")).toHaveLength(1);
+  expect(frames.filter(frame => frame.phase === "application.turn.resumed")).toHaveLength(2);
+});
+
+it("cold-resumes only a durable approval checkpoint, preserves event ancestry, and fences a crash after resumption intent", async () => {
+  const { events, storage } = taskStorage();
+  const first = new TurnApplication({ registry: new TurnTaskRegistry(storage), scope: "owner", execute: async () => ({ status: 202, value: approvalValue("write") }) });
+  const task = await first.reserve(), input = { text: "same request" };
+  await first.start(task.taskId, input);
+  await vi.waitFor(async () => expect((await first.get(task.taskId))?.frames.at(-1)?.phase).toBe("application.turn.awaiting_approval"));
+  const checkpoint = structuredClone(events);
+  const pending = deferred<{ status: number; value: null }>(), execute = vi.fn(() => pending.promise);
+  const restarted = new TurnApplication({ registry: new TurnTaskRegistry(storage), scope: "owner", execute });
+  await Promise.all(Array.from({ length: 8 }, () => restarted.start(task.taskId, input)));
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(events.slice(0, checkpoint.length)).toEqual(checkpoint);
+  const resumedEvent = events.at(-1)!; expect(resumedEvent.parents).toEqual([checkpoint.at(-1)!.id]);
+  const afterCrash = new TurnApplication({ registry: new TurnTaskRegistry(storage), scope: "owner", execute });
+  expect((await afterCrash.start(task.taskId, input)).status).toBe("interrupted"); expect(execute).toHaveBeenCalledTimes(1);
+  pending.resolve({ status: 200, value: null });
+  await vi.waitFor(async () => expect((await restarted.get(task.taskId))?.status).toBe("succeeded"));
+  expect((await new TurnApplication({ registry: new TurnTaskRegistry(storage), scope: "owner", execute }).start(task.taskId, input)).status).toBe("succeeded");
+  expect(execute).toHaveBeenCalledTimes(1);
+});
+
+it("does not execute a continuation before its resumption intent is durable", async () => {
+  const { storage } = taskStorage();
+  const execute = vi.fn(async () => ({ status: 202, value: approvalValue("write") }));
+  const app = new TurnApplication({ registry: new TurnTaskRegistry(storage), scope: "owner", execute });
+  const task = await app.reserve(), input = { text: "await approval" }; await app.start(task.taskId, input);
+  await vi.waitFor(async () => expect((await app.get(task.taskId))?.frames.at(-1)?.phase).toBe("application.turn.awaiting_approval"));
+  vi.mocked(storage.events.append).mockRejectedValueOnce(Error("ledger unavailable"));
+  await expect(app.start(task.taskId, input)).rejects.toMatchObject({ code: "PERSISTENCE_FAILED" }); expect(execute).toHaveBeenCalledTimes(1);
+});

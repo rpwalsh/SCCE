@@ -75,6 +75,7 @@ function verificationReceipt(verification: CodeMouthVerification | undefined): C
     buildSucceeded, testsRun, testsSucceeded
   };
 }
+export { verificationReceipt as codeMouthVerificationReceipt };
 
 /**
  * How a proposal was arrived at, so a caller never has to infer it from the patch.

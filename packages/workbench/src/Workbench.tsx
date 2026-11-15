@@ -36,6 +36,9 @@ const capabilitiesQuery = graphql`query WorkbenchCapabilitiesQuery {
 }`;
 const reserveMutation = graphql`mutation WorkbenchReserveMutation($input: ReserveTurnInput!) { reserveTurn(input: $input) { task { id status } } }`;
 const startMutation = graphql`mutation WorkbenchStartMutation($input: StartTurnInput!) { startTurn(input: $input) { task { id status latestSequence } } }`;
+export const registerWorkspaceActionPolicyMutation = graphql`mutation WorkbenchRegisterWorkspaceActionPolicyMutation($input: RegisterWorkspaceActionPolicyInput!) {
+  registerWorkspaceActionPolicy(input: $input) { clientMutationId workspaceActionContext { schema workspaceId expectedWorkspaceUpdatedAt policyId } }
+}`;
 const cancelMutation = graphql`mutation WorkbenchCancelMutation($input: CancelTurnInput!) { cancelTurn(input: $input) { task { id status latestSequence } } }`;
 const reviewHeldMutation = graphql`mutation WorkbenchReviewHeldSourceMutation($input: VscodeReviewCommandInput!) {
   vscodeReviewHeldSource(input: $input) { clientMutationId schema review { id decision promotedEvidence } }

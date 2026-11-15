@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { canonicalStringify, codeLanguageForPath, createPatchTransactionPlan, hashPatchContent, type ProgramDiagnostic, type RepairOperation } from "@scce/kernel";
 import { createClangCodeMouthPorts } from "./clang-code-mouth-ports.js";
-import { createTypeScriptCodeMouthPorts, type CodeMouthPorts, type CodeMouthVerification } from "./code-mouth.js";
+import { createTypeScriptCodeMouthPorts, parseTscDiagnostics, type CodeMouthPorts, type CodeMouthVerification } from "./code-mouth.js";
 import type { LearnedCodeProposer, LearnedCodeCorpusAvailability } from "./learned-code-proposer.js";
 import { checkerDiagnostics, createTreeSitterCodeMouthPorts } from "./tree-sitter-code-mouth-ports.js";
 import { runStructuredWorkspaceValidation, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type StructuredWorkspaceValidationEvidence } from "./structured-patch-validation.js";
@@ -17,6 +17,7 @@ export interface WorkspaceCodeMouthOptions {
   log?: (message: string) => void;
   /** Host-owned commands, shared with the workspace patch transaction lane. */
   projectValidation?: { policy: StructuredPatchValidationPolicy; provider?: StructuredPatchValidationProvider };
+  initialVerification?: WorkspaceApplicationVerification;
 }
 
 export interface WorkspaceCodeMouthPorts extends CodeMouthPorts {
@@ -29,6 +30,7 @@ export function createWorkspaceCodeMouthPorts(options: WorkspaceCodeMouthOptions
   containedPath(options.workspaceRoot, options.targetPath);
   if (options.projectValidation && !options.projectValidation.policy.commands.some(command => command.checkIds?.some(check => check === "compiler" || check === "typecheck"))) throw new Error("workspace code validation requires a compiler or typecheck command");
   let projectVerification: WorkspaceApplicationVerification | undefined;
+  let initialVerification = options.initialVerification;
   let behavioralFailure: { observationId: string } | undefined;
   const language = codeLanguageForPath(options.targetPath);
   const ports = language === "typescript"
@@ -52,7 +54,10 @@ export function createWorkspaceCodeMouthPorts(options: WorkspaceCodeMouthOptions
     },
     ...(options.projectValidation ? { verify: async (targetPath?: string) => {
       const target = targetPath ?? options.targetPath;
-      try { projectVerification = await verifyWorkspaceApplication(options, target); }
+      try {
+        projectVerification = initialVerification ?? await verifyWorkspaceApplication({ workspaceRoot: options.workspaceRoot, projectValidation: options.projectValidation! }, target);
+        initialVerification = undefined;
+      }
       catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         projectVerification = { buildSucceeded: false, testsRun: false, testsSucceeded: false, diagnostics: [{
@@ -70,7 +75,7 @@ export interface WorkspaceApplicationVerification extends CodeMouthVerification 
   projectEvidence?: StructuredWorkspaceValidationEvidence;
 }
 
-async function verifyWorkspaceApplication(options: WorkspaceCodeMouthOptions, targetPath: string): Promise<WorkspaceApplicationVerification> {
+export async function verifyWorkspaceApplication(options: { workspaceRoot: string; projectValidation: NonNullable<WorkspaceCodeMouthOptions["projectValidation"]> }, targetPath = ""): Promise<WorkspaceApplicationVerification> {
   const validation = options.projectValidation!;
   const result = await runStructuredWorkspaceValidation({ workspaceRoot: options.workspaceRoot, ...validation });
   const commands = result.evidence.commands;
@@ -78,12 +83,19 @@ async function verifyWorkspaceApplication(options: WorkspaceCodeMouthOptions, ta
   const buildCommands = commands.filter(command => command.checkIds.some(check => check === "compiler" || check === "typecheck"));
   const tests = commands.filter(command => command.checkIds.includes("tests"));
   const testsExpected = validation.policy.commands.some(command => command.checkIds?.includes("tests"));
-  const failures: ProgramDiagnostic[] = commands.filter(command => !passed(command)).flatMap(command =>
-    checkerDiagnostics(command, targetPath, codeLanguageForPath(targetPath) ?? "unknown", options.workspaceRoot, result.locationContext).map(diagnostic => ({
+  const failures: ProgramDiagnostic[] = commands.filter(command => !passed(command)).flatMap(command => {
+    const typed = parseTscDiagnostics(`${command.stdout}\n${command.stderr}`, path.resolve(options.workspaceRoot, command.cwd));
+    const diagnostics = typed.length ? typed.map(diagnostic => {
+      const relative = path.relative(result.locationContext.stageRoot, diagnostic.path!);
+      return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+        ? { ...diagnostic, path: path.resolve(options.workspaceRoot, relative) } : diagnostic;
+    }) : checkerDiagnostics(command, targetPath, codeLanguageForPath(targetPath) ?? "unknown", options.workspaceRoot, result.locationContext);
+    return diagnostics.map(diagnostic => ({
       ...diagnostic,
       class: command.checkIds.includes("tests") ? "runtime" as const : diagnostic.class,
-      patternId: `workspace.command.${command.index}.${diagnostic.patternId ?? diagnostic.class}`
-    })));
+      ...(typed.length ? {} : { patternId: `workspace.command.${command.index}.${diagnostic.patternId ?? diagnostic.class}` })
+    }));
+  });
   return {
     buildSucceeded: buildCommands.length > 0 && buildCommands.every(passed),
     testsRun: tests.length > 0,
