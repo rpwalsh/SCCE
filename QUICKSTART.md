@@ -44,6 +44,8 @@ This compiles document evidence, cognitive structures and language memory into P
 
 See [corpus training](docs/CORPUS_TRAINING.md) for larger bounded collections, resumable imports and other source formats.
 
+[Reproducible multicorpus initialization](docs/INITIAL_BRAIN_BUILD.md) runs the supervised Wikipedia, Gutenberg, dialogue, and code build with optional pinned lexical annotation files in the same brain.
+
 ## Start and use the brain
 
 ```sh

@@ -9,7 +9,17 @@ test("the supervisor publishes a blind-run usage contract", () => {
   assert.match(usage, /--fresh-config/u);
   assert.match(usage, /--output-config/u);
   assert.match(usage, /--checkpoint-smoke-out/u);
+  assert.match(usage, /--lexical-manifest-hash/u);
   assert.match(usage, /owns --resume/u);
+});
+
+test("the supervisor forwards pinned lexical resources through the same builder", () => {
+  const manifestHash = `sha256_${"b".repeat(64)}`;
+  const parsed = parseSupervisorArguments([
+    "--fresh-config", ".scce/brain.json", "--receipt", ".scce/receipt.json",
+    "--lexical-manifest", "offline/lexical.json", "--lexical-manifest-hash", manifestHash
+  ]);
+  assert.deepEqual(parsed.builderArgs.slice(4, 8), ["--lexical-manifest", "offline/lexical.json", "--lexical-manifest-hash", manifestHash]);
 });
 
 test("the initialization supervisor owns resume and preserves builder arguments", () => {

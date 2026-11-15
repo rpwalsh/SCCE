@@ -86,6 +86,8 @@ Both scripts are optional. Tests use local fixtures and do not need network acce
 
 ## First local build
 
+For a supervised multicorpus build with a fresh database, automatic checkpoint resume, and optional pinned UD/WN-LMF annotations, use [reproducible multicorpus initialization](INITIAL_BRAIN_BUILD.md).
+
 For installation, PostgreSQL configuration and the local runtime, follow the [quickstart](../QUICKSTART.md). Build the CLI, then use the same configured database for initialization, training and serving. Initialize its schema before training:
 
 ```powershell

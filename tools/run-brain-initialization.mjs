@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runCheckpointCorpusSmoke } from "./checkpoint-corpus-smoke.mjs";
 import { recoverBrainBuildPublication } from "./lib/brain-build-publication.mjs";
+import { assertBuildStateScope, parseArguments, verifyBrainBuildPrerequisites } from "./build-5gb-multicorpus-brain.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const BUILDER_PATH = fileURLToPath(new URL("./build-5gb-multicorpus-brain.mjs", import.meta.url));
@@ -22,6 +23,7 @@ export function brainInitializationUsage() {
     "  --checkpoint-smoke-out <p>  run source-bound corpus smoke checks after completion",
     "",
     "All corpus, database budget, target, worker, and --english-only options are forwarded to build-5gb-multicorpus-brain.mjs.",
+    "Optional --lexical-manifest and --lexical-manifest-hash pin local CoNLL-U/WN-LMF files into the same build.",
     "The supervisor owns --resume and adds it only after reading a durable unfinished state."
   ].join("\n");
 }
@@ -106,8 +108,14 @@ export async function runBrainInitialization(options) {
     while (true) {
       await recoverBrainBuildPublication({ statePath: options.statePath, receiptPath: options.receiptPath });
       const before = await readState(options.statePath);
+      if (before) {
+        const builderOptions = parseArguments(options.builderArgs);
+        assertBuildStateScope(before, builderOptions);
+        await verifyBrainBuildPrerequisites(builderOptions);
+      }
       if (before?.status === "complete") return await printReceipt(options.receiptPath);
       if (before && before.status !== "building") throw new Error(`Initialization state cannot resume from ${String(before.status)}`);
+      if (before?.lastFailure) throw new Error("Brain initialization has a durable failure; resolve it before resuming the same build");
       const resume = before?.status === "building";
       const childArgs = [`--max-old-space-size=${options.nodeHeapMb}`, BUILDER_PATH, ...options.builderArgs, ...(resume ? ["--resume"] : [])];
       const outcome = await new Promise((resolve, reject) => {

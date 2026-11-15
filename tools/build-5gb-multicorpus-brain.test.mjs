@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,18 +10,153 @@ import {
   albedoAcceptanceCase,
   assertCorpusSkipsAdmissible,
   assertResumeCorpusScope,
+  assertBuildStateScope,
   completionTargetReached,
   dollyAcceptanceCase,
   mayStartBudgetedBatch,
+  loadPinnedLexicalManifest,
   parseArguments,
+  publishPinnedLexicalResource,
+  replayPinnedLexicalResource,
   resumeOrderedSchedule,
   selectedOasstRoot,
   trainCodeBatch,
   trainGutenbergBatch,
+  trainPinnedLexicalResource,
+  finalizeBuildLanguageIdentities,
   validateAcceptanceCases,
   verifyBrainBuildPrerequisites,
   walkdirCiAcceptanceCase
 } from "./build-5gb-multicorpus-brain.mjs";
+
+test("lexical inputs are optional and require a complete manifest pin", () => {
+  const base = ["--fresh-config", ".scce/fresh.json", "--receipt", ".scce/receipt.json"];
+  assert.equal(parseArguments(base).lexicalManifest, undefined);
+  assert.throws(() => parseArguments([...base, "--lexical-manifest", "lexical.json"]), /requires a path/u);
+  const lexicalManifest = { path: path.resolve("lexical.json"), contentHash: `sha256_${"a".repeat(64)}` };
+  const parsed = parseArguments([...base, "--lexical-manifest", "lexical.json", "--lexical-manifest-hash", lexicalManifest.contentHash]);
+  assert.deepEqual(parsed.lexicalManifest, lexicalManifest);
+  assert.throws(() => assertResumeCorpusScope({ corpusIdentity: { lexicalManifest } }, { resume: true }), /lexical manifest differs/u);
+  assert.doesNotThrow(() => assertResumeCorpusScope({ corpusIdentity: { lexicalManifest } }, { resume: true, lexicalManifest }));
+});
+
+test("completed and unfinished initialization scope must match before supervisor reuse", () => {
+  const options = parseArguments(["--fresh-config", "fresh.json", "--receipt", "receipt.json"]);
+  const state = { status: "complete", budgetBytes: options.budgetBytes, guardBytes: options.guardBytes, targetBytes: null,
+    corpusIdentity: { wikipediaDump: null, wikipediaIndex: null, gutenbergRoot: options.gutenbergRoot,
+      dollyRoot: options.dollyRoot, oasstRoot: options.oasstRoot, codeRoot: options.codeRoot }, selection: { englishOnly: false } };
+  assert.doesNotThrow(() => assertBuildStateScope(state, options));
+  assert.throws(() => assertBuildStateScope(state, { ...options, targetBytes: 100 }), /target-bytes differs/u);
+  assert.throws(() => assertBuildStateScope(state, { ...options, lexicalManifest: { path: "different", contentHash: "different" } }), /corpus paths differ/u);
+});
+
+test("pinned lexical initialization uses ordinary checkpoints and refuses changed inputs without learning", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "scce-lexical-init-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source.conllu"), manifestPath = path.join(root, "lexical.json");
+  const sourceText = await readFile(new URL("../packages/adapters-node/src/__tests__/fixtures/ud-ewt-question-excerpt.conllu", import.meta.url), "utf8");
+  await writeFile(source, sourceText);
+  const hash = value => `sha256_${createHash("sha256").update(value).digest("hex")}`;
+  const resource = { id: "pinned-ud", path: "source.conllu", format: "conllu", contentHash: hash(sourceText),
+    sourceUri: "https://example.test/pinned/source.conllu", lexiconId: "fixture:1", language: "en", license: "CC-BY-SA-4.0",
+    maxSourceBytes: Buffer.byteLength(sourceText) };
+  const manifest = { schema: "scce.initial_lexical_resources.v1", resources: [resource] };
+  const writeManifest = async value => {
+    const bytes = JSON.stringify(value);
+    await writeFile(manifestPath, bytes);
+    return { path: manifestPath, contentHash: hash(bytes) };
+  };
+  const pin = await writeManifest(manifest);
+  const [loaded] = await loadPinnedLexicalManifest(pin);
+  assert.equal(loaded.path, source);
+  assert.equal(loaded.maxDatabaseGrowthBytes, undefined);
+  const label = { tenantId: "test", principals: ["owner"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" };
+  const report = { schema: "scce.languageCorpusTrainingReport.v1", sourceVersionId: "derived.1", originalSourceVersionId: "raw.1",
+    sourceContentHash: hash(sourceText), artifacts: { languageProfileId: "profile.1" } };
+  const result = { status: "complete", checkpointed: true, lexiconId: resource.lexiconId, language: resource.language,
+    license: resource.license, sourceVersionId: report.sourceVersionId, annotationSourceVersionId: report.originalSourceVersionId,
+    contentHash: report.sourceContentHash, profileId: report.artifacts.languageProfileId };
+  let rows = [], learned = 0;
+  const api = { config: { security: { informationAccess: { tenantId: "test" }, defaultSourceInformationLabel: label } },
+    storage: { ingestion: { list: async query => {
+      assert.equal(query.rootUri, resource.sourceUri);
+      return rows;
+    } } }, readLexicalSource: async input => {
+      assert.equal(input.maxSourceBytes, resource.maxSourceBytes);
+      return readFile(input.path, "utf8");
+    }, adapters: { ingestUdLexicalCorpus: async input => {
+      assert.equal(input.informationLabel, label);
+      assert.equal(input.text, sourceText);
+      if (!rows.length) { learned++; rows = [{ metadata: { report } }]; }
+      return result;
+    } } };
+  const state = { status: "building", reports: [], batches: [], measurements: [], lanes: {}, budgetBytes: 1000, guardBytes: 100 };
+  const first = await trainPinnedLexicalResource(loaded, state, api);
+  assert.equal(first.replayed, false);
+  assert.deepEqual(first.input, loaded);
+  const replay = await trainPinnedLexicalResource(loaded, state, api);
+  assert.equal(replay.replayed, true);
+  assert.equal(learned, 1);
+  assert.deepEqual(state.reports, [report]);
+  const projection = { profileId: result.profileId, sourceId: "source.1", sourceVersionId: result.sourceVersionId,
+    sourceSystem: "workspace", patternSchema: "grammar.v1", componentRecipe: "grammar.recipe.v1", patternIds: ["pattern.1"], informationLabel: label };
+  report.sourceOwnedPatternProjections = [projection];
+  rows[0].metadata.compilerRecipe = "corpus.recipe.v1";
+  rows[0].metadata.batchRecipe = "batch.recipe.v1";
+  rows[0].metadata.componentRecipes = { "sourceOwned:grammar.v1": "grammar.recipe.v1" };
+  api.kernel = { canonicalStringify: JSON.stringify, normalizeInformationLabel: value => value,
+    LANGUAGE_TRAINING_BATCH_RECIPE_ID: "batch.recipe.v1", LEXICAL_GRAMMAR_SCHEMA: "grammar.v1", LEXICAL_GRAMMAR_RECIPE: "grammar.recipe.v1",
+    SOURCE_QUESTION_FRAME_SCHEMA: "frame.v1", SOURCE_QUESTION_FRAME_RECIPE: "frame.recipe.v1" };
+  api.adapters.languageCorpusTrainingRecipeId = () => "corpus.recipe.v1";
+  api.storage.languageMemory = { getLanguagePatternProjection: async () => projection, listLanguagePatterns: async () => [{ id: "pattern.1" }] };
+  api.storage.query = async sql => sql.includes("pg_database_size") ? [{ bytes: "950" }] : [];
+  await publishPinnedLexicalResource(loaded, { statePath: path.join(root, "state.json"), receiptPath: path.join(root, "receipt.json"),
+    budgetBytes: 1000, guardBytes: 100 }, state, api);
+  assert.equal(learned, 1);
+  assert.equal(state.batches.at(-1).details.replayed, true);
+  await assert.rejects(replayPinnedLexicalResource(loaded, state, { ...api, storage: { ...api.storage,
+    languageMemory: { ...api.storage.languageMemory, getLanguagePatternProjection: async () => undefined } } }), /active projection header/u);
+  await assert.rejects(replayPinnedLexicalResource(loaded, state, { ...api, storage: { ...api.storage,
+    languageMemory: { ...api.storage.languageMemory, listLanguagePatterns: async () => [] } } }), /active projection patterns/u);
+  await assert.rejects(replayPinnedLexicalResource(loaded, state, { ...api,
+    adapters: { ...api.adapters, languageCorpusTrainingRecipeId: () => "new.recipe" } }), /stale compiler recipes/u);
+  await assert.rejects(trainPinnedLexicalResource(loaded, { reports: [] }, { ...api, storage: { ingestion: { list: async () => [] } } }), /exact durable/u);
+  await assert.rejects(trainPinnedLexicalResource(loaded, { reports: [] }, { ...api, config: { security: {} } }), /configured information access/u);
+  await assert.rejects(trainPinnedLexicalResource({ ...loaded, format: "wordnet" }, { reports: [] },
+    { ...api, adapters: { readWordnetLmf: () => ({ lexiconId: "changed", language: "en", license: resource.license }) } }), /declaration differs/u);
+  await assert.rejects(loadPinnedLexicalManifest({ ...pin, contentHash: hash("wrong") }), /declared pin/u);
+  await assert.rejects(loadPinnedLexicalManifest(await writeManifest({ ...manifest, resources: [{ ...resource, maxSourceBytes: resource.maxSourceBytes - 1 }] })), /encoded bytes exceed/u);
+  await assert.rejects(loadPinnedLexicalManifest(await writeManifest({ ...manifest, resources: [resource, resource] })), /repeats a resource/u);
+  await writeFile(source, `${sourceText}\nchanged`);
+  await assert.rejects(trainPinnedLexicalResource(loaded, state, api), /encoded bytes exceed|declared pin/u);
+  assert.equal(learned, 1);
+});
+
+test("lexical global budget refusal is durable and never invokes the ingestor", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "scce-lexical-budget-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const options = { statePath: path.join(root, "state.json"), receiptPath: path.join(root, "receipt.json"), budgetBytes: 1000, guardBytes: 100 };
+  const state = { status: "building", reports: [], batches: [], lanes: {}, budgetBytes: 1000, guardBytes: 100 };
+  const api = { storage: { query: async sql => sql.includes("pg_database_size") ? [{ bytes: "950" }] : [] } };
+  await assert.rejects(publishPinnedLexicalResource({ id: "required-resource" }, options, state, api), /cannot start/u);
+  const persisted = JSON.parse(await readFile(options.statePath, "utf8"));
+  assert.equal(persisted.lastFailure.resourceId, "required-resource");
+  assert.equal(persisted.status, "building");
+  assert.equal(persisted.lastFailure.beforeBytes, 950);
+});
+
+test("initialization finalizes the measured identities of exactly its admitted profile owners", async () => {
+  const calls = [];
+  const state = { reports: [{ artifacts: { languageProfileId: "ordinary" } }, { artifacts: { languageProfileId: "lexical" } }] };
+  const api = { storage: { transaction: async operation => { calls.push("transaction"); return operation(); } } };
+  const runtime = { ensure: async input => {
+    calls.push(input);
+    return { readiness: "ready", identities: [{ id: "measured" }], assigned: 2, discovered: true };
+  } };
+  assert.equal((await finalizeBuildLanguageIdentities(state, api, runtime)).identities, 1);
+  assert.deepEqual(calls, ["transaction", { finalize: true, initializeIfMissing: true, requiredProfileIds: ["ordinary", "lexical"] }]);
+  await assert.rejects(finalizeBuildLanguageIdentities(state, api, { ensure: async () => ({ readiness: "missing", identities: [] }) }), /not ready/u);
+});
 
 test("a resumed round-robin continues after its last committed optional lane", () => {
   const schedule = ["gutenberg", "dolly", "code", "oasst", "wikipedia"].map(lane => [lane, lane]);

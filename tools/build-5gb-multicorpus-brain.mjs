@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { opendir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -41,6 +42,7 @@ const valueFlags = new Map([
   ["--wikipedia-index", "wikipediaIndex"], ["--gutenberg", "gutenbergRoot"], ["--dolly", "dollyRoot"],
   ["--oasst", "oasstRoot"], ["--code", "codeRoot"], ["--budget-bytes", "budgetBytes"],
   ["--code-dependency-manifest", "codeDependencyManifestPath"], ["--code-dependency-manifest-hash", "codeDependencyManifestHash"],
+  ["--lexical-manifest", "lexicalManifestPath"], ["--lexical-manifest-hash", "lexicalManifestHash"],
   ["--guard-bytes", "guardBytes"], ["--target-bytes", "targetBytes"], ["--heap-checkpoint-mb", "heapCheckpointMb"],
   ["--source-workers", "sourceWorkers"], ["--source-worker-heap-mb", "sourceWorkerHeapMb"],
   ["--max-node-rss-bytes", "maxNodeRssBytes"]
@@ -83,6 +85,13 @@ export function parseArguments(args, cwd = process.cwd()) {
     }
     codeDependencyManifest = { path: absolute(result.codeDependencyManifestPath), contentHash: result.codeDependencyManifestHash };
   }
+  let lexicalManifest;
+  if (result.lexicalManifestPath !== undefined || result.lexicalManifestHash !== undefined) {
+    if (!result.lexicalManifestPath || !/^sha256_[a-f0-9]{64}$/u.test(result.lexicalManifestHash ?? "")) {
+      throw new Error("Lexical manifest requires a path and canonical sha256_ content hash");
+    }
+    lexicalManifest = { path: absolute(result.lexicalManifestPath), contentHash: result.lexicalManifestHash };
+  }
   const workerFlags = [result.sourceWorkers, result.sourceWorkerHeapMb, result.maxNodeRssBytes];
   const workerFlagsPresent = workerFlags.filter(value => value !== undefined).length;
   if (workerFlagsPresent !== 0 && workerFlagsPresent !== workerFlags.length) {
@@ -106,6 +115,7 @@ export function parseArguments(args, cwd = process.cwd()) {
     oasstRoot: absolute(result.oasstRoot ?? path.join(cwd, ".scce", "corpus-bootstrap", "oasst1-human-conversations-v1", "train")),
     codeRoot: absolute(result.codeRoot ?? path.join(cwd, ".scce", "corpus-bootstrap", "code-seed-v1", "repos")),
     ...(codeDependencyManifest ? { codeDependencyManifest } : {}),
+    ...(lexicalManifest ? { lexicalManifest } : {}),
     budgetBytes, guardBytes, ...(targetBytes === undefined ? {} : { targetBytes }),
     heapCheckpointMb: positiveInteger(result.heapCheckpointMb ?? 7168, "heap-checkpoint-mb"),
     ...(sourceInductionExecution ? { sourceInductionExecution } : {}),
@@ -131,6 +141,9 @@ export function selectedOasstRoot(options) {
 }
 
 export function assertResumeCorpusScope(state, options) {
+  if (options.resume && JSON.stringify(state.corpusIdentity?.lexicalManifest ?? null) !== JSON.stringify(options.lexicalManifest ?? null)) {
+    throw new Error("Resume lexical manifest differs from the original initialization scope");
+  }
   if (options.resume && (state.corpusIdentity?.codeDependencyManifest?.path !== options.codeDependencyManifest?.path
     || state.corpusIdentity?.codeDependencyManifest?.contentHash !== options.codeDependencyManifest?.contentHash)) {
     throw new Error("Resume code dependency manifest differs from the original initialization scope");
@@ -143,8 +156,14 @@ export function assertResumeCorpusScope(state, options) {
 
 export async function buildFiveGbMulticorpusBrain(options) {
   await verifyBrainBuildPrerequisites(options);
+  const lexicalResources = options.lexicalManifest ? await loadPinnedLexicalManifest(options.lexicalManifest) : [];
   const adapters = await import("../packages/adapters-node/dist/index.js");
   const kernel = await import("../packages/kernel/dist/index.js");
+  const lexicalReader = lexicalResources.length ? await import("../packages/adapters-node/dist/lexical-corpus-store.js") : undefined;
+  if (lexicalResources.length && ["ingestUdLexicalCorpus", "ingestWordnetCorpus", "readWordnetLmf", "languageCorpusTrainingRecipeId"]
+    .some(name => typeof adapters[name] !== "function")) {
+    throw prerequisiteFailure("built lexical corpus adapters", options.rootPath, "rebuild the packages before starting this initialization");
+  }
   let state;
   if (options.resume) {
     state = JSON.parse(await readFile(options.statePath, "utf8"));
@@ -190,8 +209,11 @@ export async function buildFiveGbMulticorpusBrain(options) {
   };
   const api = {
     storage, config, label, settings, adapters, kernel, dumpPath,
+    ...(lexicalReader ? { readLexicalSource: lexicalReader.readBoundedLexicalCorpusSource } : {}),
     ...(indexPath ? { indexPath: path.resolve(indexPath) } : {})
   };
+  const identityRuntime = kernel.createLanguageIdentityRuntime({ store: storage.languageIdentities,
+    hasher: kernel.createHasher(), now: Date.now, informationLabel: config.security?.defaultSourceInformationLabel });
 
   let primaryFailure;
   try {
@@ -214,6 +236,11 @@ export async function buildFiveGbMulticorpusBrain(options) {
         if (state.lanes[lane].exhausted) throw new Error(`Required corpus lane has no successfully trained source: ${lane}`);
         await committedBatch(lane, true, operation, options, state, storage);
       }
+    }
+    if (lexicalResources.length) {
+      state.finalization = { ...state.finalization, beforeLexical: await finalizeBuildLanguageIdentities(state, api, identityRuntime) };
+      await checkpoint(options, state, await databaseMeasurement(storage));
+      for (const resource of lexicalResources) await publishPinnedLexicalResource(resource, options, state, api);
     }
 
     const schedule = resumeOrderedSchedule([
@@ -245,6 +272,7 @@ export async function buildFiveGbMulticorpusBrain(options) {
     }
 
     if (!state.reports.length) throw new Error("No language-training reports were committed");
+    state.finalization = { ...state.finalization, languageIdentities: await finalizeBuildLanguageIdentities(state, api, identityRuntime) };
     const selectedItems = adapters.sourceBrainSelectedItemsFromReports(state.reports);
     const selectedIds = selectedItems.map(item => item.sourceVersionId);
     const retainedQa = await runStoredDialogueQaPublication({
@@ -256,7 +284,7 @@ export async function buildFiveGbMulticorpusBrain(options) {
       ...RETAINED_QA_FINALIZATION_BOUNDS,
       contextualQaExecution: RETAINED_QA_EXECUTION
     });
-    state.finalization = { contextualQa: retainedQa.result };
+    state.finalization = { ...state.finalization, contextualQa: retainedQa.result };
     const finalizationMeasurement = await databaseMeasurement(storage);
     state.measurements.push({ stage: "retained_dialogue_qa_published", at: new Date().toISOString(), ...finalizationMeasurement });
     await checkpoint(options, state, finalizationMeasurement, selectedItems);
@@ -268,6 +296,7 @@ export async function buildFiveGbMulticorpusBrain(options) {
       schema: "scce.multicorpus_5gb_configuration.v1", budgetBytes: options.budgetBytes, guardBytes: options.guardBytes,
       targetBytes: state.targetBytes,
       selection: { englishOnly: options.englishOnly === true },
+      ...(options.lexicalManifest ? { lexicalManifest: options.lexicalManifest, lexicalResources } : {}),
       finalization: { contextualQa: {
         required: true,
         compilerFingerprints: [...new Set(retainedQa.result.components.map(item => item.compilerFingerprint))].sort(),
@@ -289,23 +318,205 @@ export async function buildFiveGbMulticorpusBrain(options) {
     });
     if (!completed.active || completed.report.disposition !== "PASSED") throw new Error("Unified source brain did not pass validation and activate");
     state.sourceBrain = adapters.sourceBrainBuildReceipt(completed);
-    state.status = "complete";
-    state.completedAt = new Date().toISOString();
+    await finalizeBuildLanguageIdentities(state, api, identityRuntime);
+    state.finalization.languageIdentities = await kernel.inspectLanguageIdentityFinalization({
+      store: storage.languageIdentities, runtime: identityRuntime, hasher: kernel.createHasher(),
+      readRevision: storage.languageMemory.readRevision?.bind(storage.languageMemory),
+      synchronize: async () => { await identityRuntime.ensure(); }, activeBrain: () => storage.brainImports.active()
+    });
+    if (!state.finalization.languageIdentities.ready) throw new Error("Completed brain lacks stable current language identity finalization");
     const finalMeasurement = await databaseMeasurement(storage);
     if (finalMeasurement.databaseBytes > options.budgetBytes) throw new Error("Final database exceeded the hard physical budget");
-    state.measurements.push({ stage: "complete", at: state.completedAt, ...finalMeasurement });
     state.acceptanceCases = await acceptanceCases(state, options, storage);
     validateAcceptanceCases(state.acceptanceCases);
+    delete state.lastFailure;
+    state.status = "complete";
+    state.completedAt = new Date().toISOString();
+    state.measurements.push({ stage: "complete", at: state.completedAt, ...finalMeasurement });
     await checkpoint(options, state, finalMeasurement, selectedItems);
     return publicReceipt(state, finalMeasurement, selectedItems);
   } catch (error) {
     primaryFailure = error;
+    if (!state.lastFailure) {
+      state.status = "building";
+      state.lastFailure = { lane: "finalization", at: new Date().toISOString(),
+        failureCode: typeof error?.code === "string" ? error.code : error?.name ?? "Error", message: String(error?.message ?? error).slice(0, 500) };
+      try { await checkpoint(options, state, await databaseMeasurement(storage)); } catch { /* preserve the original failure */ }
+    }
     throw error;
   } finally {
     let cleanupFailure;
     try { await sourceInductionExecutionOwner?.close(primaryFailure); } catch (error) { cleanupFailure = error; }
     try { await storage.close(); } catch (error) { cleanupFailure ??= error; }
     if (primaryFailure === undefined && cleanupFailure !== undefined) throw cleanupFailure;
+  }
+}
+
+async function fileContentHash(target) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(target)) hash.update(chunk);
+  return `sha256_${hash.digest("hex")}`;
+}
+
+export async function loadPinnedLexicalManifest(pin) {
+  await assertRegularFile(pin.path, "lexical manifest");
+  const bytes = await readFile(pin.path);
+  if (`sha256_${createHash("sha256").update(bytes).digest("hex")}` !== pin.contentHash) {
+    throw prerequisiteFailure("lexical manifest", pin.path, "content hash differs from its declared pin");
+  }
+  const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (manifest?.schema !== "scce.initial_lexical_resources.v1" || !Array.isArray(manifest.resources) || !manifest.resources.length) {
+    throw new Error("Lexical manifest requires schema scce.initial_lexical_resources.v1 and nonempty resources");
+  }
+  const ids = new Set(), uris = new Set(), paths = new Set();
+  const resources = [];
+  for (const row of manifest.resources) {
+    for (const key of ["id", "path", "sourceUri", "lexiconId", "language", "license"]) {
+      if (typeof row?.[key] !== "string" || !row[key].trim()) throw new Error(`Lexical manifest resource requires ${key}`);
+    }
+    if (!["conllu", "wordnet"].includes(row.format) || !/^sha256_[a-f0-9]{64}$/u.test(row.contentHash ?? "")) {
+      throw new Error("Lexical resource requires format conllu or wordnet and a canonical sha256_ content hash");
+    }
+    const resource = { id: row.id, path: path.resolve(path.dirname(pin.path), row.path), sourceUri: row.sourceUri,
+      contentHash: row.contentHash, format: row.format, lexiconId: row.lexiconId, language: row.language, license: row.license,
+      maxSourceBytes: positiveInteger(row.maxSourceBytes, "lexical maxSourceBytes"),
+      ...(row.maxDatabaseGrowthBytes === undefined ? {} : {
+        maxDatabaseGrowthBytes: positiveInteger(row.maxDatabaseGrowthBytes, "lexical maxDatabaseGrowthBytes") }) };
+    if (ids.has(resource.id) || uris.has(resource.sourceUri) || paths.has(resource.path)) throw new Error("Lexical manifest repeats a resource identity, URI, or path");
+    ids.add(resource.id); uris.add(resource.sourceUri); paths.add(resource.path);
+    await verifyPinnedLexicalResource(resource);
+    resources.push(resource);
+  }
+  return resources;
+}
+
+async function verifyPinnedLexicalResource(resource) {
+  await assertRegularFile(resource.path, `lexical resource ${resource.id}`);
+  if ((await stat(resource.path)).size > resource.maxSourceBytes) {
+    throw prerequisiteFailure("lexical resource", resource.path, "encoded bytes exceed maxSourceBytes");
+  }
+  if (await fileContentHash(resource.path) !== resource.contentHash) {
+    throw prerequisiteFailure("lexical resource", resource.path, "content hash differs from its declared pin");
+  }
+}
+
+export async function finalizeBuildLanguageIdentities(state, api, runtime) {
+  const result = await api.storage.transaction(() => runtime.ensure({ finalize: true, initializeIfMissing: true,
+    requiredProfileIds: [...new Set(state.reports.map(report => report.artifacts.languageProfileId))] }));
+  if (result.readiness !== "ready" || !result.identities.length) throw new Error("Language identity finalization is not ready");
+  return { readiness: result.readiness, identities: result.identities.length, assigned: result.assigned, discovered: result.discovered };
+}
+
+export async function trainPinnedLexicalResource(resource, state, api) {
+  await verifyPinnedLexicalResource(resource);
+  if (!api.config.security?.informationAccess || !api.config.security?.defaultSourceInformationLabel) {
+    throw new Error("Lexical initialization requires configured information access and source label");
+  }
+  const text = await api.readLexicalSource({ path: resource.path, maxSourceBytes: resource.maxSourceBytes });
+  await verifyPinnedLexicalResource(resource);
+  if (resource.format === "wordnet") {
+    const parsed = api.adapters.readWordnetLmf(text);
+    if (["lexiconId", "language", "license"].some(key => parsed[key] !== resource[key])) {
+      throw new Error(`Lexical resource ${resource.id} WN-LMF declaration differs from the pinned identity, language, or license`);
+    }
+  }
+  const ingest = resource.format === "conllu" ? api.adapters.ingestUdLexicalCorpus : api.adapters.ingestWordnetCorpus;
+  const previousCheckpoints = await api.storage.ingestion.list({ rootUri: resource.sourceUri, status: "complete", phase: "stored" });
+  const result = await ingest({ storage: api.storage, text, sourceUri: resource.sourceUri,
+    maxSourceBytes: resource.maxSourceBytes, lexiconId: resource.lexiconId, language: resource.language, license: resource.license,
+    informationLabel: api.config.security.defaultSourceInformationLabel });
+  if (result.status !== "complete" || result.checkpointed !== true || ["lexiconId", "language", "license"].some(key => result[key] !== resource[key])) {
+    throw new Error(`Lexical resource ${resource.id} did not complete its pinned ordinary corpus checkpoint`);
+  }
+  const checkpoints = await api.storage.ingestion.list({ rootUri: resource.sourceUri, status: "complete", phase: "stored" });
+  const reports = checkpoints.map(row => row.metadata?.report).filter(report => report?.sourceVersionId === result.sourceVersionId
+    && report.originalSourceVersionId === result.annotationSourceVersionId && report.sourceContentHash === result.contentHash
+    && report.artifacts?.languageProfileId === result.profileId);
+  if (reports.length !== 1) throw new Error(`Lexical resource ${resource.id} lacks one exact durable language-training report`);
+  const report = reports[0];
+  const previous = state.reports.find(row => row.sourceVersionId === report.sourceVersionId);
+  if (previous && JSON.stringify(previous) !== JSON.stringify(report)) throw new Error("Lexical checkpoint report changed during replay");
+  if (!previous) state.reports.push(report);
+  state.lexicalResources ??= {};
+  const replayed = previousCheckpoints.some(row => JSON.stringify(row.metadata?.report) === JSON.stringify(report));
+  state.lexicalResources[resource.id] = { input: resource, ...result, replayed, sourceBytes: Buffer.byteLength(text) };
+  return state.lexicalResources[resource.id];
+}
+
+export async function replayPinnedLexicalResource(resource, state, api) {
+  await verifyPinnedLexicalResource(resource);
+  const receipt = state.lexicalResources?.[resource.id];
+  if (!receipt || JSON.stringify(receipt.input) !== JSON.stringify(resource) || receipt.status !== "complete" || !receipt.checkpointed) {
+    throw new Error(`Lexical resource ${resource.id} has no matching completed initialization receipt`);
+  }
+  const rows = await api.storage.ingestion.list({ rootUri: resource.sourceUri, status: "complete", phase: "stored" });
+  const matching = rows.filter(row => row.metadata?.report?.sourceVersionId === receipt.sourceVersionId
+    && row.metadata.report.originalSourceVersionId === receipt.annotationSourceVersionId
+    && row.metadata.report.sourceContentHash === receipt.contentHash
+    && row.metadata.report.artifacts?.languageProfileId === receipt.profileId);
+  if (matching.length !== 1) throw new Error(`Lexical resource ${resource.id} lacks its exact durable checkpoint`);
+  const checkpoint = matching[0], report = checkpoint.metadata.report, canonical = api.kernel.canonicalStringify;
+  if (checkpoint.metadata.compilerRecipe !== api.adapters.languageCorpusTrainingRecipeId("workspace")
+    || checkpoint.metadata.batchRecipe !== api.kernel.LANGUAGE_TRAINING_BATCH_RECIPE_ID
+    || !state.reports.some(row => canonical(row) === canonical(report))) {
+    throw new Error(`Lexical resource ${resource.id} has stale compiler recipes or a changed checkpoint report`);
+  }
+  const currentRecipes = new Map(resource.format === "wordnet"
+    ? [[api.kernel.LEXICAL_SENSE_SCHEMA, api.kernel.LEXICAL_SENSE_RECIPE]]
+    : [[api.kernel.LEXICAL_GRAMMAR_SCHEMA, api.kernel.LEXICAL_GRAMMAR_RECIPE],
+      [api.kernel.SOURCE_QUESTION_FRAME_SCHEMA, api.kernel.SOURCE_QUESTION_FRAME_RECIPE]]);
+  const projections = report.sourceOwnedPatternProjections;
+  const requiredSchema = resource.format === "wordnet" ? api.kernel.LEXICAL_SENSE_SCHEMA : api.kernel.LEXICAL_GRAMMAR_SCHEMA;
+  if (!projections?.length || !projections.some(row => row.patternSchema === requiredSchema)
+    || projections.some(row => !currentRecipes.has(row.patternSchema) || currentRecipes.get(row.patternSchema) !== row.componentRecipe
+      || checkpoint.metadata.componentRecipes?.[`sourceOwned:${row.patternSchema}`] !== row.componentRecipe)) {
+    throw new Error(`Lexical resource ${resource.id} has missing or stale source-owned projection recipes`);
+  }
+  if (!api.config.security?.informationAccess || !api.config.security?.defaultSourceInformationLabel
+    || projections.some(row => canonical(row.informationLabel) !== canonical(api.kernel.normalizeInformationLabel(api.config.security.defaultSourceInformationLabel)))) {
+    throw new Error(`Lexical resource ${resource.id} no longer matches its configured source information label`);
+  }
+  for (const projection of projections) {
+    const active = await api.storage.languageMemory.getLanguagePatternProjection?.(projection);
+    if (!active || canonical(active) !== canonical(projection) || !projection.patternIds.length) {
+      throw new Error(`Lexical resource ${resource.id} lacks its complete active projection header`);
+    }
+    const patterns = await api.storage.languageMemory.listLanguagePatterns({ view: "request_seed", patternIds: projection.patternIds,
+      limit: projection.patternIds.length });
+    if (canonical(patterns.map(row => row.id).sort()) !== canonical([...projection.patternIds].sort())) {
+      throw new Error(`Lexical resource ${resource.id} lacks its complete active projection patterns`);
+    }
+  }
+  receipt.replayed = true;
+  return receipt;
+}
+
+export async function publishPinnedLexicalResource(resource, options, state, api) {
+  const before = await databaseMeasurement(api.storage);
+  try {
+    const replay = Boolean(state.lexicalResources?.[resource.id]);
+    if (!replay && (!mayStartBudgetedBatch(before.databaseBytes, options.budgetBytes, options.guardBytes)
+      || resource.maxDatabaseGrowthBytes !== undefined && before.databaseBytes + resource.maxDatabaseGrowthBytes >= options.budgetBytes)) {
+      throw new Error(`Lexical resource ${resource.id} cannot start within the physical database budget and guard`);
+    }
+    const result = replay ? await replayPinnedLexicalResource(resource, state, api) : await trainPinnedLexicalResource(resource, state, api);
+    const after = await databaseMeasurement(api.storage);
+    if (after.databaseBytes > options.budgetBytes || resource.maxDatabaseGrowthBytes !== undefined
+      && after.databaseBytes - before.databaseBytes > resource.maxDatabaseGrowthBytes) {
+      throw new Error(`Lexical resource ${resource.id} exceeded its declared database growth bound or hard physical budget`);
+    }
+    state.batches.push({ lane: "lexical", required: true, at: new Date().toISOString(), beforeBytes: before.databaseBytes,
+      afterBytes: after.databaseBytes, growthBytes: Math.max(0, after.databaseBytes - before.databaseBytes), details: result });
+    state.measurements.push({ stage: `lexical:${resource.id}`, at: new Date().toISOString(), ...after });
+    delete state.lastFailure;
+    await checkpoint(options, state, after);
+  } catch (error) {
+    const after = await databaseMeasurement(api.storage);
+    state.lastFailure = { lane: "lexical", resourceId: resource.id, at: new Date().toISOString(),
+      failureCode: typeof error?.code === "string" ? error.code : error?.name ?? "Error", message: String(error.message).slice(0, 500),
+      beforeBytes: before.databaseBytes, afterBytes: after.databaseBytes };
+    await checkpoint(options, state, after);
+    throw error;
   }
 }
 
@@ -670,14 +881,21 @@ function initialState(options, databaseName) {
 
 function validateResumeState(state, options) {
   if (state?.schema !== STATE_SCHEMA || state.status !== "building") throw new Error("Resume state is not an unfinished 5 GB multicorpus build");
+  assertBuildStateScope(state, options);
+}
+
+export function assertBuildStateScope(state, options) {
   if (state.budgetBytes !== options.budgetBytes || state.guardBytes !== options.guardBytes) throw new Error("Resume budget differs from the original build");
   if (JSON.stringify(state.corpusIdentity) !== JSON.stringify(corpusIdentity(options))) throw new Error("Resume corpus paths differ from the original build");
+  if ((state.targetBytes ?? null) !== (options.targetBytes ?? null)) throw new Error("Resume target-bytes differs from the original initialization target");
+  assertResumeCorpusScope(state, { ...options, resume: true });
 }
 
 function corpusIdentity(options) {
   return { wikipediaDump: options.wikipediaDump ?? null, wikipediaIndex: options.wikipediaIndex ?? null,
     gutenbergRoot: options.gutenbergRoot, dollyRoot: options.dollyRoot, oasstRoot: options.oasstRoot, codeRoot: options.codeRoot,
-    ...(options.codeDependencyManifest ? { codeDependencyManifest: options.codeDependencyManifest } : {}) };
+    ...(options.codeDependencyManifest ? { codeDependencyManifest: options.codeDependencyManifest } : {}),
+    ...(options.lexicalManifest ? { lexicalManifest: options.lexicalManifest } : {}) };
 }
 
 async function checkpoint(options, state, measurement, selectedItems = undefined) {
@@ -708,12 +926,14 @@ function publicReceipt(state, measurement, selectedItems) {
     }])), trainedReports: state.reports.length, batches: state.batches.length,
     largestTables: measurement?.largestTables ?? [], sourceBrain: state.sourceBrain ?? null,
     finalization: state.finalization ?? null,
+    ...(state.lexicalResources ? { lexicalResources: state.lexicalResources } : {}),
     acceptanceCases: state.acceptanceCases ?? [], stopReason: state.stopReason ?? null,
     lastFailure: state.lastFailure ?? null,
     checks: { freshPhysicalDatabase: true, everyRequiredCorpusIncluded: Object.values(state.lanes).every(lane => lane.included),
       withinPhysicalBudget: measurement ? measurement.databaseBytes <= state.budgetBytes : null,
       unifiedBrainActive: state.sourceBrain?.active === true,
-      retainedDialogueQaPublished: state.finalization?.contextualQa?.coldVerifiedContextualQaPatterns > 0 }
+      retainedDialogueQaPublished: state.finalization?.contextualQa?.coldVerifiedContextualQaPatterns > 0,
+      languageIdentitiesFinalized: state.finalization?.languageIdentities?.ready === true }
   };
 }
 
@@ -761,6 +981,7 @@ async function assertNonemptyDirectory(target, label) {
 export async function verifyBrainBuildPrerequisites(options) {
   if (process.env.SCCE_DATABASE_URL?.trim()) throw new Error("Unset SCCE_DATABASE_URL so the new brain config cannot be overridden");
   await assertRegularFile(options.configPath, "local SCCE config");
+  if (options.lexicalManifest) await loadPinnedLexicalManifest(options.lexicalManifest);
   if (options.codeDependencyManifest) {
     const manifest = options.codeDependencyManifest;
     await assertRegularFile(manifest.path, "code dependency manifest");
@@ -799,7 +1020,7 @@ function positiveInteger(value, name) {
 }
 
 function usage() {
-  return "Usage: node --max-old-space-size=7168 tools/build-5gb-multicorpus-brain.mjs (--fresh-config <existing-empty-brain.json> | --config <base-local-config.json> --output-config <new-ignored-config.json> [--database-name <new-name>]) --receipt <ignored-receipt.json> [--wikipedia-dump <dump>] [--wikipedia-index <index>] [--gutenberg <dir>] [--dolly <transcripts-dir>] [--oasst <train-dir>] [--code <repos-dir>] [--code-dependency-manifest <manifest.json> --code-dependency-manifest-hash <sha256_hex>] [--budget-bytes 5000000000] [--guard-bytes 200000000] [--target-bytes 2000000000] [--heap-checkpoint-mb 7168] [--source-workers N --source-worker-heap-mb N --max-node-rss-bytes N] [--english-only] [--resume]";
+  return "Usage: node --max-old-space-size=7168 tools/build-5gb-multicorpus-brain.mjs (--fresh-config <existing-empty-brain.json> | --config <base-local-config.json> --output-config <new-ignored-config.json> [--database-name <new-name>]) --receipt <ignored-receipt.json> [--wikipedia-dump <dump>] [--wikipedia-index <index>] [--gutenberg <dir>] [--dolly <transcripts-dir>] [--oasst <train-dir>] [--code <repos-dir>] [--code-dependency-manifest <manifest.json> --code-dependency-manifest-hash <sha256_hex>] [--lexical-manifest <manifest.json> --lexical-manifest-hash <sha256_hex>] [--budget-bytes 5000000000] [--guard-bytes 200000000] [--target-bytes 2000000000] [--heap-checkpoint-mb 7168] [--source-workers N --source-worker-heap-mb N --max-node-rss-bytes N] [--english-only] [--resume]";
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
