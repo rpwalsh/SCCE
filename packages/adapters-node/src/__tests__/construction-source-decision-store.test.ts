@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { expect, it } from "vitest";
-import { createHasher, constructionSourceExampleStorageJson as exact, requestSeedLanguagePattern, encodeConstructionSourceExamples,
+import { createSourceConstructionComponentOwner, validateSourceConstructionComponentOwner, createHasher, constructionSourceExampleStorageJson as exact, requestSeedLanguagePattern, encodeConstructionSourceExamples,
   type EvidenceSpan, type InformationLabel, type JsonValue } from "@scce/kernel";
 import { createConstructionSourceDecisionStore, constructionSourceDecisionSchemaStatements, type ConstructionSourceDecisionStorageHost } from "../construction-source-decision-store.js";
 import { decodeDurableArtifact, DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths } from "../durable-artifact-storage.js";
@@ -176,4 +176,48 @@ it("preserves raw array roots without adding a ledger envelope or performing I/O
   expect(stored[0]).toBe(array); expect(exact(stored[0])).toBe(before);
   expect(await f.store.decodeMany(cold(stored))).toEqual([array]);
   expect(f.calls).toHaveLength(0); expect(f.state.transactions).toBe(0); expect(f.pages.size).toBe(0);
+});
+
+it("reports an absent compilation owner before writing any decision page", async () => {
+  const f = fixture(), input = values().map(value => {
+    const { sourceCompilationId: _owner, ...unbound } = value;
+    return { value: unbound, informationLabel: label };
+  });
+  await expect(f.store.encodeMany(input)).rejects.toThrow("missing_source_compilation_owner");
+  expect(f.pages.size).toBe(0);
+});
+
+it("keeps component generations separate from v8 ownership and restores exact multi-source pages", async () => {
+  const f = fixture(), hasher = createHasher();
+  const component = createSourceConstructionComponentOwner({ sourceId: "source", sourceVersionId: "version",
+    sourceContentHash: `sha256_${hasher.digestHex(f.state.evidence[0]!.text)}`, profileId: "profile", componentRecipe: "kernel.language_construction_active_projection.v1" }, hasher);
+  f.state.evidence.push({ ...f.state.evidence[0]!, id: "evidence.pool" as EvidenceSpan["id"], sourceId: "source.pool" as EvidenceSpan["sourceId"], sourceVersionId: "version.pool" as EvidenceSpan["sourceVersionId"] });
+  const originals = values().map(value => ({ ...value, sourceConstructionComponent: component,
+    bundle: { ...value.bundle, evidenceIds: ["evidence", "evidence.pool"], sourceVersionIds: ["version", "version.pool"], evidenceContentHashes: ["hash"] } }));
+  const stored = await f.store.encodeMany(originals.map(value => ({ value, informationLabel: label })));
+  expect(f.pages.size).toBeGreaterThan(0);
+  expect([...f.pages.values()].every(page => page.owner_key === component.id)).toBe(true);
+  expect(stored.every(value => object(value).sourceCompilationId === "compilation")).toBe(true);
+  expect(stored.every(value => exact(object(value).sourceConstructionComponent) === exact(component))).toBe(true);
+  expect((await f.store.decodeMany(cold(stored))).map(decodeDurableArtifact)).toEqual(originals);
+  const changed = cold(stored);
+  object(object(changed[0]).sourceConstructionComponent).componentRecipe = "forged.recipe";
+  await expect(f.store.decodeMany(changed)).rejects.toThrow("invalid source construction component owner");
+});
+
+it.each(["hash", "profile", "source", "version", "unavailable", "extra"])("rejects component owner %s mismatch without writing pages", async mutation => {
+  const f = fixture(), hasher = createHasher();
+  const component = createSourceConstructionComponentOwner({ sourceId: "source", sourceVersionId: "version",
+    sourceContentHash: `sha256_${hasher.digestHex(f.state.evidence[0]!.text)}`, profileId: "profile", componentRecipe: "component.recipe" }, hasher);
+  expect(validateSourceConstructionComponentOwner(component, hasher)).toEqual(component);
+  let declared: Record<string, unknown> = { ...component };
+  if (mutation === "hash") declared.id = "source.construction.component.forged";
+  if (mutation === "profile") declared = { ...createSourceConstructionComponentOwner({ ...component, profileId: "foreign" }, hasher) };
+  if (mutation === "source") declared = { ...createSourceConstructionComponentOwner({ ...component, sourceId: "foreign" }, hasher) };
+  if (mutation === "version") declared = { ...createSourceConstructionComponentOwner({ ...component, sourceVersionId: "foreign" }, hasher) };
+  if (mutation === "unavailable") f.state.evidence = [{ ...f.state.evidence[0]!, status: "quarantined" }];
+  if (mutation === "extra") declared.injected = true;
+  const inputs = values().map(value => ({ value: { ...value, sourceConstructionComponent: declared }, informationLabel: label }));
+  await expect(f.store.encodeMany(inputs)).rejects.toThrow();
+  expect(f.pages.size).toBe(0);
 });

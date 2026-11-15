@@ -20,6 +20,8 @@ import {
   createEvidenceExtractor,
   putSpanBlobs,
   createHasher,
+  createSourceConstructionComponentOwner,
+  sourceConstructionComponentPatternId,
   createIdFactory,
   createLanguageAcquisitionEngine,
   createLanguageMemoryRuntime,
@@ -1220,7 +1222,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const compiledConstructionPatterns: LanguagePatternRecord[] = [...compiledBatch.constructionPatterns];
   const compiledConstructionPatternIds = new Set(compiledConstructionPatterns.map(pattern => pattern.id));
   const constructionWarnings: string[] = [...compiledBatch.warnings];
-  let patterns = [
+  let patterns: LanguagePatternRecord[] = [
     ...compiledBatch.patterns.filter(pattern => !compiledConstructionPatternIds.has(pattern.id)),
     ...compiledConstructionPatterns,
     ...compactSourceCodeFunctionPatterns({ constructions: sourceCodeFunctions, metadata, sourceSystem, profileId: profile.id, sourceVersionId,
@@ -1233,6 +1235,9 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     .map(item => jsonRecord(item.patternJson).schema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA
       ? { ...item, patternJson: toJsonValue({ ...jsonRecord(item.patternJson), sourceId: canonicalSource?.sourceId ?? sourceId, sourceVersionId }) } : item);
   let frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
+
+  if (constructionOnly) patterns = await bindSourceConstructionComponents({ storage: input.storage, patterns,
+    source: canonicalSource, profileId: profile.id, evidence: [...evidence, ...constructionPoolEvidence], hasher });
 
   if (canonicalSource && models.length) {
     const receipts = models.map(model => jsonRecord(jsonRecord(model.modelJson).sourceCompilation));
@@ -1365,6 +1370,40 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   };
 }
 
+
+export async function bindSourceConstructionComponents(input: {
+  storage: { evidence: Pick<ScceStorage["evidence"], "sourceVersionsForEvidence"> }; patterns: readonly LanguagePatternRecord[]; source?: SourceVersion;
+  profileId: string; evidence: readonly EvidenceSpan[]; hasher: ReturnType<typeof createHasher>;
+}): Promise<LanguagePatternRecord[]> {
+  const { patterns, source: canonicalSource, hasher } = input;
+  const componentPatterns = patterns.filter(pattern => {
+    const row = jsonRecord(pattern.patternJson);
+    return row.schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA && String(jsonRecord(row.bundle).bindingId).startsWith("language.source_relation.");
+  });
+  if (!componentPatterns.length) return [...patterns];
+  if (!canonicalSource) throw new Error("construction-only source relations require a canonical source owner");
+  const componentEvidence = new Map(input.evidence.map(span => [String(span.id), span]));
+  const componentEvidenceIds = [...new Set(componentPatterns.flatMap(pattern => pattern.evidenceIds))];
+  const owners = await input.storage.evidence.sourceVersionsForEvidence(componentEvidenceIds);
+  const owned = new Map(componentPatterns.map(pattern => {
+    const candidates = pattern.evidenceIds.map(id => {
+      const span = componentEvidence.get(String(id));
+      if (!span || span.status !== "promoted") throw new Error("construction component has no promoted source evidence");
+      const owner = owners.find(row => row.sourceId === span.sourceId && row.sourceVersionId === span.sourceVersionId);
+      if (!owner) throw new Error("construction component evidence has no accessible canonical source");
+      return owner;
+    }).sort((left, right) => Number(right.sourceVersionId === canonicalSource.sourceVersionId) - Number(left.sourceVersionId === canonicalSource.sourceVersionId)
+      || String(left.sourceVersionId).localeCompare(String(right.sourceVersionId)) || String(left.sourceId).localeCompare(String(right.sourceId)));
+    const owner = candidates[0];
+    if (!owner) throw new Error("construction component needs an exact source owner");
+    const componentOwner = createSourceConstructionComponentOwner({ sourceId: owner.sourceId, sourceVersionId: owner.sourceVersionId,
+      sourceContentHash: owner.contentHash, profileId: input.profileId, componentRecipe: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID }, hasher);
+    return [pattern.id, { ...pattern,
+      id: sourceConstructionComponentPatternId({ componentOwner, patternId: pattern.id, contentDigest: String(jsonRecord(pattern.patternJson).contentDigest) }, hasher),
+      patternJson: toJsonValue({ ...jsonRecord(pattern.patternJson), sourceConstructionComponent: componentOwner }) }] as const;
+  }));
+  return patterns.map(pattern => owned.get(pattern.id) ?? pattern);
+}
 
 function prepareSourceOwnedPatterns(input: {
   input: LanguageCorpusTrainingInput; source?: SourceVersion; originalSource?: SourceVersion; profile: LanguageProfile;

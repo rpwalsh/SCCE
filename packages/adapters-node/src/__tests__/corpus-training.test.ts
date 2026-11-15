@@ -261,6 +261,7 @@ describe("learned rows carry the shard's provenance once", () => {
     expect({ patterns: fixture.state.patterns.length, events: fixture.state.events.length }).toEqual(writes);
   });
 
+
   it("upgrades a complete creative checkpoint missing its surface component without changing source ownership", async () => {
     const fixture = memoryStorage(), checkpoints = new Map<string, IngestionCheckpoint>();
     const putSpans = async (spans: readonly EvidenceSpan[]) => {

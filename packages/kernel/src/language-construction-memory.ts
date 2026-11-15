@@ -9,6 +9,7 @@ import {
   type LearnedFormClass
 } from "./language-construction.js";
 import { canonicalStringify, toJsonValue } from "./primitives.js";
+import { sourceConstructionComponentPatternId, validateSourceConstructionComponentOwner } from "./construction-source-decision-storage.js";
 import { decodeConstructionSourceExamples, encodeConstructionSourceExamples } from "./construction-source-example-storage.js";
 import { type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
 import { preparedLanguageInductionProducts, type PreparedConstructionInduction } from "./graph-surface-alignment.js";
@@ -1453,14 +1454,26 @@ function verifyPersistedPattern(
   }, evidenceById, evidencePointsById);
   if (recompiled.status !== "compiled") return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   const expectedRow = recordOf(recompiled.pattern.patternJson);
+  let expectedPatternId = recompiled.pattern.id;
+  if (row.sourceConstructionComponent !== undefined) {
+    try {
+      const owner = validateSourceConstructionComponentOwner(row.sourceConstructionComponent, hasher);
+      if (owner.profileId !== pattern.profileId || !bindingId.startsWith("language.source_relation.")
+        || !evidence.some(span => String(span.sourceId) === owner.sourceId && String(span.sourceVersionId) === owner.sourceVersionId)) {
+        return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.identity);
+      }
+      expectedPatternId = sourceConstructionComponentPatternId({ componentOwner: owner,
+        patternId: recompiled.pattern.id, contentDigest: recompiled.bundle.contentDigest }, hasher);
+    } catch { return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.identity); }
+  }
   if (stringOf(row.contentDigest) !== recompiled.bundle.contentDigest
-    || pattern.id !== recompiled.pattern.id
+    || pattern.id !== expectedPatternId
     || pattern.patternKind !== recompiled.pattern.patternKind
     || pattern.profileId !== recompiled.pattern.profileId
     || pattern.support !== recompiled.pattern.support
     || pattern.entropy !== recompiled.pattern.entropy
     || !sameStrings(pattern.evidenceIds.map(String), recompiled.pattern.evidenceIds.map(String))) {
-    return issue(pattern, pattern.id !== recompiled.pattern.id
+    return issue(pattern, pattern.id !== expectedPatternId
       ? LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.identity
       : LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.digest);
   }

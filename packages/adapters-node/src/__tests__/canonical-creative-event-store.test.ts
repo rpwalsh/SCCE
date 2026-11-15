@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { canonicalStringify, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine,
-  createUniversalCreativeEventConstructionCompiler, deriveUniversalCreativeEvent, hashEvent, hydrateLanguageConstructionPatterns,
+  createUniversalCreativeEventConstructionCompiler, createLanguageMemoryRuntime, compileLanguageTrainingBatch, deriveUniversalCreativeEvent, hashEvent, hydrateLanguageConstructionPatterns,
   informationLabelAllowsRead, requestSeedLanguagePattern, type EvidenceSpan, type InformationLabel,
   type JsonValue, type LanguagePatternRecord, type ScceEvent } from "@scce/kernel";
 import { PostgresStorageAdapter } from "../postgres.js";
@@ -40,7 +40,8 @@ beforeAll(() => {
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });
 
-function fixture() {
+function fixture(evidenceOverride = evidence, ownerOverride = owner) {
+  const evidence = evidenceOverride, owner = ownerOverride;
   const adapter = new PostgresStorageAdapter({ url: "postgres://offline.invalid/none", schema: "canonical_creative", informationAccess: access });
   adapters.push(adapter);
   const components = new Map(CREATIVE_EVENT_NORMALIZATION_TABLES.map(table => [table, new Map<string, Record<string, unknown>>()]));
@@ -128,6 +129,68 @@ describe("canonical creative-event domain normalization", () => {
     expect(await codec.decodeMany(cold(encoded))).toEqual([original]);
     expect(await codec.encode({ retained: "pure" })).toEqual({ retained: "pure" });
   });
+  it("cold-restores actual learner agent frames through the production canonical codec", async () => {
+    const events = patterns.flatMap(pattern => object(object(pattern.patternJson).bundle).events as Array<{
+      id: string; valencyId: string; argumentFrame: { bindings: Array<{ roleId: string }> }
+    }>);
+    const agentOnly = events.filter(event => event.argumentFrame.bindings.length === 1
+      && event.argumentFrame.bindings[0]!.roleId === "scce.role.agent");
+    const mixed = events.filter(event => event.argumentFrame.bindings.some(port => port.roleId === "scce.role.agent")
+      && event.argumentFrame.bindings.some(port => port.roleId === "scce.role.patient"));
+    expect(agentOnly.length).toBeGreaterThan(0);
+    expect(mixed.length).toBeGreaterThan(0);
+    expect(agentOnly.every(event => event.valencyId === "scce.valency.agent")).toBe(true);
+    const { adapter } = fixture();
+    await adapter.languageMemory.putLanguagePatterns!(patterns);
+    const restored = await adapter.languageMemory.listLanguagePatterns({ patternIds: patterns.map(pattern => pattern.id),
+      limit: patterns.length, maxTotalJsonBytes: patterns.reduce((sum, pattern) => sum + decodedJsonByteLengths(pattern.patternJson).decodedJsonbBytes, 0), requireComplete: true });
+    expect(restored.map(pattern => pattern.patternJson)).toEqual(patterns.map(pattern => pattern.patternJson));
+    const original = hydrateLanguageConstructionPatterns({ patterns, evidence: [evidence], hasher });
+    const decoded = hydrateLanguageConstructionPatterns({ patterns: restored, evidence: [evidence], hasher });
+    expect(decoded).toEqual(original);
+    const restoredIds = new Set(decoded.bundles.flatMap(bundle => bundle.creativeEvents?.map(event => event.id) ?? []));
+    expect(agentOnly.some(event => restoredIds.has(event.id))).toBe(true);
+    expect(mixed.some(event => restoredIds.has(event.id))).toBe(true);
+    const bundle = object(object(patterns[0]!.patternJson).bundle);
+    const mutated = cold(bundle), invalidEvents = mutated.events as Array<Record<string, unknown>>;
+    const frame = object(invalidEvents[0]!.argumentFrame);
+    (frame.bindings as Array<Record<string, unknown>>)[0]!.roleId = "scce.role.unsupported";
+    const owners = new Map([[creativeEventStorageJson([owner.profileId, owner.evidenceId]), owner]]);
+    expect(() => normalizeCreativeEventPage({ bundle: mutated, owners })).toThrow("invalid canonical creative-event normalization");
+  });
+
+  it("cold-replays learned partial creative correspondences through the canonical PostgreSQL ledger codec", async () => {
+    const pair = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8"));
+    const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true, namespace: "canonical.partial" });
+    const sourceVersionId = ids.sourceVersionId(pair.text), contentHash = ids.contentHash(pair.text), length = Buffer.byteLength(pair.text);
+    const premise: EvidenceSpan = { ...evidence, id: ids.evidenceId({ sourceVersionId, byteStart: 0, byteEnd: length, spanHash: contentHash }),
+      sourceVersionId, contentHash, byteStart: 0, byteEnd: length, charStart: 0, charEnd: [...pair.text].length, text: pair.text, textPreview: pair.text };
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: pair.text, createdAt: 1 });
+    const runtime = createLanguageMemoryRuntime({ hasher, idFactory: ids });
+    const learned = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://canonical.partial", sourceSystem: "dialogue",
+      profile, sourceVersionId, text: pair.text, evidence: [premise], transcriptTurns: pair.turns, createdAt: 1, retainNgramObservations: false } });
+    const ownedPatterns = learned.patterns.map(pattern => ({ ...pattern, informationLabel: label }));
+    const ownerForPair = { ...owner, profileId: profile.id, sourceVersionId, sourceContentHash: contentHash,
+      evidenceId: premise.id, evidenceContentHash: contentHash, evidenceCharStart: 0, evidenceCharEnd: premise.charEnd, evidenceText: premise.text };
+    const { adapter } = fixture(premise, ownerForPair);
+    const codec = createCanonicalCreativeEventCodec(adapter);
+    const input = { id: "event.partial.creative", episodeId: "episode.partial.creative", typeId: "InducedLanguageModelPersisted", t: 1,
+      parents: [], payload: { memoryProjection: { patterns: ownedPatterns } } } as unknown as Omit<ScceEvent, "hash">;
+    const event = { ...input, hash: hashEvent(input, [], hasher) };
+    const encoded = await codec.encode(event, label);
+    expect(JSON.stringify(encoded)).toContain(CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA);
+    const decoded = (await codec.decodeMany([cold(encoded)]))[0] as ScceEvent;
+    expect(decoded).toEqual(event);
+    expect(hashEvent(decoded, [], hasher)).toBe(event.hash);
+    const restoredPatterns = object(object(decoded.payload).memoryProjection).patterns as LanguagePatternRecord[];
+    const before = runtime.hydrate({ models: [], patterns: ownedPatterns, constructionEvidence: [premise] });
+    const after = createLanguageMemoryRuntime({ hasher, idFactory: ids }).hydrate({ models: [], patterns: restoredPatterns, constructionEvidence: [premise] });
+    expect(after).toEqual(before);
+    const events = after.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? []);
+    expect(after.creativeEventCompatibilityModels.some(model => model.sourceObservations?.some(row =>
+      row.request.sourceAuthority === "creative" && row.bindings.length < events.find(event => event.id === row.eventId)!.argumentFrame.bindings.length))).toBe(true);
+  });
+
   it("stores shared definitions once and cold-restores every genuine event through the production pattern API", async () => {
     const { adapter, rows, components, lexicalPages, calls, state } = fixture();
     if (!adapter.languageMemory.putLanguagePatterns) throw Error("missing batch pattern writer");

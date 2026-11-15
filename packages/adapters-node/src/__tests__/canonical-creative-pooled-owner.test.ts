@@ -51,6 +51,13 @@ function fixture() {
       return selected.map(row => sql.includes("lexical-page sizes") ? { id: row.id, stored_bytes: Buffer.byteLength(JSON.stringify(row.value_json)) }
         : sql.includes("lexical-page membership") ? { id: row.id } : { ...row, value_json: cold(row.value_json) }) as T[];
     }
+    if (sql.includes('"blobs" blob')) {
+      const page = pool.pages.find(page => ids.contentHash(page.text) === params[0]);
+      if (!page) return [];
+      const content = Buffer.from(page.text, "utf8");
+      return [{ content, byte_length: String(content.byteLength), range_parent_hash: null, range_start: null,
+        range_end: null, archive_reference: null, archive: null }] as T[];
+    }
     const parameters = new Set([...sql.matchAll(/\$(\d+)/gu)].map(match => Number(match[1])));
     expect(parameters.size).toBe(params.length);
     if (parameters.size) expect(Math.max(...parameters)).toBe(params.length);

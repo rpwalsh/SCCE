@@ -1,7 +1,48 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { constructionSourceExampleStorageJson as exactJson, decodeConstructionSourceExamples, encodeConstructionSourceExamples } from "./construction-source-example-storage.js";
+import { canonicalStringify } from "./primitives.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
+
+export const SOURCE_CONSTRUCTION_COMPONENT_OWNER_SCHEMA = "scce.source_construction_component_owner.v1" as const;
+export interface SourceConstructionComponentOwner {
+  schema: typeof SOURCE_CONSTRUCTION_COMPONENT_OWNER_SCHEMA;
+  sourceId: string;
+  sourceVersionId: string;
+  sourceContentHash: string;
+  profileId: string;
+  componentRecipe: string;
+  id: string;
+}
+const COMPONENT_OWNER_FIELDS = ["schema", "sourceId", "sourceVersionId", "sourceContentHash", "profileId", "componentRecipe", "id"];
+/** A component generation has its own owner; it never claims a whole-language compilation inventory. */
+export function createSourceConstructionComponentOwner(input: Omit<SourceConstructionComponentOwner, "schema" | "id">, hasher: Hasher): SourceConstructionComponentOwner {
+  const material = { schema: SOURCE_CONSTRUCTION_COMPONENT_OWNER_SCHEMA, sourceId: input.sourceId,
+    sourceVersionId: input.sourceVersionId, sourceContentHash: input.sourceContentHash, profileId: input.profileId, componentRecipe: input.componentRecipe };
+  const result = { ...material, id: `source.construction.component.${hasher.digestHex(canonicalStringify(material))}` };
+  return Object.freeze(validateSourceConstructionComponentOwner(result, hasher));
+}
+/** Validates the exact versioned owner descriptor without admitting extra fields or repairing identities. */
+export function validateSourceConstructionComponentOwner(value: unknown, hasher: Hasher): SourceConstructionComponentOwner {
+  const invalid = (): never => { throw Error("invalid source construction component owner"); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();
+  if (Object.values(Object.getOwnPropertyDescriptors(value)).some(descriptor => descriptor.get || descriptor.set)) return invalid();
+  const owner = value as Record<string, unknown>;
+  if (Object.keys(owner).sort().join(",") !== [...COMPONENT_OWNER_FIELDS].sort().join(",")
+    || owner.schema !== SOURCE_CONSTRUCTION_COMPONENT_OWNER_SCHEMA
+    || COMPONENT_OWNER_FIELDS.some(field => typeof owner[field] !== "string" || !owner[field])
+    || !/^sha256[_:][a-f0-9]{64}$/u.test(String(owner.sourceContentHash))) return invalid();
+  const { id, ...material } = owner;
+  if (id !== `source.construction.component.${hasher.digestHex(canonicalStringify(material))}`) return invalid();
+  return owner as unknown as SourceConstructionComponentOwner;
+}
+
+/** Immutable row identity; bundle and observation identities remain the compiler's exact identities. */
+export function sourceConstructionComponentPatternId(input: { componentOwner: SourceConstructionComponentOwner; patternId: string; contentDigest: string }, hasher: Hasher): string {
+  const owner = validateSourceConstructionComponentOwner(input.componentOwner, hasher);
+  if (!input.patternId || !input.contentDigest) throw Error("invalid source construction component pattern identity");
+  return `${input.patternId}.component.${hasher.digestHex(canonicalStringify([owner.id, input.patternId, input.contentDigest]))}`;
+}
 
 export const CONSTRUCTION_SOURCE_DECISION_KIND = "construction_source_decisions" as const;
 export const CONSTRUCTION_SOURCE_DECISION_SCHEMA = "scce.construction_source_decisions.v1" as const;
@@ -43,7 +84,7 @@ const copy = <T>(value: T): T => { try { return JSON.parse(exactJson(value)) as 
 const bytes = (value: unknown): number => new TextEncoder().encode(exactJson(value)).byteLength;
 const own = (value: Row, fields: readonly string[]): Row => Object.fromEntries(fields.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]!])) as Row;
 const omit = (value: Row, fields: readonly string[]): Row => Object.fromEntries(Object.entries(value).filter(([key]) => !fields.includes(key)));
-const IDENTITY_FIELDS = ["schema", "storageEncoding", "sourceCompilationId", "profileId", "sourceVersionId", "sourceId", "sourceSystem",
+const IDENTITY_FIELDS = ["schema", "storageEncoding", "sourceCompilationId", "sourceConstructionComponent", "profileId", "sourceVersionId", "sourceId", "sourceSystem",
   "requestConstructionCandidate", "sourceConstructionCandidate", "conversationalBindingId"] as const;
 
 function prepare(value: unknown, hasher: Hasher, ordinal: number): Prepared | undefined {

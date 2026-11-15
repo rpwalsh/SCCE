@@ -79,7 +79,7 @@ function canonicalEvent(raw: unknown, verifyIncoming: boolean): DurableCreativeE
     || !["scce.valency.agent", "scce.valency.agent_patient"].includes(valencyId)) return fail();
   const bindings: DurableCreativeEventArgumentBinding[] = array(frame.bindings).map(raw => {
     const binding = creativeEventRecord(raw), roleId = text(binding.roleId);
-    if (roleId !== "scce.role.patient" && roleId !== "scce.role.complement") return fail();
+    if (roleId !== "scce.role.agent" && roleId !== "scce.role.patient" && roleId !== "scce.role.complement") return fail();
     const connector = binding.connector === undefined ? undefined : creativeEventRecord(binding.connector);
     return { ...binding, roleId, surface: text(binding.surface), surfaceDigest: typeof binding.surfaceDigest === "string" ? binding.surfaceDigest : "pending",
       startCodePoint: coordinate(binding.startCodePoint), endCodePoint: coordinate(binding.endCodePoint),

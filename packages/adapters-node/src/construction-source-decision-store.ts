@@ -4,7 +4,7 @@ import { createHasher, normalizeInformationLabel, joinInformationLabels, decodeC
   constructionSourceExampleStorageJson as exact,
   CONSTRUCTION_SOURCE_DECISION_KIND, constructionSourceDecisionPageId, createConstructionSourceDecisionRestorer,
   normalizeConstructionSourceDecisions, validateConstructionSourceDecisionPage, type ConstructionSourceDecisionPage,
-  CONSTRUCTION_SOURCE_DECISION_MAX_PAGE_BYTES
+  validateSourceConstructionComponentOwner, CONSTRUCTION_SOURCE_DECISION_MAX_PAGE_BYTES
 } from "@scce/kernel";
 import type { CreativeEventStorageHost } from "./canonical-creative-event-store.js";
 import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths } from "./durable-artifact-storage.js";
@@ -19,7 +19,7 @@ export function constructionSourceDecisionSchemaStatements(q: string): string[] 
 }
 interface PageRow { id: string; owner_key: string; kind: string; value_json: unknown; information_label: InformationLabel; json_bytes?: string }
 const record = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-const fail = (): never => { throw Error("invalid or inaccessible construction source decision storage"); };
+const fail = (reason = "invalid_structure"): never => { throw Error(`invalid or inaccessible construction source decision storage: ${reason}`); };
 const natural = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 
 /** Immutable source-owned pages; no learned rows or source versions are replaced or collected. */
@@ -37,8 +37,8 @@ export function createConstructionSourceDecisionStore(host: ConstructionSourceDe
     const active = new WeakSet<object>(); let count = 0;
     const next = (value: unknown, label: InformationLabel | undefined, depth: number): void => {
       if (!value || typeof value !== "object") return;
-      if (++count > 1_000_000 || depth > 128 || active.has(value)) return fail(); active.add(value);
-      try { if (Object.values(Object.getOwnPropertyDescriptors(value)).some(descriptor => descriptor.get || descriptor.set)) return fail();
+      if (++count > 1_000_000 || depth > 128 || active.has(value)) return fail("cyclic_or_oversized_value"); active.add(value);
+      try { if (Object.values(Object.getOwnPropertyDescriptors(value)).some(descriptor => descriptor.get || descriptor.set)) return fail("accessor_value");
         const node = record(value), joined = node ? join(label, node.informationLabel) : label;
         if (node) visit(node, joined); for (const child of Object.values(value)) next(child, joined, depth + 1);
       } finally { active.delete(value); }
@@ -48,14 +48,27 @@ export function createConstructionSourceDecisionStore(host: ConstructionSourceDe
     let count = 0; const active = new WeakSet<object>();
     const next = (value: unknown, depth: number): unknown => {
       if (!value || typeof value !== "object") return value;
-      if (++count > 1_000_000 || depth > 128 || active.has(value)) return fail(); active.add(value);
+      if (++count > 1_000_000 || depth > 128 || active.has(value)) return fail("cyclic_or_oversized_value"); active.add(value);
       try { const node = record(value), changed = node ? visit(node) : undefined; if (changed !== undefined) return changed;
         let modified = false; const entries = Object.entries(value).map(([key, child]) => { const result = next(child, depth + 1); modified ||= result !== child; return [key, result] as const; });
         return modified ? Array.isArray(value) ? entries.map(([, child]) => child) : Object.fromEntries(entries) : value;
       } finally { active.delete(value); }
     }; return next(value, 0);
   };
-  const ownerOf = (value: unknown): string => { const key = record(value)?.sourceCompilationId; return typeof key === "string" && key.length > 0 ? key : fail(); };
+  const ownerOf = (value: unknown): string => {
+    const root = record(value) ?? fail();
+    if (Object.hasOwn(root, "sourceConstructionComponent")) {
+      const owner = validateSourceConstructionComponentOwner(root.sourceConstructionComponent, hasher), bundle = record(root.bundle);
+      if (root.profileId !== undefined && root.profileId !== owner.profileId
+        || root.sourceId !== undefined && root.sourceId !== owner.sourceId
+        || root.sourceVersionId !== undefined && root.sourceVersionId !== owner.sourceVersionId
+        || bundle?.sourceProfileId !== undefined && bundle.sourceProfileId !== owner.profileId
+        || bundle?.targetProfileId !== undefined && bundle.targetProfileId !== owner.profileId) return fail("component_owner_scope_mismatch");
+      return owner.id;
+    }
+    const key = root.sourceCompilationId;
+    return typeof key === "string" && key.length > 0 ? key : fail("missing_source_compilation_owner");
+  };
   const eligible = (value: unknown): boolean => {
     const root = record(value), bundle = record(root?.bundle);
     if (root?.schema !== "scce.language_construction_pattern.v1" || root.storageEncoding !== "scce.language_construction.source_examples.v1"
@@ -95,7 +108,7 @@ export function createConstructionSourceDecisionStore(host: ConstructionSourceDe
         // Raw array roots have no parent ledger envelope. Preserve the logical array without page writes.
         if (Array.isArray(input.value)) continue;
         walk(input.value, (value, inherited) => {
-        if (constructionSourceDecisionPageId(value) !== undefined) return fail();
+        if (constructionSourceDecisionPageId(value) !== undefined) return fail("preencoded_source_decision_reference");
         if (!eligible(value)) return;
         const ownerKey = ownerOf(value), label = normalizeInformationLabel(host.requireWritableInformationLabel(inherited));
         const key = exact([ownerKey, label]); const group = groups.get(key) ?? { ownerKey, label, entries: [] }; group.entries.push({ index, value }); groups.set(key, group);
@@ -109,9 +122,17 @@ export function createConstructionSourceDecisionStore(host: ConstructionSourceDe
         const ids = [...new Set(values.flatMap(value => { const ids = record(record(value)?.bundle)?.evidenceIds;
           return Array.isArray(ids) && ids.every((id): id is string => typeof id === "string") ? ids : fail(); }))];
         const evidence = await host.evidence(ids);
-        if (evidence.length !== ids.length || new Set(evidence.map(span => span.id)).size !== ids.length || evidence.some(span => !ids.includes(String(span.id)) || span.status !== "promoted")) return fail();
+        if (evidence.length !== ids.length || new Set(evidence.map(span => span.id)).size !== ids.length || evidence.some(span => !ids.includes(String(span.id)) || span.status !== "promoted")) return fail("missing_or_unpromoted_evidence");
         for (const span of evidence) if (span.informationLabel && exact(normalizeInformationLabel(joinInformationLabels([group.label, span.informationLabel], {
-          explicitMergeAuthority: host.informationAccess?.explicitMergeAuthority === true }))) !== exact(group.label)) return fail();
+          explicitMergeAuthority: host.informationAccess?.explicitMergeAuthority === true }))) !== exact(group.label)) return fail("incompatible_evidence_label");
+        for (const value of values) if (Object.hasOwn(value, "sourceConstructionComponent")) {
+          const owner = validateSourceConstructionComponentOwner(value.sourceConstructionComponent, hasher);
+          const declaredIds = record(value.bundle)?.evidenceIds;
+          if (!Array.isArray(declaredIds) || !evidence.some(span => declaredIds.includes(String(span.id))
+            && span.sourceId === owner.sourceId && span.sourceVersionId === owner.sourceVersionId)) {
+            return fail("component_source_evidence_unavailable");
+          }
+        }
         const namespace = hasher.digestHex(exact(group.label));
         const plan = normalizeConstructionSourceDecisions(values, { ownerKey: group.ownerKey, namespace, evidence, hasher, maxPageBytes: writePageBytes });
         for (const page of plan.pages) { validateConstructionSourceDecisionPage(page, group.ownerKey, hasher, writePageBytes);
@@ -132,7 +153,7 @@ export function createConstructionSourceDecisionStore(host: ConstructionSourceDe
           JOIN jsonb_to_recordset($1::jsonb) AS expected(id text,owner_key text,kind text,value_json jsonb,information_label jsonb) ON expected.id=page.id
           WHERE page.owner_key=expected.owner_key AND page.kind=expected.kind AND page.value_json=expected.value_json
             AND page.information_label=expected.information_label AND ${access.sql}`, [serialized, ...access.params]);
-        if (new Set(found.map(row => row.id)).size !== batch.length || found.some(row => !batch.some(expected => expected.page.id === row.id))) return fail();
+        if (new Set(found.map(row => row.id)).size !== batch.length || found.some(row => !batch.some(expected => expected.page.id === row.id))) return fail("page_write_readback_mismatch");
       }
       return inputs.map((input, index) => { const next = replace(input.value, node => replacements[index]!.get(node)); return next === input.value ? input.value : withLedger(next, input); });
       });

@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { constructionSourceDecisionPageId, createConstructionSourceDecisionRestorer, normalizeConstructionSourceDecisions,
+import { createSourceConstructionComponentOwner, sourceConstructionComponentPatternId, constructionSourceDecisionPageId, createConstructionSourceDecisionRestorer, normalizeConstructionSourceDecisions,
   restoreConstructionSourceDecision, validateConstructionSourceDecisionPage, type ConstructionSourceDecisionPage } from "../construction-source-decision-storage.js";
 import { constructionSourceExampleStorageJson as exactJson, encodeConstructionSourceExamples } from "../construction-source-example-storage.js";
 import { createHasher } from "../primitives.js";
@@ -223,4 +223,36 @@ describe("source-owned construction decision pages", () => {
     expect(coldState.rejected).toEqual([]);
     expect(coldState).toEqual(hydrateLanguageConstructionPatterns({ patterns, evidence: [evidence], hasher }));
   });
+  it("cold-verifies immutable component-owned rows while preserving the compiler's original bundles and historical rows", () => {
+    const evidence = { ...sources[0]!, status: "promoted" as const, alpha: 0.9, observedAt: 1 };
+    const owner = createSourceConstructionComponentOwner({ sourceId: String(evidence.sourceId), sourceVersionId: String(evidence.sourceVersionId),
+      sourceContentHash: String(evidence.contentHash), profileId: "profile.owned", componentRecipe: "kernel.language_construction_active_projection.v1" }, hasher);
+    const original = Array.from({ length: 16 }, (_, i) => compileLanguageConstructionPattern({
+      bindingId: `language.source_relation.${hasher.digestHex(`component.${i}`).slice(0, 32)}`, profileId: "profile.owned", evidence: [evidence], hasher, updatedAt: 1,
+      storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE, observations: [0, 9, 18, 27].map(start => ({ sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
+        surfaceStartCodePoint: start, surfaceEndCodePoint: start + 7, roles: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: 2 },
+          { slotIndex: 1, startCodePoint: 3, endCodePoint: 5 }, { slotIndex: 2, startCodePoint: 6, endCodePoint: 7 }] }))
+    })).map(result => { if (result.status !== "compiled") throw Error("compile failed"); return result.pattern; });
+    const before = JSON.stringify(original);
+    const component = original.map(pattern => ({ ...pattern,
+      id: sourceConstructionComponentPatternId({ componentOwner: owner, patternId: pattern.id,
+        contentDigest: String((pattern.patternJson as Record<string, JsonValue>).contentDigest) }, hasher),
+      patternJson: { ...(pattern.patternJson as Record<string, JsonValue>), sourceConstructionComponent: owner as unknown as JsonValue } }));
+    expect(component.every((pattern, i) => pattern.id !== original[i]!.id)).toBe(true);
+    const plan = normalizeConstructionSourceDecisions(component.map(pattern => pattern.patternJson), {
+      ownerKey: owner.id, namespace, evidence: [evidence], hasher, maxPageBytes: 32768 });
+    expect(plan.pages.length).toBeGreaterThan(0);
+    const restore = createConstructionSourceDecisionRestorer(new Map(cold(plan.pages).map(page => [page.id, page])), owner.id, hasher);
+    const restored = component.map((pattern, i) => ({ ...pattern, patternJson: restore(cold(plan.patterns[i])) as JsonValue }));
+    expect(restored).toEqual(component);
+    const hydrated = hydrateLanguageConstructionPatterns({ patterns: restored, evidence: [evidence], hasher });
+    expect(hydrated.rejected).toEqual([]);
+    expect(hydrated.bundles).toEqual(hydrateLanguageConstructionPatterns({ patterns: original, evidence: [evidence], hasher }).bundles);
+    expect(JSON.stringify(original)).toBe(before);
+    expect(hydrateLanguageConstructionPatterns({ patterns: [{ ...component[0]!, id: original[0]!.id }], evidence: [evidence], hasher }).rejected.length).toBeGreaterThan(0);
+    const forged = cold(component[0]!);
+    (forged.patternJson.sourceConstructionComponent as Record<string, JsonValue>).profileId = "foreign";
+    expect(hydrateLanguageConstructionPatterns({ patterns: [forged], evidence: [evidence], hasher }).rejected.length).toBeGreaterThan(0);
+  });
+
 });
