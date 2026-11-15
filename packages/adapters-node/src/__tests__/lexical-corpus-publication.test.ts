@@ -5,14 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, expect, it } from "vitest";
-import { createHasher, LEXICAL_GRAMMAR_SCHEMA, LEXICAL_SENSE_SCHEMA, SOURCE_QUESTION_FRAME_SCHEMA, verifySourceOwnedLexicalPattern,
+import { createHasher, createClock, createIdFactory, LEXICAL_GRAMMAR_SCHEMA, LEXICAL_SENSE_SCHEMA, SOURCE_QUESTION_FRAME_SCHEMA, verifySourceOwnedLexicalPattern,
   type EvidenceSpan, type InformationLabel, type IngestionCheckpoint, type LanguageIdentityRecord,
-  type LanguagePatternRecord, type LanguageProfile, type SourceVersion } from "@scce/kernel";
+  type LanguagePatternRecord, type LanguageProfile, type SourceVersion, type EvidenceSpanReference, type NgramModelRecord, type NgramObservation } from "@scce/kernel";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { captureFixtureLanguagePatternProjections, removeFixtureLanguagePatternProjections } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { readBoundedLexicalCorpusSource, LexicalCorpusCapacityError } from "../lexical-corpus-store.js";
 import { ingestUdLexicalCorpus, readUdLexicalGrammar } from "../ud-lexical-corpus.js";
 import { ingestWordnetCorpus } from "../wordnet-corpus.js";
+import { trainLanguageCorpusText, prepareLanguageCorpusTraining } from "../language-corpus-trainer.js";
 
 const label: InformationLabel = { tenantId: "lexical.tests", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" };
 const hasher = createHasher(), hash = (bytes: Uint8Array | string) => `sha256_${hasher.digestHex(bytes)}`;
@@ -27,6 +28,7 @@ function fixture() {
   const storage = base.storage;
   let state = { sources: new Map<string, SourceVersion>(), spans: new Map<string, EvidenceSpan>(), blobs: new Map<string, Uint8Array>(),
     patterns: new Map<string, LanguagePatternRecord>(), profiles: new Map<string, LanguageProfile>(), checkpoints: new Map<string, IngestionCheckpoint>(),
+    models: new Map<string, NgramModelRecord>(), observations: new Map<string, NgramObservation>(),
     assignments: [] as Array<{ profileId: string; languageId: string }> };
   const identity: LanguageIdentityRecord = { schema: "scce.language_identity.v2", id: "identity.measured", script: "", directions: [],
     closedClass: [{ word: "é", documentShare: 1 }], families: [], corpusRoles: [], profileCount: 1, membershipCut: 0, createdAt: 1, informationLabel: label };
@@ -38,6 +40,12 @@ function fixture() {
   storage.evidence.getEvidenceBatch = async ids => ids.flatMap(id => state.spans.get(id) ?? []);
   storage.evidence.sourceVersionById = async id => state.sources.get(id) ?? null;
   storage.evidence.sourceVersionsForEvidence = async ids => [...new Set(ids.flatMap(id => state.spans.get(id)?.sourceVersionId ?? []))].flatMap(id => state.sources.get(id) ?? []);
+  storage.evidence.resolveEvidenceSpanReferences = async input => input.spans.flatMap(expected => {
+    const span = state.spans.get(expected.id) ?? [...state.spans.values()].filter(row => row.sourceVersionId === input.sourceVersionId
+      && row.byteStart === expected.byteStart && row.byteEnd === expected.byteEnd && row.contentHash === expected.contentHash).sort((a, b) => String(a.id).localeCompare(String(b.id)))[0];
+    return span ? [Object.fromEntries(["id", "chunkId", "sourceId", "sourceVersionId", "contentHash", "mediaType", "byteStart", "byteEnd", "charStart", "charEnd", "status", "alpha", "observedAt", "informationLabel"]
+      .map(key => [key, span[key as keyof EvidenceSpan]])) as EvidenceSpanReference] : [];
+  });
   storage.blobs.put = async bytes => { const id = hash(bytes); state.blobs.set(id, new Uint8Array(bytes)); return id as SourceVersion["contentHash"]; };
   storage.blobs.get = async id => { const bytes = state.blobs.get(id); if (!bytes) throw new Error("missing canonical blob"); return bytes; };
   storage.blobs.putRanges = async (rows, parent) => {
@@ -48,6 +56,12 @@ function fixture() {
   storage.model.putLanguageProfile = async row => { state.profiles.set(row.id, row); };
   storage.model.listLanguageProfiles = async () => [...state.profiles.values()];
   storage.languageMemory.putLanguagePattern = async row => { state.patterns.set(row.id, row); };
+  storage.languageMemory.putNgramModel = async row => { state.models.set(row.id, row); };
+  storage.languageMemory.putNgramModels = async rows => { for (const row of rows) state.models.set(row.id, row); };
+  storage.languageMemory.putNgramObservation = async row => { state.observations.set(row.id, row); };
+  storage.languageMemory.putNgramObservationsBatch = async rows => { for (const row of rows) state.observations.set(row.id, row); };
+  storage.languageMemory.listNgramModels = async () => [...state.models.values()];
+  storage.languageMemory.listNgramObservations = async () => [...state.observations.values()];
   storage.languageMemory.listLanguagePatterns = async query => [...state.patterns.values()].filter(row => (!query?.patternIds || query.patternIds.includes(row.id))
     && (!query?.patternSchemas || query.patternSchemas.includes(String((row.patternJson as { schema?: string }).schema)))).slice(0, query?.limit);
   storage.ingestion = { get: async id => state.checkpoints.get(id) ?? null,
@@ -139,6 +153,129 @@ it("replays a complete durable checkpoint after a lost commit acknowledgement wi
   expect(f.events).toHaveLength(eventCount);
   expect(f.state().assignments).toEqual(assignments);
   expect(result.checkpointed).toBe(true);
+});
+
+it("reuses exact retained raw owners and aliased evidence while adding only newly observed annotation ranges", async () => {
+  const seed = fixture();
+  await trainLanguageCorpusText({ storage: seed.storage, sourceSystem: "gutenberg", streamUri: "fixture://prior-language", sourceUri: "fixture://prior-language",
+    text: "é links tea. é links coffee.", createdAt: 1, informationLabel: label, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
+  const text = await readFile(new URL("./fixtures/ud-ewt-question-excerpt.conllu", import.meta.url), "utf8");
+  const identity = (await seed.storage.languageIdentities!.listIdentities())[0]!;
+  seed.storage.languageIdentities!.listIdentities = async () => [{ ...identity, closedClass: [{ word: "what", documentShare: 1 }] }];
+  const first = await ingestUdLexicalCorpus({ ...udInput(seed.storage), text });
+  const raw = seed.state().sources.get(first.annotationSourceVersionId)!, ids = createIdFactory({ clock: createClock(), hasher });
+  const retained: SourceVersion = { ...structuredClone(raw), sourceId: ids.sourceId("retained.annotations", raw.canonicalUri),
+    sourceVersionId: ids.sourceVersionId(`retained-owner:${raw.contentHash}`), namespace: "retained.annotations", role: undefined,
+    metadata: { retainedMetadata: "keep exactly", license: "test", lexiconId: "ud.fixture", language: "fixture" } };
+  const prior = fixture(); Object.assign(prior.state(), structuredClone(seed.state())); prior.events.push(...structuredClone(seed.events));
+  prior.state().checkpoints.clear(); prior.state().sources.set(retained.sourceVersionId, retained);
+  prior.storage.languageIdentities!.listIdentities = seed.storage.languageIdentities!.listIdentities;
+  const retainedSpans = [...seed.state().spans.values()].filter(span => span.sourceVersionId === raw.sourceVersionId && !span.text.startsWith("# text ="))
+    .map((span, index): EvidenceSpan => ({ ...structuredClone(span), id: `${span.id}.retained.${index}` as EvidenceSpan["id"],
+      sourceId: retained.sourceId, sourceVersionId: retained.sourceVersionId, features: ["opaque.retained.feature"], provenance: { retained: "verbatim" } }));
+  for (const span of retainedSpans) prior.state().spans.set(span.id, span);
+  const rawBefore = structuredClone(retained), spansBefore = structuredClone(retainedSpans), ngrams = structuredClone([...prior.state().models]), observations = structuredClone([...prior.state().observations]);
+  const putSource = prior.storage.evidence.putSourceVersion, putSpans = prior.storage.evidence.putEvidenceSpans!, putBlob = prior.storage.blobs.put;
+  prior.storage.evidence.putSourceVersion = async row => { expect(row.sourceVersionId).not.toBe(retained.sourceVersionId); await putSource(row); };
+  prior.storage.evidence.putEvidenceSpans = async rows => { expect(rows.some(row => retainedSpans.some(old => old.id === row.id))).toBe(false); await putSpans(rows); };
+  prior.storage.blobs.put = async (bytes, mediaType) => { expect(hash(bytes)).not.toBe(retained.contentHash); return putBlob(bytes, mediaType); };
+  const result = await ingestUdLexicalCorpus({ ...udInput(prior.storage), text, retainedSourceVersionId: retained.sourceVersionId });
+  expect(result.annotationSourceVersionId).toBe(retained.sourceVersionId);
+  expect(result.sourceVersionId).not.toBe(first.sourceVersionId);
+  expect(prior.state().sources.get(retained.sourceVersionId)).toEqual(rawBefore);
+  for (const span of spansBefore) expect(prior.state().spans.get(span.id)).toEqual(span);
+  const rawSpans = [...prior.state().spans.values()].filter(span => span.sourceVersionId === retained.sourceVersionId);
+  expect(rawSpans).toHaveLength(retainedSpans.length + 1);
+  expect(rawSpans.filter(span => !retainedSpans.some(old => old.id === span.id)).map(span => span.text)).toEqual(["# text = What is the problem?"]);
+  expect([...prior.state().models]).toEqual(ngrams); expect([...prior.state().observations]).toEqual(observations);
+  const cold = structuredClone(prior.state()), source = cold.sources.get(result.sourceVersionId)!;
+  const lexicalSchemas: readonly string[] = [LEXICAL_GRAMMAR_SCHEMA, SOURCE_QUESTION_FRAME_SCHEMA];
+  const published = [...cold.patterns.values()].filter(row => row.profileId === result.profileId && lexicalSchemas.includes(String((row.patternJson as { schema?: string }).schema)));
+  expect(published).toHaveLength(result.patterns);
+  for (const pattern of published) expect(verifySourceOwnedLexicalPattern({ pattern, source, evidenceOwners: [cold.sources.get(retained.sourceVersionId)!],
+    evidence: pattern.evidenceIds.map(id => cold.spans.get(id)!) }, { hasher, informationAccess: { tenantId: label.tenantId, principalId: "reader", compartments: [], maximumExportClass: "public" } })).toBeDefined();
+  const counts = { sources: prior.state().sources.size, spans: prior.state().spans.size, profiles: prior.state().profiles.size, events: prior.events.length };
+  expect(await ingestUdLexicalCorpus({ ...udInput(prior.storage), text, retainedSourceVersionId: retained.sourceVersionId })).toEqual(result);
+  expect({ sources: prior.state().sources.size, spans: prior.state().spans.size, profiles: prior.state().profiles.size, events: prior.events.length }).toEqual(counts);
+});
+
+it("uses one exact derivative identity for fresh and retained instances of the same raw owner", async () => {
+  const f = fixture();
+  const input = { storage: f.storage, sourceSystem: "workspace", streamUri: "fixture://derivative", sourceUri: "fixture://derivative", text: "é", exactSourceText: true,
+    informationLabel: label, createdAt: 1, languageOnly: true, skipNgramPersistence: true,
+    corpusCheckpoint: { rootUri: "fixture://projection-root", itemUri: "fixture://derivative", contentHash: hash(conllu), byteLength: Buffer.byteLength(conllu) },
+    originalSource: { bytes: Buffer.from(conllu), sourceUri: "fixture://raw", mediaType: "text/plain", transformId: "fixture.source_projection.v1" } };
+  const fresh = await trainLanguageCorpusText(input), original = f.state().sources.get(fresh.originalSourceVersionId)!;
+  const retained = await prepareLanguageCorpusTraining({ ...input, originalSource: { ...input.originalSource, retainedSourceVersionId: original.sourceVersionId } });
+  expect(retained.sourceVersionId).toBe(fresh.sourceVersionId);
+  expect(retained.inputBinding).toBe((await prepareLanguageCorpusTraining(input)).inputBinding);
+  const eventCount = f.events.length;
+  expect(await trainLanguageCorpusText({ ...input, originalSource: { ...input.originalSource, retainedSourceVersionId: original.sourceVersionId } })).toEqual(fresh);
+  expect(f.events).toHaveLength(eventCount);
+  const ids = createIdFactory({ clock: createClock(), hasher }), other = { ...original, sourceId: ids.sourceId("another.canonical.owner", original.canonicalUri),
+    sourceVersionId: ids.sourceVersionId("another canonical owner") };
+  f.state().sources.set(other.sourceVersionId, other);
+  const changed = { ...input, originalSource: { ...input.originalSource, retainedSourceVersionId: other.sourceVersionId } };
+  expect((await prepareLanguageCorpusTraining(changed)).sourceVersionId).not.toBe(fresh.sourceVersionId);
+  await expect(trainLanguageCorpusText(changed)).rejects.toThrow("checkpoint binding mismatch");
+  await expect(prepareLanguageCorpusTraining({ ...changed, sourceVersionId: original.sourceVersionId })).rejects.toThrow("canonical lineage");
+  await expect(prepareLanguageCorpusTraining({ ...changed, informationLabel: { ...label, exportClass: "restricted", principals: ["reader"] } })).rejects.toThrow("exact source binding");
+});
+
+it("reuses an already canonical computed original owner without requiring an execution-mode flag", async () => {
+  const seed = fixture(), first = await ingestUdLexicalCorpus(udInput(seed.storage)), raw = seed.state().sources.get(first.annotationSourceVersionId)!;
+  const f = fixture(), original = { ...structuredClone(raw), role: undefined, metadata: { ...raw.metadata as object, acquiredEarlier: true } };
+  f.state().sources.set(original.sourceVersionId, original);
+  for (const [id, bytes] of seed.state().blobs) f.state().blobs.set(id, new Uint8Array(bytes));
+  const spans = [...seed.state().spans.values()].filter(span => span.sourceVersionId === original.sourceVersionId)
+    .map(span => ({ ...structuredClone(span), id: `${span.id}.opaque` as EvidenceSpan["id"], provenance: { earlier: "retain verbatim" } }));
+  for (const span of spans) f.state().spans.set(span.id, span);
+  const rawBefore = structuredClone(original), spansBefore = structuredClone(spans);
+  const putSource = f.storage.evidence.putSourceVersion, putSpans = f.storage.evidence.putEvidenceSpans!;
+  f.storage.evidence.putSourceVersion = async row => { expect(row.sourceVersionId).not.toBe(original.sourceVersionId); await putSource(row); };
+  f.storage.evidence.putEvidenceSpans = async rows => { expect(rows.some(row => row.sourceVersionId === original.sourceVersionId)).toBe(false); await putSpans(rows); };
+  const result = await ingestUdLexicalCorpus(udInput(f.storage));
+  expect(result.sourceVersionId).toBe(first.sourceVersionId);
+  expect(f.state().sources.get(original.sourceVersionId)).toEqual(rawBefore);
+  for (const span of spansBefore) expect(f.state().spans.get(span.id)).toEqual(span);
+  expect([...f.state().spans.values()].filter(span => span.sourceVersionId === original.sourceVersionId)).toHaveLength(spans.length);
+  const events = f.events.length;
+  expect(await ingestUdLexicalCorpus({ ...udInput(f.storage), retainedSourceVersionId: original.sourceVersionId })).toEqual(result);
+  expect(f.events).toHaveLength(events);
+});
+
+it("reuses retained WordNet annotation rows during current-projection repair without rewriting the raw owner", async () => {
+  const f = fixture(), input = { storage: f.storage, text: wordnet, sourceUri: "fixture://retained/wordnet", informationLabel: label, maxSourceBytes: 65536, updatedAt: 1 };
+  const first = await ingestWordnetCorpus(input), original = f.state().sources.get(first.annotationSourceVersionId)!;
+  const rawBefore = structuredClone(original), spansBefore = structuredClone([...f.state().spans.values()].filter(span => span.sourceVersionId === original.sourceVersionId));
+  const counts = { sources: f.state().sources.size, spans: f.state().spans.size, profiles: f.state().profiles.size };
+  const putSource = f.storage.evidence.putSourceVersion, putSpans = f.storage.evidence.putEvidenceSpans!, putBlob = f.storage.blobs.put;
+  f.storage.evidence.putSourceVersion = async row => { expect(row.sourceVersionId).not.toBe(original.sourceVersionId); await putSource(row); };
+  f.storage.evidence.putEvidenceSpans = async rows => { expect(rows.some(row => spansBefore.some(old => old.id === row.id))).toBe(false); await putSpans(rows); };
+  f.storage.blobs.put = async (bytes, mediaType) => { expect(hash(bytes)).not.toBe(original.contentHash); return putBlob(bytes, mediaType); };
+  removeFixtureLanguagePatternProjections(f.storage.languageMemory);
+  const repaired = await ingestWordnetCorpus({ ...input, retainedSourceVersionId: original.sourceVersionId });
+  expect(repaired).toEqual(first);
+  expect({ sources: f.state().sources.size, spans: f.state().spans.size, profiles: f.state().profiles.size }).toEqual(counts);
+  expect(f.state().sources.get(original.sourceVersionId)).toEqual(rawBefore);
+  for (const span of spansBefore) expect(f.state().spans.get(span.id)).toEqual(span);
+  const cold = structuredClone(f.state()), source = cold.sources.get(repaired.sourceVersionId)!;
+  for (const pattern of [...cold.patterns.values()].filter(row => row.profileId === repaired.profileId && (row.patternJson as { schema?: string }).schema === LEXICAL_SENSE_SCHEMA)) {
+    expect(verifySourceOwnedLexicalPattern({ pattern, source, evidenceOwners: [cold.sources.get(original.sourceVersionId)!],
+      evidence: pattern.evidenceIds.map(id => cold.spans.get(id)!) }, { hasher, informationAccess: { tenantId: label.tenantId, principalId: "reader", compartments: [], maximumExportClass: "public" } })).toBeDefined();
+  }
+});
+
+it.each(["quarantined", "coordinates", "label"])("does not replace a retained annotation whose %s port is invalid", async failure => {
+  const f = fixture(), first = await ingestUdLexicalCorpus(udInput(f.storage)), original = f.state().sources.get(first.annotationSourceVersionId)!;
+  const span = [...f.state().spans.values()].find(row => row.sourceVersionId === original.sourceVersionId)!;
+  if (failure === "quarantined") span.status = "quarantined";
+  if (failure === "coordinates") span.charEnd++;
+  if (failure === "label") span.informationLabel = { ...label, exportClass: "restricted", principals: ["reader"] };
+  const before = structuredClone({ sources: [...f.state().sources], spans: [...f.state().spans], profiles: [...f.state().profiles] });
+  removeFixtureLanguagePatternProjections(f.storage.languageMemory);
+  await expect(ingestUdLexicalCorpus({ ...udInput(f.storage), retainedSourceVersionId: original.sourceVersionId })).rejects.toThrow("retained source evidence range");
+  expect({ sources: [...f.state().sources], spans: [...f.state().spans], profiles: [...f.state().profiles] }).toEqual(before);
 });
 
 it("compiles genuine UD HEAD-aligned question frames through the same verified raw annotation publication", async () => {

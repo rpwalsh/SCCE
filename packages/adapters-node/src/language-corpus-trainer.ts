@@ -226,6 +226,7 @@ export interface SourceOwnedPatternProjection {
 export interface CorpusOriginalSource {
   bytes: Uint8Array;
   sourceUri: string;
+  retainedSourceVersionId?: SourceVersionId;
   transformId: string;
   kind?: "redacted-text" | "extracted-text";
   originalCoordinateSpace?: "source-bytes" | "extracted-text-utf8";
@@ -310,6 +311,8 @@ interface PreparedLanguageCorpusPayload {
   mediaType: string;
   source?: SourceVersion;
   originalSource?: SourceVersion;
+  retainedOriginalSource?: boolean;
+  reusedOriginalEvidenceIds?: readonly EvidenceSpan["id"][];
   quarantine?: QuarantineSource;
   profile: LanguageProfile;
   evidence: EvidenceSpan[];
@@ -407,6 +410,38 @@ function validateOriginalSourceBinding(input: LanguageCorpusTrainingInput): void
   }
 }
 
+async function readRetainedOriginalSource(input: LanguageCorpusTrainingInput, verifyBlob: boolean): Promise<SourceVersion | undefined> {
+  const original = input.originalSource;
+  if (!original) return undefined;
+  const lookup = input.storage.evidence.sourceVersionById;
+  if (!lookup) {
+    if (original.retainedSourceVersionId) throw new Error("retained original source requires canonical source lookup");
+    return undefined;
+  }
+  if (original.retainedSourceVersionId && !input.informationLabel) throw new Error("retained original source requires explicit information ownership");
+  const expectedVersion = originalSourceVersionIdentity(input)!, source = await lookup.call(input.storage.evidence, expectedVersion);
+  if (!source && !original.retainedSourceVersionId) return undefined;
+  const contentHash = blobContentHash(original.bytes), label = normalizeInformationLabel(input.informationLabel ?? verifiedPublicCorpusLabel(canonicalCorpusSourceSystemId(input.sourceSystem)));
+  if (!source || source.sourceVersionId !== expectedVersion || source.canonicalUri !== original.sourceUri
+    || source.contentHash !== contentHash || source.byteLength !== original.bytes.byteLength || original.mediaType !== undefined && source.mediaType !== original.mediaType
+    || !source.informationLabel || canonicalStringify(normalizeInformationLabel(source.informationLabel)) !== canonicalStringify(label)) throw new Error("retained original source is inaccessible or differs from its exact source binding");
+  if (verifyBlob) {
+    const bytes = await input.storage.blobs.get(source.contentHash);
+    if (bytes.byteLength !== source.byteLength || blobContentHash(bytes) !== contentHash) throw new Error("retained original source bytes are missing or changed");
+  }
+  return source;
+}
+
+function originalSourceVersionIdentity(input: LanguageCorpusTrainingInput): SourceVersionId | undefined {
+  const original = input.originalSource;
+  if (!original) return undefined;
+  if (original.retainedSourceVersionId) return original.retainedSourceVersionId;
+  const hasher = createHasher(), ids = input.idFactory ?? createIdFactory({ clock: input.clock ?? createClock(), hasher });
+  return ids.sourceVersionId(canonicalStringify({ contract: "scce.corpus-source-version.v1",
+    sourceId: ids.sourceId(input.namespace ?? `corpus:${canonicalCorpusSourceSystemId(input.sourceSystem)}`, original.sourceUri),
+    contentHash: blobContentHash(original.bytes), role: "original" }));
+}
+
 function checkpointMetadata(input: LanguageCorpusTrainingInput, binding: string, report?: LanguageCorpusTrainingReport): JsonValue {
   const checkpoint = input.corpusCheckpoint!;
   return toJsonValue({
@@ -472,6 +507,7 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
   if (graphProjectionEnabled) {
     components.sourceEntityGraph = SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID;
   }
+  if (input.exactSourceText) components.exactSourceIdentity = "scce.exact_source_version.v2";
   for (const projection of input.sourceOwnedPatternProjections ?? []) components[`sourceOwned:${projection.patternSchema}`] = projection.componentRecipe;
   return components;
 }
@@ -527,6 +563,8 @@ export async function readCompletedCorpusCheckpoint(input: LanguageCorpusTrainin
 }
 
 async function checkpointPatternProjectionsCurrent(input: LanguageCorpusTrainingInput, report: LanguageCorpusTrainingReport): Promise<boolean> {
+  const retained = await readRetainedOriginalSource(input, false);
+  if (retained && (report.originalSourceVersionId !== retained.sourceVersionId || report.sourceContentHash !== retained.contentHash)) throw new CorpusCheckpointConflictError("retained original source differs from the completed publication");
   const creative = report.creativeSurfacePatternProjection;
   if (corpusComponentRecipes(input).creativeSurfaceAcquisition && (!creative || creative.componentRecipe !== CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID)) return false;
   if (!input.sourceOwnedPatternProjections?.length && !creative) return true;
@@ -623,6 +661,7 @@ function trainingInputBinding(input: LanguageCorpusTrainingInput, batchRecipe: s
       kind: input.originalSource.kind ?? "extracted-text",
       originalCoordinateSpace: input.originalSource.originalCoordinateSpace ?? "source-bytes",
       ...(input.originalSource.mediaType ? { mediaType: input.originalSource.mediaType } : {}),
+      sourceVersionId: originalSourceVersionIdentity(input),
       contentHash: blobContentHash(input.originalSource.bytes),
       byteLength: input.originalSource.bytes.byteLength
     } as unknown as typeof semantic.originalSource;
@@ -821,6 +860,7 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   input = await resolveTrainingSegmentationInput(input);
   // Both source-owning and aggregate callers get an atomic learned write. CPU compilation precedes it.
   validateOriginalSourceBinding(input);
+  await readRetainedOriginalSource(input, false);
   if (input.corpusCheckpoint) {
     const replay = await prepareCorpusCheckpoint(input, checkpointBinding(input));
     if (replay) return replay;
@@ -846,6 +886,7 @@ export async function commitLanguageCorpusTraining(
 ): Promise<LanguageCorpusTrainingReport> {
   input = await resolveTrainingSegmentationInput(input, preparations.get(prepared)?.segmentation);
   validateOriginalSourceBinding(input);
+  await readRetainedOriginalSource(input, false);
   if (input.corpusCheckpoint) {
     const replay = await prepareCorpusCheckpoint(input, checkpointBinding(input));
     if (replay) return replay;
@@ -935,8 +976,6 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const createdAt = input.createdAt ?? clock.now();
   const text = input.exactSourceText ? input.text : normalizeCorpusTrainingText(input.text);
   const bytes = Buffer.from(text, "utf8");
-  const sourceVersionId = input.sourceVersionId ?? (input.exactSourceText
-    ? ids.sourceVersionId(`${sourceUri}\u001f${hasher.digestHex(bytes)}`) : corpusSourceVersionIdFor({ sourceUri, text }));
   const sourceId = ids.sourceId(namespace, sourceUri);
   const originalSpec = input.originalSource;
   if (originalSpec && !originalSpec.transformId.trim()) throw new Error("corpus original source requires a non-empty transformId");
@@ -944,16 +983,21 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   // instead of cloning a second full raw document beside the compiled batch.
   const originalBytes = originalSpec?.bytes;
   const originalSourceUri = originalSpec?.sourceUri ?? sourceUri;
-  const originalSourceId = originalSpec ? ids.sourceId(namespace, originalSourceUri) : undefined;
+  const retainedOriginalSource = await readRetainedOriginalSource(input, true);
+  const originalSourceId = retainedOriginalSource?.sourceId ?? (originalSpec ? ids.sourceId(namespace, originalSourceUri) : undefined);
   const originalContentHash = originalBytes ? blobContentHash(originalBytes) : undefined;
-  const originalSourceVersionId = originalSpec && originalSourceId && originalContentHash
-    ? ids.sourceVersionId(canonicalStringify({
-      contract: "scce.corpus-source-version.v1",
-      sourceId: originalSourceId,
-      contentHash: originalContentHash,
-      role: "original"
-    }))
-    : undefined;
+  const originalSourceVersionId = retainedOriginalSource?.sourceVersionId ?? originalSourceVersionIdentity(input);
+  const sourceVersionId = input.sourceVersionId ?? (input.exactSourceText
+    ? ids.sourceVersionId(canonicalStringify({ contract: "scce.exact_source_version.v2", sourceUri, contentHash: blobContentHash(bytes),
+      ...(originalSpec && originalSourceVersionId ? { originalSourceVersionId, transformId: originalSpec.transformId,
+        kind: originalSpec.kind ?? "extracted-text", originalCoordinateSpace: originalSpec.originalCoordinateSpace ?? "source-bytes" } : {}) }))
+    : corpusSourceVersionIdFor({ sourceUri, text }));
+  if (input.sourceVersionId && originalSpec && originalSourceVersionId) {
+    if (!input.storage.evidence.sourceVersionById) throw new Error("an explicit derivative source version requires canonical lineage lookup");
+    const existing = await input.storage.evidence.sourceVersionById(input.sourceVersionId);
+    if (existing && (existing.sourceId !== sourceId || existing.canonicalUri !== sourceUri || existing.contentHash !== blobContentHash(bytes)
+      || existing.derivation?.derivedFromSourceVersionId !== originalSourceVersionId || existing.derivation.transformId !== originalSpec.transformId)) throw new Error("explicit derivative source version differs from its canonical lineage");
+  }
   let profile: LanguageProfile = {
     ...(input.profile ?? language.acquire({ sourceVersionId, text, createdAt })),
     informationLabel: sourceInformationLabel
@@ -975,7 +1019,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
 
   let evidence = [...(input.evidence ?? [])];
   let source: SourceVersion | undefined;
-  let originalSource: SourceVersion | undefined;
+  let originalSource: SourceVersion | undefined = retainedOriginalSource;
   let quarantine: QuarantineSource | undefined;
   let admission: LanguageCorpusTrainingReport["admission"] = { disposition: "not_applicable", reasons: ["this lane persists no source version of its own"] };
   if (!evidence.length && input.persistSource !== false) {
@@ -1008,7 +1052,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       } : {})
     };
     if (originalSpec && originalSourceId && originalSourceVersionId && originalContentHash && originalBytes) {
-      originalSource = {
+      originalSource = retainedOriginalSource ?? {
         sourceId: originalSourceId,
         sourceVersionId: originalSourceVersionId,
         namespace,
@@ -1272,7 +1316,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     hasher
   });
 
-  const auxiliary = prepareSourceOwnedPatterns({ input, source, originalSource, profile, evidence, informationLabel, ids, hasher, createdAt });
+  const auxiliary = await prepareSourceOwnedPatterns({ input, source, originalSource, profile, evidence, informationLabel, ids, hasher, createdAt,
+    reuseOriginalEvidence: retainedOriginalSource !== undefined });
   evidence.push(...auxiliary.evidence);
   patterns.push(...auxiliary.patterns.map(pattern => ({ ...pattern, informationLabel })));
 
@@ -1330,6 +1375,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     mediaType: input.mediaType ?? "text/plain",
     source,
     originalSource,
+    retainedOriginalSource: retainedOriginalSource !== undefined,
+    reusedOriginalEvidenceIds: auxiliary.reusedEvidenceIds,
     quarantine,
     profile,
     evidence,
@@ -1405,12 +1452,13 @@ export async function bindSourceConstructionComponents(input: {
   return patterns.map(pattern => owned.get(pattern.id) ?? pattern);
 }
 
-function prepareSourceOwnedPatterns(input: {
+async function prepareSourceOwnedPatterns(input: {
   input: LanguageCorpusTrainingInput; source?: SourceVersion; originalSource?: SourceVersion; profile: LanguageProfile;
   evidence: readonly EvidenceSpan[]; informationLabel: InformationLabel; ids: IdFactory; hasher: ReturnType<typeof createHasher>; createdAt: number;
-}): { evidence: EvidenceSpan[]; patterns: LanguagePatternRecord[]; projections: LanguagePatternProjection[] } {
+  reuseOriginalEvidence: boolean;
+}): Promise<{ evidence: EvidenceSpan[]; patterns: LanguagePatternRecord[]; projections: LanguagePatternProjection[]; reusedEvidenceIds: EvidenceSpan["id"][] }> {
   const declarations = input.input.sourceOwnedPatternProjections ?? [];
-  if (!declarations.length) return { evidence: [], patterns: [], projections: [] };
+  if (!declarations.length) return { evidence: [], patterns: [], projections: [], reusedEvidenceIds: [] };
   const source = input.source, original = input.originalSource, originalBytes = input.input.originalSource?.bytes;
   if (!source || !original || !originalBytes || source.sourceId === original.sourceId
     || source.derivation?.derivedFromSourceVersionId !== original.sourceVersionId || !input.evidence.length || input.evidence.some(span => span.status !== "promoted")) {
@@ -1422,6 +1470,7 @@ function prepareSourceOwnedPatterns(input: {
   const ranges = [...new Map(declarations.flatMap(declaration => declaration.patterns.flatMap(pattern => pattern.ranges))
     .map(range => [rangeKey(range), range])).values()].sort((left, right) => left.start - right.start || left.end - right.end);
   const spans = new Map<string, EvidenceSpan>();
+  const sourceAlpha = input.evidence.reduce((lowest, span) => Math.min(lowest, span.alpha), Number.POSITIVE_INFINITY);
   let priorStart = 0, priorByte = 0, priorChar = 0;
   for (const range of ranges) {
     if (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end) || range.start < priorStart || range.end <= range.start || range.end > text.length
@@ -1435,8 +1484,35 @@ function prepareSourceOwnedPatterns(input: {
       text: value, textPreview: value, languageHints: toJsonValue(input.input.languageAliases ?? []), scriptHints: toJsonValue(input.profile.scripts),
       trustVector: toJsonValue(original.sourceTrust), provenance: toJsonValue({ sourceSystem: corpusSourceAlias(input.input.sourceSystem), sourceKind: input.input.sourceKind,
         uri: original.canonicalUri, annotationSourceContentHash: original.contentHash }), features: [], status: "promoted",
-      alpha: Math.min(...input.evidence.map(span => span.alpha)), observedAt: input.createdAt, informationLabel: input.informationLabel });
+      alpha: sourceAlpha, observedAt: input.createdAt, informationLabel: input.informationLabel });
     priorStart = range.start; priorByte = byteStart; priorChar = charStart;
+  }
+  const reusedEvidenceIds: EvidenceSpan["id"][] = [];
+  if (input.reuseOriginalEvidence) {
+    const resolve = input.input.storage.evidence.resolveEvidenceSpanReferences;
+    if (!resolve) throw new Error("retained source annotations require exact evidence range resolution");
+    const references = await resolve.call(input.input.storage.evidence, { sourceVersionId: original.sourceVersionId, spans: [...spans.values()] });
+    if (references.length > spans.size || new Set(references.map(row => row.id)).size !== references.length) throw new Error("retained source evidence lookup has an invalid inventory");
+    const expectedById = new Map([...spans.values()].map(span => [span.id, span]));
+    const expectedRanges = new Set([...spans.values()].map(span => `${span.byteStart}:${span.byteEnd}:${span.contentHash}`));
+    const byRange = new Map<string, typeof references>();
+    for (const reference of references) {
+      const expected = expectedById.get(reference.id);
+      if (expected && (reference.byteStart !== expected.byteStart || reference.byteEnd !== expected.byteEnd || reference.contentHash !== expected.contentHash)) throw new Error("retained evidence ID differs from its exact annotation range");
+      const key = `${reference.byteStart}:${reference.byteEnd}:${reference.contentHash}`;
+      if (!reference.id || !reference.chunkId || !expectedRanges.has(key)) throw new Error("retained source evidence lookup returned an unrequested range");
+      const prior = byRange.get(key) ?? []; prior.push(reference); byRange.set(key, prior);
+    }
+    for (const [key, expected] of spans) {
+      const candidates = byRange.get(`${expected.byteStart}:${expected.byteEnd}:${expected.contentHash}`) ?? [];
+      const reference = candidates.find(row => row.id === expected.id) ?? candidates.sort((left, right) => String(left.id).localeCompare(String(right.id)))[0];
+      if (!reference) continue;
+      if (reference.sourceId !== original.sourceId || reference.sourceVersionId !== original.sourceVersionId || reference.status !== "promoted"
+        || reference.mediaType !== original.mediaType || reference.charStart !== expected.charStart || reference.charEnd !== expected.charEnd
+        || !Number.isFinite(reference.alpha) || !Number.isFinite(reference.observedAt)
+        || !reference.informationLabel || canonicalStringify(normalizeInformationLabel(reference.informationLabel)) !== canonicalStringify(input.informationLabel)) throw new Error("retained source evidence range is inaccessible or changed");
+      spans.set(key, { ...expected, ...reference }); reusedEvidenceIds.push(reference.id);
+    }
   }
   const patterns: LanguagePatternRecord[] = [], projections: LanguagePatternProjection[] = [];
   const dependencies: NonNullable<LanguagePatternProjection["sourceDependencies"]> = [
@@ -1462,7 +1538,7 @@ function prepareSourceOwnedPatterns(input: {
       patternSchema: declaration.patternSchema, componentRecipe: declaration.componentRecipe, informationLabel: input.informationLabel,
       patternIds: rows.map(row => row.id).sort(), sourceDependencies: dependencies });
   }
-  return { evidence: [...spans.values()], patterns, projections };
+  return { evidence: [...spans.values()], patterns, projections, reusedEvidenceIds };
 }
 
 function isSurrogateBoundary(text: string, offset: number): boolean {
@@ -1509,7 +1585,11 @@ function compactSourceCodeFunctionPatterns(input: {
 
 async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainingInput, prepared: PreparedLanguageCorpusPayload): Promise<LanguageCorpusTrainingReport> {
   if (prepared.source && prepared.quarantine) {
-    if (prepared.originalSource && prepared.originalBytes) {
+    if (prepared.originalSource) {
+      const existing = await readRetainedOriginalSource(input, false);
+      if (prepared.retainedOriginalSource && !existing || !prepared.retainedOriginalSource && existing) throw new Error("canonical original source availability changed after preparation; prepare again");
+    }
+    if (prepared.originalSource && prepared.originalBytes && !prepared.retainedOriginalSource) {
       const persistedOriginalHash = await input.storage.blobs.put(prepared.originalBytes, prepared.originalSource.mediaType);
       if (persistedOriginalHash !== prepared.originalSource.contentHash) throw new Error("language training original source blob hash mismatch");
       await input.storage.evidence.putSourceVersion(prepared.originalSource);
@@ -1518,16 +1598,18 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     if (persistedHash !== prepared.source.contentHash) throw new Error("language training source blob hash mismatch");
     if (prepared.transcriptArchive && await input.storage.blobs.put(prepared.transcriptArchive.bytes, "application/json") !== prepared.transcriptArchive.descriptor.archiveHash) throw Error("transcript archive publication hash mismatch");
     await input.storage.quarantine.put(prepared.quarantine);
-    const derivativeSpans = prepared.evidence.filter(span => span.sourceVersionId === prepared.source!.sourceVersionId);
-    const annotationSpans = prepared.evidence.filter(span => span.sourceVersionId !== prepared.source!.sourceVersionId);
+    const reused = new Set(prepared.reusedOriginalEvidenceIds ?? []);
+    const newEvidence = prepared.evidence.filter(span => !reused.has(span.id));
+    const derivativeSpans = newEvidence.filter(span => span.sourceVersionId === prepared.source!.sourceVersionId);
+    const annotationSpans = newEvidence.filter(span => span.sourceVersionId !== prepared.source!.sourceVersionId);
     await putSpanBlobs(input.storage.blobs, derivativeSpans, prepared.mediaType, { contentHash: persistedHash, bytes: prepared.bytes });
     if (annotationSpans.length) {
       if (!prepared.originalSource || !prepared.originalBytes || annotationSpans.some(span => span.sourceVersionId !== prepared.originalSource!.sourceVersionId)) throw new Error("language training evidence has no canonical source owner");
       await putSpanBlobs(input.storage.blobs, annotationSpans, prepared.originalSource.mediaType, { contentHash: prepared.originalSource.contentHash, bytes: prepared.originalBytes });
     }
     await input.storage.evidence.putSourceVersion(prepared.source);
-    if (input.storage.evidence.putEvidenceSpans) await input.storage.evidence.putEvidenceSpans(prepared.evidence);
-    else for (const span of prepared.evidence) await input.storage.evidence.putEvidenceSpan(span);
+    if (input.storage.evidence.putEvidenceSpans) await input.storage.evidence.putEvidenceSpans(newEvidence);
+    else for (const span of newEvidence) await input.storage.evidence.putEvidenceSpan(span);
     if (prepared.transcriptArchive && input.storage.evidence.sourceVersionById) {
       const current = await input.storage.evidence.sourceVersionById(prepared.source.sourceVersionId);
       if (canonicalStringify(jsonRecord(current?.metadata).transcriptArchive ?? null) !== canonicalStringify(toJsonValue(prepared.transcriptArchive.descriptor))) throw Error("transcript archive append was not accepted");

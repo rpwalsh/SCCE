@@ -4,6 +4,7 @@ import { Pool, type PoolClient } from "pg";
 import { CORPUS_ARCHIVE_KEY_PREFIX, corpusArchiveIdentity, createCanonicalBlobReader, readCanonicalBlob, type CanonicalBlobHost } from "./canonical-evidence-text.js";
 import { encodeCanonicalEvidenceSpanText, hydrateCanonicalEvidenceSpanText, type CanonicalEvidenceSpanSource, type CanonicalEvidenceSpanTextRecord } from "./canonical-evidence-span-text.js";
 import { ExactTransactionWriteCache } from "./exact-transaction-write-cache.js";
+import { resolveRetainedSourceEvidence } from "./retained-source-evidence.js";
 import { readWikipediaArchiveBlob } from "./wikipedia.js";
 import { isSourceOwnedProjectProjection, SOURCE_OWNED_PROJECT_PROJECTION_PREFIX, projectContractDependencyEligibilitySql } from "./source-owned-project-projection.js";
 import { consolidateCorpusSegmentation, loadCorpusSegmentationContextSlice } from "./corpus-segmentation-producer.js";
@@ -2054,6 +2055,9 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     },
     async getEvidenceBatch(ids) {
       return readEvidenceBatch(storage, ids);
+    },
+    async resolveEvidenceSpanReferences(input) {
+      return resolveRetainedSourceEvidence(storage, input);
     },
     async openingEvidenceForSourceVersions(sourceVersionIds) {
       if (sourceVersionIds.length === 0) return [];

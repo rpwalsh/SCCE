@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { lexicalLookupUnits, LEXICAL_SENSE_SCHEMA, LEXICAL_SENSE_RECIPE, toJsonValue, type InformationLabel, type LexicalSense, type ScceStorage } from "@scce/kernel";
+import { lexicalLookupUnits, LEXICAL_SENSE_SCHEMA, LEXICAL_SENSE_RECIPE, toJsonValue, type InformationLabel, type LexicalSense, type ScceStorage, type SourceVersionId } from "@scce/kernel";
 import { assertLexicalCorpusCapacity, persistLexicalCorpus } from "./lexical-corpus-store.js";
 
 interface XmlBlock { attributes: Record<string, string>; text: string; start: number; end: number }
@@ -66,6 +66,7 @@ export function readWordnetLmf(text: string): { lexiconId: string; language: str
 
 export async function ingestWordnetCorpus(input: { storage: ScceStorage; text: string; sourceUri: string; updatedAt?: number;
   informationLabel: InformationLabel; maxSourceBytes: number;
+  retainedSourceVersionId?: SourceVersionId;
   batchSize?: number; onProgress?: (value: { patterns: number; totalPatterns: number; evidence: number }) => void }) {
   assertLexicalCorpusCapacity(input.text,input);
   const parsed = readWordnetLmf(input.text);

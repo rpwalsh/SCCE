@@ -767,6 +767,9 @@ export interface EvidenceBackedSourceVersionInventory {
   aboveMaxArticleBytes: number;
 }
 
+export type EvidenceSpanReference = Pick<EvidenceSpan, "id" | "chunkId" | "sourceId" | "sourceVersionId" | "contentHash" | "mediaType"
+  | "byteStart" | "byteEnd" | "charStart" | "charEnd" | "status" | "alpha" | "observedAt" | "informationLabel">;
+
 export interface EvidenceStore {
   putSourceVersion(source: SourceVersion): Promise<void>;
   putEvidenceSpan(span: EvidenceSpan): Promise<void>;
@@ -774,6 +777,9 @@ export interface EvidenceStore {
   promoteEvidence(ids: EvidenceId[], reason: string): Promise<number>;
   getEvidence(id: EvidenceId): Promise<EvidenceSpan | null>;
   getEvidenceBatch(ids: EvidenceId[]): Promise<EvidenceSpan[]>;
+  /** Resolve existing exact source ranges without expanding their text, features or provenance. */
+  resolveEvidenceSpanReferences?(input: { sourceVersionId: SourceVersionId;
+    spans: readonly Pick<EvidenceSpanReference, "id" | "byteStart" | "byteEnd" | "contentHash">[] }): Promise<EvidenceSpanReference[]>;
   /**
    * Source-version projection only. Hydrating whole spans to read one column exhausted a 7 GB heap on a
    * 12,000-edge fit, so provenance-only consumers ask for provenance only.

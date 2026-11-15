@@ -651,6 +651,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_features ON ${q}.evidence_spans USING GIN(features)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source ON ${q}.evidence_spans(source_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source_version ON ${q}.evidence_spans(source_version_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_exact_source_range ON ${q}.evidence_spans(source_version_id,byte_start,byte_end,content_hash)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source_kind ON ${q}.evidence_spans(source_kind)`,
     // The title match is LIKE '%unit%' over source_name; only a trigram index serves an unanchored LIKE.
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source_name_trgm ON ${q}.evidence_spans USING gin(source_name gin_trgm_ops)`,

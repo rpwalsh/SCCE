@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, lexicalLookupUnits, LEXICAL_GRAMMAR_SCHEMA, LEXICAL_GRAMMAR_RECIPE, SOURCE_QUESTION_FRAME_SCHEMA, SOURCE_QUESTION_FRAME_RECIPE, toJsonValue,
-  type InformationLabel, type LexicalGrammarForm, type ScceStorage } from "@scce/kernel";
+  type InformationLabel, type LexicalGrammarForm, type ScceStorage, type SourceVersionId } from "@scce/kernel";
 import { conlluAttributes, readConlluDocuments, type ConlluSentence } from "./conllu-source-reader.js";
 import { assertLexicalCorpusCapacity, persistLexicalCorpus, type SourceLexicalPattern } from "./lexical-corpus-store.js";
 
@@ -71,6 +71,7 @@ function copularQuestionFrame(sentence: ConlluSentence): { prefix: string; suffi
 
 export async function ingestUdLexicalCorpus(input: { storage: ScceStorage; text: string; sourceUri: string; lexiconId: string;
   language: string; license: string; informationLabel: InformationLabel; maxSourceBytes: number; updatedAt?: number; batchSize?: number;
+  retainedSourceVersionId?: SourceVersionId;
   onProgress?: (value: { patterns: number; totalPatterns: number; evidence: number }) => void }) {
   assertLexicalCorpusCapacity(input.text,input);
   const parsed = readUdLexicalGrammar(input.text);

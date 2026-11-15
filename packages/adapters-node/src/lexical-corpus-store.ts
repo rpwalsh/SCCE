@@ -3,7 +3,7 @@
 import {createReadStream} from "node:fs";
 import {open} from "node:fs/promises";
 import {createGunzip} from "node:zlib";
-import {createHasher,normalizeInformationLabel,selectLanguageIdentityForSurface,toJsonValue,type InformationLabel,type JsonValue,type ScceStorage} from "@scce/kernel";
+import {createHasher,normalizeInformationLabel,selectLanguageIdentityForSurface,toJsonValue,type InformationLabel,type JsonValue,type ScceStorage,type SourceVersionId} from "@scce/kernel";
 import {trainLanguageCorpusText,type SourceOwnedPatternProjection} from "./language-corpus-trainer.js";
 
 export interface SourceLexicalPattern {
@@ -41,6 +41,7 @@ export async function readBoundedLexicalCorpusSource(input:{path:string;maxSourc
 export async function persistLexicalCorpus(input:{storage:ScceStorage;text:string;sourceUri:string;languageText:string;
   lexiconId:string;language:string;license:string;informationLabel:InformationLabel;maxSourceBytes:number;mediaType?:string;
   patterns:SourceLexicalPattern[];updatedAt?:number;batchSize?:number;
+  retainedSourceVersionId?:SourceVersionId;
   onProgress?:(value:{patterns:number;totalPatterns:number;evidence:number})=>void}){
   assertLexicalCorpusCapacity(input.text,input);
   assertLexicalCorpusCapacity(input.languageText,input);
@@ -67,7 +68,8 @@ export async function persistLexicalCorpus(input:{storage:ScceStorage;text:strin
     ...(input.updatedAt===undefined?{}:{createdAt:input.updatedAt}),languageOnly:true,skipNgramPersistence:true,languageAliases:[input.language],
     profileLanguageIdentityId:language.identity.id,sourceOwnedPatternProjections:[...projections.values()] satisfies SourceOwnedPatternProjection[],
     corpusMetadata:toJsonValue({sourceKind:"lexical_knowledge",lexiconId:input.lexiconId,language:input.language,license:input.license}),
-    originalSource:{bytes,sourceUri:input.sourceUri,mediaType:input.mediaType??"text/plain",transformId,kind:"extracted-text",originalCoordinateSpace:"source-bytes"},
+    originalSource:{bytes,sourceUri:input.sourceUri,mediaType:input.mediaType??"text/plain",transformId,kind:"extracted-text",originalCoordinateSpace:"source-bytes",
+      ...(input.retainedSourceVersionId?{retainedSourceVersionId:input.retainedSourceVersionId}:{})},
     corpusCheckpoint:{rootUri:input.sourceUri,itemUri:derivativeUri,contentHash:`sha256_${createHasher().digestHex(bytes)}`,byteLength:bytes.length,transformId,originalSourceUri:input.sourceUri}});
   input.onProgress?.({patterns:input.patterns.length,totalPatterns:input.patterns.length,evidence:report.evidence});
   return {status:"complete" as const,lexiconId:input.lexiconId,language:input.language,languageIdentityId:language.identity.id,

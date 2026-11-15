@@ -28,6 +28,7 @@ try {
   let previousProgress = Date.now();
   const ingest = format === "wordnet" ? ingestWordnetCorpus : ingestUdLexicalCorpus;
   const result = await ingest({ storage, text, sourceUri: args.get("uri"), maxSourceBytes,informationLabel:config.security.defaultSourceInformationLabel,
+    retainedSourceVersionId:args.get("retained-source-version-id"),
     lexiconId: args.get("lexicon-id"), language: args.get("language"), license: args.get("license"),
     onProgress(value) {
       if (Date.now() - previousProgress >= 10000 || value.patterns === value.totalPatterns) {
