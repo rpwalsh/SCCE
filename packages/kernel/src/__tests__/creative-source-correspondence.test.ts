@@ -4,13 +4,14 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { compileLanguageTrainingBatch } from "../language-training-batch.js";
 import { createLanguageMemoryRuntime, scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
-import { compileCreativeRequestFrameFromCompatibilityModels, creativeEventCompatibilityDecision, creativeEventRoleDecision, creativeEventCompatibilityModelsFromPatterns } from "../creative-event-compatibility.js";
+import { compileCreativeRequestFrameFromCompatibilityModels, creativeEventCompatibilityDecision, creativeEventRetainsSourceArguments, creativeEventRoleDecision, creativeEventCompatibilityModelsFromPatterns, creativeRequestSourcePrerequisites } from "../creative-event-compatibility.js";
 import { createLanguageAcquisitionEngine } from "../language.js";
 import { canonicalStringify, createClock, createHasher, toJsonValue } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import { createAlphaFieldEngine } from "../field.js";
 import { planInventions } from "../invention-planner.js";
 import { updateDialogueState } from "../dialogue-pragmatics.js";
+import { creativeSourceUtterances } from "../creative-source-utterance.js";
 import { compileCreativeSourceCorrespondences } from "../creative-source-correspondence.js";
 import { segmentUnicodeSurfaceV2 } from "../unicode-segmentation-v2.js";
 import type { EvidenceSpan, JsonValue } from "../types.js";
@@ -23,7 +24,7 @@ import { inventionConstructNode } from "../prediction.js";
 import { createCandidateEngine } from "../candidate.js";
 import { createCcrEngine } from "../ccr.js";
 import { jsonRecord } from "../kernel-answer-primitives.js";
-import { projectRequestAuthority } from "../request-authority.js";
+import { projectRequestAuthority, explicitAuthorityRequirements } from "../request-authority.js";
 import { deriveTurnRequirementField } from "../turn-requirements.js";
 import type { ConstructGraph } from "../types.js";
 import { creativeReferenceTestAnnotation, replyWithReviewedProperty } from "./fixtures/creative-reference-test-annotations.js";
@@ -52,6 +53,36 @@ describe("declared human creative source correspondence", () => {
     const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: humanPair.text, createdAt: 1 });
     patterns = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://human", sourceSystem: "dialogue", profile, sourceVersionId,
       text: humanPair.text, evidence, transcriptTurns: humanPair.turns as TranscriptTurn[], createdAt: 1, retainNgramObservations: false } }).patterns;
+  });
+
+  it("roundtrips source agents and retains only reply-owned unspecified creative arguments", () => {
+    const state = restart();
+    const events = state.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? []);
+    expect(events.some(event => event.argumentFrame.bindings.some(port => port.roleId === "scce.role.agent"))).toBe(true);
+    const persistedEvents = patterns.flatMap(pattern => {
+      const raw = jsonRecord(jsonRecord(pattern.patternJson).bundle).events;
+      return Array.isArray(raw) ? raw as unknown as typeof events : [];
+    });
+    const agentOnly = persistedEvents.filter(event => event.argumentFrame.bindings.length > 0
+      && event.argumentFrame.bindings.every(port => port.roleId === "scce.role.agent"));
+    expect(agentOnly.length).toBeGreaterThan(0);
+    expect(agentOnly.every(event => events.some(restored => restored.id === event.id && restored.valencyId === "scce.valency.agent"))).toBe(true);
+    const models = state.creativeEventCompatibilityModels;
+    const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: humanPair.turns[0]!.surface, models, hasher })!;
+    const observations = models.flatMap(model => model.sourceObservations ?? []);
+    expect(observations.length).toBeGreaterThan(0);
+    let partial = 0;
+    for (const row of observations) {
+      const event = events.find(event => event.id === row.eventId)!;
+      expect(event.argumentFrame.bindings.every(port => port.startCodePoint >= row.reply.start && port.endCodePoint <= row.reply.end)).toBe(true);
+      if (row.bindings.length < event.argumentFrame.bindings.length) {
+        partial++;
+        expect(creativeEventRetainsSourceArguments(models, frame, event)).toBe(true);
+        expect(creativeEventRetainsSourceArguments(JSON.parse(JSON.stringify(models)), frame, event)).toBe(false);
+      }
+    }
+    expect(partial).toBeGreaterThan(0);
+    expect(models.flatMap(model => creativeSourceUtterances(model, events[0]!.profileId, hasher)).length).toBeGreaterThan(0);
   });
 
   it("rejects unavailable owners before whole-model hashing while retaining every admitted model digest check", () => {
@@ -241,6 +272,41 @@ describe("declared human creative source correspondence", () => {
     expect(structural.some(event => event.requestRoleBindings.some((binding: any) => replacements.some(row => row.value === binding.requestSpan.text)))).toBe(true);
     expect(structural.every(event => event.compatibilityQualification === "source_observed" && event.compatibilityCalibrationId === undefined && event.compatibilityThreshold === undefined)).toBe(true);
     expect(planned.every(construct => construct.proofStatusId === "proof.status.generated_not_evidence" && construct.basisEvidenceIds.length === 0)).toBe(true);
+  });
+
+  it("does not generalize a source request whose only fixed text is punctuation", () => {
+    const source = "Why are cats better than dogs?";
+    const segments = segmentUnicodeSurfaceV2(source).lexicalSegments;
+    const model = patterns.find(pattern => jsonRecord(pattern.patternJson).reliability === "source_observed")!;
+    const value = jsonRecord(model.patternJson);
+    const prerequisites = jsonRecord(value.sourceUtterancePrerequisites!);
+    const evidenceIds = model.evidenceIds;
+    const roleSpans = segments.map((segment, index) => ({ roleId: `role.${index}`, occurrenceId: `occurrence.${index}`,
+      start: segment.codePointStart, end: segment.codePointEnd,
+      surface: segment.surface, evidenceIds }));
+    const pattern = { ...model, patternJson: toJsonValue({ ...value,
+      requestFrameAnchors: [{ requestFrameId: "request.all_slots", requestCompilerId: "compiler.all_slots", sourceAuthority: "creative",
+        lexicalKeys: segments.map(segment => segment.normalized), requestRoleIds: roleSpans.map(role => role.roleId),
+        support: 1, acceptedSupport: 0, rejectedSupport: 0, observedSupport: 1, exampleTextHashes: [hasher.digestHex(source)],
+        requestRoleExamples: [{ id: "example.all_slots", profileKey: "compiler.all_slots", surface: source, evidenceIds, roleSpans }] }],
+      sourceUtterancePrerequisites: { ...prerequisites, requests: [{ requestFrameId: "request.all_slots", patternIds: ["pattern.source_request"] }] }
+    }) };
+    const select = (requestText: string) => creativeRequestSourcePrerequisites({ requestText, patterns: [pattern], hasher });
+    expect(select(source)).toHaveLength(1);
+    expect(select("Who wrote The Queen of Spades?")).toEqual([]);
+  });
+
+  it("does not let a source creative example reverse a factual requirement field", () => {
+    const state = restart();
+    const requestText = humanPair.turns[0]!.surface;
+    const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText, models: state.creativeEventCompatibilityModels, hasher })!;
+    expect(frame).toBeDefined();
+    const requirementField = deriveTurnRequirementField({ requestText, explicitRequirements: explicitAuthorityRequirements({ requestText, authority: "factual" }) });
+    const baseline = projectRequestAuthority({ requirementField });
+    expect(baseline.requestedAuthority).toBe("factual");
+    const result = projectRequestAuthority({ requirementField, sourceRequestFrame: frame });
+    expect(result.requestedAuthority).toBe("factual");
+    expect(jsonRecord(result.trace).sourceObservedRequestAuthorityAccepted).toBe(false);
   });
 
   it("carries observed source intent without trusting cloned or changed request frames or overriding the owner", () => {

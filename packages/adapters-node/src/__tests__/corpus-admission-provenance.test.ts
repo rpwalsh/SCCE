@@ -127,6 +127,7 @@ describe("corpus trainer admission and provenance", () => {
       .toEqual(fixture.state.sourceVersions.map(row => String(row.sourceVersionId)));
     expect(fixture.state.quarantine[0]?.decision).toBe("promoted");
     expect(fixture.state.evidence.every(span => span.status === "promoted")).toBe(true);
+    for (const span of fixture.state.evidence) expect(Buffer.from(await fixture.storage.blobs.get(span.contentHash))).toEqual(Buffer.from(span.text, "utf8"));
   });
 
   it("names the corpus a span came from instead of labelling every lane construction_training", async () => {
@@ -381,6 +382,21 @@ describe("corpus trainer admission and provenance", () => {
 function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
   const state: MemoryState = { events: [], sourceVersions: [], evidence: [], quarantine: [], blobs: new Map(),
     profiles: [], patterns: [], models: [], observations: [], checkpoints: new Map(), replayPages: [], graph: { nodes: [], edges: [], hyperedges: [] } };
+  const ranges = new Map<string, Parameters<ScceStorage["blobs"]["putRanges"]>[0][number]>();
+  const readBlob = async (hash: string, ancestors = new Set<string>()): Promise<Uint8Array> => {
+    if (ancestors.has(hash)) throw new Error("cyclic canonical fixture blob range");
+    const material = state.blobs.get(hash);
+    if (material) {
+      if (blobContentHash(material) !== hash) throw new Error("canonical fixture blob hash mismatch");
+      return new Uint8Array(material);
+    }
+    const range = ranges.get(hash);
+    if (!range) throw new Error(`no blob ${hash}`);
+    const parent = await readBlob(range.parentHash, new Set([...ancestors, hash]));
+    const bytes = parent.slice(range.byteStart, range.byteEnd);
+    if (blobContentHash(bytes) !== hash) throw new Error("canonical fixture range hash mismatch");
+    return bytes;
+  };
   const put = <T extends { id: string }>(rows: T[], row: T) => {
     const index = rows.findIndex(existing => existing.id === row.id);
     if (index < 0) rows.push(row); else rows[index] = row;
@@ -429,8 +445,18 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       }
     },
     blobs: {
-      put: async (bytes: Uint8Array) => { const hash = blobContentHash(bytes); state.blobs.set(hash, bytes); return hash; },
-      get: async (hash: string) => { const found = state.blobs.get(hash); if (!found) throw new Error(`no blob ${hash}`); return found; }
+      put: async (bytes: Uint8Array) => { const hash = blobContentHash(bytes); state.blobs.set(hash, new Uint8Array(bytes)); return hash; },
+      putRanges: async (items: Parameters<ScceStorage["blobs"]["putRanges"]>[0], parent: Parameters<ScceStorage["blobs"]["putRanges"]>[1]) => {
+        if (blobContentHash(parent.bytes) !== parent.contentHash
+          || !Buffer.from(await readBlob(parent.contentHash)).equals(Buffer.from(parent.bytes))) throw new Error("canonical fixture range parent mismatch");
+        for (const item of items) {
+          if (item.parentHash !== parent.contentHash || ![item.byteStart, item.byteEnd].every(Number.isSafeInteger)
+            || item.byteStart < 0 || item.byteEnd <= item.byteStart || item.byteEnd > parent.bytes.byteLength
+            || blobContentHash(parent.bytes.subarray(item.byteStart, item.byteEnd)) !== item.contentHash) throw new Error("invalid canonical fixture range");
+        }
+        for (const item of items) if (item.contentHash !== item.parentHash && !state.blobs.has(item.contentHash)) ranges.set(item.contentHash, { ...item });
+      },
+      get: readBlob
     },
     quarantine: {
       put: async (record: { sourceVersionId: string; decision: string; decisionJson: JsonValue; permissionVector: JsonValue }) => {

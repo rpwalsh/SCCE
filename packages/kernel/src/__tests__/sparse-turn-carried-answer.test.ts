@@ -28,6 +28,7 @@ import { trainKneserNey } from "../kneser-ney.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
 import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
 import { measureRequestCorpusSubject } from "../corpus-identity-runtime.js";
+import { sourceOwnedDiscourseGrammar } from "./fixtures/source-owned-discourse-grammar.js";
 
 afterEach(() => clearCorpusIdentitySignals());
 
@@ -54,7 +55,7 @@ type TraceRow = { stage: string; counts?: Record<string, number>; support?: Reco
 // back with the previous answer. The carrier is the discourse binding suspending the turn's own source admission.
 describe("a sparse chat turn after an evidence-bearing turn", () => {
   it("does not re-serve the carried evidence when the request brings content that evidence never carries", async () => {
-    const session = chatSession();
+    const session = await chatSession();
     const first = await session.turn("who is albert einstein");
     expect(first.result.answer).toContain("theoretical physicist");
 
@@ -69,10 +70,33 @@ describe("a sparse chat turn after an evidence-bearing turn", () => {
     }
   }, 120_000);
 
+  it("searches the corpus after rejecting a carried subject that the new request does not name", async () => {
+    const alice = span("evidence:alice", "Alice in Wonderland", "Alice's cat was Dinah.", 0);
+    const session = await chatSession({ additionalEvidence: [alice],
+      formExamples: "einstein r0. einstein's r0. newton r0. newton's r0. curie r0. curie's r0. alice r0. alice's r0." });
+    const first = await session.turn("who is albert einstein");
+    expect(first.result.answer).toContain("theoretical physicist");
+    const next = await session.turn("what is alice's cat");
+    expect(next.trace.some(row => row.stage === "graph.resolve.discourse_carry_unshared")).toBe(true);
+    expect(next.trace.find(row => row.stage === "graph.resolve.discourse_retrieval")?.counts?.evidence).toBeGreaterThan(0);
+    expect(next.result.evidence.map(row => row.id)).toContain(alice.id);
+    expect(next.result.answer).toContain("Dinah");
+    expect(next.result.answer).not.toContain("theoretical physicist");
+  }, 120_000);
+
   it("still resolves an anaphoric follow-up through the discourse referent", async () => {
-    const session = chatSession();
+    const session = await chatSession();
     await session.turn("who is albert einstein");
     const win = await session.turn("what did he win");
+    expect(win.trace.find(row => row.stage === "turn.lexical_semantics")?.counts?.grammaticalEntries).toBeGreaterThan(0);
+    const read = session.lexicalReads.at(-1)!;
+    expect(read.query.requireComplete).toBe(true);
+    expect(Number.isSafeInteger(read.query.limit) && read.query.limit! > 0).toBe(true);
+    expect(read.query.maxTotalJsonBytes).toBe(32 * 1024 * 1024);
+    expect(read.evidenceIds.length).toBeGreaterThan(0);
+    expect(read.evidenceBatches).toEqual([read.evidenceIds]);
+    expect(read.ownerBatches).toEqual([read.evidenceIds]);
+    expect(read.sourceIds).toEqual([session.grammarSourceVersionId]);
     // It names nobody and asks with learned scaffolding only, so the carry stands and the referent's source answers.
     expect(win.trace.some(row => row.stage === "graph.resolve.discourse_carry_unshared")).toBe(false);
     expect(win.trace.find(row => row.stage === "graph.resolve.pool_admission")?.counts?.admitted).toBeGreaterThan(0);
@@ -80,11 +104,24 @@ describe("a sparse chat turn after an evidence-bearing turn", () => {
     expect(win.result.evidence.every(span => String(span.id).startsWith("evidence:einstein"))).toBe(true);
   }, 120_000);
 
+  it("executes only the complete question argument licensed by a genuine source annotation", async () => {
+    const session = await chatSession({ questionGrammar: true });
+    const result = await session.turn("What is 2 + 3?");
+    expect(result.trace.find(row => row.stage === "turn.lexical_semantics")?.counts?.questionFrames).toBeGreaterThan(0);
+    const expression = result.trace.find(row => row.stage === "turn.source_question_expression");
+    expect(expression?.support?.expression).toBe("2 + 3");
+    expect(expression?.counts?.sourcePatterns).toBeGreaterThan(0);
+    expect(result.result.answer).toBe("2 + 3 = 5.");
+    const trailing = await session.turn("What is 2 + 3? suffix");
+    expect(trailing.trace.some(row => row.stage === "turn.source_question_expression")).toBe(false);
+  }, 120_000);
+
   it("keeps new content authoritative when no language closed class has been measured", async () => {
     for (const text of ["请换个话题", "የተለየ ጥያቄ", "zuv krel"]) {
-      const session = chatSession({ unmeasuredClass: true });
+      const session = await chatSession({ unmeasuredClass: true });
       const first = await session.turn("who is albert einstein");
       expect(first.result.answer).toContain("theoretical physicist");
+      expect(first.trace.find(row => row.stage === "turn.support_candidates")?.counts?.corpusFunctionSymbols).toBe(0);
       const next = await session.turn(text);
       expect(next.result.evidence).toEqual([]);
       expect(next.result.answer).not.toContain(EINSTEIN_LEAD);
@@ -93,7 +130,7 @@ describe("a sparse chat turn after an evidence-bearing turn", () => {
   }, 120_000);
 
   it("keeps a follow-up whose relation the carried evidence does carry", async () => {
-    const session = chatSession();
+    const session = await chatSession();
     await session.turn("who is albert einstein");
     const born = await session.turn("when was he born");
     // "born" is the request's own content unit and the carried article carries it, so the carry stands.
@@ -102,16 +139,26 @@ describe("a sparse chat turn after an evidence-bearing turn", () => {
   }, 120_000);
 });
 
-function chatSession(options: { unmeasuredClass?: boolean } = {}) {
-  const teaching = options.unmeasuredClass ? undefined : sourceOwnedAnswerhoodLanguage();
+async function chatSession(options: { questionGrammar?: boolean; unmeasuredClass?: boolean; additionalEvidence?: EvidenceSpan[]; formExamples?: string } = {}) {
+  const teaching = options.unmeasuredClass ? undefined : sourceOwnedAnswerhoodLanguage(options.formExamples);
+  const grammar = await sourceOwnedDiscourseGrammar(options.questionGrammar);
+  const lexicalReads: Array<{ query: NonNullable<Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]>;
+    evidenceIds: EvidenceId[]; evidenceBatches: EvidenceId[][]; ownerBatches: EvidenceId[][]; sourceIds: SourceVersionId[] }> = [];
+  const recordLexicalBatch = (ids: EvidenceId[], port: "evidenceBatches" | "ownerBatches") => {
+    if (grammar.evidence.some(span => ids.includes(span.id))) lexicalReads.at(-1)?.[port].push([...ids]);
+  };
   const evidence = [
     span("evidence:einstein", "Albert Einstein", EINSTEIN_LEAD, 0),
     span("evidence:einstein-nobel", "Albert Einstein", EINSTEIN_NOBEL, 400),
     span("evidence:einstein-birth", "Albert Einstein", EINSTEIN_BIRTH, 800),
     span("evidence:abba", "ABBA", "ABBA are a Swedish pop group formed in Stockholm in 1972 by Agnetha Faltskog and Bjorn Ulvaeus.", 0),
-    span("evidence:everest", "Mount Everest", "Mount Everest is Earth's highest mountain above sea level in the Himalayas.", 0)
+    span("evidence:everest", "Mount Everest", "Mount Everest is Earth's highest mountain above sea level in the Himalayas.", 0),
+    ...(options.additionalEvidence ?? [])
   ];
-  const titles = [...new Set(evidence.map(row => corpusIdentitySurface(String((row.provenance as { title: string }).title))))];
+  // Searchable sources can precede their admission to the resident identity catalog.
+  const newIds = new Set(options.additionalEvidence?.map(row => row.id) ?? []);
+  const titles = [...new Set(evidence.filter(row => !newIds.has(row.id))
+    .map(row => corpusIdentitySurface(String((row.provenance as { title: string }).title))))];
   const base = storageFixtureForEvaluation({ evidence, clockNow: () => 0 }).storage;
   const trained = trainKneserNey(CORPUS, { order: 3 });
   const modelRecord = {
@@ -160,7 +207,15 @@ function chatSession(options: { unmeasuredClass?: boolean } = {}) {
     languageMemory: {
       ...base.languageMemory,
       listNgramModels: teaching?.readModels ?? (async () => [modelRecord]),
-      listLanguagePatterns: teaching?.readPatterns ?? (async (query?: { sourceSystem?: string }) => query?.sourceSystem === "corrections" ? requestPatterns : []),
+      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => {
+        const ordinary = teaching ? await teaching.readPatterns(query) : query?.sourceSystem === "corrections" ? requestPatterns : [];
+        const lexical = query?.languageId === "language.fixture" && query.lexicalUnits?.length
+          ? grammar.patterns.filter(row => query.patternSchemas?.includes((row.patternJson as { schema: string }).schema)
+            && (row.patternJson as { lexicalUnits: string[] }).lexicalUnits.some(unit => query.lexicalUnits!.includes(unit))) : [];
+        if (query?.lexicalUnits !== undefined) lexicalReads.push({ query,
+          evidenceIds: [...new Set(lexical.flatMap(pattern => pattern.evidenceIds))], evidenceBatches: [], ownerBatches: [], sourceIds: [] });
+        return [...ordinary, ...lexical];
+      },
       continuationPopulation: async () => ({ languageId: "language.fixture", modelCount: teaching?.state.models.length ?? 1,
         continuationCounts: teaching?.state.models[0]?.continuationCounts ?? trained.continuationCounts })
     },
@@ -173,7 +228,21 @@ function chatSession(options: { unmeasuredClass?: boolean } = {}) {
     },
     evidence: {
       ...base.evidence,
-      getEvidenceBatch: teaching ? async (ids: EvidenceId[]) => [...await base.evidence.getEvidenceBatch(ids), ...teaching.evidence.filter(span => ids.includes(span.id))] : base.evidence.getEvidenceBatch,
+      getEvidenceBatch: async (ids: EvidenceId[]) => {
+        recordLexicalBatch(ids, "evidenceBatches");
+        return [...await base.evidence.getEvidenceBatch(ids), ...(teaching?.evidence ?? []).filter(span => ids.includes(span.id)),
+          ...grammar.evidence.filter(span => ids.includes(span.id))];
+      },
+      sourceVersionsForEvidence: async (ids: EvidenceId[]) => {
+        recordLexicalBatch(ids, "ownerBatches");
+        return [...await base.evidence.sourceVersionsForEvidence(ids),
+          ...(grammar.evidence.some(span => ids.includes(span.id)) ? [grammar.annotationSource] : [])];
+      },
+      sourceVersionById: async (id: SourceVersionId) => {
+        if (id === grammar.source.sourceVersionId || id === grammar.annotationSource.sourceVersionId) lexicalReads.at(-1)?.sourceIds.push(id);
+        return id === grammar.source.sourceVersionId ? grammar.source
+          : id === grammar.annotationSource.sourceVersionId ? grammar.annotationSource : await base.evidence.sourceVersionById?.(id) ?? null;
+      },
       sourceIdentityArbitration: async ({ text }: { text: string }) => ({
         identities: titles.filter(title => ` ${corpusIdentitySurface(text)} `.includes(` ${title} `)),
         spread: new Map<string, number>()
@@ -184,6 +253,7 @@ function chatSession(options: { unmeasuredClass?: boolean } = {}) {
   const recentTurns: JsonValue[] = [];
   let index = 0;
   return {
+    lexicalReads, grammarSourceVersionId: grammar.source.sourceVersionId,
     async turn(text: string): Promise<{ result: TurnResult; trace: TraceRow[] }> {
       const requestSubject = await measureRequestCorpusSubject({ requestText: text, evidence: storage.evidence });
       const discourse = buildDiscourseObjectState({ sessionId: "session.sparse-turn", currentText: text, recentTurns, requestSubject, now: 1 });
@@ -229,6 +299,7 @@ function bootKernel(storage: ScceStorage): ScceKernel {
   const hasher = createHasher();
   return createScceKernel({
     storage,
+    informationAccess: { tenantId: "public", principalId: "fixture.sparse-turn", compartments: [], maximumExportClass: "public" },
     files: { streamPath: async function* () { /* unused */ } },
     buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
     idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),

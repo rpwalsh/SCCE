@@ -1,0 +1,9 @@
+{
+  "sourceUri": "https://github.com/UniversalDependencies/UD_English-EWT/blob/r2.18/en_ewt-ud-train.conllu",
+  "sourceRevision": "r2.18",
+  "license": "CC-BY-SA-4.0",
+  "attribution": "UD English EWT contributors; original EWT text from Yahoo Answers",
+  "sourceSha256": "d68e06122a702464c613076523d56740f047e5bbe89dd90ec32737e04d952143",
+  "excerptSha256": "baa4ccf8b2cd8078c7b815b3e76ad3b00497b3037275d0e1ce1ba28617a8476a",
+  "selection": "Complete retained CoNLL-U sentence answers-20111108080049AAgT0iA_ans-0007; annotation unchanged."
+}

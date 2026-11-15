@@ -13,6 +13,8 @@ const humanCreativePair = JSON.parse(readFileSync(new URL("../../../kernel/src/_
 import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
 import { creativeReferenceTestAnnotation } from "../../../kernel/src/__tests__/fixtures/creative-reference-test-annotations.js";
 import { sourceReferenceBindingsFromPatterns } from "../../../kernel/src/source-reference-bindings.js";
+import { sourceLanguageCompilationReceiptId, validateSourceLanguageCompilation, validateSourceLanguageCompilationHeader,
+  validateSourceCompilationReceipt, validateSourceCompilationArtifactInventory } from "../../../kernel/src/source-language-compilation.js";
 import { creativeSourceUtterances, realizeCreativeSourceUtterance } from "../../../kernel/src/creative-source-utterance.js";
 import { compileCreativeRequestFrameFromCompatibilityModels } from "../../../kernel/src/creative-event-compatibility.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -167,6 +169,96 @@ describe("learned rows carry the shard's provenance once", () => {
       expect(recordOf(unit.metadata).sourceMetadata).toEqual(sourceMetadata);
       expect(recordOf(unit.metadata)).not.toHaveProperty("sourceMetadataRef");
     }
+  });
+
+  it("refreshes retained human creative surfaces through construction-only replay without duplicating canonical ngrams", async () => {
+    const fixture = memoryStorage();
+    const putPatterns = fixture.storage.languageMemory.putLanguagePatterns!;
+    fixture.storage.languageMemory.putLanguagePatterns = async rows => putPatterns(rows.map(row => {
+      const prior = fixture.state.patterns.find(pattern => pattern.id === row.id), membership = recordOf(prior?.patternJson).sourceCompilationId;
+      return membership === undefined ? row : { ...row, patternJson: { sourceCompilationId: membership, ...recordOf(row.patternJson) } };
+    }));
+    const human = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/oasst-human-russian-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
+    const first = await trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "dialogue", sourceUri: "fixture://creative-stored-refresh/human.json",
+      streamUri: "dialogue:human.json", text: human.text, transcriptTurns: human.turns, informationLabel: publicCorpusInformationLabel,
+      corpusMetadata: { authorship: "human_authored", transcriptSchema: "scce.dialogue_transcript.v1" }, createdAt: 1700000000000,
+      ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 4096 });
+    installDurableConstructionPool(fixture);
+    const source = fixture.state.sourceVersions[0]!, schema = "scce.creative_event_compatibility_model.v1";
+    fixture.storage.evidence.listEvidenceBackedSourceVersions = async query => !query?.afterSourceVersionId || source.sourceVersionId > query.afterSourceVersionId
+      ? [{ sourceVersionId: source.sourceVersionId, contentHash: source.contentHash, canonicalUri: source.canonicalUri,
+        byteLength: source.byteLength, maxAlpha: 1, promotedSpanCount: fixture.state.evidence.filter(span => span.sourceVersionId === source.sourceVersionId && span.status === "promoted").length }] : [];
+    const model = fixture.state.patterns.find(pattern => recordOf(pattern.patternJson).schema === schema)!;
+    expect(model).toBeDefined();
+    expect(recordOf(model.patternJson).surfaceBindingRecipe).toBe(kernel.CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID);
+    const currentQuery = { profileId: model.profileId, sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, sourceSystem: "dialogue",
+      patternSchema: schema, componentRecipe: kernel.CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID, informationLabel: publicCorpusInformationLabel };
+    const initialProjection = await fixture.storage.languageMemory.getLanguagePatternProjection!(currentQuery);
+    expect(initialProjection?.patternIds).toContain(model.id);
+    await fixture.storage.languageMemory.replaceLanguagePatternProjection!({ patterns: [model],
+      projection: { ...initialProjection!, componentRecipe: "kernel.creative_source_surface_acquisition.v2" } });
+    expect(await fixture.storage.languageMemory.getLanguagePatternProjection!(currentQuery)).toBeUndefined();
+    const canonical = structuredClone({ sources: fixture.state.sourceVersions, profiles: fixture.state.profiles, evidence: fixture.state.evidence,
+      models: fixture.state.models, observations: fixture.state.observations, units: fixture.state.units, frames: fixture.state.frames });
+    expect(canonical.models.length).toBeGreaterThan(0);
+    expect(canonical.observations.length).toBeGreaterThan(0);
+    const hasher = createHasher(), owner = { sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, contentHash: source.contentHash };
+    const modelQuery = { sourceSystem: "dialogue", profileIds: [model.profileId], limit: fixture.state.models.length + 1 };
+    const retainedModels = await fixture.storage.languageMemory.listNgramModels(modelQuery);
+    const modelDigests = retainedModels.map(row => [row.id, hasher.digestHex(kernel.canonicalStringify(row.modelJson))]);
+    const compilation = validateSourceLanguageCompilation({ owner, profileId: model.profileId, sourceSystem: "dialogue", models: retainedModels, hasher })!;
+    expect(compilation).toBeDefined();
+    const receiptId = sourceLanguageCompilationReceiptId(compilation.compilationId);
+    const canonicalReceipt = structuredClone(fixture.state.patterns.find(pattern => pattern.id === receiptId)!);
+    expect(recordOf(recordOf(canonicalReceipt.patternJson).compilation).compilerRecipe).toBe("kernel.language_training_batch.v8");
+    const assertCurrentCompilation = async () => {
+      const current = await fixture.storage.languageMemory.listNgramModels(modelQuery);
+      expect(current.map(row => [row.id, hasher.digestHex(kernel.canonicalStringify(row.modelJson))])).toEqual(modelDigests);
+      expect(validateSourceLanguageCompilation({ owner, profileId: model.profileId, sourceSystem: "dialogue", models: current, hasher })).toEqual(compilation);
+      const receipt = fixture.state.patterns.find(pattern => pattern.id === receiptId)!;
+      expect(receipt).toEqual(canonicalReceipt);
+      for (const row of current) expect(validateSourceLanguageCompilationHeader({ owner, profileId: model.profileId, sourceSystem: "dialogue",
+        modelJson: row.modelJson, compilationReceipt: recordOf(receipt.patternJson).compilation, validationPolicy: "read_stored", hasher })).toBe(compilation.compilationId);
+      validateSourceCompilationReceipt(recordOf(receipt.patternJson).compilation!, current, hasher);
+      await validateSourceCompilationArtifactInventory({ compilation, profileId: model.profileId, hasher,
+        list: fixture.storage.languageMemory.listSourceCompilationArtifactIds! });
+    };
+    await assertCurrentCompilation();
+    const options = { storage: fixture.storage, sourceSystem: "dialogue", sourceVersionIds: [String(source.sourceVersionId)],
+      minArticleBytes: 0, maxArticleBytes: source.byteLength, maxTotalBytes: 65536, sourcePageSize: 1, maxSourceAttempts: 1 };
+    const replay = await trainStoredCorpusConstructions(options);
+    expect(replay.batchesFailed).toEqual([]);
+    expect(replay.sourcesSkipped).toEqual([]);
+    expect(replay.articlesTrained).toBe(1);
+    expect(replay.reports).toHaveLength(1);
+    expect(replay.reports[0]).toMatchObject({ sourceVersionId: first.sourceVersionId, ngramModels: 0, ngramObservations: 0, languageUnits: 0, semanticFrames: 0 });
+    expect({ sources: fixture.state.sourceVersions, profiles: fixture.state.profiles, evidence: fixture.state.evidence,
+      models: fixture.state.models, observations: fixture.state.observations, units: fixture.state.units, frames: fixture.state.frames }).toEqual(canonical);
+    await assertCurrentCompilation();
+    const refreshedProjection = await fixture.storage.languageMemory.getLanguagePatternProjection!(currentQuery);
+    expect(refreshedProjection?.patternIds).toContain(model.id);
+    const active = await fixture.storage.languageMemory.listLanguagePatterns({ profileIds: [model.profileId] });
+    const hydrated = createLanguageMemoryRuntime({ hasher: createHasher() }).hydrate({ models: [], patterns: active, constructionEvidence: fixture.state.evidence });
+    expect(hydrated.creativeEventCompatibilityModels.map(row => row.id)).toContain(model.id);
+    expect(fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.creative_source_surface_acquisition_receipt.v1")
+      .some(pattern => recordOf(pattern.patternJson).recipe === kernel.CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID)).toBe(true);
+    const refreshCheckpoint = (await fixture.storage.ingestion.list()).find(checkpoint => recordOf(checkpoint.metadata).report !== undefined)!;
+    expect(recordOf(recordOf(refreshCheckpoint.metadata).componentRecipes).creativeSurfaceAcquisition).toBe(kernel.CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID);
+    expect(recordOf(recordOf(recordOf(refreshCheckpoint.metadata).report).creativeSurfacePatternProjection).componentRecipe).toBe(kernel.CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID);
+    await fixture.storage.languageMemory.replaceLanguagePatternProjection!({ patterns: [model],
+      projection: { ...refreshedProjection!, componentRecipe: "kernel.creative_source_surface_acquisition.v2" } });
+    const eventsBeforeRepair = fixture.state.events.length;
+    const repair = await trainStoredCorpusConstructions(options);
+    expect(repair.batchesFailed).toEqual([]);
+    expect(fixture.state.events.length).toBeGreaterThan(eventsBeforeRepair);
+    expect(await fixture.storage.languageMemory.getLanguagePatternProjection!(currentQuery)).toEqual(refreshedProjection);
+    expect({ sources: fixture.state.sourceVersions, profiles: fixture.state.profiles, evidence: fixture.state.evidence,
+      models: fixture.state.models, observations: fixture.state.observations, units: fixture.state.units, frames: fixture.state.frames }).toEqual(canonical);
+    await assertCurrentCompilation();
+    const writes = { patterns: fixture.state.patterns.length, events: fixture.state.events.length };
+    const retry = await trainStoredCorpusConstructions(options);
+    expect(retry.batchesFailed).toEqual([]);
+    expect({ patterns: fixture.state.patterns.length, events: fixture.state.events.length }).toEqual(writes);
   });
 
   it("upgrades a complete creative checkpoint missing its surface component without changing source ownership", async () => {

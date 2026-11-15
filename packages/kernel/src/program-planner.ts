@@ -16,7 +16,7 @@ import { createEngineeringCorpusRuntime, packageManagerCommandName, plannerScrip
 import { createProgramHydrationContract, hydrationSummary } from "./program-runtime.js";
 import { composeProgramGraphFromBehavior, jsonValueTypeId, type ProgramModulePort, type ProgramModuleSpec } from "./program-composition.js";
 import { type ProgramExpression, type ProgramTransformationCandidate } from "./program-transformation-search.js";
-import {programImplementationCandidates,sourceProgramCandidateBindings,type ProgramSourcePlanningContext} from "./source-program-provider.js";
+import {programImplementationCandidates,sourceProgramCandidateArity,sourceProgramCandidateBindings,type ProgramSourcePlanningContext} from "./source-program-provider.js";
 import { searchStateTransitions, type StateTransitionCandidate } from "./state-transition-search.js";
 
 export interface ProgramTargetProfile {
@@ -3727,7 +3727,7 @@ function executableBehaviorTransformationFunction(
   const candidate = candidates.find(item => item.callableId === callableId && selectedIds.includes(item.id));
   if (!candidate) throw new Error(`selected owner behavior has no transformation for callable: ${callableId}`);
   const argumentCount = candidate.preconditions.find(precondition => precondition.kind === "argument_count")?.count;
-  if (!argumentCount || argumentCount > 3) throw new Error(`selected owner behavior has invalid arity: ${callableId}`);
+  if (!argumentCount || (argumentCount > 3 && sourceProgramCandidateArity(candidate) !== argumentCount)) throw new Error(`selected owner behavior has invalid arity: ${callableId}`);
   const numericArgumentIndexes = candidate.preconditions
     .filter((precondition): precondition is Extract<typeof precondition, { kind: "finite_numeric_argument" }> => precondition.kind === "finite_numeric_argument")
     .map(precondition => precondition.index);

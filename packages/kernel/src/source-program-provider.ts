@@ -10,6 +10,7 @@ export interface ProgramSourcePlanningContext {readonly id:string;readonly langu
 interface Provider {id:string;patternId:string;sourceVersionId:string;sourceHash:string;sourceStart:number;sourceEnd:number;evidenceIds:string[];constructionId:string;abi:NonNullable<SourceCodeFunctionConstruction["numericAbi"]>;informationLabel:unknown;construction:Pick<SourceCodeFunctionConstruction,"expression"|"bindings"|"parameters">;}
 export type SourceProgramCandidate=ProgramTransformationCandidate&{readonly sourceProvider:{readonly id:string;readonly patternId:string;readonly sourceVersionId:string;readonly sourceHash:string;readonly sourceStart:number;readonly sourceEnd:number;readonly evidenceIds:readonly string[]};readonly sourceBindings:readonly ProgramExpression[]};
 const contexts=new WeakMap<ProgramSourcePlanningContext,readonly Provider[]>(),hasher=createHasher();
+const sourceProviderArities=new WeakMap<SourceProgramCandidate['sourceProvider'],number>();
 const object=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const hash=(value:unknown)=>hasher.digestHex(canonicalStringify(toJsonValue(value)));
 function numeric(expression:ProgramExpression,available:number):boolean {
@@ -23,7 +24,7 @@ function numeric(expression:ProgramExpression,available:number):boolean {
 }
 function abiSupported(construction:SourceCodeFunctionConstruction):boolean {
  const abi=construction.numericAbi,arity=construction.parameters.length;
- if(!abi||!Array.isArray(abi.parameters)||!abi.result||abi.schema!=='scce.source_numeric_callable_abi.v1'||construction.languageId!==abi.languageId||arity<1||arity>3||abi.parameters.length!==arity)return false;
+ if(!abi||!Array.isArray(abi.parameters)||!abi.result||abi.schema!=='scce.source_numeric_callable_abi.v1'||construction.languageId!==abi.languageId||arity<1||abi.parameters.length!==arity)return false;
  for(const type of [...abi.parameters,abi.result])if(!Number.isSafeInteger(type.start)||!Number.isSafeInteger(type.end)||type.start<0||type.end<=type.start||type.end>construction.sourceText.length
   ||construction.sourceText.slice(type.start,type.end)!=='number'||type.textHash!==hasher.digestHex('number'))return false;
  const bindings=construction.bindings??[];
@@ -55,17 +56,25 @@ export function prepareProgramSourcePlanningContext(input:{languageId:string;pat
  contexts.set(context,providers);return context;
 }
 export function sourceProgramCandidateBindings(candidate:ProgramTransformationCandidate):readonly ProgramExpression[]{return (candidate as Partial<SourceProgramCandidate>).sourceBindings??[];}
+/** Serialized provider metadata cannot grant the admission carried by a freshly verified ABI handle. */
+export function sourceProgramCandidateArity(candidate:ProgramTransformationCandidate):number|undefined {
+ const provider=(candidate as Partial<SourceProgramCandidate>).sourceProvider;
+ return provider?sourceProviderArities.get(provider):undefined;
+}
 export function programImplementationCandidates(requirements:readonly ProgramBehaviorRequirement[],context?:ProgramSourcePlanningContext){
  const searched=searchProgramTransformations(requirements),providers=context?contexts.get(context):[];
  if(context&&!providers)throw new Error('Unrecognized program source planning context');
  const candidates:ProgramTransformationCandidate[]=[...searched.candidates];
+ const ownedSelections=new Map<string,SourceProgramCandidate>();
  for(const callableId of [...new Set(requirements.filter(row=>row.verificationRole==='fit').map(row=>row.callableId))].sort()){
   const fit=requirements.filter(row=>row.callableId===callableId&&row.verificationRole==='fit'),reservedIds=requirements.filter(row=>row.callableId===callableId&&row.verificationRole==='held_out').map(row=>row.id).sort();
+  const sourceCandidates:SourceProgramCandidate[]=[];
   for(const provider of providers??[]){const construction=provider.construction,arity=construction.parameters.length;
    if(fit.some(row=>row.arguments.length!==arity||row.sourceContract&&(row.sourceContract.sourceHash!==provider.sourceHash||row.sourceContract.sourceVersionId!==provider.sourceVersionId)))continue;
    if(!fit.every(row=>row.arguments.every(value=>typeof value==='number'&&Number.isFinite(value))&&typeof row.expectedResult==='number'
     &&Object.is(evaluateProgramExpressionBindings(construction.expression,row.arguments,construction.bindings??[]),row.expectedResult)))continue;
    const {construction:_body,...sourceProvider}=provider;
+   sourceProviderArities.set(sourceProvider,arity);
    const complexity=expressionComplexity(construction.expression)+(construction.bindings??[]).reduce((sum,binding)=>sum+expressionComplexity(binding),0);
    const candidate:SourceProgramCandidate={id:`program.source.candidate.${hash([provider.id,callableId,fit.map(row=>row.id).sort()])}`,callableId,
     operator:topLevelOperator(construction.expression),operands:expressionOperands(construction.expression),producedIr:structuredClone(construction.expression),sourceBindings:structuredClone(construction.bindings??[]),sourceProvider,
@@ -73,7 +82,10 @@ export function programImplementationCandidates(requirements:readonly ProgramBeh
     predictedFitObligationIds:fit.map(row=>row.id).sort(),heldOutObligationIds:reservedIds,score:programTransformationScore(0,complexity),fitMeanSquaredError:0,complexity,
     provenance:{kind:'fit_requirements',fitRequirementIds:fit.map(row=>row.id).sort()}};
    candidates.push(candidate);
+   sourceCandidates.push(candidate);
   }
+  // A unique current typed source witness satisfies ownership that fit-only hypotheses cannot establish.
+  if(fit.every(row=>row.sourceContract)&&sourceCandidates.length===1)ownedSelections.set(callableId,sourceCandidates[0]!);
  }
- return {candidates};
+ return {candidates:candidates.filter(candidate=>!ownedSelections.has(candidate.callableId)||ownedSelections.get(candidate.callableId)===candidate)};
 }

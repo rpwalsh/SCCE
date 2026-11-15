@@ -10,6 +10,7 @@ import { compileLanguageTrainingBatch } from "../language-training-batch.js";
 import { createScceKernel } from "../kernel.js";
 import { createLanguageIdentityRuntime } from "../language-identity-runtime.js";
 import { requestSeedLanguagePattern } from "../request-language-hydration.js";
+import { explicitAuthorityRequirements } from "../request-authority.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
 import { CORPUS_ROLE_IDS } from "../corpus-registry.js";
 import type { LanguageIdentityRecord } from "../language-identity.js";
@@ -77,4 +78,6 @@ it("cold-binds a genuine source request before a stronger foreign function-word 
   expect(result.withheld).toBeUndefined();
   expect(modelQueries.length).toBeGreaterThan(0);
   expect(modelQueries.every(query => query?.profileIds?.length === 1 && query.profileIds[0] === profile.id)).toBe(true);
+  const factualInput = { ...input, metadata: { turnRequirements: toJsonValue(explicitAuthorityRequirements({ requestText, authority: "factual" })) } };
+  await expect(kernel().turn(factualInput)).rejects.toThrow("Foreign patterns must not seed the source-owned program");
 });

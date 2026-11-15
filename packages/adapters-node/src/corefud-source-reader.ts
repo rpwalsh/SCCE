@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHasher, SOURCE_REFERENCE_BINDING_SCHEMA, toJsonValue, type SourceReferenceBindingDeclaration } from "@scce/kernel";
 import type { LanguageCorpusTrainingInput } from "./language-corpus-trainer.js";
+import { readConlluDocuments, type ConlluWord as Word, type ConlluSentence as Sentence } from "./conllu-source-reader.js";
 
 export interface CorefUDSourceOwner {
   corpusId: string;
@@ -19,11 +20,6 @@ export interface CorefUDSourceIssue {
   sourceEntityId?: string;
 }
 
-interface Word {
-  id: string; form: string; misc: Record<string, string>; line: number;
-  tags: Record<string, string>; start?: number; end?: number; unsupported?: string;
-}
-interface Sentence { id: string; text?: string; words: Word[]; line: number }
 interface OpenMention { entity: string; rawEntity: string; start: number; line: number; tags: Record<string, string>; discontinuous: boolean }
 interface Mention extends OpenMention { end: number }
 
@@ -31,41 +27,13 @@ interface Mention extends OpenMention { end: number }
 export function readCorefUDSource(input: { text: string; owner: CorefUDSourceOwner }) {
   const hasher = createHasher();
   if (hasher.digestHex(input.text) !== input.owner.artifactSha256) throw new Error("coreference artifact hash does not match its source owner");
-  const documents: Array<ReturnType<typeof projectDocument>> = [];
   const seenDocuments = new Set<string>();
-  let fields: string[] = [];
-  let documentId: string | undefined;
-  let sentences: Sentence[] = [];
-  let sentence: Sentence = { id: "", words: [], line: 1 };
-  const flushSentence = () => { if (sentence.words.length || sentence.text !== undefined) sentences.push(sentence); sentence = { id: "", words: [], line: sentence.line }; };
-  const flushDocument = () => {
-    flushSentence();
-    if (sentences.length) {
-      if (!documentId) throw new Error("coreference annotations require an explicit source document id");
-      if (seenDocuments.has(documentId)) throw new Error(`duplicate source document id: ${documentId}`);
-      seenDocuments.add(documentId);
-      documents.push(projectDocument(documentId, sentences, fields, input.owner));
-    }
-    sentences = [];
-  };
-  for (const [index, raw] of input.text.split(/\r?\n/u).entries()) {
-    const line = index + 1;
-    if (!raw) { flushSentence(); sentence.line = line + 1; continue; }
-    const global = /^# global\.Entity = (.+)$/u.exec(raw);
-    if (global) { fields = global[1]!.split("-"); continue; }
-    const nextDocument = /^# newdoc id = (.+)$/u.exec(raw);
-    if (nextDocument) { flushDocument(); documentId = nextDocument[1]!; continue; }
-    const id = /^# sent_id = (.+)$/u.exec(raw);
-    if (id) { sentence.id = id[1]!; continue; }
-    const text = /^# text = (.*)$/u.exec(raw);
-    if (text) { sentence.text = text[1]!.normalize("NFC"); continue; }
-    if (raw.startsWith("#")) continue;
-    const columns = raw.split("\t");
-    if (columns.length !== 10) throw new Error(`invalid CoNLL-U column count at source line ${line}`);
-    sentence.words.push({ id: columns[0]!, form: columns[1]!.normalize("NFC"), line,
-      misc: attributes(columns[9]!), tags: { lemma: columns[2]!, upos: columns[3]!, xpos: columns[4]!, feats: columns[5]!, head: columns[6]!, deprel: columns[7]!, deps: columns[8]! } });
-  }
-  flushDocument();
+  const documents = readConlluDocuments(input.text).map(document => {
+    if (!document.id) throw new Error("coreference annotations require an explicit source document id");
+    if (seenDocuments.has(document.id)) throw new Error(`duplicate source document id: ${document.id}`);
+    seenDocuments.add(document.id);
+    return projectDocument(document.id, document.sentences, document.entityFields, input.owner);
+  });
   return { schema: "scce.corefud_source_projection.v1" as const, inputKind: "source-annotated-only" as const,
     rawTextInference: "unavailable" as const, owner: input.owner, documents };
 }
@@ -91,10 +59,6 @@ export function assertCorefUDSourceDisjoint(training: readonly CorefUDSourceDocu
   for (const document of heldOut) if (identities.has(JSON.stringify([document.corpusId, document.documentId]))) throw new Error(`coreference source-document overlap: ${document.corpusId}/${document.documentId}`);
 }
 
-function attributes(text: string): Record<string, string> {
-  if (text === "_") return {};
-  return Object.fromEntries(text.split("|").map(part => { const split = part.indexOf("="); return split < 0 ? [part, ""] : [part.slice(0, split), part.slice(split + 1)]; }));
-}
 
 function projectDocument(documentId: string, sentences: Sentence[], fields: string[], owner: CorefUDSourceOwner) {
   const hasher = createHasher();

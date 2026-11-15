@@ -1,0 +1,29 @@
+# sent_id = weblog-juancole.com_juancole_20051126063000_ENG_20051126_063000-0007
+# text = You wonder if he was manipulating the market with his bombing targets.
+1	You	you	PRON	PRP	Case=Nom|Person=2|PronType=Prs	2	nsubj	2:nsubj	_
+2	wonder	wonder	VERB	VBP	Mood=Ind|Number=Sing|Person=2|Tense=Pres|VerbForm=Fin	0	root	0:root	_
+3	if	if	SCONJ	IN	_	6	mark	6:mark	_
+4	he	he	PRON	PRP	Case=Nom|Gender=Masc|Number=Sing|Person=3|PronType=Prs	6	nsubj	6:nsubj	_
+5	was	be	AUX	VBD	Mood=Ind|Number=Sing|Person=3|Tense=Past|VerbForm=Fin	6	aux	6:aux	_
+6	manipulating	manipulate	VERB	VBG	Tense=Pres|VerbForm=Part	2	ccomp	2:ccomp	Cxn=Interrogative-Polar-Indirect|CxnElt=6:Interrogative-Polar-Indirect.Clause
+7	the	the	DET	DT	Definite=Def|PronType=Art	8	det	8:det	_
+8	market	market	NOUN	NN	Number=Sing	6	obj	6:obj	_
+9	with	with	ADP	IN	_	12	case	12:case	_
+10	his	his	PRON	PRP$	Case=Gen|Gender=Masc|Number=Sing|Person=3|Poss=Yes|PronType=Prs	12	nmod:poss	12:nmod:poss	_
+11	bombing	bombing	NOUN	NN	Number=Sing	12	compound	12:compound	_
+12	targets	target	NOUN	NNS	Number=Plur	6	obl	6:obl:with	SpaceAfter=No
+13	.	.	PUNCT	.	_	2	punct	2:punct	_
+
+# sent_id = weblog-juancole.com_juancole_20051126063000_ENG_20051126_063000-0028
+# text = This item is a small one and easily missed.
+1	This	this	DET	DT	Number=Sing|PronType=Dem	2	det	2:det	_
+2	item	item	NOUN	NN	Number=Sing	6	nsubj	6:nsubj|9:nsubj:pass	_
+3	is	be	AUX	VBZ	Mood=Ind|Number=Sing|Person=3|Tense=Pres|VerbForm=Fin	6	cop	6:cop	_
+4	a	a	DET	DT	Definite=Ind|PronType=Art	6	det	6:det	_
+5	small	small	ADJ	JJ	Degree=Pos	6	amod	6:amod	_
+6	one	one	NOUN	NN	Number=Sing	0	root	0:root	_
+7	and	and	CCONJ	CC	_	9	cc	9:cc	_
+8	easily	easily	ADV	RB	_	9	advmod	9:advmod	_
+9	missed	miss	VERB	VBN	Tense=Past|VerbForm=Part|Voice=Pass	6	conj	6:conj:and	SpaceAfter=No
+10	.	.	PUNCT	.	_	6	punct	6:punct	_
+

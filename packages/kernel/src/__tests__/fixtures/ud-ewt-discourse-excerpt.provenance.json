@@ -1,0 +1,8 @@
+{
+    "sourceUri":  "https://github.com/UniversalDependencies/UD_English-EWT/blob/r2.18/en_ewt-ud-train.conllu",
+    "sourceRevision":  "r2.18",
+    "license":  "CC-BY-SA-4.0",
+    "attribution":  "UD English EWT contributors; original EWT text attributed to Juan Cole (juancole.com)",
+    "excerptSha256":  "186c51716ff0a07aadfe2c61145dda923451bc5ac32da4530b8bee8fedc99d11",
+    "selection":  "Two complete retained CoNLL-U sentences, IDs weblog-juancole.com_juancole_20051126063000_ENG_20051126_063000-0007 and -0028; original annotation unchanged."
+}

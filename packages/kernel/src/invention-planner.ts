@@ -5,6 +5,7 @@ import { kneserNeyProbability } from "./kneser-ney.js";
 import {
   creativeEventCompatibilityDecision,
   creativeEventRoleDecision,
+  creativeEventRetainsSourceArguments,
   type CreativeEventCompatibilityDecision,
   type CreativeRequestFrame,
   type CreativeRequestSpan
@@ -283,7 +284,7 @@ interface StructuralCreativeEventPlanRecord {
   discourseBridgeBasisId: StructuralCreativeDiscourseBridgeBasisId;
   discourseBeatId: string;
   requestRoleBindings: Array<{
-    eventRoleId: "scce.role.patient" | "scce.role.complement";
+    eventRoleId: "scce.role.agent" | "scce.role.patient" | "scce.role.complement";
     requestArgumentId: string;
     requestRoleId: string;
     requestSpan: CreativeRequestSpan;
@@ -1087,10 +1088,11 @@ function creativeRequestRoleBindings(
 ): StructuralCreativeEventPlanRecord["requestRoleBindings"] | undefined {
   const bindings = event.argumentFrame.bindings
     .filter((binding): binding is typeof binding & {
-      roleId: "scce.role.patient" | "scce.role.complement";
-    } => binding.roleId === "scce.role.patient" || binding.roleId === "scce.role.complement");
+      roleId: "scce.role.agent" | "scce.role.patient" | "scce.role.complement";
+    } => binding.roleId === "scce.role.agent" || binding.roleId === "scce.role.patient" || binding.roleId === "scce.role.complement");
   if (bindings.length !== event.argumentFrame.bindings.length) return undefined;
   if (!bindings.length) return [];
+  const retainSourceArguments = creativeEventRetainsSourceArguments(models, frame, event);
   const orderedBindings = [...bindings].sort((left, right) => left.roleId.localeCompare(right.roleId));
   const matchFrom = (
     bindingIndex: number,
@@ -1117,7 +1119,7 @@ function creativeRequestRoleBindings(
         || left.argument.id.localeCompare(right.argument.id)
       ));
     const selected = candidates[0];
-    if (!selected) return undefined;
+    if (!selected) return retainSourceArguments ? matchFrom(bindingIndex + 1, usedArguments) : undefined;
     for (const candidate of candidates) {
       const nextUsed = new Set(usedArguments);
       nextUsed.add(candidate.argument.id);

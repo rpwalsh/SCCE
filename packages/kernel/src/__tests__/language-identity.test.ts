@@ -147,6 +147,18 @@ describe("language identity discovery", () => {
       .toBeUndefined();
   });
 
+  it("uses observed vocabulary to distinguish populations sharing a form word", () => {
+    const base = discoverLanguageIdentities({ signatures: wikipedia, hasher, now: 1 }).identities[0]!;
+    const english = { ...base, id: "language.english", closedClass: [{ word: "a", documentShare: 0.46 }],
+      evidence: { ...base.evidence!, observedSymbols: [{ symbol: "a", profileCount: 6, continuationCount: 12 },
+        { symbol: "about", profileCount: 2, continuationCount: 3 }] } };
+    const other = { ...base, id: "language.other", closedClass: [{ word: "a", documentShare: 1 }],
+      evidence: { ...base.evidence!, observedSymbols: [{ symbol: "a", profileCount: 6, continuationCount: 12 }] } };
+    for (const identities of [[english, other], [other, english]]) {
+      expect(selectLanguageIdentityForSurface(identities, "Write a short story about a fox.")?.identity).toBe(english);
+    }
+  });
+
   it("reads a signature from a profile's compact Kneser-Ney summary and drops apparatus symbols", () => {
     const profile = { id: "profile.x", sourceVersionId: "source.x", scripts: [{ script: "script:Latn", mass: 1 }], symbolShapes: [], charNgrams: [], direction: "ltr", entropy: 1, createdAt: 1, kneserNey: { topContinuation: [["|", 3898], [".", 1408], ["the", 1018], ["=", 985], ["of", 714], ["<s>", 3]] } } as unknown as LanguageProfile;
     const signature = languageProfileSignature(profile, "wikipedia")!;

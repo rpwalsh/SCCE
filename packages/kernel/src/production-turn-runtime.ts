@@ -26,7 +26,7 @@ import { createCcrEngine } from "./ccr.js";
 import { cognitiveProposalComparisonReceipt, planCognitiveProposals, type CognitiveActionPlan } from "./cognitive-planner.js";
 import { createConnectorGovernance } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
-import { CORPUS_ROLE_IDS, CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, type CorpusRoleId } from "./corpus-registry.js";
+import { CORPUS_ROLE_IDS, CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, languageMemoryHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { closedClassForFamilies, selectLanguageIdentityForSurface } from "./language-identity.js";
 import { corpusFamiliesForRole, roleHydrationLanguageIdentityId } from "./language-identity-runtime.js";
 import {
@@ -185,6 +185,9 @@ import { repoCognitionForTurn } from "./repo-cognition.js";
 import { deriveClosedClassWords, requestClosedClassWords as requestClosedClassWordsFor } from "./closed-class-words.js";
 import { primeFreeFormLexicon } from "./free-form-lexicon.js";
 import { primeLearnedAnswerUnitForms } from "./learned-answer-unit-forms.js";
+import { LEXICAL_SENSE_SCHEMA, lexicalLookupUnits, primeLexicalSemanticMemory, verifySourceOwnedLexicalPattern } from "./lexical-semantic-memory.js";
+import { LEXICAL_GRAMMAR_SCHEMA, primeSourceLexicalGrammar } from "./source-lexical-grammar.js";
+import { SOURCE_QUESTION_FRAME_SCHEMA, primeSourceQuestionFrames, sourceQuestionExpression } from "./source-question-frames.js";
 import { withRequestLanguageFormScope } from "./request-language-form-scope.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
@@ -199,7 +202,7 @@ import { completeTaskDecompositionNode, schedulableSubtasks, type TaskDecomposit
 import { solveTaskSchedule } from "./task-schedule-solver.js";
 import { nodeCanExecute, replan } from "./task-replanning.js";
 import { CODE_CONSTRAINT } from "./code-learning.js";
-import { exactComputationForText } from "./exact-computation.js";
+import { exactComputationForExpression, exactComputationForText } from "./exact-computation.js";
 import { syncUserModelStoreForTurn, userModelStoreProvenanceSummary, userModelStoreToJson } from "./user-model-turn-request.js";
 import { compileBuildTestSkillFromLedger, executeBuildTestSkill } from "./procedural-skill-runtime.js";
 import { applyPragmaticsGuard, type PresentationPlan } from "./pragmatics-authorization-guard.js";
@@ -218,7 +221,7 @@ import {
 import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
-import { admissionTierDiagnostics, answerCoversRequest, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestUnitSharesStem, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
+import { admissionTierDiagnostics, answerCoversRequest, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
 import {programValidationApprovalInput} from "./program-validation-approval.js";
@@ -236,7 +239,7 @@ import { evidenceForceFromProofForceClass, type EvidenceForceClass } from "./tru
 import { evidenceProofBoundary } from "./proof-boundary.js";
 import { subjectTemporalComparison } from "./temporal-subject-comparison.js";
 import type { EvidenceId, GraphEdge, GraphNode, NodeId, RequestedAuthority } from "./types.js";
-import { createRuntimeGraphRetrieval, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
+import { createRuntimeGraphRetrieval, discourseEvidenceAdmissionForRequest, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
 import { isCodeEvidenceSpan, retrievalBinding, retrievalBindingSupports } from "./retrieval-binding.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
@@ -1076,9 +1079,18 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const sourceLanguageAlias = sourceLanguageAliasFromMetadata(input.metadata);
       if (translationTarget) warmTranslationCorrectionPriors(translationTarget, sourceLanguageAlias);
       const callerAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
-      const observedSourceSpeech = !deps.evaluationCondition?.flags.disableLanguageMemory
+      const sourceSelectionEligible = !deps.evaluationCondition?.flags.disableLanguageMemory
         && !translationTarget && (!callerAuthority || callerAuthority === "creative")
-        && jsonRecord(input.metadata).sourceSpanCompletion === undefined
+        && jsonRecord(input.metadata).sourceSpanCompletion === undefined;
+      const sourceSelectionField = sourceSelectionEligible ? deriveTurnRequirementField({ requestText: input.text,
+        explicitRequirements: explicitTurnRequirementsFromInput(input, callerAuthority),
+        languageMemoryState: cloneLanguageMemoryRuntimeState(emptySurfaceLanguageMemory().state, {
+          importedPatterns: await requestControlPatternsForRequest(input.text)
+        }), contextContribution: requirementContextFromMetadata(input.metadata), model: await turnRequirementModelCached() }) : undefined;
+      const sourceSelectionProjection = sourceSelectionField ? projectRequestAuthority({ requirementField: sourceSelectionField,
+        explicitAuthority: callerAuthority }) : undefined;
+      const observedSourceSpeech = sourceSelectionProjection && (!sourceSelectionProjection.contributionPresent
+        || !sourceSelectionProjection.authorityDistinguishable || sourceSelectionProjection.requestedAuthority === "creative")
         ? await surfaceLanguageRuntime.creativeSourceMemoryForRequest(input.text) : undefined;
       const observedSourceRequestFrame = observedSourceSpeech ? compileCreativeRequestFrameFromCompatibilityModels({
         requestText: input.text, models: observedSourceSpeech.state.creativeEventCompatibilityModels, hasher
@@ -1094,7 +1106,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           });
         await lazyLanguageIdentityLoad;
       }
-      const requestProgramOwnerIds = observedSourceSpeech && observedSourceRequestFrame && !sourceLanguageAlias
+      const sourceProgramAuthority = sourceSelectionField ? projectRequestAuthority({ requirementField: sourceSelectionField,
+        explicitAuthority: callerAuthority, sourceRequestFrame: observedSourceRequestFrame }).requestedAuthority : undefined;
+      const requestProgramOwnerIds = sourceProgramAuthority === "creative" && observedSourceSpeech && observedSourceRequestFrame && !sourceLanguageAlias
         ? [...new Set([observedSourceSpeech.profile.id, ...observedSourceSpeech.state.scope.profileIds,
           ...creativeRequestSourcePrerequisites({ requestText: input.text, patterns: observedSourceSpeech.patterns, hasher }).map(candidate => candidate.profileId)])]
         : [];
@@ -1370,8 +1384,60 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && (!explicitAuthority || explicitAuthority === "action")
         ? await capabilityBindingForRequest({ storage: deps.storage, requestText: input.text,
           sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
-      const formalArithmetic = sourceSpanCompletionRequest ? undefined : arithmeticAnswerForText(input.text);
-      const formalExactComputation = sourceSpanCompletionRequest ? undefined : exactComputationForText(input.text);
+      const lexicalStarted = performance.now();
+      const lexicalUnits = lexicalLookupUnits(input.text);
+      const lexicalReadLimit = Math.max(...languageMemoryHydrationPlan(surfaceLanguageRuntime.corpusRegistry)
+        .map(item => item.limits.languagePatterns));
+      const lexicalReadBytes = (Number(process.env.SCCE_LANGUAGE_HYDRATE_PATTERNS_MB) || 32) * 1024 * 1024;
+      if (requestLanguage && lexicalUnits.length && (!Number.isSafeInteger(lexicalReadLimit) || lexicalReadLimit <= 0
+        || !Number.isSafeInteger(lexicalReadBytes) || lexicalReadBytes <= 0)) throw new Error("lexical source reads require configured finite hydration bounds");
+      const lexicalPatterns = requestLanguage && lexicalUnits.length && !deps.evaluationCondition?.flags.disableLanguageMemory
+        ? await deps.storage.languageMemory.listLanguagePatterns({ patternSchemas: [LEXICAL_SENSE_SCHEMA, LEXICAL_GRAMMAR_SCHEMA, SOURCE_QUESTION_FRAME_SCHEMA],
+          languageId: requestLanguage.identity.id, lexicalUnits, limit: lexicalReadLimit, maxTotalJsonBytes: lexicalReadBytes, requireComplete: true }) : [];
+      if (lexicalPatterns.length && !deps.informationAccess) throw new Error("source-owned lexical reads require an explicit information access context");
+      if (lexicalPatterns.length && !deps.storage.evidence.sourceVersionById) throw new Error("source-owned lexical reads require the canonical source owner reader");
+      const lexicalEvidenceIds = [...new Set(lexicalPatterns.flatMap(pattern => pattern.evidenceIds))];
+      const lexicalSourceIds = [...new Set(lexicalPatterns.flatMap(pattern => {
+        const id = jsonRecord(pattern.patternJson).sourceVersionId;
+        return typeof id === "string" && id ? [id as SourceVersionId] : [];
+      }))];
+      const [lexicalEvidence, lexicalEvidenceOwners, lexicalSources] = lexicalPatterns.length ? await Promise.all([
+        deps.storage.evidence.getEvidenceBatch(lexicalEvidenceIds),
+        deps.storage.evidence.sourceVersionsForEvidence(lexicalEvidenceIds),
+        Promise.all(lexicalSourceIds.map(id => deps.storage.evidence.sourceVersionById!(id)))
+      ]) : [[], [], []];
+      const lexicalSourceById = new Map(lexicalSources.flatMap(source => source ? [[String(source.sourceVersionId), source] as const] : []));
+      const lexicalEvidenceById = new Map<string, EvidenceSpan[]>();
+      for (const span of lexicalEvidence) {
+        const matches = lexicalEvidenceById.get(String(span.id)) ?? [];
+        matches.push(span); lexicalEvidenceById.set(String(span.id), matches);
+      }
+      const verifiedLexicalPatterns = lexicalPatterns.flatMap(pattern => {
+        const source = lexicalSourceById.get(String(jsonRecord(pattern.patternJson).sourceVersionId));
+        if (!source) return [];
+        const verified = verifySourceOwnedLexicalPattern({ pattern, source, evidenceOwners: lexicalEvidenceOwners,
+          evidence: pattern.evidenceIds.flatMap(id => lexicalEvidenceById.get(String(id)) ?? []) },
+          { hasher, informationAccess: deps.informationAccess! });
+        return verified ? [verified] : [];
+      });
+      const lexicalSenses = primeLexicalSemanticMemory(verifiedLexicalPatterns);
+      const lexicalGrammar = primeSourceLexicalGrammar(verifiedLexicalPatterns);
+      const questionFrames = primeSourceQuestionFrames(verifiedLexicalPatterns);
+      kernelTrace({ stage: "turn.lexical_semantics", label: "kernel.turn", durationMs: performance.now() - lexicalStarted,
+        counts: { requestUnits: lexicalUnits.length, patterns: lexicalPatterns.length, verified: verifiedLexicalPatterns.length,
+          senses: lexicalSenses, grammaticalEntries: lexicalGrammar, questionFrames } });
+      const questionExpression = sourceSpanCompletionRequest ? undefined : sourceQuestionExpression(input.text);
+      const framedArithmetic = questionExpression ? arithmeticAnswerForText(questionExpression.expression) : undefined;
+      const framedUnitComputation = questionExpression ? exactComputationForText(questionExpression.expression) : undefined;
+      const formalArithmetic = sourceSpanCompletionRequest ? undefined : arithmeticAnswerForText(input.text) ?? framedArithmetic;
+      const framedComputation = questionExpression && (framedArithmetic || framedUnitComputation)
+        ? exactComputationForExpression(questionExpression.expression) : undefined;
+      const formalExactComputation = sourceSpanCompletionRequest ? undefined : exactComputationForText(input.text)
+        ?? (framedComputation ? { ...framedComputation, audit: toJsonValue({ ...jsonRecord(framedComputation.audit),
+          requestLanguageConstruction: questionExpression }) } : undefined);
+      if (framedComputation) kernelTrace({ stage: "turn.source_question_expression", label: "kernel.turn",
+        counts: { sourcePatterns: questionExpression!.patternIds.length }, support: { expression: questionExpression!.expression,
+          patternIds: questionExpression!.patternIds } });
       const sourceComputation = !sourceSpanCompletionRequest && !formalArithmetic && !formalExactComputation && /[0-9]/u.test(input.text) && !deps.evaluationCondition?.flags.disableLanguageMemory && (!explicitAuthority || explicitAuthority === "factual" || explicitAuthority === "reasoned")
         ? await sourceComputationForRequest({ storage: deps.storage, hasher, requestText: input.text,
           generation: surfaceLanguageRuntime.revisionGeneration(), sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
@@ -1787,11 +1853,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && metadataEvidenceIds.size === 0
         && explicitContextEvidenceIds.size === 0;
       const authoredRequestNeedsNoRetrieval = declaredEvidenceScope === undefined && (creativeRequestNeedsNoRetrieval || ownerChatNeedsNoRetrieval);
-      const requestedEvidenceScope = declaredEvidenceScope !== undefined
+      let requestedEvidenceScope = declaredEvidenceScope !== undefined
         ? [...declaredEvidenceScope]
         : discourseEvidenceBound ? [...metadataEvidenceIds] : undefined;
       const graphSliceStarted = Date.now();
-      let graphSlice = await evaluationComponent(
+      const resolveGraphSlice = () => evaluationComponent(
         "graph",
         "graph.resolve",
         () => evaluationComponent(
@@ -1846,6 +1912,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ),
         () => requestedEvidenceScope ? evidenceOnlyForIds(requestedEvidenceScope) : evidenceOnlyForText(retrievalText, allowSemanticFrameEvidence, evidenceAccessPolicy.sourceCodeEvidenceAllowed)
       );
+      let graphSlice = await resolveGraphSlice();
       kernelTrace({
         stage: "graph.resolve",
         label: "kernel.turn.graph_slice",
@@ -1863,34 +1930,52 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // keeps its own retrieval; one that names none, or names something the corpus has no article for ("what did
       // he win the Nobel Prize for?"), continues the conversation -- and the answerhood gate still requires the
       // bound sentence to carry the request's own units, so a subject the bound article never mentions declines.
-      if (!declaredEvidenceIds && !discourseEvidenceBound && discourseObject?.evidenceIds.length
-        && !evidenceTitledForRequestSubject(input.text, graphSlice.evidence.filter(span => !String(span.id).startsWith("evidence_session_")))) {
+      if (!declaredEvidenceIds && (discourseEvidenceBound || discourseObject?.evidenceIds.length
+        && !evidenceTitledForRequestSubject(input.text, graphSlice.evidence.filter(span => !String(span.id).startsWith("evidence_session_"))))) {
         const discourseBoundStarted = Date.now();
-        const boundSlice = await graphForEvidenceIds([...discourseObject.evidenceIds]).catch(() => undefined);
-        if (boundSlice && boundSlice.evidence.length) {
+        const tentativeOwnerIds = new Set([...metadataEvidenceIds, ...explicitContextEvidenceIds, ...(discourseObject?.evidenceIds ?? [])]);
+        const boundSlice = discourseEvidenceBound ? graphSlice
+          : await graphForEvidenceIds([...discourseObject!.evidenceIds]).catch(() => undefined);
+        {
           // The carrier turn's spans are the chunks that answered it, not the subject's definition: "where and when
           // was he born?" bound to the inventions chunk and dated a son's birth. The bound sources' opening blocks
           // come along, so a follow-up can reach the lead the way a fresh question does.
-          const boundSourceIds = uniqueKernelStrings(boundSlice.evidence.map(span => String(span.sourceVersionId))).slice(0, 3);
-          const openingBlocks = deps.storage.evidence.openingEvidenceForSourceVersions
+          const ownedEvidence = (boundSlice?.evidence ?? []).filter(span => tentativeOwnerIds.has(String(span.id)));
+          const boundSourceIds = uniqueKernelStrings(ownedEvidence.map(span => String(span.sourceVersionId))).slice(0, 3);
+          const openingBlocks = boundSourceIds.length && deps.storage.evidence.openingEvidenceForSourceVersions
             ? await deps.storage.evidence.openingEvidenceForSourceVersions(boundSourceIds.map(id => id as SourceVersionId)).catch(() => [] as EvidenceSpan[])
             : [];
-          const boundEvidence = mergeEvidenceSpans([...boundSlice.evidence, ...openingBlocks.filter(span => !isUnparsedMarkupText(String(span.text ?? "")))]);
+          const boundEvidence = mergeEvidenceSpans([...ownedEvidence, ...openingBlocks.filter(span => !isUnparsedMarkupText(String(span.text ?? "")))]);
           // Opening blocks become admitted evidence, so hydrate their bounded graph topology too. Keeping only the
           // prior boundSlice graph made newly added spans proof-orphaned before semantic proof and relation routing.
-          const expandedBoundSlice = openingBlocks.length
-            ? await graphForEvidenceIds(boundEvidence.map(span => String(span.id))).catch(() => boundSlice)
-            : boundSlice;
-          graphSlice = { ...expandedBoundSlice, evidence: boundEvidence };
-          for (const span of boundEvidence) explicitContextEvidenceIds.add(String(span.id));
-          discourseEvidenceBound = true;
+          const admission = discourseEvidenceAdmissionForRequest(turnSignals.subjectText, boundEvidence, requestClosedClassWords());
+          if (boundSlice && boundEvidence.length && admission.carriesRequest) {
+            const expandedBoundSlice = openingBlocks.length
+              ? await graphForEvidenceIds(boundEvidence.map(span => String(span.id))).catch(() => boundSlice)
+              : boundSlice;
+            graphSlice = { ...expandedBoundSlice, evidence: boundEvidence };
+            for (const span of boundEvidence) explicitContextEvidenceIds.add(String(span.id));
+            discourseEvidenceBound = true;
+          } else {
+            kernelTrace({ stage: "graph.resolve.discourse_carry_unshared", label: "kernel.turn",
+              counts: { carriedEvidence: boundEvidence.length, requestUnits: admission.requestUnits.length },
+              support: { requestUnits: admission.requestUnits.slice(0, 8) } });
+            discourseEvidenceBound = false;
+            explicitContextEvidenceIds.clear();
+            if (requestedEvidenceScope) {
+              requestedEvidenceScope = undefined;
+              graphSlice = await resolveGraphSlice();
+            }
+            kernelTrace({ stage: "graph.resolve.discourse_retrieval", label: "kernel.turn.graph_slice",
+              counts: { evidence: graphSlice.evidence.length, nodes: graphSlice.graph.nodes.length } });
+          }
         }
         kernelTrace({
           stage: "graph.resolve.discourse_bound",
           label: "kernel.turn.graph_slice",
           durationMs: Date.now() - discourseBoundStarted,
           counts: { evidence: boundSlice?.evidence.length ?? 0 },
-          support: { objectId: discourseObject.objectId, bound: discourseEvidenceBound, bindingConfidence: discourseObject.bindingConfidence }
+          support: { objectId: discourseObject?.objectId ?? null, bound: discourseEvidenceBound, bindingConfidence: discourseObject?.bindingConfidence ?? null }
         });
       }
       // The resident slice is a latency optimization, not a corpus. The server sets `fastLocalEvidenceAnswer` on
@@ -2084,7 +2169,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }
       });
       const unsealedEvidencePool = discourseEvidenceBound
-        ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => metadataEvidenceIds.has(String(span.id)))]).filter(span => !isControlCorpusSpan(span))
+        ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => explicitContextEvidenceIds.has(String(span.id)))]).filter(span => !isControlCorpusSpan(span))
         : evidenceAdmissibleUnderAccessPolicy(
           mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence])
             .filter(span => !isControlCorpusSpan(span) && (!evidenceAccessPolicy.sourceCodeEvidenceRequired || isCodeEvidenceSpan(span))),
@@ -2125,13 +2210,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const contextualQaValueDemandUnbound = Boolean(contextualQaConstructions && !contextualQa);
       const calibrationModels = await calibrationModelsCached();
       // Only measured form is excluded; an unmeasured language class cannot erase the current turn's content.
-      const carriedRequestUnits = discourseEvidenceBound
-        ? requestContentEvidenceUnits(turnSignals.subjectText).filter(unit => !requestClosedClassWords().has(unit))
-        : [];
-      const carriedPoolCarriesRequest = !carriedRequestUnits.length || evidence.some(span => {
-        const spanUnits = surfaceUnits(String(span.text ?? span.textPreview ?? "").toLocaleLowerCase());
-        return carriedRequestUnits.some(unit => spanUnits.some(spanUnit => requestUnitSharesStem(unit, spanUnit)));
-      });
+      const { requestUnits: carriedRequestUnits, carriesRequest: carriedPoolCarriesRequest } = discourseEvidenceBound
+        ? discourseEvidenceAdmissionForRequest(turnSignals.subjectText, evidence, requestClosedClassWords())
+        : { requestUnits: [], carriesRequest: true };
       if (discourseEvidenceBound && !carriedPoolCarriesRequest) {
         kernelTrace({
           stage: "graph.resolve.discourse_carry_unshared",

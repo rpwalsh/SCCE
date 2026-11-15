@@ -25,7 +25,7 @@ export interface CreativeSourceCorrespondence {
   eventRelationId: string;
   eventConstructionId: string;
   eventArgumentFrameId: string;
-  bindings: Array<{ requestRoleId: string; eventRoleId: "scce.role.patient" | "scce.role.complement";
+  bindings: Array<{ requestRoleId: string; eventRoleId: "scce.role.agent" | "scce.role.patient" | "scce.role.complement";
     requestStart: number; requestEnd: number; eventStart: number; eventEnd: number;
     sourceReference?: { patternId: string; referentId: string; propertyId: string } }>;
 }
@@ -151,6 +151,7 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
   turns: readonly TranscriptTurn[]; profileId: string; updatedAt: number;
 }): LanguagePatternRecord[] {
   const evidence = input.evidence.filter(span => span.status === "promoted");
+  const sourcePoints = createSourceTextPointCache();
   const byIndex = new Map(input.turns.map(turn => [turn.index, turn]));
   if (byIndex.size !== input.turns.length) return [];
   const observations: CreativeSourceCorrespondence[] = [];
@@ -165,11 +166,15 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
     const replyOwner = evidence.find(span => ownsTurn(span, reply) && span.sourceId === requestOwner?.sourceId && span.sourceVersionId === requestOwner?.sourceVersionId);
     if (!requestOwner || !replyOwner) continue;
     eventRanges ??= indexSourceEventRanges(input.events);
-    const responseEvents = sourceEventsWithinReply(eventRanges, replyOwner, reply);
+    const responseEvents = sourceEventsWithinReply(eventRanges, replyOwner, reply).filter(event => event.argumentFrame.bindings.every(port =>
+      port.startCodePoint >= reply.startCodePoint - replyOwner.charStart && port.endCodePoint <= reply.endCodePoint - replyOwner.charStart
+      && sourceTextPointSlice(replyOwner.text, port.startCodePoint, port.endCodePoint, sourcePoints) === port.surface
+      && (!port.connector || port.connector.startCodePoint >= reply.startCodePoint - replyOwner.charStart
+        && port.connector.endCodePoint <= reply.endCodePoint - replyOwner.charStart)));
     const segments = segmentUnicodeSurfaceV2(request.surface).lexicalSegments;
     const spans = new Map<string, { start: number; end: number }>();
     const eventMatches = responseEvents.map(event => ({ event, bindings: event.argumentFrame.bindings.flatMap(port => {
-      if (port.roleId !== "scce.role.patient" && port.roleId !== "scce.role.complement") return [];
+      if (port.roleId !== "scce.role.agent" && port.roleId !== "scce.role.patient" && port.roleId !== "scce.role.complement") return [];
       const units = segmentUnicodeSurfaceV2(port.surface).lexicalSegments.map(row => row.normalized);
       if (!units.length) return [];
       const matches = segments.flatMap((segment, index) => units.every((unit, offset) => segments[index + offset]?.normalized === unit)
@@ -191,8 +196,10 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
       spans.set(`${match.start}:${match.end}`, match);
       return [{ ...match, port }];
     }) }));
+    const mayRetainSourceArguments = request.requestAuthority === "creative";
+    const usableEvents = eventMatches.filter(row => mayRetainSourceArguments || row.bindings.length === row.event.argumentFrame.bindings.length);
     spans.clear();
-    for (const row of eventMatches) if (row.bindings.length === row.event.argumentFrame.bindings.length) for (const binding of row.bindings) {
+    for (const row of usableEvents) for (const binding of row.bindings) {
       spans.set(`${binding.start}:${binding.end}`, { start: binding.start, end: binding.end });
     }
     const roles = [...spans.values()].sort((a, b) => a.start - b.start || a.end - b.end);
@@ -206,14 +213,13 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
     const roleIds = roles.map((_, index) => `${requestFrameId}.role.${index}`);
     const requestWitness = { ...turnWitness(requestOwner, request, input.hasher), surface: request.surface,sourceAuthority };
     const replyWitness = { ...turnWitness(replyOwner, reply, input.hasher), replyToTurnIndex: request.index, commitmentScope: "conversation" as const };
-    for (const { event, bindings } of eventMatches) {
-      if (bindings.length !== event.argumentFrame.bindings.length) continue;
+    for (const { event, bindings } of usableEvents) {
       const material: Omit<CreativeSourceCorrespondence, "id"> = {
         requestFrameId, sourceId: String(requestOwner.sourceId), sourceVersionId: String(requestOwner.sourceVersionId),
         request: requestWitness, reply: replyWitness, eventId: event.id, eventRelationId: event.relationId,
         eventConstructionId: event.constructionId, eventArgumentFrameId: event.argumentFrame.id,
         bindings: bindings.map(({ start, end, port, ...declared }) => ({ requestRoleId: roleIds[roles.findIndex(role => role.start === start && role.end === end)]!,
-          eventRoleId: port.roleId as "scce.role.patient" | "scce.role.complement", requestStart: start, requestEnd: end,
+          eventRoleId: port.roleId as "scce.role.agent" | "scce.role.patient" | "scce.role.complement", requestStart: start, requestEnd: end,
           eventStart: port.startCodePoint, eventEnd: port.endCodePoint, ...declared }))
       };
       observations.push(deriveCreativeSourceCorrespondence(material, input.hasher));
@@ -310,7 +316,12 @@ function verifyCreativeSourceCorrespondenceIndexed(row: CreativeSourceCorrespond
     && event.sourceVersionId === row.sourceVersionId && event.relationId === row.eventRelationId
     && event.constructionId === row.eventConstructionId && event.argumentFrame.id === row.eventArgumentFrameId);
   if (!event || event.labelStartCodePoint < row.reply.start || event.labelEndCodePoint > row.reply.end
-    || row.bindings.length !== event.argumentFrame.bindings.length) return false;
+    || event.argumentFrame.bindings.some(port => port.startCodePoint < row.reply.start || port.endCodePoint > row.reply.end
+      || sourceTextPointSlice(reply.text, port.startCodePoint, port.endCodePoint, points) !== port.surface
+      || port.connector && (port.connector.startCodePoint < row.reply.start || port.connector.endCodePoint > row.reply.end))
+    || row.bindings.length > event.argumentFrame.bindings.length
+    || row.request.sourceAuthority !== "creative" && row.bindings.length !== event.argumentFrame.bindings.length
+    || new Set(row.bindings.map(binding => `${binding.eventRoleId}:${binding.eventStart}:${binding.eventEnd}`)).size !== row.bindings.length) return false;
   return row.bindings.every(binding => {
     const port = event.argumentFrame.bindings.find(port => port.roleId === binding.eventRoleId
       && port.startCodePoint === binding.eventStart && port.endCodePoint === binding.eventEnd);

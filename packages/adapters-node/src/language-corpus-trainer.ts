@@ -81,6 +81,7 @@ import {
   type GraphSnapshot,
   type JsonValue,
   type LanguagePatternRecord,
+  type LanguagePatternProjection,
   type LanguageTrainingConstructionObservationReceipt,
   type LanguageProfile,
   type SourceReferenceBindingDeclaration,
@@ -106,6 +107,9 @@ import {
 import type { TranscriptTurn } from "@scce/kernel";
 
 export interface LanguageCorpusTrainingInput {
+  exactSourceText?: boolean;
+  sourceOwnedPatternProjections?: readonly SourceOwnedPatternProjection[];
+  profileLanguageIdentityId?: string;
   corpusSegmentation?: LanguageTrainingSegmentationDeclaration;
   sourceInductionExecution?: SourceInductionWorkerExecution;
   /** Caller-owned worker pool retained across corpus items; never serialized into a checkpoint binding. */
@@ -211,12 +215,19 @@ export interface CorpusTrainingCheckpoint {
   originalSourceUri?: string;
 }
 
+export interface SourceOwnedPatternProjection {
+  patternSchema: string;
+  componentRecipe: string;
+  patterns: readonly { key: string; patternJson: JsonValue; support: number; ranges: readonly { start: number; end: number }[] }[];
+}
+
 export interface CorpusOriginalSource {
   bytes: Uint8Array;
   sourceUri: string;
   transformId: string;
   kind?: "redacted-text" | "extracted-text";
   originalCoordinateSpace?: "source-bytes" | "extracted-text-utf8";
+  mediaType?: string;
 }
 
 export class CorpusCheckpointConflictError extends Error {
@@ -227,6 +238,8 @@ export class CorpusCheckpointConflictError extends Error {
 }
 
 export interface LanguageCorpusTrainingReport {
+  creativeSurfacePatternProjection?: LanguagePatternProjection;
+  sourceOwnedPatternProjections?: readonly LanguagePatternProjection[];
   sourceInductionExecution?: SourceInductionExecutionReceipt;
   segmentation?: PreparedCorpusSegmentationSelection["identity"];
   schema: "scce.languageCorpusTrainingReport.v1";
@@ -278,6 +291,7 @@ export interface PreparedLanguageCorpusTraining {
 }
 
 interface PreparedLanguageCorpusPayload {
+  sourceOwnedPatternProjections?: readonly LanguagePatternProjection[];
   sourceInductionExecution?: SourceInductionExecutionReceipt;
   projectedGraph?: GraphSnapshot;
   relationObservations?: Awaited<ReturnType<NonNullable<ScceStorage["relationObservations"]>["list"]>>;
@@ -456,6 +470,7 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
   if (graphProjectionEnabled) {
     components.sourceEntityGraph = SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID;
   }
+  for (const projection of input.sourceOwnedPatternProjections ?? []) components[`sourceOwned:${projection.patternSchema}`] = projection.componentRecipe;
   return components;
 }
 
@@ -488,7 +503,7 @@ async function prepareCorpusCheckpoint(input: LanguageCorpusTrainingInput, bindi
       throw new CorpusCheckpointConflictError(`corpus checkpoint identity mismatch for ${id}; refusing replay`);
     }
     const report = checkpointReport(existing, input, binding);
-    if (report) return ensureCachedTranscriptArchive(input, report, existing);
+    if (report && await checkpointPatternProjectionsCurrent(input, report)) return ensureCachedTranscriptArchive(input, report, existing);
   }
   await input.storage.ingestion.put(checkpointRecord(input, binding));
   return undefined;
@@ -506,7 +521,24 @@ export async function readCompletedCorpusCheckpoint(input: LanguageCorpusTrainin
   const existing = await input.storage.ingestion.get(id);
   if (existing?.status !== "complete") return undefined;
   const report = checkpointReport(existing, input, checkpointBinding(input));
-  return report ? ensureCachedTranscriptArchive(input, report, existing) : undefined;
+  return report && await checkpointPatternProjectionsCurrent(input, report) ? ensureCachedTranscriptArchive(input, report, existing) : undefined;
+}
+
+async function checkpointPatternProjectionsCurrent(input: LanguageCorpusTrainingInput, report: LanguageCorpusTrainingReport): Promise<boolean> {
+  const creative = report.creativeSurfacePatternProjection;
+  if (corpusComponentRecipes(input).creativeSurfaceAcquisition && (!creative || creative.componentRecipe !== CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID)) return false;
+  if (!input.sourceOwnedPatternProjections?.length && !creative) return true;
+  const expected = (input.sourceOwnedPatternProjections ?? []).map(row => [row.patternSchema, row.componentRecipe]).sort();
+  const projections = report.sourceOwnedPatternProjections ?? [];
+  if (canonicalStringify(projections.map(row => [row.patternSchema, row.componentRecipe]).sort()) !== canonicalStringify(expected)
+    || !input.storage.languageMemory.getLanguagePatternProjection) return false;
+  for (const projection of [...projections, ...(creative ? [creative] : [])]) {
+    const active = await input.storage.languageMemory.getLanguagePatternProjection(projection);
+    if (!active || canonicalStringify(active) !== canonicalStringify(projection)) return false;
+    const rows = await input.storage.languageMemory.listLanguagePatterns({ view: "request_seed", patternIds: projection.patternIds, limit: Math.max(1, projection.patternIds.length) });
+    if (canonicalStringify(rows.map(row => row.id).sort()) !== canonicalStringify([...projection.patternIds].sort())) return false;
+  }
+  return true;
 }
 
 async function ensureCachedTranscriptArchive(input: LanguageCorpusTrainingInput, report: LanguageCorpusTrainingReport, checkpoint: IngestionCheckpoint): Promise<LanguageCorpusTrainingReport> {
@@ -539,6 +571,7 @@ function preparationInputSnapshot(input: LanguageCorpusTrainingInput): LanguageC
   return {
     ...input,
     evidence: clone(input.evidence),
+    sourceOwnedPatternProjections: clone(input.sourceOwnedPatternProjections),
     profile: clone(input.profile),
     corpusRegistry: clone(input.corpusRegistry),
     sourceAdmission: clone(input.sourceAdmission),
@@ -587,6 +620,7 @@ function trainingInputBinding(input: LanguageCorpusTrainingInput, batchRecipe: s
       transformId: input.originalSource.transformId,
       kind: input.originalSource.kind ?? "extracted-text",
       originalCoordinateSpace: input.originalSource.originalCoordinateSpace ?? "source-bytes",
+      ...(input.originalSource.mediaType ? { mediaType: input.originalSource.mediaType } : {}),
       contentHash: blobContentHash(input.originalSource.bytes),
       byteLength: input.originalSource.bytes.byteLength
     } as unknown as typeof semantic.originalSource;
@@ -897,9 +931,10 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const sourceUri = input.sourceUri ?? input.streamUri;
   const namespace = input.namespace ?? `corpus:${sourceSystemId}`;
   const createdAt = input.createdAt ?? clock.now();
-  const text = normalizeCorpusTrainingText(input.text);
+  const text = input.exactSourceText ? input.text : normalizeCorpusTrainingText(input.text);
   const bytes = Buffer.from(text, "utf8");
-  const sourceVersionId = input.sourceVersionId ?? corpusSourceVersionIdFor({ sourceUri, text });
+  const sourceVersionId = input.sourceVersionId ?? (input.exactSourceText
+    ? ids.sourceVersionId(`${sourceUri}\u001f${hasher.digestHex(bytes)}`) : corpusSourceVersionIdFor({ sourceUri, text }));
   const sourceId = ids.sourceId(namespace, sourceUri);
   const originalSpec = input.originalSource;
   if (originalSpec && !originalSpec.transformId.trim()) throw new Error("corpus original source requires a non-empty transformId");
@@ -977,7 +1012,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
         namespace,
         canonicalUri: originalSourceUri,
         contentHash: originalContentHash,
-        mediaType,
+        mediaType: originalSpec.mediaType ?? mediaType,
         observedAt: createdAt,
         byteLength: originalBytes.byteLength,
         sourceTrust: corpusSourceTrust(sourceSystemId),
@@ -1232,6 +1267,10 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     hasher
   });
 
+  const auxiliary = prepareSourceOwnedPatterns({ input, source, originalSource, profile, evidence, informationLabel, ids, hasher, createdAt });
+  evidence.push(...auxiliary.evidence);
+  patterns.push(...auxiliary.patterns.map(pattern => ({ ...pattern, informationLabel })));
+
   const learned = events.create({
     episodeId: input.episodeId ?? ids.episodeId(),
     typeId: "SymbolPatternLearned",
@@ -1271,6 +1310,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   });
   return {
     sourceSystem,
+    sourceOwnedPatternProjections: auxiliary.projections,
     projectedGraph: sourceProjection?.graph,
     relationObservations: sourceProjection?.observations,
     sourceSystemId,
@@ -1326,6 +1366,71 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
 }
 
 
+function prepareSourceOwnedPatterns(input: {
+  input: LanguageCorpusTrainingInput; source?: SourceVersion; originalSource?: SourceVersion; profile: LanguageProfile;
+  evidence: readonly EvidenceSpan[]; informationLabel: InformationLabel; ids: IdFactory; hasher: ReturnType<typeof createHasher>; createdAt: number;
+}): { evidence: EvidenceSpan[]; patterns: LanguagePatternRecord[]; projections: LanguagePatternProjection[] } {
+  const declarations = input.input.sourceOwnedPatternProjections ?? [];
+  if (!declarations.length) return { evidence: [], patterns: [], projections: [] };
+  const source = input.source, original = input.originalSource, originalBytes = input.input.originalSource?.bytes;
+  if (!source || !original || !originalBytes || source.sourceId === original.sourceId
+    || source.derivation?.derivedFromSourceVersionId !== original.sourceVersionId || !input.evidence.length || input.evidence.some(span => span.status !== "promoted")) {
+    throw new Error("source-owned annotations require distinct admitted original and measured-text source owners");
+  }
+  if (new Set(declarations.map(row => row.patternSchema)).size !== declarations.length) throw new Error("duplicate source-owned annotation schema");
+  const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(originalBytes);
+  const rangeKey = (range: { start: number; end: number }) => `${range.start}:${range.end}`;
+  const ranges = [...new Map(declarations.flatMap(declaration => declaration.patterns.flatMap(pattern => pattern.ranges))
+    .map(range => [rangeKey(range), range])).values()].sort((left, right) => left.start - right.start || left.end - right.end);
+  const spans = new Map<string, EvidenceSpan>();
+  let priorStart = 0, priorByte = 0, priorChar = 0;
+  for (const range of ranges) {
+    if (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end) || range.start < priorStart || range.end <= range.start || range.end > text.length
+      || isSurrogateBoundary(text, range.start) || isSurrogateBoundary(text, range.end)) throw new Error("invalid source-owned annotation range");
+    const gap = text.slice(priorStart, range.start), value = text.slice(range.start, range.end);
+    const byteStart = priorByte + Buffer.byteLength(gap), byteEnd = byteStart + Buffer.byteLength(value);
+    const charStart = priorChar + [...gap].length, charEnd = charStart + [...value].length;
+    const contentHash = blobContentHash(Buffer.from(value)), identity = { sourceVersionId: original.sourceVersionId, byteStart, byteEnd };
+    spans.set(rangeKey(range), { id: input.ids.evidenceId({ ...identity, spanHash: contentHash }), chunkId: input.ids.chunkId({ ...identity, chunkHash: contentHash }),
+      sourceId: original.sourceId, sourceVersionId: original.sourceVersionId, contentHash, mediaType: original.mediaType, byteStart, byteEnd, charStart, charEnd,
+      text: value, textPreview: value, languageHints: toJsonValue(input.input.languageAliases ?? []), scriptHints: toJsonValue(input.profile.scripts),
+      trustVector: toJsonValue(original.sourceTrust), provenance: toJsonValue({ sourceSystem: corpusSourceAlias(input.input.sourceSystem), sourceKind: input.input.sourceKind,
+        uri: original.canonicalUri, annotationSourceContentHash: original.contentHash }), features: [], status: "promoted",
+      alpha: Math.min(...input.evidence.map(span => span.alpha)), observedAt: input.createdAt, informationLabel: input.informationLabel });
+    priorStart = range.start; priorByte = byteStart; priorChar = charStart;
+  }
+  const patterns: LanguagePatternRecord[] = [], projections: LanguagePatternProjection[] = [];
+  const dependencies: NonNullable<LanguagePatternProjection["sourceDependencies"]> = [
+    { sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, contentHash: source.contentHash, evidenceIds: input.evidence.map(span => span.id) },
+    { sourceId: original.sourceId, sourceVersionId: original.sourceVersionId, contentHash: original.contentHash, evidenceIds: [...spans.values()].map(span => span.id) }
+  ];
+  for (const declaration of declarations) {
+    if (!declaration.patternSchema.trim() || !declaration.componentRecipe.trim() || new Set(declaration.patterns.map(row => row.key)).size !== declaration.patterns.length) throw new Error("invalid source-owned annotation projection");
+    const rows: LanguagePatternRecord[] = declaration.patterns.map(annotation => {
+      if (!annotation.key || !Number.isFinite(annotation.support) || annotation.support <= 0 || !annotation.ranges.length
+        || jsonRecord(annotation.patternJson).schema !== declaration.patternSchema || jsonRecord(annotation.patternJson).componentRecipe !== declaration.componentRecipe) throw new Error("invalid source-owned annotation");
+      const evidence = [...new Set(annotation.ranges.map(range => spans.get(rangeKey(range))!.id))];
+      return { id: input.ids.semanticId("source_owned_annotation", { sourceVersionId: source.sourceVersionId, schema: declaration.patternSchema, recipe: declaration.componentRecipe, key: annotation.key }),
+        profileId: input.profile.id, patternKind: "semantic_role", support: annotation.support, entropy: 0, evidenceIds: evidence, updatedAt: input.createdAt, informationLabel: input.informationLabel,
+        patternJson: toJsonValue({ ...jsonRecord(annotation.patternJson), sourceId: source.sourceId, sourceVersionId: source.sourceVersionId,
+          sourceContentHash: source.contentHash, profileId: input.profile.id, sourceSystem: corpusSourceAlias(input.input.sourceSystem),
+          annotationSourceVersionId: original.sourceVersionId, annotationSourceContentHash: original.contentHash,
+          sourceRanges: annotation.ranges.map(range => { const span = spans.get(rangeKey(range))!; return { ...range, evidenceId: span.id,
+            byteStart: span.byteStart, byteEnd: span.byteEnd, charStart: span.charStart, charEnd: span.charEnd, textHash: span.contentHash }; }) }) };
+    });
+    patterns.push(...rows);
+    projections.push({ profileId: input.profile.id, sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, sourceSystem: corpusSourceAlias(input.input.sourceSystem),
+      patternSchema: declaration.patternSchema, componentRecipe: declaration.componentRecipe, informationLabel: input.informationLabel,
+      patternIds: rows.map(row => row.id).sort(), sourceDependencies: dependencies });
+  }
+  return { evidence: [...spans.values()], patterns, projections };
+}
+
+function isSurrogateBoundary(text: string, offset: number): boolean {
+  return offset > 0 && offset < text.length && text.charCodeAt(offset - 1) >= 0xd800 && text.charCodeAt(offset - 1) <= 0xdbff
+    && text.charCodeAt(offset) >= 0xdc00 && text.charCodeAt(offset) <= 0xdfff;
+}
+
 function compactSourceCodeFunctionPatterns(input: {
   constructions: JsonValue | undefined;
   metadata: JsonValue;
@@ -1374,7 +1479,13 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     if (persistedHash !== prepared.source.contentHash) throw new Error("language training source blob hash mismatch");
     if (prepared.transcriptArchive && await input.storage.blobs.put(prepared.transcriptArchive.bytes, "application/json") !== prepared.transcriptArchive.descriptor.archiveHash) throw Error("transcript archive publication hash mismatch");
     await input.storage.quarantine.put(prepared.quarantine);
-    await putSpanBlobs(input.storage.blobs, prepared.evidence, prepared.mediaType, { contentHash: persistedHash, bytes: prepared.bytes });
+    const derivativeSpans = prepared.evidence.filter(span => span.sourceVersionId === prepared.source!.sourceVersionId);
+    const annotationSpans = prepared.evidence.filter(span => span.sourceVersionId !== prepared.source!.sourceVersionId);
+    await putSpanBlobs(input.storage.blobs, derivativeSpans, prepared.mediaType, { contentHash: persistedHash, bytes: prepared.bytes });
+    if (annotationSpans.length) {
+      if (!prepared.originalSource || !prepared.originalBytes || annotationSpans.some(span => span.sourceVersionId !== prepared.originalSource!.sourceVersionId)) throw new Error("language training evidence has no canonical source owner");
+      await putSpanBlobs(input.storage.blobs, annotationSpans, prepared.originalSource.mediaType, { contentHash: prepared.originalSource.contentHash, bytes: prepared.originalBytes });
+    }
     await input.storage.evidence.putSourceVersion(prepared.source);
     if (input.storage.evidence.putEvidenceSpans) await input.storage.evidence.putEvidenceSpans(prepared.evidence);
     else for (const span of prepared.evidence) await input.storage.evidence.putEvidenceSpan(span);
@@ -1386,6 +1497,10 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
 
   if (input.persistProfile !== false) await input.storage.model.putLanguageProfile(input.profileBinding
     ? attachPooledLanguageProfileOwnership(prepared.profile, input.profileBinding, createHasher()) : prepared.profile);
+  if (input.profileLanguageIdentityId) {
+    if (!input.storage.languageIdentities || !(await input.storage.languageIdentities.listIdentities()).some(row => row.id === input.profileLanguageIdentityId)) throw new Error("source language identity is no longer accessible");
+    await input.storage.languageIdentities.assignProfileLanguages([{ profileId: prepared.profile.id, languageId: input.profileLanguageIdentityId }]);
+  }
   if (prepared.relationObservations?.length && input.storage.relationObservations) await input.storage.relationObservations.put(prepared.relationObservations);
   if (prepared.projectedGraph) {
     const graph = prepared.projectedGraph;
@@ -1442,6 +1557,12 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
   const componentRecipes = corpusComponentRecipes(input);
   const patternProjectionRecipe = componentRecipes.sourceCodeFunctions ?? componentRecipes.sourceConstructionProjection;
   const patternSchema = componentRecipes.sourceCodeFunctions ? SOURCE_CODE_FUNCTION_PATTERN_SCHEMA : LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA;
+  const creativeSurfacePatternProjection: LanguagePatternProjection | undefined = !input.languageOnly && componentRecipes.sourceConstructionProjection
+    && (prepared.models.length || componentRecipes.creativeSurfaceAcquisition || prepared.patterns.some(pattern => jsonRecord(pattern.patternJson).schema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA))
+    ? { profileId: String(prepared.profile.id), sourceId: prepared.sourceId, sourceVersionId: prepared.sourceVersionId,
+      sourceSystem: prepared.sourceSystem, informationLabel: prepared.informationLabel, patternSchema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
+      componentRecipe: CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
+      patternIds: prepared.patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA).map(pattern => pattern.id).sort() } : undefined;
   await publishCompiledLanguagePatterns({ store: input.storage.languageMemory,
     owner: { sourceId: prepared.sourceId, sourceVersionId: prepared.sourceVersionId, contentHash: blobContentHash(prepared.bytes) },
     profileId: String(prepared.profile.id), sourceSystem: prepared.sourceSystem, informationLabel: prepared.informationLabel,
@@ -1450,10 +1571,10 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
         sourceDependencies: sourceRequestEditDependencies(prepared.patterns) }] : []),
       ...(patternProjectionRecipe ? [{ patternSchema, componentRecipe: patternProjectionRecipe }] : []),
       ...(componentRecipes.inducedLanguageMemory ? INDUCED_LANGUAGE_MEMORY_PUBLICATIONS : []),
-      ...(!input.languageOnly && prepared.models.length && componentRecipes.sourceConstructionProjection
-        ? [{ patternSchema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, componentRecipe: CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID }] : []),
+      ...(creativeSurfacePatternProjection ? [creativeSurfacePatternProjection] : []),
       ...(canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode
-        ? [{ patternSchema: "scce.source_owned_test_contract.v1", componentRecipe: "scce.source_owned_test_contract_projection.v1" }] : [])
+        ? [{ patternSchema: "scce.source_owned_test_contract.v1", componentRecipe: "scce.source_owned_test_contract_projection.v1" }] : []),
+      ...(prepared.sourceOwnedPatternProjections ?? [])
     ] });
   if (input.storage.languageMemory.putSemanticFrames) await input.storage.languageMemory.putSemanticFrames(prepared.frames);
   else for (const frame of prepared.frames) await input.storage.languageMemory.putSemanticFrame(frame);
@@ -1468,6 +1589,8 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
 
   return {
     schema: "scce.languageCorpusTrainingReport.v1",
+    ...(creativeSurfacePatternProjection ? { creativeSurfacePatternProjection } : {}),
+    ...(prepared.sourceOwnedPatternProjections?.length ? { sourceOwnedPatternProjections: prepared.sourceOwnedPatternProjections } : {}),
     ...(prepared.sourceInductionExecution ? { sourceInductionExecution: prepared.sourceInductionExecution } : {}),
     sourceSystem: prepared.sourceSystem,
     sourceSystemId: prepared.sourceSystemId,

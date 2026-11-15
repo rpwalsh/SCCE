@@ -80,12 +80,12 @@ describe("source-owned creative compatibility publication", () => {
     const query = calls.at(-1)!;
     expect(query.params).toContain(CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID);
     for (const predicate of ["projection_profile.id=active_projection.value_json->>'profileId'", "projection_profile.source_version_id=active_projection.value_json->>'sourceVersionId'",
-      "projection_version.source_id=active_projection.value_json->>'sourceId'", "published.profile_id=pattern.profile_id", "published.source_system=pattern.source_system", "published.pattern_schema=pattern.pattern_schema"])
+      "projection_version.source_id=active_projection.value_json->>'sourceId'"])
       expect(query.sql).toContain(predicate);
-    expect(query.sql).toContain("OR NOT EXISTS (");
-    expect(query.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id FROM active_projection_ids_0");
-    expect(query.sql.indexOf("FROM active_projection_ids_0_headers published")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
-    expect(query.sql.indexOf("FROM active_projection_ids_0_headers published")).toBeLessThan(query.sql.indexOf("running_json_bytes"));
+    expect(query.sql).not.toContain("FROM active_projection_ids_0_headers published");
+    const membership = "SELECT profile_id,source_system,pattern_schema,pattern_id FROM active_projection_ids_0";
+    expect(query.sql).toContain(membership);
+    expect(query.sql.indexOf(membership)).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
     expect(query.sql).toContain("active_projection.information_label->>'tenantId'");
   });
 });

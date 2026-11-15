@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
 
-import { createRuntimeGraphRetrieval, learnedMorphologyPrefixIndex } from "../runtime-graph-retrieval.js";
+import { createRuntimeGraphRetrieval, discourseEvidenceAdmissionForRequest, learnedMorphologyPrefixIndex } from "../runtime-graph-retrieval.js";
 import { createClock, createHasher } from "../primitives.js";
 import { evidenceProofBoundary, isSourceContentEvidence } from "../proof-boundary.js";
 import type { KneserNeyModel } from "../kneser-ney.js";
@@ -18,6 +18,24 @@ import type {
 import type { EvidenceSearchResult, SemanticFrameRecord } from "../storage.js";
 
 describe("runtime hot graph retrieval", () => {
+  it("does not license a prior owner scope for content only the current source carries", () => {
+    const prior = evidenceSpan("evidence:prior", "Prior", "Einstein developed relativity.");
+    const current = evidenceSpan("evidence:current", "Current", "Qevra is Nulom.");
+    const language = new Set(["what", "is"]);
+    expect(discourseEvidenceAdmissionForRequest("what is qevra", [prior], language).carriesRequest).toBe(false);
+    expect(discourseEvidenceAdmissionForRequest("what is qevra", [current], language).carriesRequest).toBe(true);
+  });
+
+  it("retains carried relation content and measured scaffolding without erasing unmeasured requests", () => {
+    const source = evidenceSpan("evidence:prior", "Prior", "Einstein was born in Ulm.");
+    const language = new Set(["when", "was", "he"]);
+    expect(discourseEvidenceAdmissionForRequest("when was he born", [source], language))
+      .toEqual({ requestUnits: ["born"], carriesRequest: true });
+    expect(discourseEvidenceAdmissionForRequest("zuv krel", [source], new Set()).carriesRequest).toBe(false);
+    expect(discourseEvidenceAdmissionForRequest("zuv krel", [source], new Set(["zuv", "krel"])))
+      .toEqual({ requestUnits: [], carriesRequest: true });
+  });
+
   it("does not retain oversized evidence below the entry-count limit", async () => {
     vi.stubEnv("SCCE_SOURCE_ANCHOR_EVIDENCE_CACHE_MB", "1");
     try {
@@ -289,15 +307,10 @@ describe("runtime hot graph retrieval", () => {
 
     expect(result.evidence).toEqual([]);
     expect(semanticFrames).toHaveBeenCalledTimes(1);
-    // sourceAnchoredEvidenceForText now searches each candidate anchor
-    // phrase as its own query instead of blending them into one
-    // overlap-ranked search (see runtime-graph-retrieval.ts's
-    // sourceAnchorRetrievalFeatureGroups) -- "Charles Babbage" yields
-    // three specific multi-word anchor candidates here; each bigram that
-    // matches nothing is retried by its own symbols (searchAnchorGroup), so
-    // an empty store sees two searches per anchor, six in all, plus the request's one concept group ("known",
-    // the content unit outside the subject anchor), which is searched and retried the same way: eight.
-    expect(fixture.searchEvidence).toHaveBeenCalledTimes(8);
+    // No language class was supplied, so short units such as "was" remain source obligations. Five distinct
+    // phrase queries and four symbol retries use the existing ordinary-turn budget, without deleting short words.
+    expect(fixture.searchEvidence).toHaveBeenCalledTimes(9);
+    expect(new Set(fixture.searchEvidence.mock.calls.map(call => JSON.stringify(call))).size).toBe(9);
   });
 
   it("keeps broad symbol postings out of a selective phrase query and uses them only for its empty-result retry", async () => {
@@ -525,9 +538,13 @@ describe("runtime hot graph retrieval", () => {
 
     // The two turns keep their own admission/proof work, while equivalent
     // storage reads share the unresolved promise at the runtime boundary.
-    expect(fixture.searchEvidence).toHaveBeenCalledTimes(4);
+    expect(fixture.searchEvidence).toHaveBeenCalledTimes(5);
+    expect(new Set(fixture.searchEvidence.mock.calls.map(call => JSON.stringify(call))).size).toBe(5);
     release();
-    await Promise.all([first, second]);
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult).toEqual(secondResult);
+    expect(fixture.searchEvidence).toHaveBeenCalledTimes(9);
+    expect(new Set(fixture.searchEvidence.mock.calls.map(call => JSON.stringify(call))).size).toBe(9);
   });
 
   it("does not reuse a graph slice across cache identities", async () => {
@@ -556,7 +573,8 @@ describe("runtime hot graph retrieval", () => {
     expect(factual.evidence.map(span => String(span.id))).toEqual(["evidence:prose"]);
 
     const program = await fixture.runtime.graphForTextUncached("Inspect runtime.ts", ["sym:runtime"], ["runtime"], true, true);
-    expect(program.evidence.map(span => String(span.id))).toEqual(["evidence:prose", "evidence:code"]);
+    // The requested exact source owner leads; allowing source code preserves the unrelated prose candidate too.
+    expect(program.evidence.map(span => String(span.id))).toEqual(["evidence:code", "evidence:prose"]);
   });
 
   it("does not reuse a warmed model-only function-unit cache when a continuation population is supplied", async () => {

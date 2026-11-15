@@ -8,6 +8,7 @@ import { atomizeText } from "./semantic-proof-system.js";
 import { SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { jsonRecord, namedSubjectAnchors, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { requestContentEvidenceUnits, requestUnitSharesStem } from "./local-evidence-runtime.js";
+import { lexicalRelationWitnesses } from "./lexical-semantic-memory.js";
 import { factualRoundTripGate } from "./semantic-round-trip.js";
 import { surfaceContainsBoundValue, surfaceWords } from "./surface-linguistics.js";
 import { sourceRequestEditResponseForContract, type SourceRequestEditResponseProgram } from "./source-request-edit-program.js";
@@ -269,7 +270,8 @@ export function candidateSurvivesRealizationContract(
   }
   const surfaceUnits = candidateSurfaceUnits(candidateText);
   const missingRelationUnits = contract.requiredRelationUnits.filter(unit =>
-    !surfaceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
+    !surfaceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)
+      || lexicalRelationWitnesses(unit, surfaceUnit, candidateText).length > 0));
   const boundValues = Object.values(contract.boundValues).filter(Boolean);
   const requestedSlotSatisfied = boundValues.every(value => surfaceContainsBoundValue(candidateText, value));
   const survives = missingRelationUnits.length === 0 && requestedSlotSatisfied;

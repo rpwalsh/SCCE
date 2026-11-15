@@ -232,6 +232,15 @@ describe("ProgramGraph runtime and artifact emission", () => {
     })?.artifactKindIds).toEqual(["program.artifact.library"]);
   });
 
+  it("does not turn an incidental program operator into a program for a story request", () => {
+    const codeSignal = codeRequestSignal("Write a short story about a fox.");
+    expect(codeSignal.observations).toEqual([]);
+    expect(programIntentForTurn({ requestedAuthority: "creative",
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning], codeSignal, evidence: [] })).toBeUndefined();
+    expect(programIntentForTurn({ requestedAuthority: "program",
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning], codeSignal, evidence: [] })).toBeDefined();
+  });
+
   it("originates and executes a callable and causal test from an owner behavior requirement", () => {
     const request = "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run tests proving it.";
     const signal = codeRequestSignal(request);

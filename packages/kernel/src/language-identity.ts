@@ -502,10 +502,8 @@ export function closedClassForFamilies(identity: LanguageIdentityRecord, familie
 /**
  * Route by measured closed class, then observed profile symbols; an unresolved tie stays unresolved.
  *
- * Membership alone is not enough: independently learned identities can carry the same form word. The measured
- * document share is the evidence that distinguishes a word used throughout one population from an incidental word
- * in a much larger population. Profile count is deliberately not a tie-breaker; corpus volume is not language
- * evidence, and letting it decide made a large code/documentation population capture ordinary dialogue.
+ * Shared form words first use observed vocabulary coverage, then measured document share. Profile count is never
+ * a tie-breaker: corpus volume is not language evidence.
  */
 export function selectLanguageIdentityForSurface(
   identities: readonly LanguageIdentityRecord[],
@@ -526,7 +524,7 @@ export function selectLanguageIdentityForSurface(
   if (!eligible.length) return undefined;
   const candidates = eligible.filter(identity => !script || identity.script === script);
   const pool = candidates.length ? candidates : eligible;
-  let best: { identity: LanguageIdentityRecord; coverage: number; strength: number } | undefined;
+  let best: { identity: LanguageIdentityRecord; coverage: number; lexicalCoverage: number; strength: number } | undefined;
   let tiedBest = false;
   let bestObserved: { identity: LanguageIdentityRecord; coverage: number } | undefined;
   let tiedObserved = false;
@@ -538,14 +536,17 @@ export function selectLanguageIdentityForSurface(
     });
     const coverage = words.length ? matchedShares.length / words.length : 0;
     const strength = words.length ? matchedShares.reduce((sum, share) => sum + share, 0) / words.length : 0;
-    if (!best || coverage > best.coverage || (coverage === best.coverage && strength > best.strength)) {
-      best = { identity, coverage, strength };
+    const observed = new Set(identity.evidence?.observedSymbols.map(row => row.symbol) ?? []);
+    // Shared form words need the population's observed vocabulary before prevalence can break a tie.
+    const lexicalCoverage = coverage > 0 ? words.filter(word => observed.has(word)).length / words.length : 0;
+    if (!best || coverage > best.coverage || (coverage === best.coverage
+      && (lexicalCoverage > best.lexicalCoverage || (lexicalCoverage === best.lexicalCoverage && strength > best.strength)))) {
+      best = { identity, coverage, lexicalCoverage, strength };
       tiedBest = false;
-    } else if (coverage === best.coverage && strength === best.strength) {
+    } else if (coverage === best.coverage && lexicalCoverage === best.lexicalCoverage && strength === best.strength) {
       tiedBest = true;
     }
     if (!closed.size) {
-      const observed = new Set(identity.evidence?.observedSymbols.map(row => row.symbol) ?? []);
       const observedCoverage = words.length ? words.filter(word => observed.has(word)).length / words.length : 0;
       if (observedCoverage > (bestObserved?.coverage ?? 0)) {
         bestObserved = { identity, coverage: observedCoverage };

@@ -49,7 +49,7 @@ function bindings(value: unknown): CreativeSourceCorrespondence["bindings"] {
   return value.map(raw => {
     const binding = record(raw); keys(binding, ["requestRoleId", "eventRoleId", "requestStart", "requestEnd", "eventStart", "eventEnd"], ["sourceReference"]);
     requiredText(binding.requestRoleId);
-    if (binding.eventRoleId !== "scce.role.patient" && binding.eventRoleId !== "scce.role.complement") failure();
+    if (binding.eventRoleId !== "scce.role.agent" && binding.eventRoleId !== "scce.role.patient" && binding.eventRoleId !== "scce.role.complement") failure();
     for (const field of ["requestStart", "requestEnd", "eventStart", "eventEnd"]) integer(binding[field]);
     if (Number(binding.requestEnd) <= Number(binding.requestStart) || Number(binding.eventEnd) <= Number(binding.eventStart)) failure();
     if (Object.hasOwn(binding, "sourceReference")) {

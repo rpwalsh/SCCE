@@ -240,7 +240,10 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
   const neutralAuthorityApplied = neutralAuthorityReasonId !== null;
   const projectedAuthority = neutralAuthorityApplied ? "factual" : (ranked[0]?.authority ?? "factual");
   const typedProgramBehaviorRequirementIds = [...new Set((input.typedProgramBehaviorRequirementIds ?? []).filter(id => typeof id === "string" && id.trim()))];
-  const observedAuthority = sourceObservedRequestAuthority(input.sourceRequestFrame);
+  const sourceAuthority = sourceObservedRequestAuthority(input.sourceRequestFrame);
+  // A source example can resolve neutral intent or corroborate measured intent, but cannot reverse it.
+  const observedAuthority = sourceAuthority && (neutralAuthorityApplied
+    || scores[sourceAuthority.authority] >= scores[projectedAuthority]) ? sourceAuthority : undefined;
   const computation=input.verifiedComputation;
   const computationAuthority=computation&&sourceComputationResultVerified(computation.result,computation.requestText,createHasher())?"reasoned":undefined;
   const qa = input.verifiedContextualQa;
@@ -267,7 +270,8 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
         ? "typed_owner_behavior_contract"
         : contextualQaAuthority ? "source_owned_contextual_qa"
         : observedAuthority ? "source_observed_request_construction" : "turn_requirement_field",
-    sourceObservedRequestAuthority: observedAuthority ?? null,
+    sourceObservedRequestAuthority: sourceAuthority ?? null,
+    sourceObservedRequestAuthorityAccepted: Boolean(observedAuthority),
     sourceComputationPatternIds: computationAuthority?computation!.result.patternIds:[],
     contextualQaPatternIds: contextualQaAuthority ? qa!.result.patternIds : [],
     typedProgramBehaviorRequirementIds,

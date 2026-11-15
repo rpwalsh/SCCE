@@ -207,7 +207,7 @@ export interface DurableCreativeEventArgumentFrame {
 }
 
 export interface DurableCreativeEventArgumentBinding {
-  roleId: "scce.role.patient" | "scce.role.complement";
+  roleId: "scce.role.agent" | "scce.role.patient" | "scce.role.complement";
   surface: string;
   surfaceDigest: string;
   startCodePoint: number;
@@ -719,7 +719,8 @@ function compileUniversalCreativeEvent(input: {
   const arg1Fillers = arg1Slot?.observedFillers;
   const hasPatient = Boolean(right && arg1Fillers?.includes(right.normalized));
 
-  const bindings: DurableCreativeEventArgumentBinding[] = [];
+  const bindings: DurableCreativeEventArgumentBinding[] = [{ roleId: "scce.role.agent", surface: left.surface,
+    surfaceDigest: "", startCodePoint: left.codePointStart, endCodePoint: left.codePointEnd }];
   if (hasPatient && right) {
     bindings.push({
       roleId: "scce.role.patient",
@@ -729,7 +730,7 @@ function compileUniversalCreativeEvent(input: {
       endCodePoint: right.codePointEnd
     });
   }
-  const roleIds = ["scce.role.agent", ...bindings.map(binding => binding.roleId)];
+  const roleIds = [...new Set(["scce.role.agent", ...bindings.map(binding => binding.roleId)])];
   const argumentFrame: UniversalCreativeEventSource["argumentFrame"] = {
     schema: CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA,
     compilerId: UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
@@ -738,7 +739,7 @@ function compileUniversalCreativeEvent(input: {
     roleIds,
     bindings
   };
-  const valencyId = bindings.length ? "scce.valency.agent_patient" as const : "scce.valency.agent" as const;
+  const valencyId = hasPatient ? "scce.valency.agent_patient" as const : "scce.valency.agent" as const;
   const forms = { infinitive: predicate, past: predicate, present: predicate, gerund: predicate, participle: predicate };
   return deriveUniversalCreativeEvent({
     compilerId: UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
@@ -1210,7 +1211,7 @@ function creativeEventFromPersisted(
     tenseId,
     valencyId
   ]);
-  const expectedValencyId = argumentFrame.bindings.length
+  const expectedValencyId = argumentFrame.bindings.some(binding => binding.roleId !== "scce.role.agent")
     ? "scce.valency.agent_patient"
     : "scce.valency.agent";
   if (valencyId !== expectedValencyId) return undefined;
@@ -1276,7 +1277,7 @@ function creativeArgumentFrameFromPersisted(input: {
     || input.labelStartCodePoint < sourceSentenceStartCodePoint
     || input.labelEndCodePoint > sourceSentenceEndCodePoint) return undefined;
   const rawBindings = arrayOfRecords(input.raw.bindings);
-  if (rawBindings.length > 2) return undefined;
+  if (rawBindings.length > new Set(["scce.role.agent", "scce.role.patient", "scce.role.complement"]).size) return undefined;
   const bindings: DurableCreativeEventArgumentBinding[] = [];
   const seenRoles = new Set<string>();
   for (const rawBinding of rawBindings) {
@@ -1284,12 +1285,13 @@ function creativeArgumentFrameFromPersisted(input: {
     const surface = stringOf(rawBinding.surface);
     const startCodePoint = numberOf(rawBinding.startCodePoint);
     const endCodePoint = numberOf(rawBinding.endCodePoint);
-    if ((roleId !== "scce.role.patient" && roleId !== "scce.role.complement")
+    if ((roleId !== "scce.role.agent" && roleId !== "scce.role.patient" && roleId !== "scce.role.complement")
       || seenRoles.has(roleId)
       || !surface
       || !singleLexicalWord(surface)
       || !validRange(startCodePoint, endCodePoint, evidencePoints.length)
-      || startCodePoint < input.labelEndCodePoint
+      || (roleId !== "scce.role.agent" && startCodePoint < input.labelEndCodePoint)
+      || (roleId === "scce.role.agent" && startCodePoint < input.labelEndCodePoint && endCodePoint > input.labelStartCodePoint)
       || startCodePoint < sourceSentenceStartCodePoint
       || endCodePoint > sourceSentenceEndCodePoint
       || evidencePoints.slice(startCodePoint, endCodePoint).join("") !== surface
@@ -1318,7 +1320,7 @@ function creativeArgumentFrameFromPersisted(input: {
       ...(connector ? { connector } : {})
     });
   }
-  const roleIds = ["scce.role.agent", ...bindings.map(binding => binding.roleId)];
+  const roleIds = [...new Set(["scce.role.agent", ...bindings.map(binding => binding.roleId)])];
   if (!sameStrings(arrayOfStrings(input.raw.roleIds), roleIds)) return undefined;
   const expectedId = stableId(input.hasher, "surface.creative_event.argument_frame", [
     input.compilerId,

@@ -92,7 +92,7 @@ export interface CreativeEventCompatibility {
 export interface CreativeEventRoleCompatibility {
   requestFrameId: string;
   requestRoleId: string;
-  eventRoleId: "scce.role.patient" | "scce.role.complement";
+  eventRoleId: "scce.role.agent" | "scce.role.patient" | "scce.role.complement";
   posterior: number;
   support: number;
   sourceActivationIds: string[];
@@ -149,7 +149,7 @@ export type CreativeRoleCompatibilityDecision = { posterior: number; threshold: 
 
 export interface CreativeEventCompatibilityCorpusRoleBinding {
   requestRoleId: string;
-  eventRoleId: "scce.role.patient" | "scce.role.complement";
+  eventRoleId: "scce.role.agent" | "scce.role.patient" | "scce.role.complement";
   accepted: boolean;
   requestSpan?: { charStart: number; charEnd: number };
 }
@@ -285,7 +285,7 @@ export function creativeEventRolePosterior(
   models: readonly CreativeEventCompatibilityModel[],
   frame: CreativeRequestFrame,
   requestRoleId: string,
-  eventRoleId: "scce.role.patient" | "scce.role.complement"
+  eventRoleId: "scce.role.agent" | "scce.role.patient" | "scce.role.complement"
 ): { posterior: number; threshold: number } | undefined {
   const model = models.find(candidate => (
     candidate.reliability === "calibrated"
@@ -305,7 +305,7 @@ export function creativeEventRolePosterior(
 }
 
 export function creativeEventRoleDecision(models: readonly CreativeEventCompatibilityModel[], frame: CreativeRequestFrame,
-  requestRoleId: string, eventRoleId: "scce.role.patient" | "scce.role.complement", event: DurableCreativeEventConstruction): CreativeRoleCompatibilityDecision | undefined {
+  requestRoleId: string, eventRoleId: "scce.role.agent" | "scce.role.patient" | "scce.role.complement", event: DurableCreativeEventConstruction): CreativeRoleCompatibilityDecision | undefined {
   if (models.some(model => model.reliability === "calibrated" && model.requestCompilerId === frame.compilerId)) {
     return creativeEventRolePosterior(models, frame, requestRoleId, eventRoleId);
   }
@@ -317,6 +317,15 @@ export function creativeEventRoleDecision(models: readonly CreativeEventCompatib
 
 function observedFrameMatches(frame: CreativeRequestFrame, row: CreativeSourceCorrespondence): boolean {
   return row.requestFrameId === frame.id || frame.sourceActivationIds.includes(row.requestFrameId);
+}
+
+/** Fiction may retain the observed scene's arguments that the new request leaves unspecified. */
+export function creativeEventRetainsSourceArguments(models: readonly CreativeEventCompatibilityModel[], frame: CreativeRequestFrame,
+  event: DurableCreativeEventConstruction): boolean {
+  if (models.some(model => model.reliability === "calibrated" && model.requestCompilerId === frame.compilerId)) return false;
+  return models.some(model => model.reliability === "source_observed" && verifiedObservedModels.has(model)
+    && model.requestCompilerId === frame.compilerId && model.eventCompilerId === event.compilerId
+    && model.sourceObservations.some(row => observedFrameMatches(frame, row) && row.eventId === event.id && row.request.sourceAuthority === "creative"));
 }
 
 export function parseCreativeEventCompatibilityCorpus(
@@ -631,8 +640,27 @@ function interpretedRequestRoles(anchor: CreativeRequestFrameAnchor, interpreter
     requestConstructionMemo.set(anchor, constructions);
   }
   const interpretations = new Map<string, InterpretedSurfaceRole[]>();
+  let observedExamples: CreativeRequestFrameAnchor["requestRoleExamples"] | undefined;
   for (const construction of constructions) {
-    const roles = interpreter.interpret(construction);
+    // Punctuation alone licenses only the observed request, not arbitrary slot substitutions.
+    const punctuationOnly = !construction.sequence.some(part => part.kind === "literal"
+      && segmentUnicodeSurfaceV2(part.surface).lexicalSegments.length > 0);
+    let roles: InterpretedSurfaceRole[] | undefined;
+    if (punctuationOnly) {
+      observedExamples ??= (anchor.requestRoleExamples ?? []).filter(example => interpreter.interpret({
+        sequence: [{ kind: "literal", surface: example.surface, origins: [], evidenceIds: example.evidenceIds }]
+      }) !== undefined);
+      const results = observedExamples.flatMap(example => {
+        const knownSurfaces = new Map(construction.sequence.flatMap(part => {
+          if (part.kind !== "slot") return [];
+          const role = example.roleSpans.find(role => role.roleId === part.roleId);
+          return role ? [[part.occurrenceId, role.surface] as const] : [];
+        }));
+        const parsed = interpreter.enumerate(construction, { knownSurfaces, maxTransitions: construction.sequence.length * 4 + 4 });
+        return parsed.complete ? parsed.interpretations : [];
+      });
+      roles = results.length === 1 ? results[0] : undefined;
+    } else roles = interpreter.interpret(construction);
     if (!roles || roles.some(role => !role.surface.trim())
       || !anchor.requestRoleIds.every(id => roles.filter(role => role.roleId === id).length === 1)) continue;
     const key = JSON.stringify(roles.map(role => [role.roleId, role.startCodePoint, role.endCodePoint]));
@@ -853,7 +881,7 @@ function eventCompatibilityFromUnknown(value: unknown): CreativeEventCompatibili
 function roleCompatibilityFromUnknown(value: unknown): CreativeEventRoleCompatibility[] {
   if (!isRecord(value)) return [];
   const eventRoleId = value.eventRoleId;
-  if (eventRoleId !== "scce.role.patient" && eventRoleId !== "scce.role.complement") return [];
+  if (eventRoleId !== "scce.role.agent" && eventRoleId !== "scce.role.patient" && eventRoleId !== "scce.role.complement") return [];
   const row: CreativeEventRoleCompatibility = {
     requestFrameId: stringValue(value.requestFrameId),
     requestRoleId: stringValue(value.requestRoleId),
@@ -943,7 +971,7 @@ function parseCompatibilityCorpusExample(
 function roleBindingFromUnknown(value: unknown): CreativeEventCompatibilityCorpusRoleBinding[] {
   if (!isRecord(value)
     || !stringValue(value.requestRoleId)
-    || (value.eventRoleId !== "scce.role.patient" && value.eventRoleId !== "scce.role.complement")
+    || (value.eventRoleId !== "scce.role.agent" && value.eventRoleId !== "scce.role.patient" && value.eventRoleId !== "scce.role.complement")
     || typeof value.accepted !== "boolean") return [];
   return [{
     requestRoleId: stringValue(value.requestRoleId),
@@ -1017,7 +1045,7 @@ function validEventCompatibility(row: CreativeEventCompatibility): boolean {
 
 function validRoleCompatibility(row: CreativeEventRoleCompatibility): boolean {
   return Boolean(row.requestFrameId && row.requestRoleId)
-    && (row.eventRoleId === "scce.role.patient" || row.eventRoleId === "scce.role.complement")
+    && (row.eventRoleId === "scce.role.agent" || row.eventRoleId === "scce.role.patient" || row.eventRoleId === "scce.role.complement")
     && unitInterval(row.posterior)
     && Number.isSafeInteger(row.support)
     && row.support > 0

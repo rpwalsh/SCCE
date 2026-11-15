@@ -9,6 +9,9 @@ import { traceEvent } from "./debug/trace.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { isSourceContentEvidence } from "./proof-boundary.js";
+import { surfaceUnits } from "./surface-linguistics.js";
+import { lexicalAlternativesForSurface, lexicalRelationWitnesses } from "./lexical-semantic-memory.js";
+import { sourceObservedDiscourseReference } from "./source-lexical-grammar.js";
 import { genericQuestionSignal, jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentSurface, splitPriorUnits, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
 import { RETRIEVAL_DEPRIORITIZED_SOURCE_KINDS, retrievalBinding, retrievalBindingCarries, retrievalBindingRank } from "./retrieval-binding.js";
@@ -19,6 +22,8 @@ import {
   orderedSequenceUnits,
   promotedSessionEvidence,
   requestInitialismCandidates,
+  requestContentEvidenceUnits,
+  requestUnitSharesStem,
   requestNeedsSourceAnchoredEvidence,
   requestSentenceSequences,
   sessionOwnerObservationSurface,
@@ -73,6 +78,20 @@ type SourceAnchoredEvidenceSelection = {
   evidence: EvidenceSpan[];
   semanticFrameBoundEvidenceIds: string[];
 };
+
+export function discourseEvidenceAdmissionForRequest(
+  requestText: string,
+  evidence: readonly EvidenceSpan[],
+  closedClassWords: ReadonlySet<string>
+): { requestUnits: string[]; carriesRequest: boolean } {
+  const requestUnits = requestContentEvidenceUnits(requestText).filter(unit => !closedClassWords.has(unit));
+  const carriesRequest = !requestUnits.length || evidence.length > 0 && sourceObservedDiscourseReference(requestText) || evidence.some(span => {
+    const spanUnits = surfaceUnits(String(span.text ?? span.textPreview ?? "").toLocaleLowerCase());
+    return requestUnits.some(unit => spanUnits.some(spanUnit => requestUnitSharesStem(unit, spanUnit)
+      || lexicalRelationWitnesses(unit, spanUnit, String(span.text ?? span.textPreview ?? ""), closedClassWords).length > 0));
+  });
+  return { requestUnits, carriesRequest };
+}
 
 
 interface GraphSliceCacheEntry {
@@ -2617,6 +2636,11 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       for (const feature of orderedRetrievalFeatures(anchor)) features.set(feature, true);
     }
     for (const feature of featureSet(requestContentSurface(text), 256)) add(feature);
+    for (const unit of requestContentEvidenceUnits(text)) {
+      for (const alternative of lexicalAlternativesForSurface(unit)) {
+        for (const feature of orderedRetrievalFeatures(alternative)) add(feature);
+      }
+    }
     return [...features.keys()].slice(0, 256);
   }
 

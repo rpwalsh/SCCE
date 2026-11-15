@@ -2,6 +2,8 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { contentRuns, corpusIdentityGeneration, corpusIdentityMatchSurface, corpusIdentitySignals, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
 import { learnedAnswerUnitFormVerdict, learnedAnswerUnitFormsGeneration, learnedAnswerUnitSharedBaseWitnesses } from "./learned-answer-unit-forms.js";
+import { sourceLexicalGrammarGeneration, sourceLexicalLemmaWitnesses } from "./source-lexical-grammar.js";
+import { sourceCollectionForRequest } from "./source-collection-answer.js";
 import { evidenceSourceIdentity, isCodeEvidenceSpan } from "./evidence-source-identity.js";
 import { SEMANTIC_CONSTRAINT, SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
@@ -428,7 +430,7 @@ export function evidenceWithGraphPreviewWindows(text: string, evidence: readonly
     if (preserveIds.has(String(span.id))) return span;
     const previews = previewsByEvidenceId.get(String(span.id)) ?? [];
     if (!previews.length) return span;
-    const currentFull = sourceTextSurface(evidenceWindowText(span), 24000);
+    const currentFull = sourceTextSurface(evidenceWindowText(span), 0);
     const current = sourceTextSurface(currentFull, 2400);
     const currentScore = weightedJaccard(requestFeatures, featureSet(current, 128));
     const selected = previews
@@ -445,11 +447,11 @@ export function evidenceWithGraphPreviewWindows(text: string, evidence: readonly
 }
 
 
-/** Best request overlap of any sentence in an oversized span (memoized sentence split); bounded to the first 12000 chars. */
+/** Rank every source sentence without discarding short or late facts. */
 function bestSentenceWindowLexical(span: EvidenceSpan, requestFeatures: ReturnType<typeof featureSet>): number {
   let best = 0;
-  for (const sentence of fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 12000))) {
-    if (sentence.length < 24) continue;
+  for (const sentence of fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 0))) {
+    if (!sentence.trim()) continue;
     const score = weightedJaccard(requestFeatures, featureSet(sentence, 128));
     if (score > best) best = score;
   }
@@ -817,7 +819,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
     // Serialized apparatus is never a candidate answer. Measured at sentence granularity, never at span
     // granularity: an article whose span also holds a results table keeps its prose lead.
-    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence)
+    .filter(row => !isHeadingOnlySurface(row.sentence)
       && (row.nearDuplicate || row.suppliesBoundValue || !endsWithUnicodeQuestionMark(row.sentence))
       && !cliticOpeningFragment(row.sentence) && !isStructuralResidueSurface(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
@@ -916,7 +918,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const focusedSentence = !selected.nearDuplicate && anchored.anchors.length > 0 && !titleAnswersRequest
     ? anchorFocusedAnswerSurface(selected.sentence, anchored.anchors, evidenceTitle(selected.span))
     : selected.sentence;
-  let answerSentences = [focusedSentence && focusedSentence.length >= 24 && selected.sentence.includes(focusedSentence)
+  let answerSentences = [focusedSentence && selected.sentence.includes(focusedSentence)
     && covers({ ...selected, sentence: focusedSentence }) ? focusedSentence : selected.sentence];
   if (sentenceBudget > 1) {
     // The window is built in tidySurfaceText space -- the exact space
@@ -928,7 +930,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // single-sentence behavior rather than shipping an unverifiable
     // surface.
     const tidySpan = tidySurfaceText(selected.span.text);
-    const tidySentences = splitSurfaceSentences(tidySpan).filter(sentence => sentence.length >= 24);
+    const tidySentences = splitSurfaceSentences(tidySpan).filter(sentence => Boolean(sentence.trim()) && !isHeadingOnlySurface(sentence));
     const matchIndex = tidySentences.findIndex(sentence =>
       sentence.includes(selected.sentence) || selected.sentence.includes(sentence));
     const start = selected.index <= 1 || matchIndex <= 1
@@ -1039,6 +1041,14 @@ export function proposeSourceExactEvidenceAnswer(input: {
   if (input.semanticProof?.verdict === SEMANTIC_VERDICT.CONTRADICTED && input.semanticProof.conflictingEvidenceIds?.length) {
     return sourceConflictAnswerPlan({ ...input, selectedEvidence: answerEvidence, conflictingEvidenceIds: input.semanticProof.conflictingEvidenceIds });
   }
+  const collection = sourceCollectionForRequest({ requestText: input.requestText,
+    evidence: answerAnchoredEvidence.filter(span => evidenceTitledForRequestSubject(input.requestText, [span])),
+    closedClassWords: input.closedClassWords ?? new Set(), titleForEvidence: evidenceTitle });
+  if (collection) return { planId: "ans.plan.source_structured_collection.v1", kindId: LOCAL_ANSWER_KIND_IDS.collection,
+    evidence: collection.evidence, slotSurfaces: { [LOCAL_ANSWER_SLOT_IDS.memberList]: collection.members },
+    maxSentences: collection.members.length, proofExcerpts: collection.excerpts,
+    audit: toJsonValue({ source: "kernel.turn.source_structured_collection", evidenceBound: true, sourceAnchorMatched: true,
+      evidenceIds: collection.evidence.map(span => String(span.id)), members: collection.members.length }) };
   const selected = proposeSourceExactEvidenceAnswer({
     requestText: input.requestText,
     selectedEvidence: answerEvidence,
@@ -1443,8 +1453,7 @@ function computeRequestUnitSharesStem(unit: string, surfaceUnit: string): boolea
 }
 
 export function requestContentEvidenceUnits(requestText: string): string[] {
-  return uniqueKernelStrings(requestContentAnchorUnits(requestText)
-    .filter(unit => [...unit].length >= 4 || hasUncasedNonLatinLetter(unit)));
+  return uniqueKernelStrings(requestContentAnchorUnits(requestText));
 }
 
 
@@ -1638,7 +1647,7 @@ function sourceConflictAnswerPlan(input: Parameters<typeof proposeSourceExactEvi
   const counter = evidence
     .filter(span => String(span.id) !== String(subject.span.id))
     .map(span => {
-      const sourceSurface = sourceTextSurface(evidenceWindowText(span), 24000);
+      const sourceSurface = sourceTextSurface(evidenceWindowText(span), 0);
       const markerCandidate = bestTemporalMarkerSentence(span, conceptUnits, orderedConceptUnits, lifespan.birthYear);
       const marker = markerCandidate?.marker;
       const markerSentence = markerCandidate?.sentence ?? "";
@@ -1895,7 +1904,7 @@ export function temporalConceptTitledEvidence(requestText: string, admitted: rea
   orderedConceptUnits: readonly string[],
   subjectBirthYear: number
 ): TemporalMarkerSentence | undefined {
-  const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000));
+  const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 0));
   const candidates: TemporalMarkerSentence[] = [];
   for (const sentence of sentences) {
     const complete = completeTemporalEvidenceSentence(sentence, 560);
@@ -2020,14 +2029,14 @@ interface RequestUnitPair {
 const requestUnitPairs = new Map<string, Map<string, RequestUnitPair>>();
 const requestUnitPairOrder: Array<readonly [string, string]> = [];
 let requestUnitPairHead = 0;
-let requestUnitPairGeneration = -1;
+let requestUnitPairGeneration = "";
 let matchEvaluations = 0;
 let stemEvaluations = 0;
 let subjectEvaluations = 0;
 const REQUEST_UNIT_MATCH_MEMO_MAX = 200_000;
 
 function requestUnitPair(unit: string, surfaceUnit: string): RequestUnitPair | undefined {
-  const generation = learnedAnswerUnitFormsGeneration();
+  const generation = `${learnedAnswerUnitFormsGeneration()}:${sourceLexicalGrammarGeneration()}`;
   if (generation !== requestUnitPairGeneration) {
     requestUnitPairs.clear();
     requestUnitPairOrder.length = 0;
@@ -2113,13 +2122,13 @@ export function requestUnitMatchesSurface(unit: string, surfaceUnit: string, fun
 
 function computeRequestUnitMatch(unit: string, surfaceUnit: string): NonNullable<RequestUnitPair["match"]> {
   matchEvaluations++;
-  return { value: learnedAnswerUnitFormVerdict(unit, surfaceUnit).status === "same" };
+  return { value: learnedAnswerUnitFormVerdict(unit, surfaceUnit).status === "same" || sourceLexicalLemmaWitnesses(unit, surfaceUnit).length > 0 };
 }
 
 
  function temporalDevelopmentContextSentence(span: EvidenceSpan, requestUnits: ReadonlySet<string>, counterSentence: string): string {
   if (!requestUnits.size) return "";
-  const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000));
+  const sentences = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 0));
   const counterKey = normalizePriorKey(counterSentence);
   const counterIndex = sentences.findIndex(sentence => normalizePriorKey(sentence) === counterKey);
   const counterFeatures = featureSet(counterSentence, 256);
@@ -2167,7 +2176,7 @@ function computeRequestUnitMatch(unit: string, surfaceUnit: string): NonNullable
         - calibrated("temporal_context.repetition_pressure_penalty") * repetitionPressure;
       return { sentence: complete, index, overlap, score };
     })
-    .filter(row => row.sentence && row.overlap > 0 && row.sentence.length >= 24 && normalizePriorKey(row.sentence) !== counterKey)
+    .filter(row => row.sentence && row.overlap > 0 && normalizePriorKey(row.sentence) !== counterKey)
     .sort((left, right) => right.score - left.score || left.index - right.index || right.sentence.length - left.sentence.length)[0]?.sentence ?? "";
 }
 
@@ -2404,7 +2413,7 @@ function declarableRequestUnit(unit: string, closedClassWords?: ReadonlySet<stri
 
 
  function firstUsefulSentence(span: EvidenceSpan): string {
-  return fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000)).find(sentence => sentence.length >= 24) ?? "";
+  return fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 0)).find(sentence => Boolean(sentence.trim()) && !isHeadingOnlySurface(sentence)) ?? "";
 }
 
 
@@ -2684,9 +2693,11 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   // The request's own named subject is a subject anchor whether or not every phrase carries it: "Athens is the
   // capital of which country?" forms "capital which country" and "which country", so the every-phrase test refused
   // "athens", the only anchor its article is titled with, and admitted nothing (live 2026-09-10).
+  const measuredSubjectIdentities = new Set(corpusNamedIdentities(requestText));
   const namedSubjectSingles = namedSubjectAnchors(requestText)
     .map(anchor => normalizePriorKey(anchor))
-    .filter(anchor => splitPriorUnits(anchor).filter(Boolean).length === 1 && [...anchor].length >= 3 && !genericQuestionSignal(anchor));
+    .filter(anchor => splitPriorUnits(anchor).filter(Boolean).length === 1
+      && (measuredSubjectIdentities.has(anchor) || [...anchor].length >= 3 && !genericQuestionSignal(anchor)));
   const subjectAnchors = uniqueKernelStrings([
     ...namedSubjectSingles,
     ...anchored.anchors.filter(anchor => anchorIsRequestSubjectUnit(anchor, anchored.anchors))
@@ -2922,11 +2933,10 @@ export function evidenceAnchorFitForRequest(span: EvidenceSpan, requestText: str
   // uses, so a short interrogative is not a unit the span has to contain. "Who is Aphrodite?" required the word "who"
   // inside the span, and the article's own opening block -- which does not say "who" -- was the one span it dropped.
   const nonTitleUnits = requestUnits
-    .filter(unit => ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)))
-    .filter(unit => [...unit].length >= 4 || hasUncasedNonLatinLetter(unit));
+    .filter(unit => ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)));
   // A request that only names the title is answered by the titled source itself.
   if (!nonTitleUnits.length) return decided(matchedTitleUnits.length >= 1, "request_names_title_only", { matchedTitleUnits, firstTitlePosition });
-  const sourceSurface = sourceTextSurface(evidenceWindowText(span), 3200);
+  const sourceSurface = sourceTextSurface(evidenceWindowText(span), 0);
   const nonTitleOverlap = requestUnitOverlapForSurface(sourceSurface, new Set(nonTitleUnits));
   const singleLateTitleOverlapFloor = titleUnits.size === 1 && firstTitlePosition > 2 ? 2 : 1;
   if (matchedTitleUnits.length >= 1 && nonTitleOverlap >= singleLateTitleOverlapFloor) {
@@ -2941,9 +2951,8 @@ export function evidenceAnchorFitForRequest(span: EvidenceSpan, requestText: str
 
 
  function sourceTitleAnchorFitUnitSet(span: EvidenceSpan): Set<string> {
-  return new Set(splitPriorUnits(normalizePriorKey(evidenceTitle(span)))
-    .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
-    .filter(unit => unit.length >= 3 && !genericQuestionSignal(unit)));
+  return new Set(requestContentAnchorUnits(evidenceTitle(span))
+    .filter(unit => !corpusIdentitySignals()?.closedClass.has(unit)));
 }
 
 
@@ -2951,9 +2960,7 @@ export function evidenceAnchorFitForRequest(span: EvidenceSpan, requestText: str
   // The request's learned scaffolding is not a unit a source must contain. "What is the capital of Albania?" made
   // "what" a content unit, and with the title late in the request the overlap floor is two: the article's own lead
   // block says "capital" and never says "what", so it was dropped while body chunks that happen to say both passed.
-  return splitPriorUnits(normalizePriorKey(text.replace(/[?!.]+$/u, "")))
-    .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
-    .filter(unit => unit.length >= 3 && !genericQuestionSignal(unit) && !closedClassWords?.has(unit));
+  return requestContentAnchorUnits(text).filter(unit => !closedClassWords?.has(unit));
 }
 
 
@@ -3026,7 +3033,7 @@ function deriveSourceEvidenceAnchorsForRequest(requestText: string): string[] {
     .sort((left, right) => splitPriorUnits(right).length - splitPriorUnits(left).length || right.length - left.length);
   const derived = derivedSourceAnchorPhrases(requestText);
   if (named.length) return uniqueKernelStrings([...named, ...derived]).slice(0, 24);
-  const casedSingle = casedSingleSourceAnchors(requestText);
+  const casedSingle = singleContentSourceAnchors(requestText);
   if (casedSingle.length) return uniqueKernelStrings([...casedSingle, ...derived]).slice(0, 24);
   const singleTopic = singleTopicSourceAnchors(requestText);
   if (singleTopic.length) return singleTopic;
@@ -3167,20 +3174,17 @@ function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
 }
 
 
- function casedSingleSourceAnchors(requestText: string): string[] {
-  return uniqueKernelStrings(surfaceWords(requestText)
-    .map(stripOuterPriorSeparators)
-    .filter(unit => hasUppercaseLetter(unit) && [...unit].length >= 4)
-    .map(normalizePriorKey)
-    .filter(Boolean));
+ function singleContentSourceAnchors(requestText: string): string[] {
+  return requestContentAnchorUnits(requestText).filter(unit => !corpusIdentitySignals()?.closedClass.has(unit));
 }
+
 
 
  function singleTopicSourceAnchors(requestText: string): string[] {
   const units = requestContentAnchorUnits(requestText);
   if (units.length !== 1) return [];
   const unit = units[0] ?? "";
-  return [...unit].length >= 5 || hasUncasedNonLatinLetter(unit) ? [unit] : [];
+  return unit && !corpusIdentitySignals()?.closedClass.has(unit) ? [unit] : [];
 }
 
 
@@ -3193,7 +3197,7 @@ function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
   }
   for (let index = 0; index < units.length - 2; index++) {
     const triple = [units[index]!, units[index + 1]!, units[index + 2]!];
-    if (triple.every(unit => unit.length >= 4)) phrases.push(triple.join(" "));
+    if (anchorPhraseUnitsSpecificEnough(triple)) phrases.push(triple.join(" "));
   }
   return uniqueKernelStrings(phrases)
     .sort((left, right) => sourceAnchorPhraseRank(right) - sourceAnchorPhraseRank(left) || splitPriorUnits(right).length - splitPriorUnits(left).length || right.length - left.length)
@@ -3202,27 +3206,22 @@ function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
 
 
 export function requestContentAnchorUnits(requestText: string): string[] {
-  return requestContentPriorUnits(requestText)
-    .map(stripOuterPriorSeparators)
-    .map(normalizePriorKey)
-    .filter(unit => unit.length >= 3 && !genericQuestionSignal(unit));
+  // Retrieval obligations and source ownership use the same Unicode word boundaries as answerhood. A Greek
+  // name's graphemes cannot each become an independent obligation or bind a different name sharing its letters.
+  return uniqueKernelStrings(corpusIdentityUnits(requestText));
 }
 
 
  function anchorPhraseUnitsSpecificEnough(units: readonly string[]): boolean {
-  if (units.length < 2) return false;
-  const lengths = units.map(unit => [...unit].length);
-  if (lengths.every(length => length >= 4)) return true;
-  return units.length === 2 && Math.min(...lengths) >= 3 && lengths.reduce((sum, length) => sum + length, 0) >= 11;
+  return units.some(unit => Boolean(unit) && !corpusIdentitySignals()?.closedClass.has(unit));
 }
 
 
  function sourceAnchorPhraseRank(anchor: string): number {
-  const units = splitPriorUnits(anchor);
-  const lengthMass = units.reduce((sum, unit) => sum + Math.min(12, [...unit].length), 0);
-  const shortPenalty = units.filter(unit => [...unit].length < 4).length * 6;
-  return lengthMass - shortPenalty + units.length * 2;
+  const signals = corpusIdentitySignals();
+  return requestContentAnchorUnits(anchor).reduce((sum, unit) => sum + (signals?.closedClass.has(unit) ? 0 : 1 / Math.max(1, signals?.spread.get(unit) ?? 1)), 0);
 }
+
 
 
  function sourceAnchorSpecificEnough(anchor: string): boolean {
@@ -3413,7 +3412,7 @@ export function evidenceSourceAnchorSurface(span: EvidenceSpan): string {
  function localEvidenceAnswerScore(requestText: string, evidence: readonly EvidenceSpan[]): number {
   const requestFeatures = featureSet(requestText, 256);
   return evidence.reduce((best, span) => {
-    const surface = sourceTextSurface(evidenceWindowText(span), 24000);
+    const surface = sourceTextSurface(evidenceWindowText(span), 0);
     const score = Math.max(
       weightedJaccard(requestFeatures, span.features),
       weightedJaccard(requestFeatures, featureSet(surface, 256))

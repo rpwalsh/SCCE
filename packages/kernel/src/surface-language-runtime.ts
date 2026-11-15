@@ -684,22 +684,24 @@ export function createSurfaceLanguageRuntime(options: {
     // source-replay patterns made that discarded work especially expensive. The storage query accepts the exact
     // registered source set and applies ownership, language, category, row and byte bounds once to the population
     // that the runtime will actually retain. Exact-profile reads remain exact-profile reads.
-    const patternHydration = hydrationQueries.length > 1
-      && hydrationQueries.every(item => item.sourceSystem !== undefined && item.profileIds === undefined)
+    const grammarQueries: typeof hydrationQueries = ownedRequestSeed && languageId
+      ? corpusPlan.flatMap(item => item.querySourceSystems.map(sourceSystem => ({ ...item, sourceSystem }))) : hydrationQueries;
+    const patternHydration = grammarQueries.length > 1
+      && grammarQueries.every(item => item.sourceSystem !== undefined && item.profileIds === undefined)
       ? deps.storage.languageMemory.listLanguagePatterns({
           ...(purpose ? { view: purpose } : {}),
-          sourceSystems: [...new Set(hydrationQueries.map(item => item.sourceSystem!))],
+          sourceSystems: [...new Set(grammarQueries.map(item => item.sourceSystem!))],
           languageId,
           limit: hydrationLimits.languagePatterns,
           maxTotalJsonBytes: hydrationByteBudgets.languagePatternJsonBytes
         }).then(rows => [rows])
-      : Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({
+      : Promise.all(grammarQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({
           ...(purpose ? { view: purpose } : {}),
           profileIds: item.profileIds,
           sourceSystem: item.sourceSystem,
           languageId: item.profileIds ? undefined : languageId,
           limit: item.limits.languagePatterns,
-          maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languagePatternJsonBytes, hydrationQueries.length)
+          maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languagePatternJsonBytes, grammarQueries.length)
         })));
     const [
       modelsBySource,

@@ -24,6 +24,8 @@ export function programIntentForTurn(input: {
   evidence: readonly EvidenceSpan[];
 }): ProgramConstructIntent | undefined {
   if (!input.activeOperatorIds.includes(COGNITIVE_OPERATOR_IDS.programPlanning)) return undefined;
+  // An incidental operator activation needs request-local code structure before it may create an artifact.
+  if (input.requestedAuthority !== "program" && !input.codeSignal.observations.length) return undefined;
   const engineering = input.evidence.filter(span => hasEngineeringCorpusMetadata(span));
   // A request naming paths asks for an edit plan over those files; one naming none asks for a callable artifact.
   const artifactKindIds = input.codeSignal.paths.length ? ["program.artifact.patch_plan"] : ["program.artifact.library"];
