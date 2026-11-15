@@ -2,6 +2,8 @@
 
 ## Engineer prerequisites
 
+For a current canonical public background-corpus inventory, use the read-only [public admission exporter](PUBLIC-ADMISSION.md) after source publication stabilizes. Its exact source bytes and metadata are pinned as initial-prior preparation artifacts, separate from fresh shared case packets and reference pretraining.
+
 Start from a clean clone at the revision being evaluated, using Node.js `>=24.18.0 <25`, the repository's pinned pnpm version, and PostgreSQL. For example, before any freeze or secret selection:
 
 ```powershell

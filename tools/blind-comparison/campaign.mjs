@@ -12,6 +12,7 @@ import { discoverCampaign, discoverConfig, implementationFiles, REPOSITORY_ROOT 
 import { admitReference } from './campaign-reference-admission.mjs';
 import { verifyCandidateFinalization } from './candidate-finalization.mjs';
 import { resolveProcessPolicy } from './process-resources.mjs';
+import { admissionArtifacts, PUBLIC_ADMISSION_SCHEMA } from './public-admission.mjs';
 import { defaultInventory, coverageGaps, createDefaultPool, CATEGORY_GROUPS } from './providers/default/cases.mjs';
 import { loadRetainedCorpus, createRetainedPool } from './providers/retained-cases.mjs';
 
@@ -38,8 +39,18 @@ export async function prepareCampaign(raw, dependencies = {}) {
   const admittedFiles = [...(options.admittedManifests ?? [])];
   const automaticInventory = path.join(REPOSITORY_ROOT, '.tmp', 'admitted-language-inventory.json');
   if (!admittedFiles.length) try { await access(automaticInventory); admittedFiles.push(automaticInventory); } catch {}
-  const admitted = [];
-  for (const file of admittedFiles) admitted.push(await readJson(file));
+  const admitted = [], admittedArtifactFiles = [], admittedArtifactHashes = new Map();
+  for (const file of admittedFiles) {
+    const manifest = await readJson(file);
+    const referenced = await admissionArtifacts(manifest, file);
+    for (const [index, artifactFile] of referenced.entries()) {
+      const expected = manifest.artifacts[index].sha256;
+      if (admittedArtifactHashes.has(artifactFile) && admittedArtifactHashes.get(artifactFile) !== expected) throw new Error('Conflicting admitted public artifact identity');
+      admittedArtifactHashes.set(artifactFile, expected);
+    }
+    admittedArtifactFiles.push(...referenced);
+    admitted.push(manifest);
+  }
   const retainedCorpus = options.retainedCorpusFile ? await loadRetainedCorpus(options.retainedCorpusFile) : undefined;
   const inventory = retainedCorpus?.inventory ?? defaultInventory(capabilities, admitted), gaps = retainedCorpus ? [] : coverageGaps(inventory, discovery.tools);
   if (gaps.length && !options.diagnostic) {
@@ -67,6 +78,14 @@ export async function prepareCampaign(raw, dependencies = {}) {
   const custodyStatement = { mode: options.seedFile ? 'operator-supplied-external-seed' : 'automated-custodian-on-trusted-operator-host', independence: 'No independent-custodian attestation is invented. Use a separate custodian and independently record commitments for true independent custody.', factoryHash: await fileHash(path.join(providerDir, 'cases.mjs')), seedTiming: 'Generate/read seed only after freeze succeeds and all pinned artifacts verify.' };
   await writeJson(path.join(publicPins, 'custody.json'), custodyStatement);
   const publicPreparation = { publicInputs: 'Identical concrete case sources, files, specifications and public check policy are sealed after factory freeze and delivered to both systems.', candidate: retainedCorpus ? 'Read-only canonical source/hash/promoted-evidence verification then ordinary factual turn; no ingestion. Coverage is retained-source cloze only.' : 'Official current-step source/workspace ingestion then ordinary production route; prior corpus is declared by admitted public inventories, not inferred from script identity.', reference: 'Same ordered public inputs in context plus the same bounded workspace/public-check tools.', limitations: 'No claim of equal latent pretraining, source-admission audit completeness or hard resource containment is fabricated.' };
+  if (admittedArtifactFiles.length) publicPreparation.initialPriorInventory = 'New-schema source exports are pinned candidate initial-prior preparation artifacts. They are not reference pretraining or per-case reference context. Only current ordered public case packets are delivered identically to both systems.';
+  const initialPrior = admittedArtifactFiles.length ? { schema: 'scce.blind-candidate-initial-prior.v1', system: 'scce',
+    configuredSchema: discovery.config.schema, publicConfigHash: discovery.publicSnapshot.candidate.publicConfigHash ?? null,
+    manifests: admitted.filter(manifest => manifest.schema === PUBLIC_ADMISSION_SCHEMA).map(manifest => ({ manifestDigest: hash(manifest),
+      snapshotDigest: manifest.snapshotDigest, scope: manifest.scope, sourceCount: manifest.sourceCount, counts: manifest.counts, totalUniqueSourceBytes: manifest.totalUniqueSourceBytes })),
+    priorRole: 'Candidate canonical initial public background corpus; direct source-owned scope only, with exclusions and unclassified roles retained.',
+    referenceExposure: 'No claim of reference filesystem-tool access, consumption or equal pretraining. Complete ordered per-case public packets remain the shared context; larger retained-source QA must declare relevant context within the admitted reference capacity or fail.' } : null;
+  if (initialPrior) await writeJson(path.join(publicPins, 'candidate-initial-prior.json'), initialPrior);
   await writeJson(path.join(publicPins, 'candidate-preparation.json'), publicPreparation);
   await writeJson(path.join(publicPins, 'reference-preparation.json'), publicPreparation);
   const sourceFiles = await (dependencies.files ?? implementationFiles)();
@@ -92,13 +111,15 @@ export async function prepareCampaign(raw, dependencies = {}) {
   add('model', 'model', path.join(publicPins, 'model.json'));
   add('isolation', 'isolation', path.join(publicPins, 'discovery.json'));
   add('candidate-preparation', 'preparation', path.join(publicPins, 'candidate-preparation.json'));
+  if (initialPrior) add('candidate-initial-prior', 'preparation', path.join(publicPins, 'candidate-initial-prior.json'));
   add('candidate-finalization', 'preparation', path.join(publicPins, 'candidate-finalization.json'));
   if (processPolicy) {
     add('process-policy', 'isolation', path.join(publicPins, 'process-policy.json'));
     add('process-measurement-provider', 'implementation', path.join(here, 'process-resources.mjs'));
   }
   add('reference-preparation', 'preparation', path.join(publicPins, 'reference-preparation.json'));
-  for (const [i, file] of admittedSnapshots.entries()) add(`admitted-public-manifest-${i}`, 'corpus', file);
+  for (const [i, file] of admittedSnapshots.entries()) add(`admitted-public-manifest-${i}`, admitted[i].schema === PUBLIC_ADMISSION_SCHEMA ? 'preparation' : 'corpus', file);
+  for (const [i, file] of [...new Set(admittedArtifactFiles)].entries()) add(`admitted-public-source-artifact-${i}`, 'preparation', file);
   for (const [language, tool] of Object.entries(discovery.tools)) if (tool.available) {
     if (tool.path) add(`tool-${language}`, 'tool', tool.path);
     if (tool.compilerPath) add(`compiler-${language}`, 'tool', tool.compilerPath);
@@ -113,6 +134,10 @@ export async function prepareCampaign(raw, dependencies = {}) {
     { id: 'scce', adapterArtifact: 'candidate-adapter', argv: candidateArgv, environmentKeys: ['SCCE_API_BEARER_TOKEN'], identity: { implementationFileListHash: hash(sourceFiles), initialReadiness: discovery.publicSnapshot.candidate.readinessHash }, preparation: { publicCorpusArtifacts: corpusIds, receiptArtifact: 'candidate-preparation' }, resourceIdentity: discovery.publicSnapshot.hardwarePolicy, capabilities: categories },
     { id: 'local-reference', adapterArtifact: 'reference-adapter', argv: [process.execPath, path.join(here, 'adapters/reference-native.mjs'), '--runner', referenceRunner, '--runner-args', canonical(runnerArgs), '--model-digest', discovery.model.digest], environmentKeys: [], identity: { model: 'qwen2.5:3b', digest: discovery.model.digest, admissionDigest: referenceAdmission.digest }, expectedModelDigest: discovery.model.digest, preparation: { publicCorpusArtifacts: corpusIds, receiptArtifact: 'reference-preparation' }, resourceIdentity: { ...discovery.publicSnapshot.hardwarePolicy, reportedModelAllocationAtAdmission: referenceAdmission.reportedResidency }, capabilities: categories }
   ], judges: options.judges ?? ['independent-judge'], acceptance: { minimumPairsPerCell: options.diagnostic ? 1 : options.count, maxLossesPerCell: 0, requireStrictWinPerCell: true, maximumOneSidedPPerCell: 0.05 } };
+  if (initialPrior) {
+    plan.systems[0].preparation.initialPriorReceiptArtifact = 'candidate-initial-prior';
+    plan.systems[0].identity.initialPriorReceiptDigest = hash(initialPrior);
+  }
   if (processPolicy) {
     plan.isolation.processMeasurement = processPolicy;
     for (const system of plan.systems) system.resourceIdentity = { ...system.resourceIdentity,
@@ -121,6 +146,7 @@ export async function prepareCampaign(raw, dependencies = {}) {
   const planFile = path.join(out, 'plan.json'), freezeFile = path.join(out, 'freeze.json');
   await writeJson(planFile, plan);
   const frozen = await freeze(planFile, freezeFile);
+  for (const artifact of frozen.plan.artifacts) if (admittedArtifactHashes.has(artifact.path) && admittedArtifactHashes.get(artifact.path) !== artifact.sha256) throw new Error('Admitted public source artifact changed before freeze');
   if (frozen.plan.artifacts.find(a => a.id === 'declared-reference-runner')?.sha256 !== referenceAdmission.runner.sha256) throw new Error('Reference runner changed after admission and before freeze');
   const prepared = signed({ schema: 'scce.blind-default-prepared.v1', out, freezeFile, freezeDigest: frozen.digest, settingsFile: path.join(publicPins, 'settings.json'), nonce, custody: custodyStatement, gaps });
   await writeJson(path.join(out, 'prepared.json'), prepared);

@@ -1,0 +1,12 @@
+{
+  "schema": "scce.blind-process-policy.v1",
+  "provider": "trusted-host-native-process-table.v1",
+  "sampleIntervalMs": 1000,
+  "probeTimeoutMs": 3000,
+  "maxProbeOutputBytes": 8388608,
+  "rssBudgetBytes": 7000000000,
+  "systems": {
+    "scce": { "sharedDaemons": [{ "id": "server-replace-actual-pid", "pid": 12345 }, { "id": "postgres-replace-actual-pid", "pid": 23456 }] },
+    "local-reference": { "sharedDaemons": [{ "id": "ollama-replace-actual-pid", "pid": 34567 }] }
+  }
+}
