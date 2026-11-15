@@ -10,6 +10,8 @@ import {
   canonicalTypeScriptDiagnosticIdentity,
   canonicalWorkspaceCompilerCandidateSetId,
   canonicalWorkspaceCompilerCommandIdentity,
+  assertExecutedCompilerWitness,
+  type CompilerCommandWitness,
   type WorkspaceCompilerAnalyzerBinding
 } from "@scce/kernel";
 import ts from "typescript";
@@ -60,6 +62,7 @@ export interface TypeScriptObservedCompilerCommand {
   args: readonly string[];
   cwd: string;
   sourcePath: string;
+  witness?: CompilerCommandWitness;
 }
 
 export interface TypeScriptCodeActionDiagnostic {
@@ -111,6 +114,7 @@ export interface TypeScriptCodeActionCompilerProvenance {
     sourceSelector: string;
     rawCommandHash: `sha256:${string}`;
     identity: `typescript.compiler_command:${string}`;
+    witness?: CompilerCommandWitness;
   };
 }
 
@@ -688,7 +692,7 @@ function observedCompilerProject(
   }
   const cwd = normalizeWorkspaceDirectory(input.cwd);
   const expectedCwd = path.posix.dirname(sourcePath) === "." ? "." : path.posix.dirname(sourcePath);
-  if (cwd !== expectedCwd) {
+  if (cwd !== expectedCwd && input.witness?.kind !== "executed_owner_policy") {
     throw new Error(`source-observed tsc cwd does not match its command source context: expected ${expectedCwd}, found ${cwd}`);
   }
   if (input.args.some(arg => typeof arg !== "string" || !arg || arg.includes("\0"))) {
@@ -708,7 +712,14 @@ function observedCompilerProject(
   if (!config) {
     throw new Error("source-observed tsc project config cannot be identified and bound to the exact workspace snapshot");
   }
-  const exactCommandBinding = exactObservedCommandBinding(source, input, cwd);
+  let exactCommandBinding:TypeScriptCodeActionCompilerProvenance["compilerCommand"]|undefined;
+  if(input.witness?.kind==="executed_owner_policy"){
+    assertExecutedCompilerWitness(input.witness,{files:snapshot.files,configPath:config.path,configContentHash:config.contentHash,compilerVersion:ts.version});
+    if(source.path!==config.path)throw new Error("executed compiler context must bind its observed config artifact");
+    const base={executable:input.executable,args:[...input.args],cwd,sourcePath:source.path,sourceContentHash:source.contentHash,
+      sourceSelector:`owner_policy.${input.witness.policyHash}.commands.${input.witness.commandIndex}`,rawCommandHash:input.witness.commandHash as `sha256:${string}`,witness:input.witness};
+    exactCommandBinding={...base,identity:canonicalWorkspaceCompilerCommandIdentity(base) as `typescript.compiler_command:${string}`};
+  }else exactCommandBinding = exactObservedCommandBinding(source, input, cwd);
   if (requireExactCommandBinding && !exactCommandBinding) {
     throw new Error("source-observed tsc command does not have one exact source binding");
   }
@@ -776,7 +787,8 @@ function exactObservedCommandBinding(
     sourcePath: source.path,
     sourceContentHash: source.contentHash,
     sourceSelector: matches[0]!.sourceSelector,
-    rawCommandHash: matches[0]!.rawCommandHash
+    rawCommandHash: matches[0]!.rawCommandHash,
+    ...(input.witness ? { witness:input.witness } : {})
   };
   return { ...base, identity: canonicalWorkspaceCompilerCommandIdentity(base) as `typescript.compiler_command:${string}` };
 }

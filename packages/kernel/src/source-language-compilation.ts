@@ -64,6 +64,19 @@ export function validateSourceLanguageCompilationHeader(input: {
   return String(compilationId);
 }
 
+export function validateSourceArtifactOnlyCompilationReceipt(input: {
+  owner: SourceCompilationOwner; profileId: string; sourceSystem: string; compilationReceipt: JsonValue; hasher: Hasher;
+}): string {
+  const receipt = jsonRecord(input.compilationReceipt), { modelInventory: _inventory, ...header } = receipt;
+  if (jsonRecord(receipt.options).artifactScope !== "artifacts_only" || receipt.chunkCount !== 0) {
+    throw new Error("canonical artifacts-only source compilation scope is incomplete or changed");
+  }
+  const compilationId = validateSourceLanguageCompilationHeader({ ...input, validationPolicy: "read_stored",
+    modelJson: toJsonValue({ profileId: input.profileId, sourceVersionId: input.owner.sourceVersionId, sourceCompilation: header }) });
+  validateSourceCompilationModelInventory(input.compilationReceipt, [], input.hasher);
+  return compilationId;
+}
+
 function modelMaterial(record: NgramModelRecord): JsonValue {
   const row = jsonRecord(record.modelJson);
   return toJsonValue({ id: record.id, streamId: record.streamId, languageHint: record.languageHint, maxOrder: record.maxOrder, discount: record.discount,
@@ -73,10 +86,16 @@ function modelMaterial(record: NgramModelRecord): JsonValue {
 export function stampSourceLanguageCompilation(input: {
   owner: SourceCompilationOwner; profileId: string; sourceSystem: string; streamId: string; text: string; chunks: readonly string[];
   inheritedMetadata?: JsonValue;
-  models: readonly NgramModelRecord[]; options: { maxOrder: number; maxCountersPerOrder: number; vocabularyLimit: number; languageOnly: boolean; retainNgramObservations: boolean; segmentationIdentity?: JsonValue };
+  models: readonly NgramModelRecord[]; updatedAt?: number;
+  options: { maxOrder: number; maxCountersPerOrder: number; vocabularyLimit: number; languageOnly: boolean; retainNgramObservations: boolean; segmentationIdentity?: JsonValue; artifactScope?: "artifacts_only" };
   artifacts: { units: readonly LanguageUnitRecord[]; patterns: readonly LanguagePatternRecord[]; semanticFrames: readonly SemanticFrameRecord[] }; hasher: Hasher;
 }): { models: NgramModelRecord[]; units: LanguageUnitRecord[]; patterns: LanguagePatternRecord[]; semanticFrames: SemanticFrameRecord[] } {
   if (input.models.length !== input.chunks.length) throw new Error("canonical source compiler must produce its complete chunk set");
+  const artifactsOnly = input.options.artifactScope === "artifacts_only";
+  if (artifactsOnly ? input.models.length !== 0 || !Number.isFinite(input.updatedAt) : input.models.length === 0) {
+    throw new Error("canonical source compiler requires an explicit timestamp and empty model inventory for artifacts-only publication");
+  }
+  const updatedAt = artifactsOnly ? input.updatedAt! : input.models[0]!.updatedAt;
   const sourceArtifacts = { ...input.artifacts, patterns: input.artifacts.patterns.filter(record => record.patternKind !== "source_compilation") };
   const compilationArtifacts = { ...sourceArtifacts, patterns: sourceArtifacts.patterns.filter(record =>
     !isCanonicalSegmentationArchiveSchema(jsonRecord(record.patternJson).schema)) };
@@ -101,7 +120,7 @@ export function stampSourceLanguageCompilation(input: {
     patterns: [...sourceArtifacts.patterns.map(record => isCanonicalSegmentationArchiveSchema(jsonRecord(record.patternJson).schema) ? record
       : { ...record, patternJson: toJsonValue({ ...jsonRecord(record.patternJson), sourceCompilationId: compilationId }) }), ...componentReceipts,
       { id: sourceLanguageCompilationReceiptId(compilationId), profileId: input.profileId, patternKind: "source_compilation", support: 1, entropy: 0,
-        evidenceIds: [], updatedAt: input.models[0]!.updatedAt, patternJson: toJsonValue({ schema: "scce.source_language_compilation_receipt.v1", sourceSystem: common.sourceSystem,
+        evidenceIds: [], updatedAt, patternJson: toJsonValue({ schema: "scce.source_language_compilation_receipt.v1", sourceSystem: common.sourceSystem,
           ...(input.inheritedMetadata === undefined ? {} : { inheritedMetadata: { schema: "scce.source_artifact_metadata.v1", digest: canonicalDigestHex(input.inheritedMetadata, input.hasher), value: input.inheritedMetadata } }),
           compilation: { ...common, compilationId, modelInventory: input.models.map((record, index) => ({ id: record.id, streamId: record.streamId,
             chunk: chunks[index], modelDigest: canonicalDigestHex(modelMaterial(record), input.hasher) })) } }) }],

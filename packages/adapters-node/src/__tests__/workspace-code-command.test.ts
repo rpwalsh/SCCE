@@ -110,13 +110,9 @@ it.each([
         expect(execution.initialVerification).toMatchObject({
             buildSucceeded: false, testsRun: false
         });
-        if (family !== "spelling_with_graph") {
-            expect(execution.result.outcome).toBe(family === "syntax" ? "stopped" : "awaiting_selection");
+        if (family === "syntax") {
+            expect(execution.result.outcome).toBe("stopped");
             expect(execution.result.finalDiagnostics.length).toBeGreaterThan(0);
-            if (family === "spelling_without_command") {
-                expect(execution.result.reason).toContain("choose one to apply");
-                expect(execution.result.proposalSources).toEqual([]);
-            }
             expect(await readFile(path.join(root, "domain/ledger.ts"), "utf8")).toBe(files["domain/ledger.ts"]);
             return;
         }

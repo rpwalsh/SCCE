@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { createHash } from "node:crypto";
+import { createHash, Hash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ContentHash, EvidenceSpan } from "@scce/kernel";
 import {
@@ -8,6 +8,7 @@ import {
   createCanonicalEvidenceSpanTextHydrator,
   encodeCanonicalEvidenceSpanText,
   hydrateCanonicalEvidenceSpanText,
+  hydrateCanonicalEvidenceSpanTextBatch,
   type CanonicalEvidenceSpanSource,
   type CanonicalEvidenceSpanTextRecord
 } from "../canonical-evidence-span-text.js";
@@ -37,6 +38,36 @@ function fixture(text = " \t雪🧭 e\u0301 العربية हिन्दी ע
 }
 
 describe("canonical evidence-span full-text references", () => {
+  it("hydrates unsorted overlapping and duplicate Unicode ranges with one source hash and one coordinate scan", async () => {
+    const text = "\ufeff\u96ea\u{1f9ed}e\u0301".repeat(30), f = fixture(text, "", "unused");
+    const points = [...text], make = (start: number, end: number, index: number) => {
+      const prefix = points.slice(0, start).join(""), selected = points.slice(start, end).join("");
+      return { ...f.span, id: `${f.span.id}.${index}` as EvidenceSpan["id"], text: selected, contentHash: hash(Buffer.from(selected)),
+        byteStart: Buffer.byteLength(prefix), byteEnd: Buffer.byteLength(prefix + selected), charStart: start, charEnd: end };
+    };
+    const logical = [make(90, 120, 0), make(1, 8, 1), make(3, 110, 2), make(1, 8, 3), make(2, 2, 4)], stored = logical.map(row => encodeCanonicalEvidenceSpanText(row));
+    const hashes = vi.spyOn(Hash.prototype, "update"), decodes = vi.spyOn(TextDecoder.prototype, "decode");
+    try {
+      expect(await hydrateCanonicalEvidenceSpanTextBatch(stored, f.source, f.read)).toEqual(logical);
+      expect(f.read).toHaveBeenCalledTimes(1);
+      const hashedBytes = hashes.mock.calls.reduce((sum, [value]) => sum + Buffer.byteLength(value as string | Uint8Array), 0);
+      const selectedBytes = logical.reduce((sum, row) => sum + row.byteEnd - row.byteStart, 0);
+      expect(hashedBytes).toBe(f.bytes.length + selectedBytes);
+      const decodedBytes = decodes.mock.calls.reduce((sum, [value]) => sum + (value?.byteLength ?? 0), 0);
+      expect(decodedBytes).toBe(Math.max(...logical.map(row => row.byteEnd)) + selectedBytes);
+    } finally { hashes.mockRestore(); decodes.mockRestore(); }
+  });
+
+  it("rejects invalid batch source bytes, owner ports, hashes and codepoint boundaries including empty split scalars", async () => {
+    const f = fixture("\u{1f9ed}e\u0301", "", ""), stored = encodeCanonicalEvidenceSpanText(f.span);
+    await expect(hydrateCanonicalEvidenceSpanTextBatch([stored], f.source, async () => Buffer.from("forged"))).rejects.toThrow("length/hash");
+    for (const changed of [{ ...stored, sourceId: "foreign" as EvidenceSpan["sourceId"] }, { ...stored, contentHash: hash(Buffer.from("forged")) },
+      { ...stored, charStart: 1 }, { ...stored, charEnd: 4 }, { ...stored, byteStart: 1, byteEnd: 1, charStart: 0, charEnd: 0, contentHash: hash(Buffer.alloc(0)) }]) {
+      await expect(hydrateCanonicalEvidenceSpanTextBatch([changed], f.source, f.read)).rejects.toThrow();
+    }
+    const sameLength = Buffer.from(f.bytes); sameLength[0] = 0;
+    await expect(hydrateCanonicalEvidenceSpanTextBatch([stored], f.source, async () => sameLength)).rejects.toThrow("length/hash");
+  });
   it("stores no full-text field, retains the existing preview, and reconstructs every logical field exactly", async () => {
     const f = fixture(), original = structuredClone(f.span), stored = encodeCanonicalEvidenceSpanText(f.span);
     expect(CANONICAL_EVIDENCE_SPAN_TEXT_SCHEMA).toBe("scce.canonical_evidence_span_text.v1");

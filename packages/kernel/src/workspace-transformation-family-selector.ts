@@ -15,6 +15,7 @@ import {
   type PatchTransactionPlan
 } from "./patch-transaction.js";
 import { canonicalStringify, createHasher } from "./primitives.js";
+import { compilerCommandWitnessHash, type CompilerCommandBinding } from "./workspace-compiler-command-binding.js";
 import type { Hasher } from "./types.js";
 import {
   WORKSPACE_TASK_CONSTRAINT_GRAPH_SCHEMA,
@@ -101,16 +102,7 @@ export interface WorkspaceCompilerAnalyzerBinding {
   readonly configPath: string;
   readonly configContentHash: string;
   readonly compilerOptionsHash: string;
-  readonly compilerCommand: {
-    readonly identity: string;
-    readonly executable: string;
-    readonly args: readonly string[];
-    readonly cwd: string;
-    readonly sourcePath: string;
-    readonly sourceContentHash: string;
-    readonly sourceSelector: string;
-    readonly rawCommandHash: string;
-  };
+  readonly compilerCommand: CompilerCommandBinding;
 }
 
 export interface WorkspaceCompilerTransformationFamily {
@@ -159,7 +151,8 @@ export function canonicalWorkspaceCompilerCommandIdentity(
     sourcePath: command.sourcePath,
     sourceContentHash: command.sourceContentHash,
     sourceSelector: command.sourceSelector,
-    rawCommandHash: command.rawCommandHash
+    rawCommandHash: command.rawCommandHash,
+    ...(command.witness?.kind === "executed_owner_policy" ? { witness: command.witness } : {})
   }))}`;
 }
 
@@ -471,7 +464,8 @@ function validAnalyzerBinding(context: SelectorContext, analyzer: WorkspaceCompi
       && node.contentHashes.includes(command.sourceContentHash)
       && node.contentHashes.includes(command.rawCommandHash)
       && metadataValue(node, "commandHash") === command.rawCommandHash
-      && metadataValue(node, "sourceSelector") === command.sourceSelector));
+      && metadataValue(node, "sourceSelector") === command.sourceSelector
+      && (command.witness?.kind !== "executed_owner_policy" || metadataValue(node, "compilerWitnessHash") === compilerCommandWitnessHash(command.witness))));
   return matchingCommands.length === 1;
 }
 
@@ -703,7 +697,8 @@ function validCompilerProvenance(
     || canonicalStringify(compiler.compilerCommand.args) !== canonicalStringify(analyzer.compilerCommand.args)
     || compiler.compilerCommand.cwd !== analyzer.compilerCommand.cwd
     || compiler.compilerCommand.sourcePath !== analyzer.compilerCommand.sourcePath
-    || compiler.compilerCommand.sourceContentHash !== analyzer.compilerCommand.sourceContentHash) return false;
+    || compiler.compilerCommand.sourceContentHash !== analyzer.compilerCommand.sourceContentHash
+    || canonicalStringify(compiler.compilerCommand.witness ?? { kind: "source_declaration" }) !== canonicalStringify(analyzer.compilerCommand.witness ?? { kind: "source_declaration" })) return false;
   const configNode = context.graph.nodes.find(node => node.kindId === "scce.program.file.v1" && node.path === compiler.tsconfigPath);
   if (!configNode || !configNode.contentHashes.includes(config.contentHash)) return false;
   for (const path of transformation.codeFix.fileChanges.map(change => change.path)) {

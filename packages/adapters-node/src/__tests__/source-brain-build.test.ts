@@ -6,10 +6,12 @@ import type { BrainLifecycleRecord, BrainLifecycleState, ScceStorage } from "@sc
 import type { LanguageCorpusTrainingReport } from "../language-corpus-trainer.js";
 
 vi.mock("@scce/kernel", async importOriginal => {
-  const { CORPUS_SOURCE_SYSTEM_IDS } = await importOriginal<typeof import("@scce/kernel")>();
+  const { CORPUS_SOURCE_SYSTEM_IDS, validateSourceArtifactOnlyCompilationReceipt, validateSourceCompilationArtifactInventory } = await importOriginal<typeof import("@scce/kernel")>();
   const digestHex = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
   return {
     CORPUS_SOURCE_SYSTEM_IDS,
+    validateSourceArtifactOnlyCompilationReceipt,
+    validateSourceCompilationArtifactInventory,
     canonicalStringify: (value: unknown) => JSON.stringify(value),
     createHasher: () => ({ digestHex }),
     compileBrainReplayManifest: (input: { sourceSchema: string; sourceManifestHash: string; componentIds: string[]; content: unknown; configuration?: unknown }) => {
@@ -36,6 +38,61 @@ const CONTENT_BYTES = new Uint8Array(64).fill(97);
 const CONTENT_HASH = `sha256_${createHash("sha256").update(CONTENT_BYTES).digest("hex")}`;
 
 describe("initial source brain completion", () => {
+  it("activates and replays a canonical artifacts-only publication without requiring n-gram learning", async () => {
+    const f = await artifactOnlyFixture(), input = { ...buildInput(f.storage), selectedItems: f.selected, reports: f.reports,
+      completion: { ...buildInput(f.storage).completion, selectedItemIds: f.selected.map(row => row.sourceVersionId), completedItemIds: f.selected.map(row => row.sourceVersionId) } };
+    const result = await completeInitialSourceBrainBuild(input);
+    expect(result.report.checks.filter(check => !check.passed)).toEqual([]);
+    expect(result.active).toBe(true);
+    expect(result.lifecycle.manifest.replayManifest?.componentIds).toContain(f.receipts[0]!.id);
+    expect(result.lifecycle.manifest.content.ngramStateCount).toBe(0);
+    expect((await completeInitialSourceBrainBuild(input)).idempotent).toBe(true);
+    expect(f.activationCalls).toBe(1);
+    f.artifactIds.patterns.push("unreported-artifact");
+    await expect(completeInitialSourceBrainBuild(input)).rejects.toThrow("no longer satisfies canonical");
+    expect(f.activationCalls).toBe(1);
+  });
+
+  it.each(["missing-receipt", "duplicate-receipt", "ordinary-zero", "wrong-source", "wrong-profile", "changed-hash", "nonempty-model-inventory", "changed-receipt-id", "missing-artifact", "unreadable-artifact"])("refuses %s zero-model publication", async failure => {
+    const f = await artifactOnlyFixture(), receipt = f.receipts[0]!;
+    const compilation = (receipt.patternJson as { compilation: { options: { artifactScope?: string }; sourceVersionId: string; contentHash: string; modelInventory: unknown[] } }).compilation;
+    if (failure === "missing-receipt") f.receipts.splice(0);
+    if (failure === "duplicate-receipt") f.receipts.push(receipt);
+    if (failure === "ordinary-zero") delete compilation.options.artifactScope;
+    if (failure === "wrong-source") compilation.sourceVersionId = "foreign-source";
+    if (failure === "wrong-profile") receipt.profileId = "foreign-profile";
+    if (failure === "changed-hash") compilation.contentHash = `sha256_${"f".repeat(64)}`;
+    if (failure === "nonempty-model-inventory") compilation.modelInventory.push({ id: "undeclared-model" });
+    if (failure === "changed-receipt-id") receipt.id = "forged-receipt";
+    if (failure === "missing-artifact") f.artifactIds.patterns.splice(0);
+    if (failure === "unreadable-artifact") f.storage.languageMemory.listSourceCompilationArtifactIds = async () => { throw Error("access denied"); };
+    if (["ordinary-zero", "wrong-source", "changed-hash"].includes(failure)) {
+      const k = await vi.importActual<typeof import("@scce/kernel")>("@scce/kernel");
+      const value = compilation as unknown as Record<string, import("@scce/kernel").JsonValue>;
+      const { compilationId: _id, modelInventory: _models, ...header } = value;
+      value.compilationId = k.createHasher().digestHex(k.canonicalStringify(header));
+      receipt.id = `source.language.compilation.${value.compilationId}`;
+    }
+    const result = await completeInitialSourceBrainBuild({ ...buildInput(f.storage), selectedItems: f.selected, reports: f.reports,
+      completion: { ...buildInput(f.storage).completion, selectedItemIds: f.selected.map(row => row.sourceVersionId), completedItemIds: f.selected.map(row => row.sourceVersionId) } });
+    expect(result.report.checks.find(check => check.id === "source.language_artifacts_persisted")?.passed).toBe(false);
+    expect(result.active).toBe(false);
+    expect(f.activationCalls).toBe(0);
+  });
+
+  it("qualifies zero-model checkpoint reports through canonical receipts after structural plan parsing", async () => {
+    const f = await artifactOnlyFixture(), input = buildInput(f.storage);
+    const plan = validateStoredSourceBrainPlan({ schema: "scce.storedSourceBrainPlan.v1", sourceId: "cohort", rootPath: "root",
+      selectedItems: f.selected.map(row => ({ ...row, canonicalUri: f.versions[0]!.canonicalUri })), reportFiles: [{ path: "report.json", sha256: "c".repeat(64) }] });
+    const stored = { schema: "scce.storedCorpusConstructionTrainReport.v1", reports: f.reports, exhausted: true, startBatchIndex: 0, startSourceVersionId: null,
+      sourcesSkipped: [], batchesFailed: [], stoppedByHeapSafetyBound: false, stoppedByInterruption: false, stoppedByStorageFailure: false,
+      selection: { schema: "scce.storedCorpusSourceSelection.v1", selectedSourceVersionIds: [f.reports[0]!.sourceVersionId], completedSourceVersionIds: [f.reports[0]!.sourceVersionId], languageTrainingComplete: true } };
+    const result = await completeInitialSourceBrainFromStoredReports({ storage: f.storage, informationLabel: input.informationLabel, plan, reports: [stored], sourceManifestHash: input.sourceManifestHash });
+    expect(result.active).toBe(true);
+    f.receipts.splice(0);
+    await expect(completeInitialSourceBrainFromStoredReports({ storage: f.storage, informationLabel: input.informationLabel, plan, reports: [stored], sourceManifestHash: input.sourceManifestHash })).rejects.toThrow("no longer satisfies canonical");
+  });
+
   it("activates a completed dialogue selection through the same persisted-artifact validation", async () => {
     const fixture = createFixture(), input = buildInput(fixture.storage);
     const result = await completeInitialSourceBrainFromDialogueReport({ storage: fixture.storage,
@@ -362,4 +419,27 @@ async function canonicalFixture(count: number) {
   f.storage.languageIdentities!.listProfileLanguages = async q => profiles.filter(row => !q?.profileIds || q.profileIds.includes(row.id)).map(row => ({ profileId: row.id, languageId: "identity-one" }));
   return { storage: f.storage, get activationCalls() { return f.activationCalls; }, versions, spans, profiles, models, blobs, reports, pages, get bodyReads() { return bodyReads; },
     selected: versions.map(row => ({ sourceVersionId: String(row.sourceVersionId), contentHash: String(row.contentHash), byteLength: row.byteLength })) };
+}
+
+async function artifactOnlyFixture() {
+  const k = await vi.importActual<typeof import("@scce/kernel")>("@scce/kernel"), f = await canonicalFixture(1);
+  const owner = f.versions[0]!, profileId = f.profiles[0]!.id, hasher = k.createHasher();
+  const stamped = k.stampSourceLanguageCompilation({ owner, profileId, sourceSystem: f.reports[0]!.sourceSystem,
+    streamId: k.sourceLanguageTrainingStreamId({ ...owner, sourceSystem: f.reports[0]!.sourceSystem, hasher }),
+    text: f.spans[0]!.text!, chunks: [], models: [], updatedAt: 1,
+    options: { maxOrder: 3, maxCountersPerOrder: 32, vocabularyLimit: 32, languageOnly: true, retainNgramObservations: false, artifactScope: "artifacts_only" },
+    artifacts: { units: [], semanticFrames: [], patterns: [{ id: "artifact-one", profileId, patternKind: "semantic_role", support: 1, entropy: 0,
+      evidenceIds: [f.spans[0]!.id], updatedAt: 1, patternJson: { schema: "fixture.pattern.v1" } }] }, hasher });
+  const receipts = stamped.patterns.filter(row => row.patternKind === "source_compilation");
+  k.validateSourceArtifactOnlyCompilationReceipt({ owner, profileId, sourceSystem: f.reports[0]!.sourceSystem,
+    compilationReceipt: (receipts[0]!.patternJson as Record<string, import("@scce/kernel").JsonValue>).compilation!, hasher });
+  const artifactIds = { units: [] as string[], patterns: ["artifact-one"], semanticFrames: [] as string[] };
+  f.models.splice(0); f.reports[0]!.ngramModels = 0; f.reports[0]!.artifacts.ngramModelIds = [];
+  f.storage.languageMemory.listLanguagePatterns = async query => {
+    if (query?.requireComplete && (!Number.isSafeInteger(query.limit) || query.limit! <= 0
+      || !Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) throw Error("complete pattern reads require positive finite row and decoded byte bounds");
+    return receipts;
+  };
+  f.storage.languageMemory.listSourceCompilationArtifactIds = async query => artifactIds[query.family].filter(id => !query.afterId || id > query.afterId).slice(0, query.limit);
+  return { ...f, get activationCalls() { return f.activationCalls; }, receipts, artifactIds };
 }

@@ -388,6 +388,7 @@ export function parseTscDiagnostics(output: string, root: string): ProgramDiagno
 export function createTypeScriptCodeMouthPorts(input: {
   workspaceRoot: string;
   tsconfigPath?: string;
+  compilerObservations?: () => readonly import("./typescript-compiler-observation.js").ExecutedTypeScriptCompilerObservation[] | null;
   tscCommand?: { command: string; args: string[] };
   /** The learned lane. Given one, composition is tried first and the compiler's own fix is the fallback. */
   learnedProposer?: LearnedCodeProposer;
@@ -422,6 +423,7 @@ export function createTypeScriptCodeMouthPorts(input: {
         attempt,
         diagnostics,
         imports: context.imports,
+        ...(input.compilerObservations ? { compilerObservations: input.compilerObservations() } : {}),
         ...(() => { const project = input.tsconfigPath ?? nearestProjectFile(root, context.targetPath); return project ? { tsconfigPath: project } : {}; })()
       });
       if (isCompilerRepairProposal(compilerRepair)) {

@@ -252,6 +252,13 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
         expect(registered.status, JSON.stringify(registered.body)).toBe(200);
         expect(f.approvals.snapshot().approved).toEqual([]);
         if (transport === "graphql") {
+            const discovered = await graphql("WorkbenchActionPoliciesQuery", {});
+            expect(discovered.body.errors, JSON.stringify(discovered.body)).toBeUndefined();
+            expect(discovered.body.data.vscodeWorkspaceStatus.workspace.actionPolicies).toEqual([{ policyId: registered.body.workspaceActionContext.policyId,
+                available: true, unavailableReason: null, remainingCalls: policy.maxCalls, context: registered.body.workspaceActionContext,
+                policy: { capabilityIds: policy.capabilityIds, readablePaths: policy.readablePaths, writablePaths: policy.writablePaths,
+                    protectedFiles: policy.protectedFiles, checks: policy.checks, maxFileBytes: policy.maxFileBytes, maxWorkspaceFiles: policy.maxWorkspaceFiles,
+                    maxWorkspaceBytes: policy.maxWorkspaceBytes, timeoutMs: policy.timeoutMs, maxOutputBytes: policy.maxOutputBytes, maxCalls: policy.maxCalls } }]);
             const repeated = await post("/api/workspace/actions/register", { workspaceId: ingested.workspace.id,
                 expectedWorkspaceUpdatedAt: ingested.workspace.updatedAt, policy: Object.fromEntries(Object.entries(policy).reverse()) });
             expect(repeated.body).toEqual(registered.body);
@@ -290,6 +297,7 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
         expect(first.body.pendingApproval.input.content).toBe(input);
         expect(first.body.pendingApproval.input.workspaceContext).toEqual(registered.body.workspaceActionContext);
         expect(first.body.pendingApproval.approvalScope).toBeDefined();
+        expect(first.body.pendingApproval.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
         expect(counts.get("filesystem.write")).toBeUndefined();
         if (transport === "graphql") {
             const conflict = await graphql("VscodeStartTurnMutation", { input: { operationId: taskId, text: body.text, requestedAuthority: "action",

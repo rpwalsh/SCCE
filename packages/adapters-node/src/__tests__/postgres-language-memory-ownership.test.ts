@@ -444,17 +444,20 @@ describe("Postgres language-memory ownership queries", () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.large-transcript", limit: 2048, maxTotalJsonBytes: 64_000_000 });
     const sql = calls.at(-1)!.sql;
-    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(10);
-    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(10);
-    expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(10);
+    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(14);
+    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(14);
+    expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(14);
+    for (const schema of ["scce.source_request_edit_program.v1", "scce.lexical_sense.v1", "scce.source_lexical_grammar.v1", "scce.source_copular_question_frame.v1"]) {
+      expect(calls.at(-1)!.params).toContain(schema);
+    }
     for (const [offset, schema] of [
       "scce.induced_language_model.morphology_memory.v1",
       INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
       "scce.induced_language_model.semantic_memory.v1",
       "scce.induced_language_model.translation_seed_memory.v1"
     ].entries()) {
-      const header = sql.slice(sql.indexOf(`active_projection_ids_${offset + 6}_headers AS MATERIALIZED`),
-        sql.indexOf(`active_projection_ids_${offset + 6} AS MATERIALIZED`));
+      const header = sql.slice(sql.indexOf(`active_projection_ids_${offset + 10}_headers AS MATERIALIZED`),
+        sql.indexOf(`active_projection_ids_${offset + 10} AS MATERIALIZED`));
       const schemaParameter = header.match(/active_projection\.value_json->>'patternSchema'=\$(\d+)/u);
       const recipeParameter = header.match(/active_projection\.value_json->>'componentRecipe'=\$(\d+)/u);
       expect(schemaParameter).not.toBeNull();

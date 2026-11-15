@@ -8,6 +8,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   answerFromWorkspaceCoreContext,
+  assertExecutedCompilerWitness,
+  canonicalStringify,
   buildWorkspaceTaskConstraintGraph,
   CALIBRATION_TASK_CLASS_IDS,
   latestDialogueStyleProfile,
@@ -55,10 +57,12 @@ import { analyzeDeveloperRepo, type RepoIntelligenceAnalysis, type RepoIntellige
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFileInspection, type EngineeringCorpusFolderInspection } from "./engineering-corpus-folder.js";
 import {
   deriveTypeScriptCodeActionCandidates,
+  deriveTypeScriptCodeActionRepair,
   type TypeScriptCodeActionCandidateSet,
   type TypeScriptObservedCompilerCommand
 } from "./typescript-code-actions.js";
 import { resolveTypeScriptCommandLane } from "./typescript-command-lane.js";
+import { isMeasuredTypeScriptCompilerObservation, semanticCompilerProjectArgs, type ExecutedTypeScriptCompilerObservation } from "./typescript-compiler-observation.js";
 import {
   buildTypeScriptSemanticProgramIndex,
   type TypeScriptSemanticProgramBounds,
@@ -1857,7 +1861,7 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
       execution: { state: "not_executed", receipt: null }
     };
   }
-  const compilerLaneResolution = selectSourceObservedCompilerLane(initial.snapshot, requestedPaths);
+  const compilerLaneResolution = resolveCompilerCommandBinding(initial.snapshot, requestedPaths);
   if (!compilerLaneResolution.selected) {
     return {
       schemaVersion: WORKSPACE_COMPILER_PATCH_PLAN_SCHEMA,
@@ -2081,7 +2085,7 @@ function uniqueWorkspacePaths(values: readonly string[]): string[] {
   return [...normalized].sort(compareCanonicalText);
 }
 
-function selectSourceObservedCompilerLane(
+function sourceDeclaredCompilerWitness(
   snapshot: WorkspaceRevisionSnapshot,
   requestedPaths: readonly string[]
 ): SourceObservedCompilerLaneResolution {
@@ -2105,7 +2109,7 @@ function selectSourceObservedCompilerLane(
       const sourceSelector = `scripts.${name}`;
       const resolved = resolveTypeScriptCommandLane({ rawCommand, sourceSelector, sourcePath: source.path, cwd });
       if (!resolved.ok || resolved.lane.wrapper !== "direct" || !resolved.lane.languageServiceCompatible) continue;
-      const configPath = compilerProjectConfigPath(resolved.lane.normalizedTscArgs, cwd);
+      const configPath = compilerProjectConfigPath(resolved.lane.normalizedTscArgs, cwd, snapshot);
       if (!configPath) continue;
       candidates.push({
         command: {
@@ -2149,7 +2153,44 @@ function selectSourceObservedCompilerLane(
   return { selected, reasonIds: [], observedCompilerLaneCount: 1 };
 }
 
-function compilerProjectConfigPath(args: readonly string[], cwd: string): string | undefined {
+/** Declaration and execution witnesses share one config/argv/revision resolver. Execution never falls back to an unexecuted declaration. */
+/** Declaration and execution witnesses share one config/argv/revision resolver. Execution never falls back to an unexecuted declaration. */
+function resolveCompilerCommandBinding(snapshot: WorkspaceRevisionSnapshot, requestedPaths: readonly string[], executions?: readonly ExecutedTypeScriptCompilerObservation[] | null): SourceObservedCompilerLaneResolution {
+    const declaration = sourceDeclaredCompilerWitness(snapshot, requestedPaths);
+    if (executions === undefined)
+        return declaration.selected ? {
+            ...declaration, selected: {
+                ...declaration.selected, command: {
+                    ...declaration.selected.command, witness: {
+                        kind: "source_declaration"
+                    }
+                }
+            }
+        } : declaration;
+    const unavailable: SourceObservedCompilerLaneResolution = {
+        selected: null, reasonIds: [
+            "scce.workspace.compiler_patch.unresolved.compiler_lane_absent.v1"
+        ], observedCompilerLaneCount: executions?.length ?? 0
+    };
+    if (executions?.length !== 1 || !isMeasuredTypeScriptCompilerObservation(executions[0]!))
+        return unavailable;
+    const executed = executions[0]!, command = executed.command, witness = executed.witness, config = snapshot.files.find(file => file.path === witness.configPath);
+    if (!config)
+        return unavailable;
+    assertExecutedCompilerWitness(witness, {
+        files: snapshot.files, configPath: config.path, configContentHash: config.contentHash, compilerVersion: witness.compilerVersion
+    });
+    if (declaration.observedCompilerLaneCount > 0 && (!declaration.selected || declaration.selected.configPath !== witness.configPath
+        || declaration.selected.command.cwd !== command.cwd || JSON.stringify(semanticCompilerProjectArgs(declaration.selected.command.args)) !== JSON.stringify(command.args)))
+        return unavailable;
+    return {
+        selected: {
+            command, configPath: config.path, sourceSelector: `owner_policy.${witness.policyHash}.commands.${witness.commandIndex}`, rawCommand: canonicalStringify(command)
+        }, reasonIds: [], observedCompilerLaneCount: 1
+    };
+}
+
+function compilerProjectConfigPath(args: readonly string[], cwd: string, snapshot: WorkspaceRevisionSnapshot): string | undefined {
   const values: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index]!;
@@ -2166,7 +2207,8 @@ function compilerProjectConfigPath(args: readonly string[], cwd: string): string
   const raw = values[0] ?? "tsconfig.json";
   const joined = cwd === "." ? raw : path.posix.join(cwd, raw);
   try {
-    return normalizePath(joined);
+    const direct = normalizePath(joined);
+    return snapshot.files.some(file => file.path === direct) ? direct : normalizePath(path.posix.join(joined,"tsconfig.json"));
   } catch {
     return undefined;
   }
@@ -2242,6 +2284,7 @@ export async function planObservedTypeScriptFailure(input: {
   targetText: string;
   requestText: string;
   diagnostics: readonly ProgramDiagnostic[];
+  compilerObservations?: readonly ExecutedTypeScriptCompilerObservation[] | null;
 }) {
   const root = path.resolve(input.root);
   const targetPath = normalizePath(path.relative(root, path.resolve(root, input.targetPath)).replace(/\\/gu, "/"));
@@ -2276,7 +2319,7 @@ export async function planObservedTypeScriptFailure(input: {
   const snapshot = await capture();
   const target = snapshot.files.find(file => file.path === targetPath);
   if (!target || decodeExactWorkspaceSource(target) !== input.targetText) return undefined;
-  const compilerLane = selectSourceObservedCompilerLane(snapshot, [targetPath]).selected;
+  const compilerLane = resolveCompilerCommandBinding(snapshot, [targetPath], input.compilerObservations).selected;
   if (!compilerLane) return undefined;
   const semanticPaths = semanticProgramPaths(snapshot, compilerLane.configPath, compilerLane.command.sourcePath);
   const semanticProgram = await buildTypeScriptSemanticProgramIndex({ workspaceRoot: root, tsconfigPath: compilerLane.configPath,
@@ -2301,7 +2344,13 @@ export async function planObservedTypeScriptFailure(input: {
       requestId: `compiler_failure_${hashParts(snapshot.revisionHash, bound.map(row => row.id))}`,
       requestText: input.requestText, requestedPaths: [targetPath], validationPlan: { validatorId: "typescript", checks: ["compiler"] } } });
   assertSameWorkspaceRevision(snapshot, await capture());
-  return { ...planned, transformation: family?.transformations.find(row => row.codeFixIdentity === planned.selection.selected?.codeFixIdentity) };
+  const transformation=family?.transformations.find(row => row.codeFixIdentity === planned.selection.selected?.codeFixIdentity);
+  // A caller's existing formal diagnostic/fix selector is operator authority, distinct from autonomous graph selection.
+  const operatorChoice=deriveTypeScriptCodeActionRepair({rootPath:root,requestedPaths:[targetPath],requestText:input.requestText,
+    files:semanticPaths.map(workspacePath=>{const file=snapshotFileByPath.get(workspacePath)!;return {path:file.path,content:decodeExactWorkspaceSource(file),contentHash:file.contentHash};}),
+    compilerCommand:compilerLane.command});
+  const operatorSelectedTransformation=operatorChoice?.selection.mode==="selected"?family?.transformations.find(row=>row.codeFixIdentity===operatorChoice.transformations[0]?.codeFixIdentity):undefined;
+  return { ...planned, transformation, operatorSelectedTransformation };
 }
 
 function buildCompilerTaskConstraintGraph(args: {
@@ -2378,6 +2427,10 @@ function buildCompilerTaskConstraintGraph(args: {
     validationCommandBindings: semanticCommand
       ? [{ id: `compiler_validation_${hashParts(semanticCommand.id, args.input.requestId).slice(0, 32)}`, checkId: "compiler", commandId: semanticCommand.id }]
       : [],
+    ...(args.family?.analyzer.compilerCommand.witness?.kind === "executed_owner_policy" ? { executedValidationCommandBindings: [{
+      id:`compiler_execution_${args.family.analyzer.compilerCommand.identity}`,checkId:"compiler" as const,
+      command:{...args.family.analyzer.compilerCommand,witness:args.family.analyzer.compilerCommand.witness}
+    }] } : {}),
     diagnosticSymbolBindings
   });
 }

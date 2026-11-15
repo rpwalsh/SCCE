@@ -36,6 +36,14 @@ export interface WorkspaceActionContext {
     expectedWorkspaceUpdatedAt: number;
     policyId: string;
 }
+export interface RegisteredWorkspaceActionPolicySummary {
+    policyId: string;
+    context?: WorkspaceActionContext;
+    available: boolean;
+    unavailableReason?: string;
+    policy: WorkspaceActionPolicy;
+    remainingCalls: number;
+}
 type Dependencies = {
     storage: ScceStorage;
     config: ScceRuntimeConfig;
@@ -213,6 +221,36 @@ type Registration = {
 export async function registerWorkspaceActionPolicy(deps: Dependencies, input: Registration): Promise<WorkspaceActionContext> {
     return serialWorkspace(deps.storage, input.workspaceId, () => registerPolicy(deps, input));
 }
+export async function registeredWorkspaceActionPolicies(deps: Dependencies, workspaceId: string): Promise<RegisteredWorkspaceActionPolicySummary[]> {
+    return serialWorkspace(deps.storage, workspaceId, async () => {
+        const workspace = await deps.storage.workspace.getWorkspace(workspaceId);
+        if (!workspace) return [];
+        const metadata = object(workspace.metadata), policies = metadata.actionPolicies === undefined ? {} : object(metadata.actionPolicies);
+        const registrations = metadata.actionPolicyRegistrations === undefined ? {} : object(metadata.actionPolicyRegistrations);
+        const usage = metadata.actionPolicyUsage === undefined ? {} : object(metadata.actionPolicyUsage);
+        const summaries: RegisteredWorkspaceActionPolicySummary[] = [];
+        for (const [policyId, candidate] of Object.entries(policies).sort(([left], [right]) => left.localeCompare(right))) {
+            validatePolicy(candidate);
+            if (workspaceActionPolicyId(candidate) !== policyId) throw Error("registered workspace policy identity differs");
+            const used = usage[`${policyId}:${workspace.updatedAt}`] ?? 0;
+            if (!Number.isSafeInteger(used) || Number(used) < 0 || Number(used) > candidate.maxCalls) throw Error("registered workspace policy usage differs");
+            const summary: RegisteredWorkspaceActionPolicySummary = { policyId, available: false, policy: structuredClone(candidate), remainingCalls: candidate.maxCalls - Number(used) };
+            const registration = registrations[policyId];
+            if (!registration || object(registration).expectedWorkspaceUpdatedAt !== workspace.updatedAt) {
+                summary.unavailableReason = "Policy was not registered for this workspace revision.";
+            } else {
+                const context: WorkspaceActionContext = { schema: WORKSPACE_ACTION_CONTEXT_SCHEMA, workspaceId, expectedWorkspaceUpdatedAt: workspace.updatedAt, policyId };
+                try {
+                    await resolveWorkspaceActionContext(deps, context);
+                    if (summary.remainingCalls === 0) summary.unavailableReason = "Registered action quota is exhausted.";
+                    else { summary.available = true; summary.context = context; }
+                } catch (error) { summary.unavailableReason = error instanceof Error ? error.message : "Workspace scope is unavailable."; }
+            }
+            summaries.push(summary);
+        }
+        return summaries;
+    });
+}
 async function registerPolicy(deps: Dependencies, input: Registration): Promise<WorkspaceActionContext> {
     validatePolicy(input.policy);
     if (input.policy.maxFileBytes > deps.config.runtime.maxFileBytes)
@@ -250,7 +288,10 @@ async function resolve(deps: Dependencies, value: unknown, capabilityId: string)
         "schema", "workspaceId", "expectedWorkspaceUpdatedAt", "policyId"
     ].includes(key)))
         throw Error("workspace action context unavailable");
-    const { workspace, root } = await workspaceRoot(deps, context as unknown as WorkspaceActionContext), policies = object(object(workspace.metadata).actionPolicies), policy = policies[context.policyId];
+    const { workspace, root } = await workspaceRoot(deps, context as unknown as WorkspaceActionContext), metadata = object(workspace.metadata), policies = object(metadata.actionPolicies), policy = policies[context.policyId];
+    const registrations = metadata.actionPolicyRegistrations === undefined ? {} : object(metadata.actionPolicyRegistrations);
+    if (!registrations[context.policyId] || object(registrations[context.policyId]).expectedWorkspaceUpdatedAt !== context.expectedWorkspaceUpdatedAt)
+        throw Error("workspace policy registration does not match this revision");
     validatePolicy(policy);
     if (workspaceActionPolicyId(policy) !== context.policyId || !policy.capabilityIds.includes(capabilityId))
         throw Error("workspace capability outside registered policy scope");

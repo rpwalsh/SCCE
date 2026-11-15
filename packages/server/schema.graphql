@@ -150,7 +150,15 @@ type LearnSourcePayload {
 type VscodeReadyResult { ok: Boolean!, postgres: JSON, serverUrl: String!, manifest: Int!, exactCounts: Boolean!, warmup: JSON }
 type VscodeProjectSummaryResult { schema: String!, workspace: JSON!, summary: JSON! }
 type VscodeWorkspaceStatusResult { workspace: VscodeWorkspace, sources: [VscodeWorkspaceSource!]! }
-type VscodeWorkspace { id: ID!, rootPath: String!, updatedAt: Float! }
+type VscodeWorkspace { id: ID!, rootPath: String!, updatedAt: Float!, actionPolicies: [RegisteredWorkspaceActionPolicy!]! }
+type WorkspaceActionProtectedFile { path: String!, sha256: String! }
+type WorkspaceActionCheck { executable: String!, executableSha256: String!, argv: [String!]!, cwd: String! }
+type WorkspaceActionPolicy {
+  schema: String!, capabilityIds: [String!]!, readablePaths: [String!]!, writablePaths: [String!]!
+  protectedFiles: [WorkspaceActionProtectedFile!]!, checks: [WorkspaceActionCheck!]!
+  maxFileBytes: Float!, maxWorkspaceFiles: Float!, maxWorkspaceBytes: Float!, timeoutMs: Float!, maxOutputBytes: Float!, maxCalls: Float!
+}
+type RegisteredWorkspaceActionPolicy { policyId: ID!, context: WorkspaceActionContext, available: Boolean!, unavailableReason: String, policy: WorkspaceActionPolicy!, remainingCalls: Float! }
 type VscodeWorkspaceSource { path: String! }
 type VscodeLearningCurriculumResult { schema: String!, items: [VscodeCurriculumItem!]! }
 type VscodeCurriculumItem { planId: ID!, query: String!, rationale: String! }

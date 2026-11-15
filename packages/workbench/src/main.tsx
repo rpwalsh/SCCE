@@ -33,7 +33,7 @@ function App() {
       <label htmlFor="token">Bearer token, if required</label><input id="token" type="password" value={token} onChange={event => setToken(event.target.value)} autoComplete="off" /></>}
       {mode === "browser" && <p>Runs the portable evidence-and-learning slice in a dedicated Worker and reopens its state from OPFS. No host API request is made.</p>}
       {error && <p role="alert">{error}</p>}<button className="primary" disabled={busy}>{busy ? "Connecting…" : "Connect"}</button></form></main>;
-  return <ErrorBoundary reset={() => setConnection(null)}><RelayEnvironmentProvider environment={connection.environment}><Suspense fallback={<main className="connect" role="status">Loading your workspace…</main>}><Workbench disconnect={() => setConnection(null)} /></Suspense></RelayEnvironmentProvider></ErrorBoundary>;
+  return <ErrorBoundary reset={() => setConnection(null)}><RelayEnvironmentProvider environment={connection.environment}><Suspense fallback={<main className="connect" role="status">Loading your workspace…</main>}><Workbench connectionScope={mode === "companion" ? new URL(endpoint).href : "browser-opfs"} nativeCompanion={mode === "companion"} disconnect={() => setConnection(null)} /></Suspense></RelayEnvironmentProvider></ErrorBoundary>;
 }
 class ErrorBoundary extends Component<{ children: ReactNode; reset(): void }, { error: string }> {
   state = { error: "" };

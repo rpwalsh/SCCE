@@ -39,6 +39,19 @@ function fixture(suffix = "", inherited: Record<string, JsonValue> = {}, schema 
 }
 
 describe("canonical source artifact metadata", () => {
+  it("requires an explicit artifacts-only scope and timestamp for a zero-model compilation", () => {
+    const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }) }), sourceVersionId = ids.sourceVersionId("artifact-only");
+    const owner = { sourceId: ids.sourceId("test", "fixture://artifact-only"), sourceVersionId, contentHash: ids.contentHash("attested") };
+    const input = { owner, profileId: "artifact-only-profile", sourceSystem: "fixture", text: "attested", chunks: [], models: [],
+      streamId: sourceLanguageTrainingStreamId({ ...owner, sourceSystem: "fixture", hasher }), hasher,
+      options: { maxOrder: 1, maxCountersPerOrder: 64, vocabularyLimit: 64, languageOnly: true, retainNgramObservations: false },
+      artifacts: { units: [], patterns: [], semanticFrames: [] } };
+    expect(() => stampSourceLanguageCompilation(input)).toThrow("artifacts-only");
+    expect(() => stampSourceLanguageCompilation({ ...input, updatedAt: 1 })).toThrow("artifacts-only");
+    expect(() => stampSourceLanguageCompilation({ ...input, options: { ...input.options, artifactScope: "artifacts_only" } })).toThrow("timestamp");
+    const result = stampSourceLanguageCompilation({ ...input, updatedAt: 1, options: { ...input.options, artifactScope: "artifacts_only" } });
+    expect(object(result.patterns[0]!.patternJson).compilation).toMatchObject({ modelInventory: [], chunkCount: 0, options: { artifactScope: "artifacts_only" } });
+  });
   it("projects logical creative selector fields from compact metadata without licensing the discarded model body", async () => {
     const f = fixture("selector", { requestFrameAnchors: [{ requestFrameId: "observed", example: "owned" }],
       sourceUtterancePrerequisites: { recipe: "owned", requests: [{ patternIds: ["source.pattern"] }] },

@@ -138,6 +138,7 @@ export async function proposeCompilerOwnedRepair(input: {
   diagnostics?: readonly ProgramDiagnostic[];
   imports?: readonly string[];
   tsconfigPath?: string;
+  compilerObservations?: readonly import("./typescript-compiler-observation.js").ExecutedTypeScriptCompilerObservation[] | null;
 }): Promise<CompilerRepairProposal | CompilerRepairCandidates | undefined> {
   const snapshot = await typeScriptProjectSnapshot(input);
   if (!snapshot) return undefined;
@@ -159,13 +160,13 @@ export async function proposeCompilerOwnedRepair(input: {
   }
   if (!repair) return undefined;
 
-  let transformation = repair.transformations[0];
+  let transformation = input.compilerObservations === undefined ? repair.transformations[0] : undefined;
   let selection: WorkspaceTransformationFamilySelection | undefined;
-  if (!transformation && repair.selection.mode === "unselected_candidates" && input.diagnostics?.length) {
+  if (!transformation && input.diagnostics?.length) {
     const planned = await planObservedTypeScriptFailure({ root, targetPath: relativeTarget, targetText: input.targetText,
-      requestText: input.requestText, diagnostics: input.diagnostics }).catch(() => undefined);
-    transformation = planned?.transformation;
-    selection = planned?.selection;
+      requestText: input.requestText, diagnostics: input.diagnostics, compilerObservations: input.compilerObservations }).catch(() => undefined);
+    transformation = planned?.transformation ?? planned?.operatorSelectedTransformation;
+    selection = planned?.transformation ? planned.selection : undefined;
   }
   if (!transformation) {
     const candidates = repair.selection.candidates

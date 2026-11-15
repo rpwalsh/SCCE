@@ -6,12 +6,14 @@ import { createReadStream } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { canonicalStringify, hashPatchContent, type PatchTransactionPlan, type PatchValidationCheckReceipt } from "@scce/kernel";
+import { canonicalStringify, compilerWorkspaceManifestHash, hashPatchContent, type PatchTransactionPlan, type PatchValidationCheckReceipt } from "@scce/kernel";
 import type { WorkspacePatchValidationResult, WorkspacePatchValidationView } from "./workspace-patch-transaction.js";
 
 export const STRUCTURED_PATCH_VALIDATION_POLICY_SCHEMA = "scce.patch-validation-policy.v1" as const;
 export const STRUCTURED_PATCH_VALIDATION_EVIDENCE_SCHEMA = "scce.patch-validation-evidence.v2" as const;
 export const TRUSTED_HOST_PATCH_VALIDATION_PROVIDER_ID = "trusted-host-process.v1" as const;
+const trustedHostReceipts = new WeakSet<object>();
+export function isTrustedHostValidationCommandReceipt(receipt: StructuredPatchValidationCommandResult): boolean { return trustedHostReceipts.has(receipt); }
 export const DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID = "trusted-host-pnpm-validate.v1" as const;
 export const DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID = "docker-pnpm-validate.v1" as const;
 
@@ -68,6 +70,7 @@ export interface StructuredPatchValidationEvidence {
 export interface StructuredWorkspaceValidationEvidence extends Omit<StructuredPatchValidationEvidence, "schemaVersion" | "planHash"> {
   readonly schemaVersion: "scce.workspace-validation-evidence.v1";
   readonly workspaceHash: `sha256:${string}`;
+  readonly workspaceManifestHash: string;
 }
 
 export interface StructuredWorkspaceValidationResult extends Omit<WorkspacePatchValidationResult, "evidence"> {
@@ -174,6 +177,7 @@ async function validateStagedWorkspace(options: Omit<RunStructuredPatchValidatio
 
     const evidence = {
       workspaceHash: copied.contentHash,
+      workspaceManifestHash: copied.manifestHash,
       stagedFileCount: copied.files,
       stagedByteCount: copied.bytes,
       execution: execution.execution,
@@ -200,6 +204,7 @@ export const trustedHostPatchValidationProvider: StructuredPatchValidationProvid
       const command = input.policy.commands[index];
       if (!command) throw new Error(`validation policy command missing at index ${index}`);
       const result = await runStructuredCommand({ stageRoot: input.stageRoot, command, index, policy: input.policy });
+      trustedHostReceipts.add(result);
       commands.push(result);
       if (result.code !== 0 || result.timedOut || result.outputLimitExceeded) break;
     }
@@ -225,10 +230,11 @@ interface CopySnapshotOptions {
   readonly maxBytes: number;
 }
 
-async function copyWorkspaceSnapshot(options: CopySnapshotOptions): Promise<{ files: number; bytes: number; contentHash: `sha256:${string}` }> {
+async function copyWorkspaceSnapshot(options: CopySnapshotOptions): Promise<{ files: number; bytes: number; contentHash: `sha256:${string}`; manifestHash: string }> {
   let files = 0;
   let bytes = 0;
   const snapshotHash = createHash("sha256");
+  const manifest: Array<{path:string;contentHash:string}> = [];
   const visit = async (sourceDirectory: string, stageDirectory: string, depth: number): Promise<void> => {
     const entries = await readdir(sourceDirectory, { withFileTypes: true });
     entries.sort((a, b) => compareCanonical(a.name, b.name));
@@ -251,11 +257,13 @@ async function copyWorkspaceSnapshot(options: CopySnapshotOptions): Promise<{ fi
       await copyFile(sourcePath, stagePath);
       const fileHash = createHash("sha256");
       for await (const chunk of createReadStream(stagePath)) fileHash.update(chunk);
-      snapshotHash.update(canonicalStringify({ path: normalizeRelative(relative(options.sourceRoot, sourcePath)), hash: fileHash.digest("hex") }));
+      const digest = fileHash.digest("hex"), name = normalizeRelative(relative(options.sourceRoot, sourcePath));
+      snapshotHash.update(canonicalStringify({ path: name, hash: digest }));
+      manifest.push({path:name,contentHash:`sha256:${digest}`});
     }
   };
   await visit(options.sourceRoot, options.stageRoot, 0);
-  return { files, bytes, contentHash: `sha256:${snapshotHash.digest("hex")}` };
+  return { files, bytes, contentHash: `sha256:${snapshotHash.digest("hex")}`, manifestHash:compilerWorkspaceManifestHash(manifest) };
 }
 
 async function applyPlanToStage(stageRoot: string, plan: PatchTransactionPlan, view: WorkspacePatchValidationView): Promise<void> {

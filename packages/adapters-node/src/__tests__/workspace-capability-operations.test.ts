@@ -6,7 +6,7 @@ import path from "node:path";
 import { it, expect } from "vitest";
 import { createHasher, toJsonValue, createRuntimeCapabilities, invokeRuntimeCapability, DEFAULT_POLICY } from "@scce/kernel";
 import { ordinaryWorkspaceProgramFixture } from "./fixtures/ordinary-workspace-program.js";
-import { createWorkspaceCapabilityOperations, registerWorkspaceActionPolicy } from "../workspace-capability-operations.js";
+import { createWorkspaceCapabilityOperations, registerWorkspaceActionPolicy, registeredWorkspaceActionPolicies } from "../workspace-capability-operations.js";
 import type { ScceRuntimeConfig } from "../config.js";
 import { capabilityRuntimeFixture } from "../../../kernel/src/__tests__/fixtures/capability-runtime.js";
 function configFor(root: string): ScceRuntimeConfig {
@@ -48,6 +48,16 @@ it("registers real source-owned workspace operations and refuses stale or out-of
         const context = await registerWorkspaceActionPolicy({
             storage: f.storage, config
         }, scope);
+        const [summary] = await registeredWorkspaceActionPolicies({ storage: f.storage, config }, context.workspaceId);
+        expect(summary).toMatchObject({ available: true, context, policy: scope.policy, remainingCalls: scope.policy.maxCalls });
+        const workspace = await f.storage.workspace.getWorkspace(context.workspaceId);
+        const metadata = workspace!.metadata as Record<string, any>, stamp = metadata.actionPolicyRegistrations;
+        delete metadata.actionPolicyRegistrations;
+        expect((await registeredWorkspaceActionPolicies({ storage: f.storage, config }, context.workspaceId))[0]).toMatchObject({ available: false });
+        expect((await registeredWorkspaceActionPolicies({ storage: f.storage, config }, context.workspaceId))[0]!.context).toBeUndefined();
+        metadata.actionPolicyRegistrations = { ...stamp, [context.policyId]: { expectedWorkspaceUpdatedAt: context.expectedWorkspaceUpdatedAt - 1 } };
+        expect((await registeredWorkspaceActionPolicies({ storage: f.storage, config }, context.workspaceId))[0]!.available).toBe(false);
+        metadata.actionPolicyRegistrations = stamp;
         const operations = createWorkspaceCapabilityOperations({
             storage: f.storage, config
         });
@@ -60,6 +70,9 @@ it("registers real source-owned workspace operations and refuses stale or out-of
         expect(original).toMatchObject({
             content: '[{"key":"fresh","value":7}]'
         });
+        expect((await registeredWorkspaceActionPolicies({ storage: f.storage, config }, context.workspaceId))[0]!.remainingCalls).toBe(scope.policy.maxCalls - 1);
+        await registerWorkspaceActionPolicy({ storage: f.storage, config }, scope);
+        expect((await registeredWorkspaceActionPolicies({ storage: f.storage, config }, context.workspaceId))[0]!.remainingCalls).toBe(scope.policy.maxCalls - 1);
         const content = JSON.stringify({
             observed: original
         });
@@ -88,6 +101,7 @@ it("registers real source-owned workspace operations and refuses stale or out-of
             workspaceContext: context, path: "../outside.json"
         }))).rejects.toThrow(/path/);
         await writeFile(path.join(root, "input.json"), "[]");
+        expect((await registeredWorkspaceActionPolicies({ storage: f.storage, config }, context.workspaceId))[0]!.available).toBe(false);
         await expect(read.execute(toJsonValue({
             workspaceContext: context, path: "input.json"
         }))).rejects.toThrow(/canonical/);

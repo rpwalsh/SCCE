@@ -2,7 +2,6 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Fragment, Suspense, useMemo, useState, type ReactNode } from "react";
 import { graphql, useLazyLoadQuery, usePaginationFragment, useRelayEnvironment, useSubscription } from "react-relay";
-import { commitMutation, type Environment, type MutationParameters } from "relay-runtime";
 import type { WorkbenchRuntimeQuery } from "./__generated__/WorkbenchRuntimeQuery.graphql";
 import type { WorkbenchReserveMutation } from "./__generated__/WorkbenchReserveMutation.graphql";
 import type { WorkbenchStartMutation } from "./__generated__/WorkbenchStartMutation.graphql";
@@ -19,6 +18,13 @@ import type { WorkbenchReviewHeldSourceMutation } from "./__generated__/Workbenc
 import type { WorkbenchDataQuery } from "./__generated__/WorkbenchDataQuery.graphql";
 import type { WorkbenchCapabilitiesQuery } from "./__generated__/WorkbenchCapabilitiesQuery.graphql";
 import type { WorkbenchLearnSourceMutation } from "./__generated__/WorkbenchLearnSourceMutation.graphql";
+import type { WorkbenchApprovePlanMutation } from "./__generated__/WorkbenchApprovePlanMutation.graphql";
+import type { WorkbenchRejectPlanMutation } from "./__generated__/WorkbenchRejectPlanMutation.graphql";
+import type { WorkbenchActionPoliciesQuery } from "./__generated__/WorkbenchActionPoliciesQuery.graphql";
+import type { WorkspaceActionContextInput } from "./__generated__/WorkbenchStartMutation.graphql";
+import { WorkbenchTurnController, pendingCapabilityApproval, type PendingCapabilityApproval } from "./turn-controller";
+import { createRelayTurnController } from "./relay-turn-controller";
+import { command } from "./relay-command";
 
 export const runtimeQuery = graphql`query WorkbenchRuntimeQuery { runtime { protocolVersion generation phase ready } }`;
 const sourcesQuery = graphql`query WorkbenchSourcesQuery { ...WorkbenchSources_sources }`;
@@ -36,6 +42,19 @@ const capabilitiesQuery = graphql`query WorkbenchCapabilitiesQuery {
 }`;
 const reserveMutation = graphql`mutation WorkbenchReserveMutation($input: ReserveTurnInput!) { reserveTurn(input: $input) { task { id status } } }`;
 const startMutation = graphql`mutation WorkbenchStartMutation($input: StartTurnInput!) { startTurn(input: $input) { task { id status latestSequence } } }`;
+const approvePlanMutation = graphql`mutation WorkbenchApprovePlanMutation($input: VscodePlanCommandInput!) {
+  vscodeApprovePlan(input: $input) { approved { planId capabilityId } clientMutationId }
+}`;
+const rejectPlanMutation = graphql`mutation WorkbenchRejectPlanMutation($input: VscodePlanCommandInput!) {
+  vscodeRejectPlan(input: $input) { rejected { planId capabilityId } clientMutationId }
+}`;
+const actionPoliciesQuery = graphql`query WorkbenchActionPoliciesQuery {
+  vscodeWorkspaceStatus { workspace { id rootPath actionPolicies {
+    policyId available unavailableReason remainingCalls context { schema workspaceId expectedWorkspaceUpdatedAt policyId }
+    policy { capabilityIds readablePaths writablePaths protectedFiles { path sha256 } checks { executable executableSha256 argv cwd }
+      maxFileBytes maxWorkspaceFiles maxWorkspaceBytes timeoutMs maxOutputBytes maxCalls }
+  } } }
+}`;
 export const registerWorkspaceActionPolicyMutation = graphql`mutation WorkbenchRegisterWorkspaceActionPolicyMutation($input: RegisterWorkspaceActionPolicyInput!) {
   registerWorkspaceActionPolicy(input: $input) { clientMutationId workspaceActionContext { schema workspaceId expectedWorkspaceUpdatedAt policyId } }
 }`;
@@ -67,13 +86,16 @@ const viewText: Record<View, { eyebrow: string; title: string; privacy: string }
   settings: { eyebrow: "LOCAL RUNTIME", title: "Settings / Capabilities", privacy: "Server-owned policy" }
 };
 
-export function Workbench({ disconnect }: { disconnect(): void }) {
+export function Workbench({ disconnect, connectionScope, nativeCompanion }: { disconnect(): void; connectionScope: string; nativeCompanion: boolean }) {
   const runtime = useLazyLoadQuery<WorkbenchRuntimeQuery>(runtimeQuery, {}, { fetchPolicy: "store-or-network" });
   const environment = useRelayEnvironment();
   const [draft, setDraft] = useState("");
   const [taskId, setTaskId] = useState(() => /^[A-Za-z0-9_-]{20,2048}$/u.test(location.hash.slice(1)) ? location.hash.slice(1) : null);
-  const [operationId, setOperationId] = useState<string | null>(null);
-  const [submitted, setSubmitted] = useState("");
+  const controller = useMemo(() => createRelayTurnController(environment, localStorage, connectionScope), [environment, connectionScope]);
+  const [submitted, setSubmitted] = useState(() => {
+    try { return taskId ? controller.load(taskId)?.input.text ?? "" : ""; } catch { return ""; }
+  });
+  const [workspaceContext, setWorkspaceContext] = useState<WorkspaceActionContextInput | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<View>("work");
@@ -81,16 +103,12 @@ export function Workbench({ disconnect }: { disconnect(): void }) {
     if (busy || !draft.trim()) return;
     if (!runtime.runtime.ready) { setError("The local engine is not ready yet. Wait for readiness before starting work."); return; }
     setBusy(true); setError("");
+    const text = draft;
     try {
-      let id = operationId;
-      if (!id) {
-        const reserved = await command<WorkbenchReserveMutation>(environment, reserveMutation, { input: {} });
-        id = reserved.reserveTurn.task.id;
-        setOperationId(id);
-      }
-      setTaskId(id); setSubmitted(draft); location.hash = id;
-      await command<WorkbenchStartMutation>(environment, startMutation, { input: { operationId: id, text: draft, sessionId: "workbench.default" } });
-      setDraft(""); setOperationId(null);
+      await controller.submit(text, { sessionId: "workbench.default", ...(workspaceContext ? { workspaceActionContext: workspaceContext } : {}) }, id => {
+        setTaskId(id); setSubmitted(text); location.hash = id;
+      });
+      setDraft(current => current === text ? "" : current);
     } catch (failure) { setError(message(failure)); }
     finally { setBusy(false); }
   }
@@ -113,7 +131,8 @@ export function Workbench({ disconnect }: { disconnect(): void }) {
       <header><div><span className="eyebrow">{heading.eyebrow}</span><h1>{heading.title}</h1></div><span className="private">{heading.privacy}</span></header>
       {!runtime.runtime.ready && <StatusNotice tone="warning" title="Local engine not ready">Phase: {runtime.runtime.phase}. Read-only data may remain available, but new work is disabled.</StatusNotice>}
       {view === "work" && <WorkView taskId={taskId} submitted={submitted} draft={draft} busy={busy} error={error}
-        ready={runtime.runtime.ready} disconnect={disconnect} setDraft={setDraft} submit={submit} />}
+        ready={runtime.runtime.ready} disconnect={disconnect} setDraft={setDraft} submit={submit} controller={controller}
+        nativeCompanion={nativeCompanion} workspaceContext={workspaceContext} setWorkspaceContext={setWorkspaceContext} />}
       {view === "learning" && <Suspense fallback={<Loading label="Loading sources and learning state" />}><LearningView /></Suspense>}
       {view === "data" && <Suspense fallback={<Loading label="Loading durable data status" />}><DataView /></Suspense>}
       {view === "settings" && <Suspense fallback={<Loading label="Loading settings and capabilities" />}><CapabilitiesView /></Suspense>}
@@ -125,15 +144,46 @@ function NavButton({ active, onClick, children }: { active: boolean; onClick(): 
   return <button className="nav-link" aria-current={active ? "page" : undefined} onClick={onClick}>{children}</button>;
 }
 
+function WorkspaceActionPolicies({ selected, onSelect, disabled }: { selected?: WorkspaceActionContextInput;
+  onSelect(context: WorkspaceActionContextInput | undefined): void; disabled: boolean }) {
+  const [fetchKey, setFetchKey] = useState(0);
+  const data = useLazyLoadQuery<WorkbenchActionPoliciesQuery>(actionPoliciesQuery, {}, { fetchPolicy: "store-and-network", fetchKey });
+  const workspace = data.vscodeWorkspaceStatus.workspace, policies = workspace?.actionPolicies ?? [];
+  const current = policies.find(item => item.available && item.context && selected && item.context.policyId === selected.policyId
+    && item.context.workspaceId === selected.workspaceId && item.context.expectedWorkspaceUpdatedAt === selected.expectedWorkspaceUpdatedAt);
+  return <section className="panel" aria-labelledby="workspace-action-scope"><div className="panel-heading"><h3 id="workspace-action-scope">Workspace scope for the next request</h3>
+    <button type="button" disabled={disabled} onClick={() => setFetchKey(value => value + 1)}>Refresh scopes</button></div>
+    <label htmlFor="workspace-action-policy">Registered policy</label><select id="workspace-action-policy" disabled={disabled} value={current?.policyId ?? ""}
+      onChange={event => onSelect(policies.find(item => item.policyId === event.target.value && item.available)?.context ?? undefined)}>
+      <option value="">No workspace action context</option>{policies.map(item => <option key={item.policyId} value={item.policyId} disabled={!item.available}>
+        {item.policyId} · {item.remainingCalls} calls remaining{item.available ? "" : " · unavailable"}</option>)}</select>
+    <p className="availability">Selecting a scope does not authorize an action. Each proposed effect still requires its recorded approval. Remaining quota is measured when scopes are refreshed.</p>
+    {!policies.length && <p>No action policy is registered for this workspace. Register one through the local host before selecting it here.</p>}
+    {selected && !current && <p role="alert">The selected scope is no longer current. Choose an available scope again or clear the selection before sending new work.</p>}
+    {policies.map(item => <details key={item.policyId} open={item.policyId === current?.policyId}><summary>{item.policyId} · {item.available ? "Available" : item.unavailableReason || "Unavailable"}</summary>
+      <dl className="facts"><dt>Workspace</dt><dd>{workspace?.rootPath}</dd><dt>Capabilities</dt><dd>{item.policy.capabilityIds.join(", ")}</dd>
+        <dt>Readable paths</dt><dd>{item.policy.readablePaths.map(name => <div key={name}><code>{name}</code></div>)}</dd>
+        <dt>Writable paths</dt><dd>{item.policy.writablePaths.map(name => <div key={name}><code>{name}</code></div>)}</dd>
+        <dt>Protected inputs</dt><dd>{item.policy.protectedFiles.map(file => <div key={file.path}><code>{file.path}</code> · SHA-256 <code>{file.sha256}</code></div>)}</dd>
+        <dt>Registered checks</dt><dd>{item.policy.checks.length ? item.policy.checks.map((check, index) => <div key={index}><code>{JSON.stringify(check.executable)} {check.argv.map(arg => JSON.stringify(arg)).join(" ")}</code><div>Working directory: <code>{check.cwd}</code></div><div>Executable SHA-256: <code>{check.executableSha256}</code></div></div>) : "None"}</dd>
+        <dt>Call quota</dt><dd>{item.remainingCalls} remaining of {item.policy.maxCalls}</dd><dt>Byte bounds</dt><dd>{item.policy.maxFileBytes} per file; {item.policy.maxWorkspaceBytes} workspace; {item.policy.maxOutputBytes} check output</dd>
+        <dt>Other bounds</dt><dd>{item.policy.maxWorkspaceFiles} files; {item.policy.timeoutMs} ms per check</dd></dl>
+    </details>)}
+  </section>;
+}
+
 function WorkView(props: { taskId: string | null; submitted: string; draft: string; busy: boolean; error: string; ready: boolean;
-  disconnect(): void; setDraft(value: string): void; submit(): Promise<void> }) {
+  disconnect(): void; setDraft(value: string): void; submit(): Promise<void>; controller: WorkbenchTurnController; nativeCompanion: boolean;
+  workspaceContext?: WorkspaceActionContextInput; setWorkspaceContext(value: WorkspaceActionContextInput | undefined): void }) {
   return <>
     <section className="conversation" aria-label="Current work and task">
       {!props.taskId && <div className="welcome"><div className="mark">S</div><h2>What would you like to work on?</h2><p>Ask about learned sources, explore an idea, or run a programming task on the local engine.</p>
         <p className="availability">Task history listing is not registered in this build. This view shows the current durable task only.</p></div>}
       {props.submitted && <article className="request"><span>You</span><p dir="auto">{props.submitted}</p></article>}
-      {props.taskId && <Suspense fallback={<Loading label="Loading task" />}><Task id={props.taskId} disconnect={props.disconnect} key={props.taskId} /></Suspense>}
+      {props.taskId && <Suspense fallback={<Loading label="Loading task" />}><Task id={props.taskId} disconnect={props.disconnect} controller={props.controller} ready={props.ready} key={props.taskId} /></Suspense>}
     </section>
+    {props.nativeCompanion && <Suspense fallback={<Loading label="Loading registered workspace scopes" />}><WorkspaceActionPolicies selected={props.workspaceContext}
+      onSelect={props.setWorkspaceContext} disabled={props.busy} /></Suspense>}
     <form className="composer" onSubmit={event => { event.preventDefault(); void props.submit(); }}>
       {props.error && <p role="alert">{props.error}</p>}
       <label htmlFor="request">Your request</label><textarea id="request" dir="auto" value={props.draft} onChange={event => props.setDraft(event.target.value)}
@@ -268,13 +318,13 @@ function Capability({ title, state, children }: { title: string; state: "availab
   return <li><div><strong>{title}</strong><span className={`state ${state}`}>{state}</span></div><p>{children}</p></li>;
 }
 
-function Task({ id, disconnect }: { id: string; disconnect(): void }) {
+function Task({ id, disconnect, controller, ready }: { id: string; disconnect(): void; controller: WorkbenchTurnController; ready: boolean }) {
   const data = useLazyLoadQuery<WorkbenchTaskQuery>(taskQuery, { id }, { fetchPolicy: "network-only" });
-  return data.turnTask ? <TaskDetails task={data.turnTask} disconnect={disconnect} />
+  return data.turnTask ? <TaskDetails task={data.turnTask} disconnect={disconnect} controller={controller} ready={ready} />
     : <StatusNotice tone="warning" title="Task unavailable">This task ID does not exist in the connected local state. Return to the current engine or start new work.</StatusNotice>;
 }
 
-function TaskDetails({ task, disconnect }: { task: WorkbenchTask_task$key; disconnect(): void }) {
+function TaskDetails({ task, disconnect, controller, ready }: { task: WorkbenchTask_task$key; disconnect(): void; controller: WorkbenchTurnController; ready: boolean }) {
   const environment = useRelayEnvironment();
   const { data, hasNext, loadNext, isLoadingNext } = usePaginationFragment<WorkbenchTaskPaginationQuery, WorkbenchTask_task$key>(graphql`
     fragment WorkbenchTask_task on TurnTask
@@ -293,6 +343,7 @@ function TaskDetails({ task, disconnect }: { task: WorkbenchTask_task$key; disco
     }`, task);
   const [streamError, setStreamError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [deciding, setDeciding] = useState(false), [decisionError, setDecisionError] = useState("");
   const [initialSequence] = useState(data.latestSequence);
   const terminal = ["succeeded", "failed", "cancelled", "interrupted"].includes(data.status);
   const config = useMemo(() => ({ subscription: taskSubscription,
@@ -307,6 +358,17 @@ function TaskDetails({ task, disconnect }: { task: WorkbenchTask_task$key; disco
   const stale = /stale|generation|runtime changed/iu.test(streamError);
   const evidence = (data.result?.evidence ?? []).slice(0, 12);
   const outcome = taskOutcome(data.result?.value);
+  const pending = data.result?.httpStatus === 202 && (data.latestFrame?.phase === "application.turn.awaiting_approval" || data.latestFrame?.kind === "result")
+    ? pendingCapabilityApproval(data.result.value) : undefined;
+  let saved = false, savedError = "";
+  try { saved = Boolean(controller.load(data.id)); } catch (error) { savedError = message(error); }
+  async function decide(proposal: PendingCapabilityApproval, choice: "approve" | "reject" | "refresh") {
+    if (deciding) return;
+    setDeciding(true); setDecisionError("");
+    try { if (choice === "refresh") await controller.refreshProposal(data.id); else await controller.decideAndResume(data.id, proposal, choice); }
+    catch (error) { setDecisionError(message(error)); }
+    finally { setDeciding(false); }
+  }
   return <article className="response"><div className="response-heading"><strong>SCCE</strong><span className={`state ${taskStateClass(data.status)}`} role="status">{data.status}</span>{!terminal && <button onClick={() => void cancel()}>Stop task</button>}</div>
     <div className="answer" dir="auto">{data.result?.answer || data.latestFrame?.answer || (!terminal ? "Working..." : "")}</div>
     {(data.result?.error || data.latestFrame?.error) && <p role="alert">{data.result?.error || data.latestFrame?.error}</p>}
@@ -317,7 +379,18 @@ function TaskDetails({ task, disconnect }: { task: WorkbenchTask_task$key; disco
     {streamError && <p role="alert">{streamError} {stale ? <button onClick={disconnect}>Reconnect local engine</button> : <button onClick={() => { setStreamError(""); setRetry(value => value + 1); }}>Reconnect task stream</button>}</p>}
     {(data.result?.guardFlags || data.result?.entailment) && <section className="result-section" aria-labelledby="uncertainty-heading"><h3 id="uncertainty-heading">Support and uncertainty</h3><dl className="facts"><dt>Source backed</dt><dd>{data.result.guardFlags?.sourceBacked === true ? "Yes" : data.result.guardFlags?.sourceBacked === false ? "No" : "Not recorded"}</dd><dt>Entailment</dt><dd>{uncertainty(data.result.entailment)}</dd></dl></section>}
     {!!evidence.length && <section className="result-section" aria-labelledby="evidence-heading"><h3 id="evidence-heading">Evidence used</h3><ol className="evidence-list">{evidence.map((item, index) => <li key={item.id ?? `${item.sourceId ?? "evidence"}-${index}`}><strong>{item.sourceId || item.id || "Evidence span"}</strong>{item.textPreview && <p>{item.textPreview}</p>}</li>)}</ol>{(data.result?.evidence?.length ?? 0) > evidence.length && <p className="availability">Showing the first {evidence.length} evidence spans.</p>}</section>}
-    {outcome && <section className="result-section" aria-labelledby="outcome-heading"><h3 id="outcome-heading">Approval or receipt</h3><dl className="facts">{outcome.map(row => <Fragment key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></Fragment>)}</dl></section>}
+    {pending ? <section className="result-section" aria-labelledby="action-approval-heading"><h3 id="action-approval-heading">Review proposed action</h3>
+      <dl className="facts"><dt>Capability</dt><dd>{pending.capabilityId}</dd><dt>Reason</dt><dd>{pending.reason || "Owner approval required"}</dd>
+        <dt>Plan</dt><dd><code>{pending.planId}</code></dd><dt>Action fingerprint</dt><dd><code>{pending.fingerprint}</code></dd></dl>
+      <details><summary>Exact proposed input and scope</summary><pre>{JSON.stringify({ input: pending.input, approvalScope: pending.approvalScope }, null, 2)}</pre></details>
+      <p>Approving continues this task with its original submitted request. Rejecting stops this task. New text in the editor is a separate request.</p>
+      {!saved && <p role="alert">{savedError || "The exact submitted request is not saved in this browser. Approval and continuation are unavailable here."}</p>}
+      {decisionError && <p role="alert">{decisionError}</p>}<div className="row-actions">
+        <button disabled={!saved || deciding || !ready || stale} onClick={() => void decide(pending, "approve")}>{deciding ? "Continuing…" : "Approve this action and continue"}</button>
+        <button disabled={!saved || deciding || !ready || stale} onClick={() => void decide(pending, "reject")}>Reject this action</button>
+        <button disabled={!saved || deciding || !ready || stale} onClick={() => void decide(pending, "refresh")}>Refresh proposal</button></div>
+      <p className="availability">If the host restarted, refresh the proposal before deciding. Refresh uses the saved request and grants no approval.</p>
+    </section> : outcome && <section className="result-section" aria-labelledby="outcome-heading"><h3 id="outcome-heading">Approval or receipt</h3><dl className="facts">{outcome.map(row => <Fragment key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></Fragment>)}</dl></section>}
     <details><summary>Task activity · {data.latestSequence} events · {data.persistence}</summary><ol className="events">{data.frames.edges.map(edge => <li key={edge.node.id}><span>{edge.node.sequence}</span>{edge.node.phase || edge.node.kind}</li>)}</ol>{hasNext && <button disabled={isLoadingNext} onClick={() => loadNext(20)}>{isLoadingNext ? "Loading..." : "Load 20 more events"}</button>}</details>
   </article>;
 }
@@ -388,8 +461,4 @@ function base64Utf8(value: string): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
-}
-function command<T extends MutationParameters>(environment: Environment, mutation: Parameters<typeof commitMutation<T>>[1]["mutation"], variables: T["variables"]): Promise<T["response"]> {
-  return new Promise((resolve, reject) => commitMutation<T>(environment, { mutation, variables,
-    onCompleted(data, errors) { if (errors?.length) reject(new Error(errors.map(error => error.message).join("; "))); else resolve(data); }, onError: reject }));
 }

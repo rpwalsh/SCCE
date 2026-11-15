@@ -3,6 +3,7 @@
 import { hashPatchContent } from "./patch-transaction.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { canonicalTypeScriptDiagnosticIdentity } from "./program-repair-kernel.js";
+import { assertExecutedCompilerWitness, compilerCommandWitnessHash, type CompilerCommandBinding, type CompilerCommandWitness } from "./workspace-compiler-command-binding.js";
 import { induceProgramBehaviorRoleConstructions, type ProgramBehaviorRoleObservation } from "./program-behavior-role-induction.js";
 import type { Hasher, JsonValue } from "./types.js";
 import type {
@@ -166,6 +167,10 @@ export interface BuildWorkspaceTaskConstraintGraphInput {
   readonly requestedOutcomes?: readonly WorkspaceRequestedOutcomeConstraint[];
   readonly validationPlan: WorkspacePatchValidationPlan;
   readonly validationCommandBindings?: readonly WorkspaceValidationCommandBinding[];
+  readonly executedValidationCommandBindings?: readonly {
+    readonly id:string; readonly checkId:WorkspaceValidationCheckId;
+    readonly command:CompilerCommandBinding & {readonly witness:CompilerCommandWitness};
+  }[];
   /** Compiler-owned replacement targets projected onto exact semantic symbols. */
   readonly diagnosticSymbolBindings?: readonly {
     readonly diagnosticId: string;
@@ -345,6 +350,19 @@ export function verifyWorkspaceTaskConstraintGraph(
     }
     requiredHash(compiler.compilerOptionsHash);
   }
+  for (const id of graph.admissibleValidationCommandNodeIds) {
+    const node = nodeById.get(id)!, metadata = metadataRecord(node.metadata);
+    if (metadata.compilerWitness !== undefined) {
+        if (!compiler)
+            throw new Error("executed compiler validation lacks compiler context");
+        const witness = metadata.compilerWitness as unknown as CompilerCommandWitness;
+        assertExecutedCompilerWitness(witness, {
+            files: revision.files, configPath: compiler.configPath, configContentHash: compiler.configContentHash, compilerVersion: compiler.compilerVersion
+        });
+        if (metadata.compilerWitnessHash !== compilerCommandWitnessHash(witness) || !node.contentHashes.includes(compilerCommandWitnessHash(witness)))
+            throw new Error("executed compiler validation witness hash is invalid");
+    }
+}
   if (graph.id !== workspaceTaskConstraintGraphId(graph, hasher)) throw new Error("task constraint graph identity is invalid");
 
   // Verify the decision-bearing indexes have the graph relations their names assert.
@@ -772,6 +790,34 @@ export function buildWorkspaceTaskConstraintGraph(
     bindingsByCheck.set(binding.checkId, bindings);
   }
   for (const check of uniqueSorted(input.validationPlan.checks) as WorkspaceValidationCheckId[]) {
+    for (const binding of (input.executedValidationCommandBindings ?? []).filter(row => row.checkId === check)) {
+    const command = binding.command, witness = command.witness;
+    assertExecutedCompilerWitness(witness, {
+        files: input.revision.files, configPath: program.config.path, configContentHash: program.config.contentHash, compilerVersion: input.observation.analyzer.version
+    });
+    if (witness.kind !== "executed_owner_policy" || command.sourcePath !== program.config.path || command.sourceContentHash !== program.config.contentHash || command.rawCommandHash !== witness.commandHash
+        || command.sourceSelector !== `owner_policy.${witness.policyHash}.commands.${witness.commandIndex}`)
+        throw new Error("executed compiler command binding is inconsistent");
+    const evidenceSpanIds = [
+        registerSpan(program.config.span)
+    ], witnessHash = compilerCommandWitnessHash(witness);
+    const node = addNode({
+        kindId: "scce.task.validation.command.v1", subjectId: command.identity, path: command.sourcePath, evidenceSpanIds,
+        contentHashes: uniqueSorted([
+            command.sourceContentHash, command.rawCommandHash, witnessHash
+        ]), metadata: toJsonValue({
+            bindingId: binding.id, checkId: check, commandId: command.identity,
+            sourceSelector: command.sourceSelector, commandHash: command.rawCommandHash, compilerWitnessHash: witnessHash, compilerWitness: witness
+        })
+    });
+    validationCommandNodeIds.add(node.id);
+    addEdge("scce.rel.task.request_requires_validation.v1", requestNode.id, node.id, evidenceSpanIds);
+    const bindings = bindingsByCheck.get(check) ?? [];
+    bindings.push({
+        id: binding.id, checkId: check, commandId: command.identity
+    });
+    bindingsByCheck.set(check, bindings);
+}
     if (!(bindingsByCheck.get(check)?.length)) addUnresolved("scce.constraint.reason.validation_command_unbound.v1", [requestNode.id, check]);
   }
 

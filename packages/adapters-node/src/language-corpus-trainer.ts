@@ -508,6 +508,9 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
     components.sourceEntityGraph = SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID;
   }
   if (input.exactSourceText) components.exactSourceIdentity = "scce.exact_source_version.v2";
+  if (input.skipNgramPersistence && !(input.persistSource === false && input.persistProfile === false)) {
+    components.sourceArtifactCompilation = "scce.source_artifact_compilation.v1";
+  }
   for (const projection of input.sourceOwnedPatternProjections ?? []) components[`sourceOwned:${projection.patternSchema}`] = projection.componentRecipe;
   return components;
 }
@@ -562,7 +565,7 @@ export async function readCompletedCorpusCheckpoint(input: LanguageCorpusTrainin
   return report && await checkpointPatternProjectionsCurrent(input, report) ? ensureCachedTranscriptArchive(input, report, existing) : undefined;
 }
 
-async function checkpointPatternProjectionsCurrent(input: LanguageCorpusTrainingInput, report: LanguageCorpusTrainingReport): Promise<boolean> {
+export async function checkpointPatternProjectionsCurrent(input: LanguageCorpusTrainingInput, report: LanguageCorpusTrainingReport): Promise<boolean> {
   const retained = await readRetainedOriginalSource(input, false);
   if (retained && (report.originalSourceVersionId !== retained.sourceVersionId || report.sourceContentHash !== retained.contentHash)) throw new CorpusCheckpointConflictError("retained original source differs from the completed publication");
   const creative = report.creativeSurfacePatternProjection;
@@ -575,8 +578,11 @@ async function checkpointPatternProjectionsCurrent(input: LanguageCorpusTraining
   for (const projection of [...projections, ...(creative ? [creative] : [])]) {
     const active = await input.storage.languageMemory.getLanguagePatternProjection(projection);
     if (!active || canonicalStringify(active) !== canonicalStringify(projection)) return false;
-    const rows = await input.storage.languageMemory.listLanguagePatterns({ view: "request_seed", patternIds: projection.patternIds, limit: Math.max(1, projection.patternIds.length) });
-    if (canonicalStringify(rows.map(row => row.id).sort()) !== canonicalStringify([...projection.patternIds].sort())) return false;
+    for (let offset = 0; offset < projection.patternIds.length; offset += 512) {
+      const patternIds = projection.patternIds.slice(offset, offset + 512);
+      const rows = await input.storage.languageMemory.listLanguagePatterns({ view: "request_seed", patternIds, limit: patternIds.length });
+      if (canonicalStringify(rows.map(row => row.id).sort()) !== canonicalStringify([...patternIds].sort())) return false;
+    }
   }
   return true;
 }
@@ -1280,16 +1286,24 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       ? { ...item, patternJson: toJsonValue({ ...jsonRecord(item.patternJson), sourceId: canonicalSource?.sourceId ?? sourceId, sourceVersionId }) } : item);
   let frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
 
+  const auxiliary = await prepareSourceOwnedPatterns({ input, source, originalSource, profile, evidence, informationLabel, ids, hasher, createdAt,
+    reuseOriginalEvidence: retainedOriginalSource !== undefined });
+  evidence.push(...auxiliary.evidence);
+  patterns.push(...auxiliary.patterns.map(pattern => ({ ...pattern, informationLabel })));
+
   if (constructionOnly) patterns = await bindSourceConstructionComponents({ storage: input.storage, patterns,
     source: canonicalSource, profileId: profile.id, evidence: [...evidence, ...constructionPoolEvidence], hasher });
 
-  if (canonicalSource && models.length) {
-    const receipts = models.map(model => jsonRecord(jsonRecord(model.modelJson).sourceCompilation));
-    const chunks = receipts.map(receipt => jsonRecord(receipt.chunk)).sort((left, right) => Number(left.index) - Number(right.index))
+  if (canonicalSource && (models.length || input.skipNgramPersistence && !constructionOnly)) {
+    const artifactsOnly = models.length === 0;
+    const receipts = (artifactsOnly ? compiledBatch.models : models).map(model => jsonRecord(jsonRecord(model.modelJson).sourceCompilation));
+    const chunks = artifactsOnly ? [] : receipts.map(receipt => jsonRecord(receipt.chunk)).sort((left, right) => Number(left.index) - Number(right.index))
       .map(chunk => text.slice(Number(chunk.start), Number(chunk.end)));
     const stamped = stampSourceLanguageCompilation({ owner: { sourceId: canonicalSource.sourceId, sourceVersionId, contentHash: canonicalSource.contentHash },
       profileId: profile.id, sourceSystem, streamId: sourceLanguageTrainingStreamId({ sourceId: canonicalSource.sourceId, sourceVersionId, sourceSystem, hasher }),
-      text, chunks, models, inheritedMetadata: rowMetadata, options: receipts[0]!.options as unknown as Parameters<typeof stampSourceLanguageCompilation>[0]["options"],
+      text, chunks, models, updatedAt: createdAt, inheritedMetadata: rowMetadata,
+      options: { ...receipts[0]!.options as unknown as Parameters<typeof stampSourceLanguageCompilation>[0]["options"],
+        ...(artifactsOnly ? { artifactScope: "artifacts_only" as const } : {}) },
       artifacts: { units, patterns, semanticFrames: frames }, hasher });
     models = stamped.models.map(row => ({ ...row, informationLabel }));
     units = stamped.units.map(row => ({ ...row, informationLabel }));
@@ -1315,11 +1329,6 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     activeImportVersion: typeof activeImportVersionValue === "string" ? activeImportVersionValue : sourceSystemId,
     hasher
   });
-
-  const auxiliary = await prepareSourceOwnedPatterns({ input, source, originalSource, profile, evidence, informationLabel, ids, hasher, createdAt,
-    reuseOriginalEvidence: retainedOriginalSource !== undefined });
-  evidence.push(...auxiliary.evidence);
-  patterns.push(...auxiliary.patterns.map(pattern => ({ ...pattern, informationLabel })));
 
   const learned = events.create({
     episodeId: input.episodeId ?? ids.episodeId(),

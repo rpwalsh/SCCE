@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { assertExecutedCompilerWitness } from "./workspace-compiler-command-binding.js";
 import type { ArtifactId, BuildTestResult, ContentHash, FileArtifact, Hasher, JsonValue, ProgramGraph } from "./types.js";
 import { canonicalStringify, clamp01, createHasher, featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createProgramHydrationContract, hydrationSummary, validateProgramGraphHydration } from "./program-runtime.js";
@@ -201,6 +202,7 @@ export interface TypeScriptCodeActionCompilerContext {
     cwd: string;
     sourcePath: string;
     sourceContentHash: string;
+    witness?: import("./workspace-compiler-command-binding.js").CompilerCommandWitness;
   };
 }
 
@@ -1363,7 +1365,8 @@ function validateTypeScriptCompilerContext(
     args: [...(value.compilerCommand?.args ?? [])].map((arg, index) => requiredRepairString(arg, `TypeScript compiler command argument ${index}`)),
     cwd: requiredRepairString(value.compilerCommand?.cwd, "TypeScript compiler command cwd"),
     sourcePath: requiredRepairString(value.compilerCommand?.sourcePath, "TypeScript compiler command source path"),
-    sourceContentHash: requiredRepairString(value.compilerCommand?.sourceContentHash, "TypeScript compiler command source content hash")
+    sourceContentHash: requiredRepairString(value.compilerCommand?.sourceContentHash, "TypeScript compiler command source content hash"),
+    ...(value.compilerCommand?.witness ? { witness: value.compilerCommand.witness } : {})
   };
   const tsconfigPath = requiredRepairString(value.tsconfigPath, "TypeScript config path");
   const tsconfigContentHash = requiredRepairString(value.tsconfigContentHash, "TypeScript config content hash");
@@ -1380,6 +1383,9 @@ function validateTypeScriptCompilerContext(
   if (!/^sha256:[0-9a-f]{64}$/u.test(context.compilerOptionsHash)) {
     throw new Error("TypeScript compiler-options hash is not canonical SHA-256");
   }
+  if (context.compilerCommand.witness?.kind === "executed_owner_policy") assertExecutedCompilerWitness(context.compilerCommand.witness, {
+    files:program.files.map(file=>({path:file.path,contentHash:String(file.contentHash)})),configPath:context.tsconfigPath,configContentHash:context.tsconfigContentHash,compilerVersion:context.version
+  });
   if (context.configDiagnosticCodes.some(code => !Number.isSafeInteger(code) || code <= 0)) {
     throw new Error("TypeScript code-action compiler context contains an invalid configuration diagnostic");
   }
@@ -1405,7 +1411,7 @@ function validateTypeScriptCompilerContext(
   if (!commandSourceArtifact
     || String(commandSourceArtifact.contentHash) !== compilerCommand.sourceContentHash
     || compilerCommand.sourceContentHash !== `sha256_${hasher.digestHex(commandSourceArtifact.content)}`
-    || compilerCommand.cwd !== commandSourceDirectory) {
+    || compilerCommand.witness?.kind !== "executed_owner_policy" && compilerCommand.cwd !== commandSourceDirectory) {
     throw new Error(`TypeScript code-action compiler command is not bound to an exact ProgramGraph artifact: ${compilerCommand.sourcePath}`);
   }
   const configArtifact = program.files.find(file => file.path === tsconfigPath);
@@ -1729,7 +1735,7 @@ function assertRepairOperationPostconditions(before: FileArtifact | undefined, a
       || !carriesConfigPath
       || !carriesConfigHash
       || compiler.compilerOptionsSource !== "source_observed_tsc_project"
-      || compiler.compilerCommand.cwd !== commandSourceDirectory
+      || compiler.compilerCommand.witness?.kind !== "executed_owner_policy" && compiler.compilerCommand.cwd !== commandSourceDirectory
       || !/^sha256_[0-9a-f]{64}$/u.test(compiler.compilerCommand.sourceContentHash)
       || !exactBaseContract
       || !createClassificationValid

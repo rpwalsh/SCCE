@@ -8,6 +8,8 @@ import {
   createLanguageIdentityRuntime,
   toJsonValue,
   validateBrainManifestContract,
+  validateSourceArtifactOnlyCompilationReceipt,
+  validateSourceCompilationArtifactInventory,
   validationDisposition,
   type BrainLifecycleRecord,
   type BrainManifestContract,
@@ -545,7 +547,8 @@ function isLanguageTrainingReport(value: unknown): value is LanguageCorpusTraini
     && typeof row.sourceSystem === "string" && typeof row.streamUri === "string" && typeof artifacts.languageProfileId === "string"
     && Array.isArray(artifacts.evidenceIds) && artifacts.evidenceIds.every(item => typeof item === "string")
     && Array.isArray(artifacts.ngramModelIds) && artifacts.ngramModelIds.every(item => typeof item === "string")
-    && [row.languageProfiles, row.ngramModels, row.evidence].every(value => typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+    && [row.languageProfiles, row.evidence].every(value => typeof value === "number" && Number.isSafeInteger(value) && value > 0)
+    && typeof row.ngramModels === "number" && Number.isSafeInteger(row.ngramModels) && row.ngramModels >= 0;
 }
 
 /**
@@ -594,7 +597,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     if (normalizeContentHash(item.contentHash) !== normalizeContentHash(report.sourceContentHash) || item.byteLength !== report.sourceByteLength) {
       throw new Error(`source brain report does not match selected source bytes: ${item.sourceVersionId}`);
     }
-    if (report.languageProfiles !== 1 || report.ngramModels < 1 || report.ngramModels !== report.artifacts.ngramModelIds.length
+    if (report.languageProfiles !== 1 || !Number.isSafeInteger(report.ngramModels) || report.ngramModels < 0 || report.ngramModels !== report.artifacts.ngramModelIds.length
       || new Set(report.artifacts.ngramModelIds).size !== report.artifacts.ngramModelIds.length || !report.artifacts.languageProfileId) {
       throw new Error(`source brain input has no persisted language profile/model output: ${item.sourceVersionId}`);
     }
@@ -715,7 +718,29 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     const profile = profileById.get(report.artifacts.languageProfileId);
     return profile && (String(profile.sourceVersionId) === report.sourceVersionId || profile.parentSourceVersionIds?.includes(report.sourceVersionId as SourceVersionId));
   });
+  const artifactOnlyReceiptIds: string[] = [];
+  let artifactOnlyCompilationsPersisted = true;
+  for (const report of reports.filter(report => report.ngramModels === 0)) {
+    try {
+      const version = versions.get(report.sourceVersionId), profileId = report.artifacts.languageProfileId;
+      const profile = profileById.get(profileId), list = input.storage.languageMemory.listSourceCompilationArtifactIds;
+      if (!version || profile?.sourceVersionId !== version.sourceVersionId || !list) throw new Error("missing canonical artifact owner");
+      const receipts = await input.storage.languageMemory.listLanguagePatterns({ profileId, sourceSystem: report.sourceSystem,
+        patternKind: "source_compilation", patternSchemas: ["scce.source_language_compilation_receipt.v1"],
+        limit: 2, maxTotalJsonBytes: 64 * 1024 * 1024, requireComplete: true });
+      if (receipts.length !== 1) throw new Error("ambiguous canonical artifact receipt");
+      const receipt = receipts[0]!, body = objectRecord(receipt.patternJson), compilation = body.compilation;
+      if (receipt.profileId !== profileId || body.schema !== "scce.source_language_compilation_receipt.v1") throw new Error("invalid canonical artifact receipt");
+      const compilationId = validateSourceArtifactOnlyCompilationReceipt({ owner: version, profileId, sourceSystem: report.sourceSystem,
+        compilationReceipt: toJsonValue(compilation), hasher });
+      if (receipt.id !== `source.language.compilation.${compilationId}`) throw new Error("changed canonical artifact receipt identity");
+      await validateSourceCompilationArtifactInventory({ compilation: { compilationId, artifacts: toJsonValue(objectRecord(compilation).artifacts) },
+        profileId, hasher, list: query => list.call(input.storage.languageMemory, query) });
+      artifactOnlyReceiptIds.push(receipt.id);
+    } catch { artifactOnlyCompilationsPersisted = false; }
+  }
   const artifactsPersisted = profileIds.every(id => persistedProfileIds.has(id)) && profilesMatchSourceVersions
+    && artifactOnlyCompilationsPersisted
     && reports.every(report => report.artifacts.ngramModelIds.every(id => modelById.get(id)?.profileId === report.artifacts.languageProfileId));
 
   const identityRuntime = createLanguageIdentityRuntime({
@@ -762,7 +787,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
   const replayManifest = compileBrainReplayManifest({
     sourceSchema: input.sourceSchema,
     sourceManifestHash: input.sourceManifestHash,
-    componentIds: [...sourceVersionIds, ...parentSourceVersionIds, ...parentBindings.map(parent => `${parent.sourceVersionId}:${parent.contentHash}:${parent.byteLength}`), ...trainedSourceVersionIds, ...profileIds, ...evidenceIds, ...ngramModelIds, ...persistedIdentityIds, ...selectedAssignments.map(item => `${item.profileId}->${item.languageId}`)].sort(compare),
+    componentIds: [...sourceVersionIds, ...parentSourceVersionIds, ...parentBindings.map(parent => `${parent.sourceVersionId}:${parent.contentHash}:${parent.byteLength}`), ...trainedSourceVersionIds, ...profileIds, ...evidenceIds, ...ngramModelIds, ...artifactOnlyReceiptIds, ...persistedIdentityIds, ...selectedAssignments.map(item => `${item.profileId}->${item.languageId}`)].sort(compare),
     content,
     configuration: toJsonValue(configuration),
     hasher
@@ -809,7 +834,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     { id: "source.raw_bytes_persisted", passed: sourceBytesVerified, severity: "error" as const, message: "the exact selected source bytes are present under their content-addressed blob identities" },
     { id: "source.raw_version_persisted", passed: rawSourceVersionsPersisted, severity: "error" as const, message: "every selected raw source version is durably bound to its exact byte hash and length" },
     { id: "source.evidence_persisted", passed: sourceVersionsPresent && evidenceOwnedByReportSource, severity: "error" as const, message: "source evidence rows are durable and each trainer report's evidence belongs to that source version", details: toJsonValue({ expected: evidenceIds.length, observed: evidenceOwners.size, evidenceOwnedByReportSource }) },
-    { id: "source.language_artifacts_persisted", passed: artifactsPersisted, severity: "error" as const, message: "all reported language profiles belong to their selected source versions and all n-gram models are durable", details: toJsonValue({ expectedProfiles: profileIds.length, observedProfiles: persistedProfileIds.size, profilesMatchSourceVersions, expectedModels: ngramModelIds.length, observedModels: modelIds.size }) },
+    { id: "source.language_artifacts_persisted", passed: artifactsPersisted, severity: "error" as const, message: "all reported profiles belong to their sources, with durable n-gram models or a complete canonical artifacts-only compilation", details: toJsonValue({ expectedProfiles: profileIds.length, observedProfiles: persistedProfileIds.size, profilesMatchSourceVersions, expectedModels: ngramModelIds.length, observedModels: modelIds.size, artifactOnlyCompilationsPersisted }) },
     { id: "source.language_identity_ready", passed: identityReady, severity: "error" as const, message: "every selected language profile has a persisted assignment to a durable learned identity", details: toJsonValue({ identityCount: persistedIdentities.length, assignedProfileCount: selectedAssignments.length }) },
     { id: "source.no_existing_active_brain", passed: Boolean(existingActive) || (activeBefore.activeImportRunIds.length === 0 && !activeBefore.activeBrainVersion), severity: "error" as const, message: "initial source build did not replace an existing active brain" }
   ];

@@ -22,7 +22,7 @@ import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, 
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
-import { registerWorkspaceActionPolicy, resolveWorkspaceActionContext, type WorkspaceActionPolicy } from "@scce/adapters-node";
+import { registerWorkspaceActionPolicy, registeredWorkspaceActionPolicies, resolveWorkspaceActionContext, type WorkspaceActionPolicy } from "@scce/adapters-node";
 import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 import { compactIngestResult, compactWorkspaceIngestResult } from "./ingestion-response.js";
 import { programResponseReadiness, unsupportedProgramResponseReadiness } from "./program-response-readiness.js";
@@ -446,7 +446,7 @@ async function queryVscodeProjectSummary(context: ApiContext, requestedPath: str
 
 async function queryVscodeWorkspaceStatus(context: ApiContext) {
   const workspace = await context.runtime.storage.workspace.latestWorkspace();
-  return workspace ? { workspace, sources: await context.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: 10_000 }) }
+  return workspace ? { workspace: { ...workspace, actionPolicies: await registeredWorkspaceActionPolicies({ storage: context.runtime.storage, config: context.config }, workspace.id) }, sources: await context.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: 10_000 }) }
     : { workspace: null, sources: [] };
 }
 

@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {afterEach,expect,it} from "vitest";
-import {createClock,createHasher,createIdFactory,sourceLanguageTrainingStreamId,stampSourceLanguageCompilation,toJsonValue,
+import {createClock,createHasher,createIdFactory,persistedKneserNey,sourceLanguageTrainingStreamId,stampSourceLanguageCompilation,toJsonValue,trainKneserNey,
   type InformationLabel} from "@scce/kernel";
 import {validateSourceCompilationReceipt} from "../../../kernel/src/source-language-compilation.js";
 import {canonicalNgramModelId} from "../../../kernel/src/source-language-training-identity.js";
@@ -20,7 +20,7 @@ function producer(variant="a",schema="scce.request_requirement_pattern.v1"){
   const streamId=sourceLanguageTrainingStreamId({...owner,sourceSystem:"fixture",hasher}),options={maxOrder:1,maxCountersPerOrder:64,vocabularyLimit:64,languageOnly:false,retainNgramObservations:false};
   const input={owner,profileId,sourceSystem:"fixture",streamId,text,chunks:[text],options,hasher,inheritedMetadata:toJsonValue(metadata),
     models:[{id:canonicalNgramModelId({streamId,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",languageHint:"und",order:1,hasher}),streamId,languageHint:"und",maxOrder:1,discount:0.5,updatedAt:1000,
-      modelJson:toJsonValue({...metadata,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",model:{order:1,totalUnigramCount:10}})}],
+      modelJson:toJsonValue({...metadata,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",model:persistedKneserNey(trainKneserNey(text,{order:1,discount:0.5,vocabularyLimit:64}))})}],
     artifacts:{units:[{id:"unit.metadata",profileId,sourceVersionId:owner.sourceVersionId,script:"Latin",unitKind:"symbol" as const,text:"\u732b",features:[],competenceVector:[1],alpha:1,evidenceIds:[],metadata:toJsonValue({...metadata,sourceSystem:"fixture"})}],
       patterns:[{id:"pattern.metadata",profileId,patternKind:"semantic_role" as const,support:1,entropy:0,updatedAt:1000,evidenceIds:[],patternJson:toJsonValue({...metadata,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",schema,surface:"opaque",requirementCoefficients:{factual:1},stats:{examples:1}})}],
       semanticFrames:[{id:"frame.metadata",frameJson:toJsonValue({...metadata,profileId,sourceVersionId:owner.sourceVersionId,sourceSystem:"fixture",surface:"opaque"}),embedding:new Array<number>(64).fill(0),evidenceIds:[],alpha:1,createdAt:1000}]}};
@@ -36,11 +36,11 @@ function fixture(){
   adapter.mutateLanguageMemory=async(sql,params=[])=>{
     calls.push({sql,params});const normalizedUnit=sql.includes('INSERT INTO "metadata_fixture"."language_units" AS unit(');
     const name=normalizedUnit?"language_units":/INSERT INTO "metadata_fixture"\."([^"]+)"/u.exec(sql)?.[1];if(!name)throw Error("unexpected mutation");
-    for(const row of JSON.parse(String(params[0])) as Row[]){const prior=table(name).get(String(row.id)),next=cold(row);
+    for(const row of JSON.parse(String(params[0])) as Row[]){const key=String(row.id??row.model_id),prior=table(name).get(key),next=cold(row);
       const column=name==="ngram_models"?"model_json":name==="language_units"?"metadata_json":undefined;
       if(prior&&column){const before=object(prior[column]),after=object(next[column]);
         next[column]=Object.hasOwn(before,SOURCE_ARTIFACT_METADATA_KEY)&&sql.includes("THEN EXCLUDED.")?after:{...before,...after};}
-      table(name).set(String(row.id),next);
+      table(name).set(key,next);
     }return true;
   };
   const mapped=(name:string):Row[]=>[...table(name).values()].map(row=>({...cold(row),updated_at:new Date(Number(row.updated_at_ms??1000)),created_at:new Date(Number(row.created_at_ms??1000)),
@@ -125,7 +125,7 @@ it.each([false,true])("logical unit/model merges retain unknown keys and regener
   const f=fixture(),value=producer();
   if(previousReference)await f.write(value);
   else{
-    await f.adapter.languageMemory.putNgramModels!([{...value.models[0]!,modelJson:toJsonValue({unknown:{keep:"\u732b"}}),informationLabel:label}]);
+    await f.adapter.languageMemory.putNgramModels!([{...value.models[0]!,modelJson:toJsonValue({profileId:value.profileId,model:object(value.models[0]!.modelJson).model,unknown:{keep:"\u732b"}}),informationLabel:label}]);
     await f.adapter.languageMemory.putLanguageUnits!([{...value.units[0]!,metadata:toJsonValue({unknown:{keep:"\u732b"}}),informationLabel:label}]);
   }
   if(previousReference){const model=await f.adapter.languageMemory.listNgramModels({limit:10});await f.adapter.languageMemory.putNgramModels!([{...model[0]!,modelJson:toJsonValue({...object(model[0]!.modelJson),unknown:{keep:"\u732b"}})}]);

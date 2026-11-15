@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
 import { CORPUS_ARCHIVE_KEY_PREFIX, corpusArchiveIdentity, createCanonicalBlobReader, readCanonicalBlob, type CanonicalBlobHost } from "./canonical-evidence-text.js";
-import { encodeCanonicalEvidenceSpanText, hydrateCanonicalEvidenceSpanText, type CanonicalEvidenceSpanSource, type CanonicalEvidenceSpanTextRecord } from "./canonical-evidence-span-text.js";
+import { encodeCanonicalEvidenceSpanText, hydrateCanonicalEvidenceSpanTextBatch, type CanonicalEvidenceSpanSource, type CanonicalEvidenceSpanTextRecord } from "./canonical-evidence-span-text.js";
 import { ExactTransactionWriteCache } from "./exact-transaction-write-cache.js";
 import { resolveRetainedSourceEvidence } from "./retained-source-evidence.js";
 import { readWikipediaArchiveBlob } from "./wikipedia.js";
@@ -57,6 +57,7 @@ import {
   isPreparedPooledLanguageProfileOwnership,
   languageProfileSignature,
   validateSourceLanguageCompilationHeader,
+  validateSourceArtifactOnlyCompilationReceipt,
   validateSourceCompilationModelInventory,
   featureSet,
   anchorSymbolUnits,
@@ -1324,13 +1325,12 @@ async function hydrateEvidenceRows<T extends EvidenceRow>(
   const read = createCanonicalBlobReader(host), restored = new Map<number, { row: T; span: EvidenceSpan }>();
   for (const [sourceVersionId, group] of groups) {
     const owner = sources.get(sourceVersionId)!;
-    let body: Promise<Uint8Array> | undefined;
     const readSource = (hash: string): Promise<Uint8Array> => {
       if (hash !== owner.contentHash) throw new Error("canonical evidence requested another source body");
-      return body ??= read(hash);
+      return read(hash);
     };
-    for (const { row, index } of group) restored.set(index, { row,
-      span: await hydrateCanonicalEvidenceSpanText(rowToCanonicalEvidence(row), owner, readSource) });
+    const spans = await hydrateCanonicalEvidenceSpanTextBatch(group.map(({ row }) => rowToCanonicalEvidence(row)), owner, readSource);
+    for (const [offset, { row, index }] of group.entries()) restored.set(index, { row, span: spans[offset]! });
   }
   return rows.flatMap((_row, index) => restored.has(index) ? [restored.get(index)!] : []);
 }
@@ -5289,6 +5289,7 @@ function* serializedNgramObservationBatches(observations: readonly NgramObservat
 interface CurrentCompilationHeaderRow {
   id: string; stream_id: string;
   profile_id: string; source_system: string; source_id: string; source_version_id: string; content_hash: string; model_metadata: JsonValue; compilation_receipt: JsonValue;
+  artifact_only?: boolean;
 }
 
 interface LanguagePatternOwner { profileId: string; sourceSystem: string | null }
@@ -5368,10 +5369,29 @@ async function currentLanguagePatternCompilations(storage: PostgresStorageAdapte
   for (const alias of ["model", "profile", "version"]) appendInformationAccess(storage, alias, params, where);
   const receiptAccess = storage.informationAccessPredicate("receipt", params.length + 1);
   params.push(...receiptAccess.params);
+  let artifactReceipts = `${storage.table("language_patterns")} receipt`;
+  if (requestedOwners) {
+    params.push(canonicalStringify(requestedOwners));
+    artifactReceipts = `jsonb_to_recordset($${params.length}::jsonb) AS requested_artifact_owner("profileId" text,"sourceSystem" text)
+      CROSS JOIN LATERAL (SELECT receipt.id,receipt.profile_id,receipt.source_system,receipt.pattern_kind,receipt.pattern_json,receipt.information_label,receipt.updated_at FROM ${storage.table("language_patterns")} receipt
+        WHERE receipt.profile_id=requested_artifact_owner."profileId"
+          AND receipt.source_system IS NOT DISTINCT FROM requested_artifact_owner."sourceSystem"
+          AND receipt.pattern_kind='source_compilation'
+          AND receipt.pattern_json->>'schema'='scce.source_language_compilation_receipt.v1'
+          AND receipt.pattern_json->'compilation'->'options'->>'artifactScope'='artifacts_only' OFFSET 0) receipt`;
+  }
+  const artifactWhere = ["receipt.pattern_kind='source_compilation'", "receipt.pattern_json->>'schema'='scce.source_language_compilation_receipt.v1'",
+    "receipt.pattern_json->'compilation'->'options'->>'artifactScope'='artifacts_only'"];
+  if (profileIds) { params.push([...profileIds]); artifactWhere.push(`receipt.profile_id=ANY($${params.length}::text[])`); }
+  if (query?.sourceSystem) { params.push(query.sourceSystem); artifactWhere.push(`receipt.source_system=$${params.length}`); }
+  if (query?.sourceSystems) { params.push([...new Set(query.sourceSystems)]); artifactWhere.push(`receipt.source_system=ANY($${params.length}::text[])`); }
+  if (query?.languageId) { params.push(query.languageId); artifactWhere.push(`(profile.language_id=$${params.length} OR profile.language_id IS NULL)`); }
+  for (const alias of ["receipt", "profile", "version"]) appendInformationAccess(storage, alias, params, artifactWhere);
+  artifactWhere.push(profileSourceOwnershipSql(storage, params, "profile"));
   const rows = await storage.query<CurrentCompilationHeaderRow>(
     `SELECT model.id,model.stream_id,model.profile_id,model.source_system,version.source_id,version.id AS source_version_id,version.content_hash,
        jsonb_build_object('profileId',metadata."profileId",'sourceVersionId',metadata."sourceVersionId",'sourceSystem',metadata."sourceSystem",'sourceCompilation',metadata."sourceCompilation") AS model_metadata,
-       receipt.pattern_json->'compilation' AS compilation_receipt
+       receipt.pattern_json->'compilation' AS compilation_receipt,FALSE AS artifact_only
      FROM ${models}
      JOIN ${storage.table("language_profiles")} profile ON profile.id=model.profile_id
      JOIN ${storage.table("source_versions")} version ON version.id=profile.source_version_id
@@ -5380,18 +5400,36 @@ async function currentLanguagePatternCompilations(storage: PostgresStorageAdapte
        AND receipt.profile_id=model.profile_id AND receipt.source_system=model.source_system AND receipt.pattern_kind='source_compilation'
        AND receipt.pattern_json->>'schema'='scce.source_language_compilation_receipt.v1'
        AND ${receiptAccess.sql}
-     WHERE ${where.join(" AND ")}`, params);
+     WHERE ${where.join(" AND ")}
+     UNION ALL
+     SELECT artifact.id,artifact.compilation->>'parentStreamId' AS stream_id,artifact.profile_id,artifact.source_system,
+       artifact.source_id,artifact.source_version_id,artifact.content_hash,
+       jsonb_build_object('profileId',artifact.profile_id,'sourceVersionId',artifact.source_version_id,'sourceSystem',artifact.source_system,
+         'sourceCompilation',artifact.compilation-'modelInventory') AS model_metadata,artifact.compilation AS compilation_receipt,TRUE AS artifact_only
+     FROM (SELECT DISTINCT ON (receipt.profile_id,receipt.source_system,version.id)
+         receipt.id,receipt.profile_id,receipt.source_system,version.source_id,version.id AS source_version_id,version.content_hash,
+         receipt.pattern_json->'compilation' AS compilation
+       FROM ${artifactReceipts}
+       JOIN ${storage.table("language_profiles")} profile ON profile.id=receipt.profile_id
+       JOIN ${storage.table("source_versions")} version ON version.id=profile.source_version_id
+         AND version.id=receipt.pattern_json->'compilation'->>'sourceVersionId'
+         AND version.source_id=receipt.pattern_json->'compilation'->>'sourceId'
+         AND version.content_hash=receipt.pattern_json->'compilation'->>'contentHash'
+       WHERE ${artifactWhere.join(" AND ")}
+       ORDER BY receipt.profile_id,receipt.source_system,version.id,receipt.updated_at DESC,receipt.id DESC) artifact`, params);
   const hasher = createHasher();
   const groups = new Map<string, { row: CurrentCompilationHeaderRow; rows: CurrentCompilationHeaderRow[]; compilationId: string; valid: boolean }>();
   for (const row of rows) {
-    const key = canonicalStringify([row.profile_id, row.source_system]);
-    const previous = groups.get(key);
     let compilationId = "";
     try {
-      compilationId = validateSourceLanguageCompilationHeader({ owner: { sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId,
+      const validation = { owner: { sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId,
         contentHash: row.content_hash as ContentHash }, profileId: row.profile_id, sourceSystem: row.source_system, modelJson: row.model_metadata,
-        compilationReceipt: row.compilation_receipt, validationPolicy: "read_stored", hasher });
+        compilationReceipt: row.compilation_receipt, validationPolicy: "read_stored" as const, hasher };
+      compilationId = row.artifact_only ? validateSourceArtifactOnlyCompilationReceipt(validation) : validateSourceLanguageCompilationHeader(validation);
+      if (row.artifact_only && row.id !== `source.language.compilation.${compilationId}`) compilationId = "";
     } catch { /* Invalid compiler ownership never authorizes owned artifacts. */ }
+    const key = canonicalStringify(row.artifact_only ? [row.profile_id, row.source_system, "artifacts_only", compilationId] : [row.profile_id, row.source_system]);
+    const previous = groups.get(key);
     const modelRows = previous?.rows ?? [];
     modelRows.push(row);
     groups.set(key, { row, rows: modelRows, compilationId, valid: Boolean(compilationId) && (!previous || previous.valid && previous.compilationId === compilationId) });
@@ -5399,7 +5437,8 @@ async function currentLanguagePatternCompilations(storage: PostgresStorageAdapte
   return [...groups.values()].filter(group => {
     if (!group.valid) return false;
     try {
-      validateSourceCompilationModelInventory(group.row.compilation_receipt, group.rows.map(row => {
+      if (group.row.artifact_only && group.rows.length !== 1) return false;
+      validateSourceCompilationModelInventory(group.row.compilation_receipt, group.rows.filter(row => !row.artifact_only).map(row => {
         const compilation = (row.model_metadata as { sourceCompilation: { chunk: JsonValue; modelDigest: string } }).sourceCompilation;
         return { id: row.id, streamId: row.stream_id, chunk: compilation.chunk, modelDigest: compilation.modelDigest };
       }), hasher);
@@ -7929,7 +7968,8 @@ function createWorkspaceStore(storage: PostgresStorageAdapter): WorkspaceStore {
   return {
     async registerActionPolicy(input) {
       const rows = await storage.query<{ id: string }>(
-        `UPDATE ${storage.table("workspaces")} SET metadata_json=jsonb_set(metadata_json,'{actionPolicies}',COALESCE(metadata_json->'actionPolicies','{}'::jsonb)||jsonb_build_object($3::text,$4::jsonb),true)
+        `UPDATE ${storage.table("workspaces")} SET metadata_json=jsonb_set(jsonb_set(metadata_json,'{actionPolicies}',COALESCE(metadata_json->'actionPolicies','{}'::jsonb)||jsonb_build_object($3::text,$4::jsonb),true),
+          '{actionPolicyRegistrations}',COALESCE(metadata_json->'actionPolicyRegistrations','{}'::jsonb)||jsonb_build_object($3::text,jsonb_build_object('expectedWorkspaceUpdatedAt',$2::bigint)),true)
          WHERE id=$1 AND updated_at=TO_TIMESTAMP($2/1000.0) AND (metadata_json->'actionPolicies'->$3::text IS NULL OR metadata_json->'actionPolicies'->$3::text=$4::jsonb) RETURNING id`,
         [input.workspaceId, input.expectedWorkspaceUpdatedAt, input.policyId, JSON.stringify(input.policy)]
       );
@@ -7940,6 +7980,7 @@ function createWorkspaceStore(storage: PostgresStorageAdapter): WorkspaceStore {
       const rows = await storage.query<{ id: string }>(
         `UPDATE ${storage.table("workspaces")} SET metadata_json=jsonb_set(metadata_json,'{actionPolicyUsage}',COALESCE(metadata_json->'actionPolicyUsage','{}'::jsonb)||jsonb_build_object($4::text,COALESCE((metadata_json#>>ARRAY['actionPolicyUsage',$4::text])::bigint,0)+1),true)
          WHERE id=$1 AND updated_at=TO_TIMESTAMP($2/1000.0) AND (metadata_json->'actionPolicies'->$3::text->>'maxCalls')::bigint=$5
+         AND (metadata_json->'actionPolicyRegistrations'->$3::text->>'expectedWorkspaceUpdatedAt')::bigint=$2
          AND COALESCE((metadata_json#>>ARRAY['actionPolicyUsage',$4::text])::bigint,0)<$5 RETURNING id`,
         [input.workspaceId, input.expectedWorkspaceUpdatedAt, input.policyId, key, input.maxCalls]
       );

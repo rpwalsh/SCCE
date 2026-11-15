@@ -86,25 +86,45 @@ export async function hydrateCanonicalEvidenceSpanText(
   readBlob: CanonicalEvidenceBlobReader,
   limits: CanonicalEvidenceSpanTextLimits = {}
 ): Promise<EvidenceSpan> {
+  return (await hydrateCanonicalEvidenceSpanTextBatch([stored], source, readBlob, limits))[0]!;
+}
+
+/** One read snapshot validates its source once and every requested byte/codepoint boundary in source order. */
+export async function hydrateCanonicalEvidenceSpanTextBatch(
+  stored: readonly CanonicalEvidenceSpanTextRecord[], source: CanonicalEvidenceSpanSource,
+  readBlob: CanonicalEvidenceBlobReader, limits: CanonicalEvidenceSpanTextLimits = {}
+): Promise<EvidenceSpan[]> {
   const { maxSpanBytes, maxSourceBytes } = bounds(limits);
-  validateFields(stored, true, maxSpanBytes);
-  const row = structuredClone(stored), owner = structuredClone(source);
-  if (!owner || owner.sourceId !== row.sourceId || owner.sourceVersionId !== row.sourceVersionId
+  for (const row of stored) validateFields(row, true, maxSpanBytes);
+  const rows = structuredClone(stored), owner = structuredClone(source);
+  if (!rows.length) return [];
+  if (!owner || rows.some(row => owner.sourceId !== row.sourceId || owner.sourceVersionId !== row.sourceVersionId || row.byteEnd > owner.byteLength)
     || typeof owner.contentHash !== "string" || !HASH.test(owner.contentHash)
-    || !integer(owner.byteLength) || owner.byteLength > maxSourceBytes || row.byteEnd > owner.byteLength) {
+    || !integer(owner.byteLength) || owner.byteLength > maxSourceBytes) {
     throw new Error("canonical evidence source ownership or byte bound mismatch");
   }
-  const bytes = await readBlob(owner.contentHash);
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== owner.byteLength || contentHash(bytes) !== owner.contentHash) {
+  const read = await readBlob(owner.contentHash);
+  if (!(read instanceof Uint8Array) || read.byteLength !== owner.byteLength) {
     throw new Error("canonical evidence source bytes failed length/hash verification");
   }
-  const selected = bytes.subarray(row.byteStart, row.byteEnd);
-  if (contentHash(selected) !== row.contentHash) throw new Error("canonical evidence source range failed content identity verification");
-  const text = utf8(selected);
-  if (prefixCodePoints(bytes, row.byteStart) !== row.charStart || codePoints(text) !== row.charEnd - row.charStart) {
-    throw new Error("canonical evidence source character coordinates differ");
+  const bytes = new Uint8Array(read);
+  if (contentHash(bytes) !== owner.contentHash) throw new Error("canonical evidence source bytes failed length/hash verification");
+  const endpoints = [...new Set(rows.flatMap(row => [row.byteStart, row.byteEnd]))].sort((left, right) => left - right);
+  const coordinates = new Map<number, number>();
+  let previousByte = 0, previousPoint = 0;
+  for (const endpoint of endpoints) {
+    try { previousPoint += prefixCodePoints(bytes.subarray(previousByte, endpoint), endpoint - previousByte); }
+    catch { throw new Error("canonical evidence source character coordinates differ"); }
+    coordinates.set(endpoint, previousPoint); previousByte = endpoint;
   }
-  return { ...row, text };
+  return rows.map(row => {
+    const selected = bytes.subarray(row.byteStart, row.byteEnd);
+    if (contentHash(selected) !== row.contentHash) throw new Error("canonical evidence source range failed content identity verification");
+    const text = utf8(selected);
+    if (coordinates.get(row.byteStart) !== row.charStart || coordinates.get(row.byteEnd) !== row.charEnd
+      || codePoints(text) !== row.charEnd - row.charStart) throw new Error("canonical evidence source character coordinates differ");
+    return { ...row, text };
+  });
 }
 
 /** One invocation-owned canonical reader; its existing archive/range validation and bounded parent cache are reused. */

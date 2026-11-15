@@ -15,10 +15,13 @@ it("reserves workspace actions with one revision- and policy-bound conditional u
   const [sql,params]=query.mock.calls[0]!;
   expect(sql).toMatch(/^UPDATE /u);expect(sql).toContain("updated_at=TO_TIMESTAMP($2/1000.0)");expect(sql).toContain("'actionPolicies'->$3::text->>'maxCalls'");expect(sql).toContain("< $5".replace(" ",""));expect(sql).toContain("RETURNING id");
   expect(params).toEqual([input.workspaceId,1200,input.policyId,`${input.policyId}:1200`,2]);
+  expect(sql).toContain("'actionPolicyRegistrations'->$3::text->>'expectedWorkspaceUpdatedAt'");
   query.mockResolvedValue([]);expect(await store.workspace.claimActionCall!(input)).toBe(false);
   query.mockResolvedValue([{id:"workspace.test"}]);
   expect(await store.workspace.registerActionPolicy!({workspaceId:input.workspaceId,expectedWorkspaceUpdatedAt:1200,policyId:input.policyId,policy:{maxCalls:2}})).toBe(true);
   const registration=query.mock.calls.at(-1)![0];expect(registration).toContain("jsonb_set(metadata_json,'{actionPolicies}'");expect(registration).not.toContain("SET metadata_json=$");
+  expect(registration).toContain("'{actionPolicyRegistrations}'");expect(registration).toContain("jsonb_build_object('expectedWorkspaceUpdatedAt',$2::bigint)");
+  expect(registration).toContain("updated_at=TO_TIMESTAMP($2/1000.0)");expect(registration).not.toContain("actionPolicyUsage");
  }finally{await store.close();}
 });
 
@@ -40,7 +43,7 @@ it.skipIf(!process.env.SCCE_LIVE_CONFIG_PATH)("preserves quota and policy identi
    expect(await store.workspace.claimActionCall!({...call,maxCalls:3})).toBe(false);
    expect(await store.workspace.claimActionCall!(call)).toBe(true);
    expect(await store.workspace.claimActionCall!(call)).toBe(false);
-   expect((await store.workspace.getWorkspace(id))?.metadata).toMatchObject({actionPolicies:{[policyId]:{maxCalls:2}},actionPolicyUsage:{[`${policyId}:${updatedAt}`]:2}});
+   expect((await store.workspace.getWorkspace(id))?.metadata).toMatchObject({actionPolicies:{[policyId]:{maxCalls:2}},actionPolicyRegistrations:{[policyId]:{expectedWorkspaceUpdatedAt:updatedAt}},actionPolicyUsage:{[`${policyId}:${updatedAt}`]:2}});
    throw rollback;
   })).rejects.toBe(rollback);
   expect(await store.workspace.getWorkspace(id)).toBeNull();

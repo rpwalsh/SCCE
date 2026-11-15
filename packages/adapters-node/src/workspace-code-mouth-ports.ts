@@ -9,6 +9,7 @@ import type { LearnedCodeProposer, LearnedCodeCorpusAvailability } from "./learn
 import { checkerDiagnostics, createTreeSitterCodeMouthPorts } from "./tree-sitter-code-mouth-ports.js";
 import { runStructuredWorkspaceValidation, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type StructuredWorkspaceValidationEvidence } from "./structured-patch-validation.js";
 import { executeWorkspacePatchTransaction } from "./workspace-patch-transaction.js";
+import { prepareTypeScriptCompilerObservations, finishTypeScriptCompilerObservations, type ExecutedTypeScriptCompilerObservation } from "./typescript-compiler-observation.js";
 
 export interface WorkspaceCodeMouthOptions {
   workspaceRoot: string;
@@ -34,7 +35,7 @@ export function createWorkspaceCodeMouthPorts(options: WorkspaceCodeMouthOptions
   let behavioralFailure: { observationId: string } | undefined;
   const language = codeLanguageForPath(options.targetPath);
   const ports = language === "typescript"
-    ? createTypeScriptCodeMouthPorts(options)
+    ? createTypeScriptCodeMouthPorts({ ...options, ...(options.projectValidation ? { compilerObservations: () => projectVerification?.compilerObservations ?? null } : {}) })
     : language === "c" || language === "cpp" || /\.(m|mm)$/iu.test(options.targetPath)
       ? createClangCodeMouthPorts(options)
       : createTreeSitterCodeMouthPorts(options);
@@ -73,11 +74,14 @@ export function createWorkspaceCodeMouthPorts(options: WorkspaceCodeMouthOptions
 
 export interface WorkspaceApplicationVerification extends CodeMouthVerification {
   projectEvidence?: StructuredWorkspaceValidationEvidence;
+  compilerObservations?: readonly ExecutedTypeScriptCompilerObservation[];
 }
 
 export async function verifyWorkspaceApplication(options: { workspaceRoot: string; projectValidation: NonNullable<WorkspaceCodeMouthOptions["projectValidation"]> }, targetPath = ""): Promise<WorkspaceApplicationVerification> {
   const validation = options.projectValidation!;
+  const compilerBefore = await prepareTypeScriptCompilerObservations(options.workspaceRoot, validation.policy);
   const result = await runStructuredWorkspaceValidation({ workspaceRoot: options.workspaceRoot, ...validation });
+  const compilerObservations = await finishTypeScriptCompilerObservations(options.workspaceRoot, validation.policy, result.evidence, compilerBefore);
   const commands = result.evidence.commands;
   const passed = (command: typeof commands[number]) => command.code === 0 && !command.timedOut && !command.outputLimitExceeded;
   const buildCommands = commands.filter(command => command.checkIds.some(check => check === "compiler" || check === "typecheck"));
@@ -102,6 +106,7 @@ export async function verifyWorkspaceApplication(options: { workspaceRoot: strin
     testsSucceeded: testsExpected ? tests.length > 0 && tests.every(passed) && result.ok : result.ok,
     diagnostics: failures,
     projectEvidence: result.evidence
+    , compilerObservations
   };
 }
 

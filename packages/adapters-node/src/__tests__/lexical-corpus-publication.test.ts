@@ -14,6 +14,8 @@ import { readBoundedLexicalCorpusSource, LexicalCorpusCapacityError } from "../l
 import { ingestUdLexicalCorpus, readUdLexicalGrammar } from "../ud-lexical-corpus.js";
 import { ingestWordnetCorpus } from "../wordnet-corpus.js";
 import { trainLanguageCorpusText, prepareLanguageCorpusTraining } from "../language-corpus-trainer.js";
+import { createSourceArtifactMetadataCodec } from "../source-artifact-metadata.js";
+import { isCanonicalSegmentationArchiveSchema, validateSourceCompilationReceipt, validateSourceCompilationArtifactInventory } from "../../../kernel/src/source-language-compilation.js";
 
 const label: InformationLabel = { tenantId: "lexical.tests", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" };
 const hasher = createHasher(), hash = (bytes: Uint8Array | string) => `sha256_${hasher.digestHex(bytes)}`;
@@ -73,6 +75,51 @@ function fixture() {
   return { storage, state: () => state, events: base.events };
 }
 function udInput(storage: ReturnType<typeof fixture>["storage"]) { return { storage, text: conllu, sourceUri: "fixture://annotations/ud", lexiconId: "ud.fixture", language: "fixture", license: "test", informationLabel: label, maxSourceBytes: 65536, updatedAt: 1 }; }
+
+it.each(["ud", "wordnet"])("publishes %s artifacts through the production metadata codec with a truthful empty ngram inventory", async format => {
+  const f = fixture(), units: import("@scce/kernel").LanguageUnitRecord[] = [], frames: import("@scce/kernel").SemanticFrameRecord[] = [],
+    logical: unknown[] = [], physical: Array<{ value: unknown; profileId?: string; sourceVersionId?: string; informationLabel: InformationLabel }> = [];
+  const codec = () => createSourceArtifactMetadataCodec({ table: name => `"codec"."${name}"`,
+    requireWritableInformationLabel: value => { if (!value) throw Error("fixture requires an explicit information label"); return value; },
+    informationAccessPredicate: () => ({ sql: "TRUE", params: [] }),
+    query: async <T>(_sql: string, params: unknown[] = []): Promise<T[]> => [...f.state().patterns.values()].flatMap(row => {
+      const root = row.patternJson as Record<string, unknown>, compilation = root.compilation as Record<string, string> | undefined;
+      const profile = f.state().profiles.get(row.profileId), owner = compilation?.sourceVersionId ? f.state().sources.get(compilation.sourceVersionId) : undefined;
+      return (params[0] as string[]).includes(row.id) && row.patternKind === "source_compilation" && profile && owner
+        && profile.sourceVersionId === owner.sourceVersionId && compilation!.sourceId === owner.sourceId && compilation!.contentHash === owner.contentHash
+        ? [{ id: row.id, profile_id: row.profileId, pattern_json: structuredClone(root), information_label: row.informationLabel } as T] : [];
+    }) });
+  f.storage.languageMemory.putLanguageUnit = async unit => {
+    const input = { artifactFamily: "language_unit" as const, value: unit.metadata, profileId: unit.profileId, sourceVersionId: unit.sourceVersionId, informationLabel: label };
+    const [encoded] = await codec().encodeMany([input]);
+    physical.push({ ...input, value: JSON.parse(JSON.stringify(encoded)) }); logical.push(unit.metadata); units.push(unit);
+  };
+  f.storage.languageMemory.putSemanticFrame = async frame => {
+    const input = { value: frame.frameJson, informationLabel: label }, [encoded] = await codec().encodeMany([input]);
+    physical.push({ ...input, value: JSON.parse(JSON.stringify(encoded)) }); logical.push(frame.frameJson); frames.push(frame);
+  };
+  const result = format === "ud" ? await ingestUdLexicalCorpus(udInput(f.storage)) : await ingestWordnetCorpus({ storage: f.storage, text: wordnet,
+    sourceUri: "fixture://codec/wordnet", informationLabel: label, maxSourceBytes: 65536, updatedAt: 1 });
+  expect(units.length).toBeGreaterThan(0);
+  expect(await codec().decodeMany(physical)).toEqual(logical);
+  const receipts = [...f.state().patterns.values()].filter(row => (row.patternJson as { schema?: string }).schema === "scce.source_language_compilation_receipt.v1");
+  expect(receipts).toHaveLength(1);
+  const compilation = (receipts[0]!.patternJson as Record<string, import("@scce/kernel").JsonValue>).compilation!;
+  expect(compilation).toMatchObject({ chunkCount: 0, modelInventory: [], sourceVersionId: result.sourceVersionId, options: { artifactScope: "artifacts_only" } });
+  expect(() => validateSourceCompilationReceipt(compilation, [], hasher)).not.toThrow();
+  await validateSourceCompilationArtifactInventory({ compilation: compilation as unknown as Parameters<typeof validateSourceCompilationArtifactInventory>[0]["compilation"],
+    profileId: result.profileId, hasher, list: async ({ family, afterId, limit }) => {
+    const ids = (family === "units" ? units.map(row => row.id) : family === "patterns" ? [...f.state().patterns.values()].filter(row => row.patternKind !== "source_compilation"
+      && !isCanonicalSegmentationArchiveSchema((row.patternJson as { schema?: string }).schema)).map(row => row.id) : frames.map(row => row.id))
+      .filter(id => afterId === undefined || id > afterId).sort();
+    expect(ids, family).toHaveLength(Number(((compilation as Record<string, unknown>).artifacts as Record<string, { count: number }>)[family]!.count));
+    return ids.slice(0, limit);
+  } });
+  const events = f.events.length;
+  expect(format === "ud" ? await ingestUdLexicalCorpus(udInput(f.storage)) : await ingestWordnetCorpus({ storage: f.storage, text: wordnet,
+    sourceUri: "fixture://codec/wordnet", informationLabel: label, maxSourceBytes: 65536, updatedAt: 1 })).toEqual(result);
+  expect(f.events).toHaveLength(events); expect(f.state().models.size).toBe(0);
+});
 
 it("counts every UD occurrence while retaining a witness for each distinct surface, feature set and dependency", () => {
   const parsed = readUdLexicalGrammar(conllu), row = parsed.patterns[0]!;

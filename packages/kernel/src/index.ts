@@ -370,7 +370,7 @@ export * from "./learning-review.js";
 
 export { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
 
-export { isCanonicalSegmentationArchiveSchema, stampSourceLanguageCompilation, validateSourceLanguageCompilationHeader, validateSourceCompilationModelInventory } from "./source-language-compilation.js";
+export { isCanonicalSegmentationArchiveSchema, stampSourceLanguageCompilation, validateSourceLanguageCompilationHeader, validateSourceArtifactOnlyCompilationReceipt, validateSourceCompilationModelInventory, validateSourceCompilationArtifactInventory } from "./source-language-compilation.js";
 export * from "./language-pattern-publication.js";
 export * from "./source-reference-bindings.js";
 export { CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "./language-training-recipe.js";
@@ -407,3 +407,5 @@ export * from "./construction-source-example-storage.js";
 export * from "./semantic-induction-factors.js";
 export * from "./construction-source-decision-storage.js";
 export * from "./source-learning-application.js";
+
+export * from "./workspace-compiler-command-binding.js";
