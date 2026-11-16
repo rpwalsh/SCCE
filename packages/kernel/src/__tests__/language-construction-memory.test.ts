@@ -17,7 +17,7 @@ import {
 import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, peekLanguageMemoryConstructionState, scopeLanguageMemoryStateToCluster, scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
 import { estimateRetainedProgramBytes } from "../retained-program-size.js";
 import { normalizeConstructionRoleGeometry, restoreConstructionRoleGeometry } from "../construction-role-geometry-storage.js";
-import { createClock, createHasher } from "../primitives.js";
+import { canonicalStringify, createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import type { LanguageProfileCluster } from "../language.js";
 import type { LanguagePatternRecord } from "../storage.js";
@@ -170,6 +170,56 @@ describe("durable language-construction memory", () => {
     expect(compiled.bundle.sourceExamples.every(example => example.antecedent?.surface === request)).toBe(true);
     currentText = text.replace("🤖", "🦉");
     expect(hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [observed], hasher }).bundles).toEqual([]);
+  });
+
+  it("preserves zero-role literal/null-role programs without requiring any role offset table", () => {
+    const evidence = evidenceSpan("source.zero-offsets", "\ud83e\uddea\u7532\u3002", 17);
+    const input = { bindingId: "relation.zero-offsets", profileId: "profile.zero-offsets", evidence: [evidence], hasher, updatedAt: 91_500,
+      observations: [{ sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id), surfaceStartCodePoint: 0,
+        surfaceEndCodePoint: 3, roles: [], nullRoles: [{ slotIndex: 0 }] }] };
+    const compiled = compileLanguageConstructionPattern(input);
+    expect(compiled.status).toBe("compiled");
+    expect(hasher.digestHex(canonicalStringify(compiled))).toBe("75febf93499305fe9624880b796b0d2e6cd762585788b7802d9f922ca725446d");
+    if (compiled.status !== "compiled") throw Error("zero-role fixture failed compilation");
+    const hydrated = hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [evidence], hasher });
+    expect(hasher.digestHex(canonicalStringify(hydrated))).toBe("0d3fe867f90fea0e51c9e9d33dd0382d11bce966c381716f42506a183c0fab09");
+    expect(hydrated.bundles[0]!.sourceExamples[0]!.roles).toEqual([]);
+    expect(hydrated.bundles[0]!.sourceExamples[0]!.nullRoles).toHaveLength(1);
+    const compact = compileLanguageConstructionPattern({ ...input, storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE });
+    expect(compact.status).toBe("compiled");
+    if (compact.status !== "compiled") throw Error("zero-role compact fixture failed compilation");
+    expect(hydrateLanguageConstructionPatterns({ patterns: [compact.pattern], evidence: [evidence], hasher })).toEqual(hydrated);
+  });
+
+  it.each([
+    ["\ud83e\uddea\u7532 f9 \ud83e\udd89\u4e59\u3002", "e58ab1a61a63771ab29b21c1317475c16559d5be4e0c380d218064c103686444", "1ad0775914e976620c75ca93f0fd7f50d99a089227ebd83e3442d093b30fd98d"],
+    ["\u00e9\u7532 f9 \ud83e\uddea\u4e59\u3002", "9bfd3bab11f107cb02e94893480521d1e17f5db3b8287c00f917f77924b04b18", "b4c74949bdbb30c00e76dd1d98a0aa79a4993e9814c228b2b5766eb3f21224e4"]
+  ])("preserves pre-change complete compile/hydrate identities for Unicode offset geometry: %s", (surface, compiledDigest, hydratedDigest) => {
+    const evidence = evidenceSpan("source.offsets", "\u0000\n" + surface, 17);
+    const observation = { sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
+      surfaceStartCodePoint: 2, surfaceEndCodePoint: 11,
+      roles: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: 2 }, { slotIndex: 1, startCodePoint: 3, endCodePoint: 5 }, { slotIndex: 2, startCodePoint: 6, endCodePoint: 8 }] };
+    const input = { bindingId: "relation.offsets", profileId: "profile.offsets", evidence: [evidence], observations: [observation], hasher, updatedAt: 91_500 };
+    const compiled = compileLanguageConstructionPattern(input);
+    expect(compiled.status).toBe("compiled");
+    expect(hasher.digestHex(canonicalStringify(compiled))).toBe(compiledDigest); // Captured from the pre-change emitted compiler.
+    if (compiled.status !== "compiled") throw Error("Unicode fixture failed compilation");
+    const hydrated = hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [evidence], hasher });
+    expect(hasher.digestHex(canonicalStringify(hydrated))).toBe(hydratedDigest);
+    expect(hydrated.bundles[0]!.sourceExamples[0]!.roles.map(role => role.surface)).toEqual([[...surface].slice(0, 2).join(""), "f9", [...surface].slice(6, 8).join("")]);
+    const compact = compileLanguageConstructionPattern({ ...input, storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE });
+    expect(compact.status).toBe("compiled");
+    if (compact.status !== "compiled") throw Error("compact Unicode fixture failed compilation");
+    expect(hydrateLanguageConstructionPatterns({ patterns: [compact.pattern], evidence: [evidence], hasher })).toEqual(hydrated);
+    for (const [start, end] of [[-1, 2], [0, 0], [0, 10], [0, Number.NaN], [0, Number.POSITIVE_INFINITY], [0.5, 2]]) {
+      const damaged = { ...observation, roles: [{ ...observation.roles[0]!, startCodePoint: start!, endCodePoint: end! }, ...observation.roles.slice(1)] };
+      expect(compileLanguageConstructionPattern({ ...input, observations: [damaged] }).status).toBe("rejected");
+    }
+    const changed = { ...evidence, text: evidence.text.replace("\u7532", "\u4e19") };
+    expect(hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [changed], hasher }).bundles).toEqual([]);
+    const decomposed = evidenceSpan("source.offsets.nfd", "\u0000\n" + surface.normalize("NFD"), 17);
+    if (decomposed.text !== evidence.text) expect(compileLanguageConstructionPattern({ ...input, evidence: [decomposed], observations: [{ ...observation,
+      sourceVersionId: String(decomposed.sourceVersionId), evidenceId: String(decomposed.id), surfaceEndCodePoint: [...decomposed.text].length }] }).status).toBe("rejected");
   });
 
   it("restarts from an exact evidence-bound Unicode/code-point record", () => {

@@ -1015,6 +1015,7 @@ function prepareObservation(input: {
     ...(antecedent ? { antecedent } : {}),
     ...(supervision ? { contextualQaSupervision: { ...supervision } } : {})
   };
+  const surfaceUtf16Offsets = durableRoles.length ? utf16OffsetsForCodePoints(surfacePoints) : [];
   const aligned: AlignedSurfaceExample = {
     id,
     profileKey: input.profileId,
@@ -1023,8 +1024,8 @@ function prepareObservation(input: {
     roleSpans: durableRoles.map(role => ({
       roleId: role.roleId,
       occurrenceId: role.occurrenceId,
-      start: utf16OffsetAtCodePoint(surface, role.startCodePoint),
-      end: utf16OffsetAtCodePoint(surface, role.endCodePoint),
+      start: utf16OffsetAtCodePoint(surfaceUtf16Offsets, role.startCodePoint),
+      end: utf16OffsetAtCodePoint(surfaceUtf16Offsets, role.endCodePoint),
       surface: role.surface,
       evidenceIds: [evidenceId]
     })),
@@ -1540,15 +1541,17 @@ function observationFromPersistedExample(
     } } : {})
   };
   const points = evidenceTextPoints(evidence, ownership.evidencePointsById);
-  const surface = points.slice(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint).join("");
+  const surfacePoints = points.slice(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint);
+  const surface = surfacePoints.join("");
+  const surfaceUtf16Offsets = roles.length ? utf16OffsetsForCodePoints(surfacePoints) : [];
   if (surface !== stringOf(raw.surface)
     || stringOf(raw.surfaceDigest) === undefined
     || roles.some((role, index) => {
       const roleRaw = arrayOfRecords(raw.roles)[index];
       return !roleRaw
         || surface.slice(
-          utf16OffsetAtCodePoint(surface, role.startCodePoint),
-          utf16OffsetAtCodePoint(surface, role.endCodePoint)
+          utf16OffsetAtCodePoint(surfaceUtf16Offsets, role.startCodePoint),
+          utf16OffsetAtCodePoint(surfaceUtf16Offsets, role.endCodePoint)
         ) !== stringOf(roleRaw.surface);
     })) {
     return { code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.coordinates, evidenceId, sourceVersionId };
@@ -1613,8 +1616,18 @@ function rangesOverlap(start: number, end: number, otherStart: number, otherEnd:
   return start < otherEnd && end > otherStart;
 }
 
-function utf16OffsetAtCodePoint(surface: string, offset: number): number {
-  return [...surface].slice(0, offset).join("").length;
+function utf16OffsetsForCodePoints(points: readonly string[]): number[] {
+  const offsets = [0];
+  for (const point of points) offsets.push(offsets[offsets.length - 1]! + point.length);
+  return offsets;
+}
+
+function utf16OffsetAtCodePoint(offsets: readonly number[], offset: number): number {
+  const exact = offsets[offset];
+  if (exact !== undefined) return exact;
+  // Preserve Array.slice's ToIntegerOrInfinity/clamping before the existing range checks reject invalid geometry.
+  const end = Math.trunc(offset) || 0, length = offsets.length - 1;
+  return offsets[end < 0 ? Math.max(length + end, 0) : Math.min(end, length)]!;
 }
 
 function codePointOffsetAtUtf16(surface: string, offset: number): number {
