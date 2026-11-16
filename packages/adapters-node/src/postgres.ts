@@ -6558,8 +6558,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         const selectedEvidenceAccess = lexical ? storage.informationAccessPredicate("selected_evidence", params.length + 1) : undefined;
         if (selectedEvidenceAccess) params.push(...selectedEvidenceAccess.params);
         const projectGuard = patternSchema === "scce.source_owned_test_contract.v1" ? projectContractDependencyEligibilitySql(storage, params) : undefined;
+        // This materialized lexical header identity is query-local; persisted projection keys stay unchanged.
         projectionSets.push(`${projectionSet}_headers AS MATERIALIZED (
-          SELECT active_projection.key AS projection_key,active_projection.value_json->>'profileId' AS profile_id,
+          SELECT ${lexical ? "row_number() OVER ()" : "active_projection.key"} AS projection_key,active_projection.value_json->>'profileId' AS profile_id,
             active_projection.value_json->>'sourceSystem' AS source_system,
             active_projection.value_json->>'patternSchema' AS pattern_schema,
             active_projection.value_json->>'componentRecipe' AS projection_recipe,
@@ -6596,7 +6597,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             WHEN jsonb_typeof(scoped.source_dependencies)='array' THEN scoped.source_dependencies ELSE '[]'::jsonb END)
             WITH ORDINALITY dependency(value,ordinality)
         )` : ""}, ${projectionSet}_dependencies AS MATERIALIZED (
-          SELECT ${lexical ? "" : "DISTINCT "}scoped.projection_key,requested.evidence_id${lexical ? ",dependency.ordinality AS dependency_ordinal" : ""} FROM ${projectionSet}_headers scoped
+          SELECT ${lexical ? "" : "DISTINCT "}scoped.projection_key,requested.evidence_id${lexical ? ' COLLATE "C" AS evidence_id,dependency.ordinality AS dependency_ordinal' : ""} FROM ${projectionSet}_headers scoped
             CROSS JOIN LATERAL jsonb_array_elements(CASE
             WHEN jsonb_typeof(scoped.source_dependencies)='array' THEN scoped.source_dependencies ELSE '[]'::jsonb END) WITH ORDINALITY dependency(value,ordinality)
             CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(dependency.value->'evidenceIds')='array'
@@ -6630,7 +6631,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           WHERE member.scoped_id IS NOT NULL AND member.pattern_id IS NOT NULL
         ), ${projectionSet}_requested AS MATERIALIZED (
           SELECT selected.projection_key,selected.profile_id,selected.source_system,selected.pattern_schema,selected.projection_recipe,
-            selected.source_version_id,selected.pattern_id,requested.evidence_id${lexical ? ",selected_evidence.source_id AS evidence_source_id,selected_evidence.source_version_id AS evidence_source_version_id" : ""} FROM ${projectionSet}_selected selected
+            selected.source_version_id,selected.pattern_id,requested.evidence_id${lexical ? ' COLLATE "C" AS evidence_id,selected_evidence.source_id AS evidence_source_id,selected_evidence.source_version_id AS evidence_source_version_id' : ""} FROM ${projectionSet}_selected selected
           CROSS JOIN LATERAL unnest(selected.evidence_ids) requested(evidence_id)
           ${lexical ? `LEFT JOIN LATERAL (
             SELECT selected_evidence.source_id,selected_evidence.source_version_id FROM ${storage.table("evidence_spans")} selected_evidence

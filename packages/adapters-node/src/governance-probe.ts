@@ -6,9 +6,12 @@ import path from "node:path";
 import {
   canonicalStringify,
   createAuditEngine,
+  createHasher,
   governanceObservation,
+  hashEvent,
   toJsonValue,
   type EventLedgerGovernanceObservation,
+  type EventChainVerification,
   type GovernanceControlObservation,
   type GovernanceObservation,
   type GovernanceProbe,
@@ -75,6 +78,11 @@ export interface PostgresGovernanceEventRow {
   ledger_hash: string;
 }
 
+type PostgresGovernanceEventHeader = Omit<PostgresGovernanceEventRow, "payload_json"> & { payload_stored_bytes?: string | number };
+const GOVERNANCE_PAYLOAD_PAGE_STORED_BYTES = 2 * 1024 * 1024;
+const GOVERNANCE_PAYLOAD_PAGE_ROWS = 64;
+const yieldEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
+
 interface ManifestRead {
   configuredPath?: string;
   value?: JsonValue;
@@ -96,10 +104,17 @@ export function createNodePostgresGovernanceProbe(
     return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 100_000) : 4096;
   })();
   let ledgerCheckpoint: EventLedgerCheckpointState | undefined;
+  let eventLedgerObservation: Promise<EventLedgerGovernanceObservation> | undefined;
+  const observeEventLedgerOnce = (): Promise<EventLedgerGovernanceObservation> => {
+    if (!eventLedgerObservation) {
+      eventLedgerObservation = observeEventLedgerIncremental().finally(() => { eventLedgerObservation = undefined; });
+    }
+    return eventLedgerObservation;
+  };
   return {
     async observe(input): Promise<GovernanceObservation> {
       const [eventLedger, rollback, killSwitch, leases, immutability] = await Promise.all([
-        observeEventLedgerIncremental(),
+        observeEventLedgerOnce(),
         observeRollback(workspaceRoot, environment),
         observeKillSwitch(workspaceRoot, environment),
         observeLeases(workspaceRoot, environment, input.now),
@@ -156,15 +171,15 @@ export function createNodePostgresGovernanceProbe(
         };
       }
 
-      const suffixRows = await options.storage.query<PostgresGovernanceEventRow>(
-        `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
+      const suffixRows = await options.storage.query<PostgresGovernanceEventHeader>(
+        `SELECT id, episode_id, type_id, t, parents, hash, ledger_hash, pg_column_size(payload_json) AS payload_stored_bytes
            FROM ${options.storage.table("events")}
           WHERE (t, id) > ($2, $1)
           ORDER BY t ASC, id ASC`,
         [ledgerCheckpoint.anchorEventId, Number(anchor.t)]
       );
 
-      const eventChain = createAuditEngine().verifyEventChain(suffixRows.map(rowToEvent));
+      const eventChain = await verifyPayloadPages(suffixRows);
       const brokenLedgerHashes: Array<{ eventId: string; expected: string; observed: string }> = [];
       let runningLedgerHash = ledgerCheckpoint.anchorLedgerHash;
       for (const row of suffixRows) {
@@ -248,8 +263,8 @@ export function createNodePostgresGovernanceProbe(
     if (fullScanOnStart) return await fullyVerifyEventLedgerAndCheckpoint();
 
     const windowSize = boundedFirstScanEvents;
-    const tailRows = await options.storage.query<PostgresGovernanceEventRow>(
-      `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
+    const tailRows = await options.storage.query<PostgresGovernanceEventHeader>(
+      `SELECT id, episode_id, type_id, t, parents, hash, ledger_hash, pg_column_size(payload_json) AS payload_stored_bytes
          FROM ${options.storage.table("events")}
         ORDER BY t DESC, id DESC
         LIMIT ${windowSize}`
@@ -270,7 +285,7 @@ export function createNodePostgresGovernanceProbe(
     // The window's own hash chain must hold. Its first row's ledger hash
     // cannot be checked without its predecessor, so continuity is verified
     // from the second row on; the event hashes are all checkable.
-    const eventChain = createAuditEngine().verifyEventChain(rows.map(rowToEvent));
+    const eventChain = await verifyPayloadPages(rows);
     const brokenLedgerHashes: Array<{ eventId: string; expected: string; observed: string }> = [];
     for (let index = 1; index < rows.length; index++) {
       const previous = rows[index - 1]!;
@@ -309,6 +324,62 @@ export function createNodePostgresGovernanceProbe(
         wholeHistoryAssurance: "scce db audit"
       })
     };
+  }
+
+  /**
+   * Verify the entire selected window without buffering its payloads together.
+   * Headers retain the complete parent/hash set before any page is read, so a
+   * parent on another page has the same meaning as in the original full read.
+   * The byte target only chooses transport pages: even an oversized event is
+   * read and checked. Nothing is sampled or omitted from the proof window.
+   */
+  async function verifyPayloadPages(headers: readonly PostgresGovernanceEventHeader[]): Promise<EventChainVerification> {
+    const byId = new Map(headers.map(row => [row.id, row]));
+    if (byId.size !== headers.length) throw new Error("duplicate event header in governance window");
+    const verification: EventChainVerification = {
+      ok: true, events: headers.length, firstEventId: headers[0]?.id as never, lastEventId: headers.at(-1)?.id as never,
+      brokenHashes: [], missingParents: [], timeViolations: [], typeHistogram: {}
+    };
+    let previousT = -Infinity;
+    for (const header of headers) {
+      verification.typeHistogram[header.type_id] = (verification.typeHistogram[header.type_id] ?? 0) + 1;
+      for (const parentId of header.parents) if (!byId.has(parentId)) verification.missingParents.push({ eventId: header.id as never, parentId: parentId as never });
+      const currentT = Number(header.t);
+      if (currentT < previousT) verification.timeViolations.push({ eventId: header.id as never, previousT, currentT });
+      previousT = Math.max(previousT, currentT);
+    }
+    const hasher = createHasher();
+    for (let offset = 0; offset < headers.length;) {
+      let end = offset, storedBytes = 0;
+      while (end < headers.length && end - offset < GOVERNANCE_PAYLOAD_PAGE_ROWS) {
+        const bytes = Math.max(0, Number(headers[end]!.payload_stored_bytes ?? 0));
+        if (end > offset && storedBytes + bytes > GOVERNANCE_PAYLOAD_PAGE_STORED_BYTES) break;
+        storedBytes += bytes; end++;
+      }
+      const page = headers.slice(offset, end), requestedIds = page.map(row => row.id);
+      const bodies = await options.storage.query<PostgresGovernanceEventRow>(
+        `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
+           FROM ${options.storage.table("events")} WHERE id=ANY($1::text[])`, [requestedIds]
+      );
+      const bodyById = new Map(bodies.map(row => [row.id, row]));
+      if (bodyById.size !== page.length || bodies.length !== page.length) throw new Error("governance payload page is missing or contains unexpected events");
+      for (const header of page) {
+        const row = bodyById.get(header.id);
+        if (!row || row.episode_id !== header.episode_id || row.type_id !== header.type_id || Number(row.t) !== Number(header.t)
+          || row.hash !== header.hash || row.ledger_hash !== header.ledger_hash || canonicalStringify(row.parents) !== canonicalStringify(header.parents)) {
+          throw new Error("governance event changed between its header and payload read");
+        }
+        const event = rowToEvent(row), parentHashes = header.parents.map(parentId => byId.get(parentId)?.hash ?? "");
+        const expected = hashEvent(event, parentHashes, hasher);
+        if (row.hash !== expected) verification.brokenHashes.push({ eventId: event.id, expected, observed: row.hash });
+        // A deferred audit still shares the server event loop. Yield after each
+        // complete hash rather than synchronously canonicalizing the window.
+        await yieldEventLoop();
+      }
+      offset = end;
+    }
+    verification.ok = verification.brokenHashes.length === 0 && verification.missingParents.length === 0 && verification.timeViolations.length === 0;
+    return verification;
   }
 
   async function fullyVerifyEventLedgerAndCheckpoint(): Promise<EventLedgerGovernanceObservation> {

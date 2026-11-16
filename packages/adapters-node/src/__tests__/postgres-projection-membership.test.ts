@@ -54,7 +54,9 @@ function membershipSql(sql: string, qa: boolean, scoped = false, customEvidence 
   const start = sql.indexOf(`${name}_headers AS MATERIALIZED`), open = sql.indexOf("(", start), headerEnd = closingParenthesis(sql, open);
   const finalStart = sql.indexOf(`${name} AS MATERIALIZED`, headerEnd), end = closingParenthesis(sql, sql.indexOf("(", finalStart));
   const header = `SELECT * FROM jsonb_to_recordset($1::jsonb) AS header(projection_key text,profile_id text,source_system text,pattern_schema text,projection_recipe text,source_version_id text,pattern_ids jsonb,source_dependencies jsonb)`;
-  const production = `${name}_headers AS MATERIALIZED (${header})${sql.slice(headerEnd + 1, end + 1)}`.replaceAll('"fixture"."language_patterns"', "pattern_rows").replaceAll('"fixture"."evidence_spans"','evidence_rows');
+  const selectedHeader = sql.slice(open + 1, headerEnd).includes("row_number() OVER () AS projection_key")
+    ? header.replace("SELECT * FROM", "SELECT row_number() OVER () AS projection_key,profile_id,source_system,pattern_schema,projection_recipe,source_version_id,pattern_ids,source_dependencies FROM") : header;
+  const production = `${name}_headers AS MATERIALIZED (${selectedHeader})${sql.slice(headerEnd + 1, end + 1)}`.replaceAll('"fixture"."language_patterns"', "pattern_rows").replaceAll('"fixture"."evidence_spans"','evidence_rows');
   const rows = `pattern_rows AS MATERIALIZED (SELECT * FROM jsonb_to_recordset($2::jsonb) AS pattern(id text,profile_id text,source_system text,pattern_schema text,component_recipe text,owned_source_version_id text,pattern_kind text,evidence_ids text[],information_label jsonb)),pattern_headers AS MATERIALIZED (SELECT id FROM pattern_rows${scoped ? " WHERE id=ANY($3::text[])" : ""})`;
   const selected = `SELECT DISTINCT pattern_id FROM ${qa ? `${name}_eligible` : name} ORDER BY pattern_id`;
   const legacy = `SELECT DISTINCT pattern.id AS pattern_id FROM ${name}_headers header
@@ -68,7 +70,8 @@ function membershipSql(sql: string, qa: boolean, scoped = false, customEvidence 
     :`SELECT DISTINCT requested.evidence_id AS id,dependency.value->>'sourceId' AS source_id,dependency.value->>'sourceVersionId' AS source_version_id,'promoted'::text AS status,${literal(JSON.stringify(label))}::jsonb AS information_label
       FROM jsonb_to_recordset($1::jsonb) header(source_dependencies jsonb) CROSS JOIN LATERAL jsonb_array_elements(header.source_dependencies) dependency(value)
       CROSS JOIN LATERAL jsonb_array_elements_text(dependency.value->'evidenceIds') requested(evidence_id)`;
-  return { next: `WITH ${rows},evidence_rows AS MATERIALIZED (${evidence}),${production} ${selected}`, legacy: `WITH ${rows},${name}_headers AS MATERIALIZED (${header}) ${legacy}` };
+  return { next: `WITH ${rows},evidence_rows AS MATERIALIZED (${evidence}),${production} ${selected}`, legacy: `WITH ${rows},${name}_headers AS MATERIALIZED (${header}) ${legacy}`,
+    headerIdentities: `WITH ${rows},evidence_rows AS MATERIALIZED (${evidence}),${production} SELECT projection_key,pg_typeof(projection_key)::text AS key_type FROM ${name}_headers ORDER BY projection_key` };
 }
 interface ExplainNode { "Node Type": string; "Join Type"?: string; "Subplan Name"?: string; "CTE Name"?: string; "Actual Loops"?: number; "Actual Rows"?: number; "Function Name"?: string; Plans?: ExplainNode[]; }
 function explainNodes(node: ExplainNode): ExplainNode[] { return [node, ...(node.Plans ?? []).flatMap(explainNodes)]; }
@@ -102,7 +105,8 @@ it("keeps exact scoped/ACL getter gates while checking one distinct evidence rel
 it.each([LEXICAL_SENSE_SCHEMA, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA])("retains per-header membership for %s before row admission", async schema => {
   const sql = await listingQuery(schema);
   expect(sql).not.toContain("evidence_ids <@");
-  expect(sql).toContain("active_projection.key AS projection_key");
+  expect(sql).toContain(schema === LEXICAL_SENSE_SCHEMA ? "row_number() OVER () AS projection_key" : "active_projection.key AS projection_key");
+  expect(sql.match(/COLLATE "C" AS evidence_id/gu) ?? []).toHaveLength(schema === LEXICAL_SENSE_SCHEMA ? 2 : 0);
   expect(sql).toContain("allowed.projection_key=requested.projection_key AND allowed.evidence_id=requested.evidence_id");
   expect(sql).toContain("HAVING bool_and(allowed_id IS NOT NULL)");
   expect(sql).toContain("_members AS MATERIALIZED");
@@ -234,7 +238,7 @@ describe.skipIf(!configPath)("read-only PostgreSQL production membership fragmen
       expect(rows.map(row => row.id), failure).toEqual(failure === "none" ? ["pattern"] : []);
     }
   });
-  const cases = ["duplicates", "missing", "unrelated", "empty-allowed", "empty-member", "null-member", "wrong-owner", "wrong-profile", "wrong-system", "wrong-schema", "wrong-recipe", "wrong-kind", "split-headers", "wrong-inventory"];
+  const cases = ["duplicates", "opaque-evidence", "different-opaque-evidence", "missing", "unrelated", "empty-allowed", "empty-member", "null-member", "wrong-owner", "wrong-profile", "wrong-system", "wrong-schema", "wrong-recipe", "wrong-kind", "split-headers", "wrong-inventory"];
   it.each([false, true])("matches exact legacy membership with a complete set join in production fragment (QA=%s)", async qa => {
     const schema = qa ? LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA : LEXICAL_SENSE_SCHEMA, recipe = qa ? CONTEXTUAL_QA_CONSTRUCTION_RECIPE : LEXICAL_SENSE_RECIPE;
     const sql = membershipSql(await listingQuery(schema), qa);
@@ -243,6 +247,8 @@ describe.skipIf(!configPath)("read-only PostgreSQL production membership fragmen
         projection_recipe: recipe, source_version_id: "version", pattern_ids: ["pattern"], source_dependencies: [{ sourceId:'source.raw',sourceVersionId:'raw.version',evidenceIds: ["a", "a", "b"] }] }];
       const patterns = [{ id: "pattern", profile_id: "profile", source_system: headers[0]!.source_system, pattern_schema: schema, component_recipe: recipe,
         owned_source_version_id: "version", pattern_kind: "semantic_role", evidence_ids: ["a", "a", "b"] as Array<string | null>, information_label: label }];
+      if (kind === "opaque-evidence") { headers[0]!.source_dependencies[0]!.evidenceIds = ["é", "e\u0301", "Ω::🤖", "A", "a"]; patterns[0]!.evidence_ids = [...headers[0]!.source_dependencies[0]!.evidenceIds]; }
+      if (kind === "different-opaque-evidence") { headers[0]!.source_dependencies[0]!.evidenceIds = ["é"]; patterns[0]!.evidence_ids = ["e\u0301"]; }
       if (kind === "missing") headers[0]!.source_dependencies[0]!.evidenceIds = ["a"];
       if (kind === "unrelated") patterns[0]!.evidence_ids = ["foreign"];
       if (kind === "empty-allowed") headers[0]!.source_dependencies = [];
@@ -259,7 +265,12 @@ describe.skipIf(!configPath)("read-only PostgreSQL production membership fragmen
       const params = [JSON.stringify(headers), JSON.stringify(patterns)];
       const before = (await client.query(sql.legacy, params)).rows, after = (await client.query(sql.next, params)).rows;
       expect(after, kind).toEqual(before);
-      expect(after.map(row => row.pattern_id), kind).toEqual(kind === "duplicates" ? ["pattern"] : []);
+      expect(after.map(row => row.pattern_id), kind).toEqual(kind === "duplicates" || kind === "opaque-evidence" ? ["pattern"] : []);
+      if (kind === "split-headers") {
+        const identities = (await client.query(sql.headerIdentities, params)).rows;
+        expect(identities.map(row => row.key_type)).toEqual(qa ? ["text", "text"] : ["bigint", "bigint"]);
+        expect(identities.map(row => row.projection_key)).toEqual(qa ? ["header-a", "header-b"] : ["1", "2"]);
+      }
     }
     const allowed = Array.from({ length: 4096 }, (_, index) => `evidence.${index}`);
     const headers = [{ projection_key: "large", profile_id: "profile", source_system: qa ? "dialogue" : "workspace", pattern_schema: schema,
