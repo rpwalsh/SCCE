@@ -187,6 +187,7 @@ export function checkerDiagnostics(
   locationContext?: { readonly stageRoot: string; readonly workspaceRoot: string }
 ): ProgramDiagnostic[] {
   const out: ProgramDiagnostic[] = [];
+  const runtimeFrames: ProgramDiagnostic[] = [];
   const text = `${result.stdout}\n${result.stderr}`;
   const lines = text.split(/\r?\n/u);
   for (const [index, line] of lines.entries()) {
@@ -209,6 +210,7 @@ export function checkerDiagnostics(
         confidence: 0.9,
         confidenceStatus: "compiler-observation-identity-not-patch-success-probability"
       });
+      runtimeFrames.push(out[out.length - 1]!);
       continue;
     }
     const quoted = QUOTED_PATH_DIAGNOSTIC.exec(trimmed);
@@ -272,7 +274,9 @@ export function checkerDiagnostics(
       confidence: 1
     });
   }
-  return out;
+  // Recognized runtime frames carry native positions. Generic reporter summaries from the
+  // same failed command must not manufacture extra source paths; retain every real frame.
+  return runtimeFrames.length ? runtimeFrames : out;
 }
 
 function checkerReportedPath(value: string): string | undefined {

@@ -6,6 +6,7 @@ import {codeLanguageForPath} from "./code-request.js";
 import type {ScceStorage,WorkspaceSourceFileRecord} from "./storage.js";
 import type {InformationAccessContext,EvidenceSpan,InformationLabel,JsonValue,SourceVersion} from "./types.js";
 export const SOURCE_OWNED_CONTRACT_COMPILER_RECIPE="scce.source_owned_contract_snapshot_compiler.v3";
+export const PYTHON_SOURCE_TEST_COMPONENT_RECIPE="scce.python_source_test_contract_compiler.v2";
 export const WORKSPACE_CONTRACT_PROJECTION_SCHEMA="scce.workspace.source_contract_projection.v1";
 export interface WorkspaceContractOwner {readonly path:string;readonly sourceId:string;readonly sourceVersionId:string;readonly contentHash:string;readonly namespace:string;readonly byteLength:number;readonly evidenceIds:readonly string[];readonly informationLabel:InformationLabel;readonly lineage?:WorkspaceSourceLineage}
 export interface WorkspaceSourceLineage {
@@ -22,7 +23,8 @@ export interface WorkspaceContractReceipt {readonly schema:typeof WORKSPACE_CONT
 export interface WorkspaceContractProjection {readonly schema:typeof WORKSPACE_CONTRACT_PROJECTION_SCHEMA;readonly workspaceId:string;readonly componentRecipe:string;readonly complete:boolean;readonly owners:readonly WorkspaceContractOwner[];readonly contracts:readonly JsonValue[];readonly informationLabel:InformationLabel}
 export function workspaceContractComponentRecipe(input:{readonly complete:boolean;readonly records:readonly {readonly path:string;readonly contentHash?:string;readonly sourceVersionId?:string;readonly ingestionStatus:string}[];readonly owners:readonly WorkspaceContractOwner[]}):string {
  const files=input.records.map(row=>[row.path,row.contentHash,row.sourceVersionId,row.ingestionStatus==="missing"]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
- return `${SOURCE_OWNED_CONTRACT_COMPILER_RECIPE}:${createHasher().digestHex(canonicalStringify({complete:input.complete,files,owners:input.owners}))}`;
+ const pythonTests=input.records.some(row=>codeLanguageForPath(row.path)==="python")?{pythonSourceTests:PYTHON_SOURCE_TEST_COMPONENT_RECIPE}:{};
+ return `${SOURCE_OWNED_CONTRACT_COMPILER_RECIPE}:${createHasher().digestHex(canonicalStringify({complete:input.complete,files,owners:input.owners,...pythonTests}))}`;
 }
 export function workspaceContractOwnerIsCurrent(value:WorkspaceContractOwner,current:WorkspaceContractOwner):boolean {
  return canonicalStringify(value)===canonicalStringify(current);

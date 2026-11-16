@@ -4,7 +4,8 @@ import { canonicalStringify, createHasher } from "./primitives.js";
 import { nativeProgramType } from "./native-program-types.js";
 import type { JsonValue } from "./types.js";
 
-export type ProgramNativeLiteral = { readonly kind: "value"; readonly value: JsonValue; readonly nativeNumberKind?: "integer" | "float"; readonly nativeNegativeZero?: true }
+export interface ProgramNativePythonContainerShape { readonly kind: "tuple" | "list"; readonly items: readonly (ProgramNativePythonContainerShape | null)[] }
+export type ProgramNativeLiteral = { readonly kind: "value"; readonly value: JsonValue; readonly nativeNumberKind?: "integer" | "float"; readonly nativeNegativeZero?: true; readonly nativePythonShape?: ProgramNativePythonContainerShape }
   | { readonly kind: "none" } | { readonly kind: "some"; readonly value: ProgramNativeLiteral };
 export function nativeLiteralJson(value: ProgramNativeLiteral): JsonValue {
   return value.kind === "none" ? null : value.kind === "some" ? nativeLiteralJson(value.value) : value.value;
@@ -21,13 +22,30 @@ export function ownedNativeLiteral(value: unknown, expected: JsonValue): Program
         if(row.nativeNegativeZero!==undefined && (row.nativeNegativeZero!==true || row.nativeNumberKind!=="float" || parsed!==0)) return undefined;
         if (row.nativeNumberKind !== undefined && (typeof parsed !== "number" || !["integer", "float"].includes(String(row.nativeNumberKind)))) return undefined;
         if (row.nativeNumberKind === "integer" && !Number.isSafeInteger(parsed)) return undefined;
-        return { kind: "value", value: parsed, ...(row.nativeNumberKind === "integer" || row.nativeNumberKind === "float" ? { nativeNumberKind: row.nativeNumberKind } : {}),...(row.nativeNegativeZero===true?{nativeNegativeZero:true as const}:{}) };
+        const pythonShape = row.nativePythonShape === undefined ? undefined : readPythonShape(row.nativePythonShape, parsed);
+        if (row.nativePythonShape !== undefined && !pythonShape) return undefined;
+        return { kind: "value", value: parsed, ...(row.nativeNumberKind === "integer" || row.nativeNumberKind === "float" ? { nativeNumberKind: row.nativeNumberKind } : {}),...(row.nativeNegativeZero===true?{nativeNegativeZero:true as const}:{}), ...(pythonShape ? { nativePythonShape: pythonShape } : {}) };
       } catch { return undefined; }
     }
     return undefined;
   };
   const literal = read(value);
   return literal && canonicalStringify(nativeLiteralJson(literal)) === canonicalStringify(expected) ? literal : undefined;
+}
+function readPythonShape(value: unknown, literal: JsonValue): ProgramNativePythonContainerShape | undefined {
+  const row = record(value);
+  if (!Array.isArray(literal) || row.kind !== "tuple" && row.kind !== "list" || !Array.isArray(row.items) || row.items.length !== literal.length
+    || Object.keys(row).some(key => key !== "kind" && key !== "items")) return undefined;
+  const items: Array<ProgramNativePythonContainerShape | null> = [];
+  for (let index = 0; index < literal.length; index++) {
+    if (Array.isArray(literal[index])) { const child = readPythonShape(row.items[index], literal[index]!); if (!child) return undefined; items.push(child); }
+    else { if (row.items[index] !== null) return undefined; items.push(null); }
+  }
+  return { kind: row.kind, items };
+}
+export function nativeLiteralHasPythonTuple(value: ProgramNativeLiteral | undefined): boolean {
+  const tuple = (shape: ProgramNativePythonContainerShape): boolean => shape.kind === "tuple" || shape.items.some(item => item !== null && tuple(item));
+  return value?.kind === "value" && value.nativePythonShape !== undefined && tuple(value.nativePythonShape);
 }
 function finiteJson(value:unknown):value is JsonValue {
   if(value===null || typeof value==="string" || typeof value==="boolean") return true;

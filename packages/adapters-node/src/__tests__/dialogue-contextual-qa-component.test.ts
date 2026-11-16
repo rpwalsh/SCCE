@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import { createScceKernel, createClock, createHasher, createIdFactory, contextualQaRequestMatches, verifyContextualQaConstruction, toJsonValue,
+import { createScceKernel, createClock, createHasher, createIdFactory, contextualQaRequestMatches, verifyContextualQaConstruction, toJsonValue, canonicalStringify,
   CONTEXTUAL_QA_CONSTRUCTION_RECIPE, LANGUAGE_IDENTITY_DISCOVERY_RECIPE, LANGUAGE_IDENTITY_SCHEMA,
   type EvidenceSpan, type IngestionCheckpoint, type LanguageIdentityRecord, type LanguagePatternRecord, type TranscriptTurn,
   type ContextualQaRequestForm } from "@scce/kernel";
@@ -94,6 +94,23 @@ async function fixture(source = corpus()) {
   return { root, storage, evidence, hasher, checkpoints, train, kernel };
 }
 
+it("binds the full measured identity digest while retaining a stricter source output label", async () => {
+  const f = await fixture();
+  const identity = { ...(await f.storage.languageIdentities!.listIdentities())[0]!,
+    informationLabel: { ...label, exportClass: "confidential" as const, mergePolicy: "same_owner" as const } };
+  f.storage.languageIdentities!.listIdentities = async () => [identity];
+  expect((await f.train()).contextualQaConstructions).toMatchObject({ pairs: 4, qualifiedFamilies: 1, patternsPersisted: 1 });
+  const qa = (await f.storage.languageMemory.listLanguagePatterns()).find(row => jsonRecord(row.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE)!;
+  expect(qa.informationLabel).toEqual(label);
+  const ownership = jsonRecord(jsonRecord(qa.patternJson).contextualQaOwnership);
+  expect(ownership.languageIdentityId).toBe(identity.id);
+  const members = ownership.members as Array<{ profileId: string; languageIdentityDigest: string }>;
+  expect(members.length).toBeGreaterThan(0);
+  for (const member of members) expect(member.languageIdentityDigest).toBe(f.hasher.digestHex(canonicalStringify({
+    schema: "scce.contextual_qa_language_identity_assignment.v1", profileId: member.profileId, languageIdentityId: identity.id, identity })));
+  expect((await f.train()).contextualQaConstructions?.unchanged).toBe(true);
+});
+
 it("normal source training publishes contextual roles, cold hydrates and answers a fresh raw direct source through kernel.turn", async () => {
   const f = await fixture(), trained = await f.train();
   expect(trained.contextualQaConstructions).toMatchObject({ pairs: 4, qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false });
@@ -105,7 +122,8 @@ it("normal source training publishes contextual roles, cold hydrates and answers
   const read = vi.spyOn(f.storage.evidence, "searchEvidence"), put = vi.spyOn(f.storage.ingestion, "put");
   expect((await f.train()).contextualQaConstructions?.unchanged).toBe(true);
   expect(put).not.toHaveBeenCalled();
-  expect(read).not.toHaveBeenCalled();
+  // Request-edit establishes its exact retained owner before checking its separate component cache.
+  expect(read.mock.calls).toEqual([[{ sourceVersionId: f.evidence[0]!.sourceVersionId, status: "promoted", limit: [...corpus().text].length + 1 }]]);
   const kernel = f.kernel();
   await kernel.ingest({ uri: "fixture://new-current-fact", content: "\u65b0\u6e2f\ud83e\udded \ua66e 907.", mediaType: "text/plain", namespace: "workspace", informationLabel: label,
     sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
@@ -285,7 +303,8 @@ it.each([CONTEXTUAL_QA_CONSTRUCTION_RECIPE, "kernel.dialogue_contextual_qa.compi
   vi.clearAllMocks();
   const read = vi.spyOn(f.storage.evidence, "searchEvidence");
   expect((await f.train()).contextualQaConstructions).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT, unchanged: true });
-  expect(trainBody).not.toHaveBeenCalled(); expect(acquire).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
+  expect(trainBody).not.toHaveBeenCalled(); expect(acquire).not.toHaveBeenCalled();
+  expect(read.mock.calls).toEqual([[{ sourceVersionId: owner.sourceVersionId, status: "promoted", limit: [...corpus().text].length + 1 }]]);
   expect(publish).not.toHaveBeenCalled(); expect(put).not.toHaveBeenCalled(); expect(f.checkpoints.size).toBe(checkpointCount);
 });
 

@@ -7,7 +7,7 @@ import { createClock, createHasher, createIdFactory, createLanguageAcquisitionEn
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { persistDialogueRequestEditComponent } from "../dialogue-request-edit-component.js";
 const label = { tenantId: "fixture", principals: ["owner"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const };
-it("publishes a current cross-source common-compiler family with chunk witnesses and whole-owner dependencies", async () => {
+it.each([false, true])("publishes a current cross-source family with exact witnesses and measured catalogue flow (stricter output=%s)", async stricterOutput => {
   const hasher = createHasher(), clock = createClock({ fixedTime: 1_000, stepMs: 1 }), ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "edit-publication" });
   const language = createLanguageAcquisitionEngine({ idFactory: ids }), evidence: EvidenceSpan[] = [], fixture = storageFixtureForEvaluation({ evidence, clockNow: clock.now });
   const checkpoints = new Map<string, import("@scce/kernel").IngestionCheckpoint>();
@@ -32,7 +32,8 @@ it("publishes a current cross-source common-compiler family with chunk witnesses
     status: "family_measured" as const, uncertainty: [], observedSymbols: [] };
   const identity: LanguageIdentityRecord = { schema: LANGUAGE_IDENTITY_SCHEMA, id: "identity.fixture", script: "script.fixture",
     directions: [{ direction: "unknown", count: 3 }], closedClass: [], families: [{ family: "dialogue", count: 3, evidence: measured }],
-    corpusRoles: [], profileCount: 3, evidence: measured, membershipCut: 0, createdAt: 1, informationLabel: label,
+    corpusRoles: [], profileCount: 3, evidence: measured, membershipCut: 0, createdAt: 1,
+    informationLabel: stricterOutput ? { ...label, exportClass: "confidential", mergePolicy: "same_owner" } : label,
     discoveryRecipe: LANGUAGE_IDENTITY_DISCOVERY_RECIPE };
   fixture.storage.languageIdentities = { listProfileLanguages: async query => (query?.profileIds ?? []).map(profileId => ({ profileId, languageId: identity.id })),
     listIdentities: async () => [identity] } as typeof fixture.storage.languageIdentities;
@@ -43,6 +44,7 @@ it("publishes a current cross-source common-compiler family with chunk witnesses
   expect(result.patternsPersisted).toBe(1);
   const patterns = await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: [SOURCE_REQUEST_EDIT_SCHEMA] });
   expect(patterns).toHaveLength(1);
+  expect(patterns[0]!.informationLabel).toEqual(label);
   const primary = sources.find(source => source.profile.id === patterns[0]!.profileId)!;
   const owner = evidence.find(span => String(span.sourceVersionId) === primary.sourceVersionId)!;
   const projection = await fixture.storage.languageMemory.getLanguagePatternProjection!({ profileId: primary.profile.id,

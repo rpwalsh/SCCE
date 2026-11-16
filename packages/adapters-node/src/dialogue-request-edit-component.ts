@@ -1,10 +1,11 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { acquireSourceRequestEditPrograms, canonicalStringify, createHasher, toJsonValue,
-  SOURCE_REQUEST_EDIT_SCHEMA, SOURCE_REQUEST_EDIT_RECIPE, LANGUAGE_IDENTITY_SCHEMA,
+  SOURCE_REQUEST_EDIT_SCHEMA, SOURCE_REQUEST_EDIT_RECIPE,
   type ConversationalConstructionDocument, type InformationLabel, type LanguagePatternProjection,
   type ScceStorage, type SourceVersionId, type TranscriptTurn } from "@scce/kernel";
 import { corpusSourceVersionIdFor } from "./language-corpus-trainer.js";
+import { dialogueIdentityAllowsInformationFlow } from "./dialogue-language-identity.js";
 import { runDialogueRequestEditComponent } from "./dialogue-conversational-checkpoint.js";
 
 export interface DialogueRequestEditReport { schema: "scce.dialogue_request_edit_report.v1"; pairs: number; patternsPersisted: number;
@@ -25,8 +26,7 @@ export async function persistDialogueRequestEditComponent(input: { storage: Scce
     if (owners.length !== 1) throw Error("Source request edits require one exact current source profile");
     const profile = owners[0]!, assigned = assignments.filter(row => row.profileId === profile.id);
     const identity = assigned.length === 1 ? identities.find(row => row.id === assigned[0]!.languageId) : undefined;
-    const verified = identity?.schema === LANGUAGE_IDENTITY_SCHEMA && identity.evidence && identity.evidence.status !== "source_observed"
-      && canonicalStringify(identity.informationLabel) === canonicalStringify(input.informationLabel);
+    const verified = identity !== undefined && dialogueIdentityAllowsInformationFlow(identity, input.informationLabel);
     const spans = (await input.storage.evidence.searchEvidence({ sourceVersionId: source.sourceVersionId as SourceVersionId,
       status: "promoted", limit: [...source.text].length + 1 })).map(row => row.span);
     if (!spans.length || spans.some(span => String(span.sourceVersionId) !== source.sourceVersionId

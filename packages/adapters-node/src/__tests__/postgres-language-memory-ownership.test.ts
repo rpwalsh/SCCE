@@ -26,7 +26,7 @@ describe("Postgres language-memory ownership queries", () => {
     await adapter.languageMemory.listLanguagePatterns({ ...options, profileIds: ["profile.owned"], sourceSystem: "oss_code",
       languageId: "language.owned", formalLanguage: "typescript", parameterCount: 0, limit: 12 });
     const sql = calls.at(-1)!.sql;
-    const headers = sql.slice(sql.indexOf("pattern_headers AS MATERIALIZED ("), sql.indexOf("candidate_pool AS MATERIALIZED ("));
+    const headers = sql.slice(sql.indexOf("pattern_headers AS MATERIALIZED ("), sql.indexOf("active_projection_ids_0_headers AS MATERIALIZED ("));
     expect(headers).not.toContain("jsonb_to_record");
     for (const field of ["pattern_schema", "component_recipe", "source_compilation_id", "owned_source_version_id", "pattern_language", "has_source_compilation", "has_source_version"]) {
       expect(headers).toContain(`pattern.${field}`);
@@ -46,7 +46,9 @@ describe("Postgres language-memory ownership queries", () => {
       expect(sql).toContain(`admitted.${field}`);
     }
     expect(sql).toContain("information_label,pattern_schema,pattern_language,source_system FROM");
-    expect(sql).not.toContain("JOIN pattern_headers");
+    const hydration = sql.slice(sql.indexOf("scoped_patterns AS MATERIALIZED ("), sql.indexOf("ranked_request_patterns AS ("));
+    expect(hydration).not.toContain("JOIN pattern_headers");
+    expect(sql).toContain("FULL JOIN pattern_headers candidate ON candidate.id=member.pattern_id");
     expect(sql.indexOf('JOIN "fixture"."language_patterns" pattern ON pattern.id=admitted.id')).toBeGreaterThan(sql.indexOf("admitted AS ("));
     expect(sql).toContain("WHERE scoped.pattern_schema='scce.request_requirement_pattern.v1'");
     expect(sql).toContain("WHERE pattern_schema IS DISTINCT FROM 'scce.request_requirement_pattern.v1'");

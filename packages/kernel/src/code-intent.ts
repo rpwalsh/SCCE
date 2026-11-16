@@ -3,7 +3,7 @@
 import { codeIdentifierTokens, codeSurfaceTokens } from "./code-surface.js";
 import { codeLanguageForPath, type CodeRequestSignal } from "./code-request.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
-import { ownedNativeArguments, ownedNativeCallableAbi, ownedNativeLiteral, type ProgramNativeCallableAbi } from "./program-native-abi.js";
+import { nativeLiteralHasPythonTuple, ownedNativeArguments, ownedNativeCallableAbi, ownedNativeLiteral, type ProgramNativeCallableAbi } from "./program-native-abi.js";
 import type { EvidenceSpan, JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
 import {ownedProjectContractClosure,type SourceOwnedProjectContractClosure} from "./source-owned-project-contract.js";
 
@@ -181,8 +181,15 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
         || !validSpan(row.inputSpan) || !validSpan(row.expectedSpan) || !validSpan(row.assertionSpan)) continue;
       if (row.nativeAbi !== undefined && !ownedNativeCallableAbi(row.nativeAbi, { targetSymbolId: body.targetSymbolId, callableName: body.targetName,
         sourcePath: body.sourcePath, sourceHash: body.sourceHash, sourceVersionId: body.sourceVersionId, languageId: String(body.formalLanguage) })) return empty;
-      if (row.nativeExpected !== undefined && (body.formalLanguage !== "rust" && body.formalLanguage !== "go" || !ownedNativeLiteral(row.nativeExpected, row.expectedResult))) return empty;
-      if (row.nativeArguments !== undefined && !ownedNativeArguments(row.nativeArguments, row.arguments)) return empty;
+      if (row.nativeExpected !== undefined) {
+        const literal = ownedNativeLiteral(row.nativeExpected, row.expectedResult);
+        if (!literal || (body.formalLanguage === "python" ? !nativeLiteralHasPythonTuple(literal)
+          : body.formalLanguage !== "rust" && body.formalLanguage !== "go" || literal.kind === "value" && literal.nativePythonShape !== undefined)) return empty;
+      }
+      if (row.nativeArguments !== undefined) {
+        const literals = ownedNativeArguments(row.nativeArguments, row.arguments);
+        if (!literals || literals.some(literal => body.formalLanguage === "python" ? literal.kind !== "value" : literal.kind === "value" && literal.nativePythonShape !== undefined)) return empty;
+      }
       if (row.nativeResultProjection !== undefined && (body.formalLanguage !== "go" || row.nativeResultProjection !== "dereference")) return empty;
       cases.push({ ...row, sourceHash: body.sourceHash, sourcePath: body.sourcePath, sourceVersionId: body.sourceVersionId,
         targetName: body.targetName, targetSymbolId: body.targetSymbolId, repositoryFamily: body.repositoryFamily,projectClosure:projectClosure?toJsonValue(projectClosure):null });

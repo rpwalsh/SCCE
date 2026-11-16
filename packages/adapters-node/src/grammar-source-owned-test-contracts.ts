@@ -5,7 +5,7 @@ import path from "node:path";
 import type Parser from "web-tree-sitter";
 import { withRepositorySyntaxTree } from "./tree-sitter-syntax.js";
 import type { SourceOwnedInvocation, SourceOwnedTestCase } from "./source-owned-test-contracts.js";
-import { nativeCallableAbiId, nativeMapStateParameter, nativeTypeEvidenceId, type ProgramNativeCallableAbi, type ProgramNativeTypeEvidence, type ProgramNativeLiteral, type JsonValue } from "@scce/kernel";
+import { nativeCallableAbiId, nativeMapStateParameter, nativeTypeEvidenceId, nativeLiteralHasPythonTuple, type ProgramNativePythonContainerShape, type ProgramNativeCallableAbi, type ProgramNativeTypeEvidence, type ProgramNativeLiteral, type JsonValue } from "@scce/kernel";
 
 type Node = Parser.SyntaxNode;
 type Language = "python" | "go" | "rust";
@@ -28,7 +28,7 @@ export async function grammarSourceOwnedTestCases(files: readonly GrammarContrac
   const invalidRustTraces = new Set<Step[]>();
   for (const file of files) {
     if (hash(file.text).replace(/^sha256:/u, "") !== file.sourceHash.replace(/^sha256[:_]/u, "")) continue;
-    const item = await withRepositorySyntaxTree({ fileId: file.path, languageId: file.languageId, text: file.text }, root => parseFile(file, root));
+    const item = await withRepositorySyntaxTree({ fileId: file.path, languageId: file.languageId, text: file.text }, root => parseFile(file, root, snapshot));
     if (item) parsed.push(item);
   }
   // A native type spelling is not a builtin witness when its lexical scope rebinds it.
@@ -77,7 +77,7 @@ export async function grammarSourceOwnedTestCases(files: readonly GrammarContrac
         sourceHash: owner.file.sourceHash, sourceVersionId: owner.file.sourceVersionId, arguments: step.call.arguments,
         inputSpan: span(item.file.text, step.call.inputStart, step.call.inputEnd), callSpan: span(item.file.text, step.call.start, step.call.end),
         ...(nativeAbi ? { nativeAbi } : {}) };
-      if (owner.file.languageId === "go" || owner.file.languageId === "rust") Object.assign(invocation, { nativeArguments: step.call.nativeArguments });
+      if (owner.file.languageId === "go" || owner.file.languageId === "rust" || step.call.nativeArguments.some(nativeLiteralHasPythonTuple)) Object.assign(invocation, { nativeArguments: step.call.nativeArguments });
       invocations.push(invocation);
       if (!step.assertion) continue;
       out.push({ ...invocation, languageId: owner.file.languageId, bindingResolverId: "scce.source_contract.grammar_static_scope.v1", testPath: item.file.path, testHash: item.file.sourceHash,
@@ -174,7 +174,7 @@ function pythonModulePaths(testPath: string, module: string): string[] {
   return [`${resolved}.py`, path.posix.join(resolved, "__init__.py")];
 }
 
-function parseFile(file: GrammarContractFile, root: Node): Parsed | undefined {
+function parseFile(file: GrammarContractFile, root: Node, snapshot: {knownPaths:readonly string[];complete:boolean}): Parsed | undefined {
   if (root.hasError) return undefined;
   const item: Parsed = { file, declarations: [], imports: [], bindings: new Map(), traces: [], rustScopes: new Map(), rustMacros: [] };
   const bind = (name: string) => item.bindings.set(name, (item.bindings.get(name) ?? 0) + 1);
@@ -261,7 +261,52 @@ function parseFile(file: GrammarContractFile, root: Node): Parsed | undefined {
     }
     if (valid && trace.some(step => step.assertion)) item.traces.push(trace);
   }
+  if (file.languageId === "python") pythonUnitTestTraces(item, root, snapshot);
   return item;
+}
+
+/** Direct, unshadowed standard TestCase methods retain their original assertion coordinates. */
+function pythonUnitTestTraces(item: Parsed, root: Node, snapshot: {knownPaths:readonly string[];complete:boolean}): void {
+  if (!snapshot.complete) return;
+  const shadowPaths = new Set(["unittest.py", "unittest/__init__.py", path.posix.join(path.posix.dirname(item.file.path), "unittest.py"), path.posix.join(path.posix.dirname(item.file.path), "unittest/__init__.py")]);
+  if (snapshot.knownPaths.some(name => shadowPaths.has(name))) return;
+  const imports = item.imports.filter(binding => binding.module === "unittest" && item.bindings.get(binding.local) === 1);
+  const modules = new Set(imports.filter(binding => binding.name === undefined).map(binding => binding.local));
+  const bases = new Set(imports.filter(binding => binding.name === "TestCase").map(binding => binding.local));
+  if (descendants(root).some(node => {
+    if (node.type !== "call") return false;
+    for (let parent = node.parent; parent; parent = parent.parent) if (parent.type === "function_definition") return false;
+    const callee = node.childForFieldName("function")?.text.split(".") ?? [];
+    return callee.length !== 2 || !modules.has(callee[0]!) || callee[1] !== "main" || node.childForFieldName("arguments")?.namedChildren.length !== 0;
+  })) return;
+  for (const cls of root.namedChildren.filter(node => node.type === "class_definition")) {
+    if (item.bindings.get(cls.childForFieldName("name")?.text ?? "") !== 1) continue;
+    const superclasses = cls.childForFieldName("superclasses")?.namedChildren, body = cls.childForFieldName("body");
+    if (superclasses?.length !== 1 || !body) continue;
+    const base = superclasses[0]!.text.split(".");
+    if (!(base.length === 1 && bases.has(base[0]!) || base.length === 2 && modules.has(base[0]!) && base[1] === "TestCase")) continue;
+    const methods = body.namedChildren.filter(node => !isComment(node));
+    if (!methods.length || methods.some(method => method.type !== "function_definition" || !method.childForFieldName("name")?.text.startsWith("test")
+      || method.children.some(child => child.type === "async") || method.childForFieldName("parameters")?.namedChildren.length !== 1
+      || method.childForFieldName("parameters")?.namedChildren[0]?.type !== "identifier")) continue;
+    if (new Set(methods.map(method => method.childForFieldName("name")!.text)).size !== methods.length) continue;
+    for (const method of methods) {
+      const receiver = method.childForFieldName("parameters")!.namedChildren[0]!.text, statements = method.childForFieldName("body")?.namedChildren.filter(node => !isComment(node));
+      if (!statements?.length) continue;
+      const trace: Step[] = []; let valid = true;
+      for (const statement of statements) {
+        const expression = statement.type === "expression_statement" ? statement.namedChildren[0] : undefined;
+        const callee = expression?.childForFieldName("function"), args = expression?.childForFieldName("arguments")?.namedChildren;
+        if (expression?.type !== "call" || callee?.type !== "attribute" || callee.childForFieldName("object")?.text !== receiver
+          || callee.childForFieldName("attribute")?.text !== "assertEqual" || args?.length !== 2) { valid = false; break; }
+        const call = parseCall(args[0]!), expected = literal(args[1]);
+        if (!call || call.name.split(".")[0] === receiver || !expected.ok) { valid = false; break; }
+        trace.push({ call, assertion: { expected: expected.value, ...(nativeLiteralHasPythonTuple(expected.nativeExpected) ? { nativeExpected: expected.nativeExpected } : {}),
+          start: args[1]!.startIndex, end: args[1]!.endIndex, assertionStart: expression.startIndex, assertionEnd: expression.endIndex } });
+      }
+      if (valid) item.traces.push(trace);
+    }
+  }
 }
 
 function rustTraces(item: Parsed, body: Node, root: boolean): void {
@@ -307,7 +352,7 @@ function pythonStep(node: Node): Step | undefined {
     const comparison = node.namedChildren[0];
     if (comparison?.type !== "comparison_operator" || comparison.namedChildren.length !== 2 || comparison.children.filter(child => !child.isNamed).map(child => child.text).join("") !== "==") return undefined;
     const call = parseCall(comparison.namedChildren[0]!), value = literal(comparison.namedChildren[1]);
-    return call && value.ok ? { call, assertion: { expected: value.value, start: comparison.namedChildren[1]!.startIndex,
+    return call && value.ok ? { call, assertion: { expected: value.value, ...(nativeLiteralHasPythonTuple(value.nativeExpected) ? { nativeExpected: value.nativeExpected } : {}), start: comparison.namedChildren[1]!.startIndex,
       end: comparison.namedChildren[1]!.endIndex, assertionStart: node.startIndex, assertionEnd: node.endIndex } } : undefined;
   }
   const expression = node.type === "expression_statement" ? node.namedChildren[0] : undefined;
@@ -344,6 +389,7 @@ function parseCall(node: Node, offset = 0): Call | undefined {
 
 function literal(node: Node | null | undefined): { ok: true; value: unknown; nativeExpected?: ProgramNativeLiteral } | { ok: false } {
   if (!node) return { ok: false };
+  if (node.type === "parenthesized_expression" && node.namedChildren.length === 1) return literal(node.namedChildren[0]);
   if (node.type === "scoped_identifier" && node.text === "::std::option::Option::None") return { ok: true, value: null, nativeExpected: { kind: "none" } };
   if (node.type === "call_expression" && node.childForFieldName("function")?.text === "::std::option::Option::Some") {
     const args = node.childForFieldName("arguments")?.namedChildren;
@@ -369,7 +415,13 @@ function literal(node: Node | null | undefined): { ok: true; value: unknown; nat
     if (text.startsWith('"') && text.endsWith('"') && !text.startsWith('"""')) { try { return { ok: true, value: JSON.parse(text) }; } catch { return { ok: false }; } }
     if ((text.startsWith("'") && text.endsWith("'") && !text.includes("\\") && !text.startsWith("'''")) || text.startsWith("`") && text.endsWith("`")) return { ok: true, value: text.slice(1, -1) };
   }
-  if (["list", "array_expression"].includes(node.type)) { const values = node.namedChildren.map(literal); return values.every(value => value.ok) ? { ok: true, value: values.map(value => value.value) } : { ok: false }; }
+  if (["tuple", "list", "array_expression"].includes(node.type)) {
+    const values = node.namedChildren.map(literal); if (!values.every(value => value.ok)) return { ok: false };
+    const value = values.map(value => value.value) as JsonValue[];
+    const shape: ProgramNativePythonContainerShape | undefined = node.type === "array_expression" ? undefined : { kind: node.type === "tuple" ? "tuple" : "list",
+      items: values.map(value => value.nativeExpected?.kind === "value" ? value.nativeExpected.nativePythonShape ?? null : null) };
+    return { ok: true, value, ...(shape ? { nativeExpected: { kind: "value" as const, value, nativePythonShape: shape } } : {}) };
+  }
   return { ok: false };
 }
 function descendants(root: Node): Node[] { const out: Node[] = []; const visit = (node: Node) => { out.push(node); for (const child of node.namedChildren) visit(child); }; visit(root); return out; }

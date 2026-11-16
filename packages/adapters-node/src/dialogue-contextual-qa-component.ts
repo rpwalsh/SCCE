@@ -3,10 +3,11 @@
 import {
   acquireContextualQaConstructions, verifyContextualQaConstruction, canonicalJsonByteLength, canonicalStringify, createHasher, CONTEXTUAL_QA_CONSTRUCTION_RECIPE as RECIPE,
   CONTEXTUAL_QA_SOURCE_SYSTEM as SYSTEM, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA as SCHEMA, CONTEXTUAL_QA_COMPILER_FINGERPRINT,
-  LANGUAGE_IDENTITY_SCHEMA, type ConversationalConstructionDocument, type InformationLabel, type LanguageIdentityRecord, type LanguagePatternProjection,
+  type ConversationalConstructionDocument, type InformationLabel, type LanguageIdentityRecord, type LanguagePatternProjection,
   type ScceStorage, type SourceVersionId, type TranscriptTurn
 } from "@scce/kernel";
 import { corpusSourceVersionIdFor } from "./language-corpus-trainer.js";
+import { dialogueIdentityAllowsInformationFlow } from "./dialogue-language-identity.js";
 import { runDialogueContextualQaComponent } from "./dialogue-conversational-checkpoint.js";
 import { runContextualQaAcquisition, type ContextualQaExecutionReceipt, type ContextualQaWorkerExecution } from "./contextual-qa-execution.js";
 
@@ -61,10 +62,7 @@ export async function persistDialogueContextualQaComponent(input: {
   const verifiedIdentity = (profileId: string): { identity: LanguageIdentityRecord; digest: string } | undefined => {
     const languageIdentityId = assignmentByProfile.get(profileId);
     const identity = languageIdentityId ? identityById.get(languageIdentityId) : undefined;
-    if (!identity || identity.schema !== LANGUAGE_IDENTITY_SCHEMA
-      || !identity.evidence || identity.evidence.status === "source_observed"
-      || !identity.informationLabel
-      || canonicalStringify(identity.informationLabel) !== canonicalStringify(input.informationLabel)) return undefined;
+    if (!identity || !dialogueIdentityAllowsInformationFlow(identity, input.informationLabel)) return undefined;
     return { identity, digest: hasher.digestHex(canonicalStringify({
       schema: "scce.contextual_qa_language_identity_assignment.v1", profileId, languageIdentityId, identity
     })) };

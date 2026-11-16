@@ -6552,7 +6552,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         if (newerActEvidenceAccess) params.push(...newerActEvidenceAccess.params);
         const projectionSet = `active_projection_ids_${projectionSets.length}`;
         const conversationalGuard = patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA ? conversationalProjectionEligibilitySql(storage, params) : undefined;
-        const computationGuard = computation ? conversationalProjectionEligibilitySql(storage, params, lexical) : undefined;
+        // Lexical entries have independent witnesses, checked below for the complete selected scope.
+        // Pooled models and the inventory getter/publisher retain whole-dependency evidence admission.
+        const computationGuard = computation ? conversationalProjectionEligibilitySql(storage, params, lexical, lexical ? "selected" : "all") : undefined;
+        const selectedEvidenceAccess = lexical ? storage.informationAccessPredicate("selected_evidence", params.length + 1) : undefined;
+        if (selectedEvidenceAccess) params.push(...selectedEvidenceAccess.params);
         const projectGuard = patternSchema === "scce.source_owned_test_contract.v1" ? projectContractDependencyEligibilitySql(storage, params) : undefined;
         projectionSets.push(`${projectionSet}_headers AS MATERIALIZED (
           SELECT active_projection.key AS projection_key,active_projection.value_json->>'profileId' AS profile_id,
@@ -6585,10 +6589,16 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
                       WHERE newer_act_evidence.source_version_id=newer_act_version.id AND newer_act_evidence.status='promoted' AND ${newerActEvidenceAccess!.sql}))` : ""}
             )` : ""}
             ${projectionScope.map(scope => `AND ${scope}`).join("\n            ")}
-        )${computation || conversationalGuard ? `, ${projectionSet}_dependencies AS MATERIALIZED (
-          SELECT DISTINCT scoped.projection_key,requested.evidence_id FROM ${projectionSet}_headers scoped
+        )${computation || conversationalGuard ? `${lexical ? `, ${projectionSet}_dependency_owners AS MATERIALIZED (
+          SELECT scoped.projection_key,dependency.ordinality AS dependency_ordinal,
+            dependency.value->>'sourceId' AS source_id,dependency.value->>'sourceVersionId' AS source_version_id
+          FROM ${projectionSet}_headers scoped CROSS JOIN LATERAL jsonb_array_elements(CASE
+            WHEN jsonb_typeof(scoped.source_dependencies)='array' THEN scoped.source_dependencies ELSE '[]'::jsonb END)
+            WITH ORDINALITY dependency(value,ordinality)
+        )` : ""}, ${projectionSet}_dependencies AS MATERIALIZED (
+          SELECT ${lexical ? "" : "DISTINCT "}scoped.projection_key,requested.evidence_id${lexical ? ",dependency.ordinality AS dependency_ordinal" : ""} FROM ${projectionSet}_headers scoped
             CROSS JOIN LATERAL jsonb_array_elements(CASE
-            WHEN jsonb_typeof(scoped.source_dependencies)='array' THEN scoped.source_dependencies ELSE '[]'::jsonb END) dependency(value)
+            WHEN jsonb_typeof(scoped.source_dependencies)='array' THEN scoped.source_dependencies ELSE '[]'::jsonb END) WITH ORDINALITY dependency(value,ordinality)
             CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(dependency.value->'evidenceIds')='array'
               THEN dependency.value->'evidenceIds' ELSE '[]'::jsonb END) requested(evidence_id)
             ${computation ? "" : `WHERE scoped.projection_recipe='${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}'`}
@@ -6600,8 +6610,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           FROM ${projectionSet}_headers header CROSS JOIN LATERAL jsonb_array_elements_text(CASE
             WHEN jsonb_typeof(header.pattern_ids)='array' THEN header.pattern_ids ELSE '[]'::jsonb END) member(pattern_id)
           ${computation ? "" : `WHERE header.projection_recipe='${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}'`}
+        ), ${projectionSet}_scope AS MATERIALIZED (
+          -- Match the already scoped/accessible candidates before looking up projected row bodies. Keep
+          -- this complete set join materialized so a one-row estimate cannot rescan either ID inventory.
+          SELECT member.*,candidate.id AS scoped_id FROM ${projectionSet}_members member
+          FULL JOIN pattern_headers candidate ON candidate.id=member.pattern_id
         ), ${projectionSet}_selected AS MATERIALIZED (
-          SELECT member.*,computation_member.evidence_ids FROM ${projectionSet}_members member
+          SELECT member.*,computation_member.evidence_ids FROM ${projectionSet}_scope member
           CROSS JOIN LATERAL (
             SELECT computation_member.evidence_ids FROM ${storage.table("language_patterns")} computation_member
             WHERE computation_member.id=member.pattern_id
@@ -6612,18 +6627,37 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             -- Keep the lookup correlated with this exact member even when the profile estimate is one row.
             OFFSET 0
           ) computation_member
+          WHERE member.scoped_id IS NOT NULL AND member.pattern_id IS NOT NULL
         ), ${projectionSet}_requested AS MATERIALIZED (
           SELECT selected.projection_key,selected.profile_id,selected.source_system,selected.pattern_schema,selected.projection_recipe,
-            selected.source_version_id,selected.pattern_id,requested.evidence_id FROM ${projectionSet}_selected selected
+            selected.source_version_id,selected.pattern_id,requested.evidence_id${lexical ? ",selected_evidence.source_id AS evidence_source_id,selected_evidence.source_version_id AS evidence_source_version_id" : ""} FROM ${projectionSet}_selected selected
           CROSS JOIN LATERAL unnest(selected.evidence_ids) requested(evidence_id)
+          ${lexical ? `LEFT JOIN LATERAL (
+            SELECT selected_evidence.source_id,selected_evidence.source_version_id FROM ${storage.table("evidence_spans")} selected_evidence
+            WHERE selected_evidence.id=requested.evidence_id AND selected_evidence.status='promoted' AND ${selectedEvidenceAccess!.sql}
+            OFFSET 0
+          ) selected_evidence ON TRUE` : ""}
         ), ${projectionSet}_membership AS MATERIALIZED (
           SELECT requested.projection_key,requested.profile_id,requested.source_system,requested.pattern_schema,requested.projection_recipe,
-            requested.source_version_id,requested.pattern_id,allowed.evidence_id AS allowed_id FROM ${projectionSet}_requested requested
+            requested.source_version_id,requested.pattern_id${lexical ? ",requested.evidence_source_id,requested.evidence_source_version_id,allowed.dependency_ordinal" : ""},allowed.evidence_id AS allowed_id FROM ${projectionSet}_requested requested
           FULL JOIN ${projectionSet}_dependencies allowed
             ON allowed.projection_key=requested.projection_key AND allowed.evidence_id=requested.evidence_id
-        ), ${projectionSet}_eligible AS MATERIALIZED (
+        )${lexical ? `, ${projectionSet}_validated AS MATERIALIZED (
+          SELECT membership.projection_key,membership.profile_id,membership.source_system,membership.pattern_schema,membership.projection_recipe,
+            membership.source_version_id,membership.pattern_id,CASE WHEN EXISTS (
+              SELECT 1 FROM ${projectionSet}_dependency_owners declared
+              WHERE declared.projection_key=membership.projection_key AND declared.dependency_ordinal=membership.dependency_ordinal
+                AND declared.source_id=membership.evidence_source_id AND declared.source_version_id=membership.evidence_source_version_id
+              OFFSET 0
+            ) THEN membership.allowed_id ELSE NULL END AS allowed_id
+          FROM ${projectionSet}_membership membership WHERE membership.pattern_id IS NOT NULL
+        ), ${projectionSet}_selected_validity AS MATERIALIZED (
+          -- An explicit full-inventory read must still fail if any consumed witness is unavailable.
+          SELECT projection_key,bool_and(allowed_id IS NOT NULL) AS complete FROM ${projectionSet}_validated GROUP BY projection_key
+        )` : ""}, ${projectionSet}_eligible AS MATERIALIZED (
           SELECT projection_key,profile_id,source_system,pattern_schema,projection_recipe,source_version_id,pattern_id
-          FROM ${projectionSet}_membership WHERE pattern_id IS NOT NULL
+          FROM ${projectionSet}_${lexical ? "validated" : "membership"} WHERE pattern_id IS NOT NULL
+          ${lexical ? `AND projection_key IN (SELECT projection_key FROM ${projectionSet}_selected_validity WHERE complete)` : ""}
           GROUP BY projection_key,profile_id,source_system,pattern_schema,projection_recipe,source_version_id,pattern_id
           HAVING bool_and(allowed_id IS NOT NULL)
         )` : ""}, ${projectionSet} AS MATERIALIZED (
@@ -6748,8 +6782,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const rows = await storage.query<LanguagePatternRow & {
         expected_pattern_count?: string | number; complete_pattern_count?: string | number; decoded_complete_bytes?: string | number;
       }>(
-        `WITH ${projectionSets.length ? `${projectionSets.join(",\n")},` : ""}
-         pattern_headers AS MATERIALIZED (
+        `WITH pattern_headers AS MATERIALIZED (
            SELECT pattern.id, pattern.profile_id, pattern.pattern_kind, pattern.support, pattern.entropy,
              pattern.evidence_ids, pattern.updated_at, pattern.information_label, pattern.source_system,
              pg_column_size(pattern.pattern_json)${query.lexicalUnits !== undefined ? " + pg_column_size(pattern.evidence_ids)" : ""} AS stored_bytes,
@@ -6763,7 +6796,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
              pattern.has_source_version
            FROM ${storage.table("language_patterns")} pattern
            ${scopeWhere.length ? `WHERE ${scopeWhere.join(" AND ")}` : ""}
-         ),
+         ),${projectionSets.length ? `${projectionSets.join(",\n")},` : ""}
          candidate_pool AS MATERIALIZED (
            SELECT pattern.id, pattern.profile_id, pattern.pattern_kind, pattern.support, pattern.entropy, pattern.evidence_ids, pattern.updated_at, pattern.information_label,
                   pattern.pattern_schema, pattern.pattern_language, pattern.source_system, pattern.stored_bytes, pattern.decoded_jsonb_bytes,
@@ -7779,14 +7812,16 @@ function activeLanguagePatternProjectionKey(input: {
   ])}`;
 }
 
-function conversationalProjectionEligibilitySql(storage: PostgresStorageAdapter, params: unknown[], requireContentHashes = false): string {
+function conversationalProjectionEligibilitySql(storage: PostgresStorageAdapter, params: unknown[], requireContentHashes = false, evidenceScope: "all" | "selected" = "all"): string {
+  // Selected evidence admission only changes independent lexical serving. Every declared source
+  // version/hash/access/currentness gate stays global, and all other callers default to strict inventory checks.
   const access = (alias: string) => {
     const predicate = storage.informationAccessPredicate(alias, params.length + 1);
     params.push(...predicate.params);
     return predicate.sql;
   };
   const profileAccess = access("auxiliary_profile"), ownerAccess = access("auxiliary_owner");
-  const versionAccess = access("dependency_version"), evidenceAccess = access("dependency_evidence");
+  const versionAccess = access("dependency_version"), evidenceAccess = evidenceScope === "all" ? access("dependency_evidence") : undefined;
   const newerVersionAccess = access("newer_dependency_version"), newerEvidenceAccess = access("newer_dependency_evidence");
   // Keep this an exact correlated owner lookup. Flattening the EXISTS into a semi join can repeatedly
   // extract the toasted projection header for every unrelated profile/version before finding its owner.
@@ -7816,11 +7851,15 @@ function conversationalProjectionEligibilitySql(storage: PostgresStorageAdapter,
           OR jsonb_typeof(dependency_value.value->'sourceId') IS DISTINCT FROM 'string'
           OR jsonb_typeof(dependency_value.value->'sourceVersionId') IS DISTINCT FROM 'string' OR jsonb_typeof(dependency."evidenceIds") IS DISTINCT FROM 'array'
           OR jsonb_array_length(CASE WHEN jsonb_typeof(dependency."evidenceIds")='array' THEN dependency."evidenceIds" ELSE '[]'::jsonb END)=0
-          OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(dependency."evidenceIds")='array'
+          ${evidenceScope === "all" ? `OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(dependency."evidenceIds")='array'
             THEN dependency."evidenceIds" ELSE '[]'::jsonb END) requested(evidence_id)
             LEFT JOIN ${storage.table("evidence_spans")} dependency_evidence ON dependency_evidence.id=requested.evidence_id
               AND dependency_evidence.source_version_id=dependency_version.id AND dependency_evidence.source_id=dependency_version.source_id
-              AND dependency_evidence.status='promoted' AND ${evidenceAccess} WHERE dependency_evidence.id IS NULL)
+              AND dependency_evidence.status='promoted' AND ${evidenceAccess} WHERE dependency_evidence.id IS NULL)` : `OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(dependency."evidenceIds")='array'
+              THEN dependency."evidenceIds" ELSE '[]'::jsonb END) declared_evidence(value)
+            WHERE jsonb_typeof(declared_evidence.value) IS DISTINCT FROM 'string' OR declared_evidence.value#>>'{}'=''
+          )`}
           OR EXISTS (SELECT 1 FROM ${storage.table("source_versions")} newer_dependency_version
             WHERE newer_dependency_version.source_id=dependency_version.source_id
               AND (newer_dependency_version.observed_at,newer_dependency_version.id)>(dependency_version.observed_at,dependency_version.id)

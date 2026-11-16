@@ -3545,6 +3545,20 @@ _owner_spec.loader.exec_module(owner_program)
 OWNER_BEHAVIOR_REQUIREMENTS = json.loads(${JSON.stringify(JSON.stringify(plan.ownerBehaviorRequirements))})
 OWNER_STATEFUL_REQUIREMENTS = json.loads(${JSON.stringify(JSON.stringify(plan.ownerStatefulBehaviorRequirements))})
 
+def _native_python_value(value, literal=None):
+    if literal is None:
+        return value
+    def restore(value, shape):
+        if shape is None:
+            return value
+        items = [restore(item, child) for item, child in zip(value, shape["items"])]
+        return tuple(items) if shape["kind"] == "tuple" else items
+    return restore(literal["value"], literal.get("nativePythonShape"))
+
+def _native_python_arguments(values, owner):
+    literals = owner.get("nativeArguments")
+    return values if literals is None else [_native_python_value(value, literal) for value, literal in zip(values, literals)]
+
 class GeneratedProgramTest(unittest.TestCase):
     def test_program_contract(self):
         self.assertEqual(owner_program.programContract["planId"], ${JSON.stringify(plan.id)})
@@ -3555,17 +3569,24 @@ class GeneratedProgramTest(unittest.TestCase):
         for requirement in OWNER_BEHAVIOR_REQUIREMENTS:
             callable_value = getattr(owner_program, requirement["callableId"], None)
             self.assertTrue(callable(callable_value), "owner-required callable was not emitted")
-            self.assertEqual(callable_value(*requirement["arguments"]), requirement["expectedResult"], "owner requirement was not satisfied")
+            owner = requirement.get("sourceContract") or {}
+            arguments = _native_python_arguments(requirement["arguments"], owner)
+            expected = _native_python_value(requirement["expectedResult"], owner.get("nativeExpected"))
+            self.assertEqual(callable_value(*arguments), expected, "owner requirement was not satisfied")
 
     def test_owner_stateful_behavior(self):
         for requirement in OWNER_STATEFUL_REQUIREMENTS:
             stateful_program = owner_program.createStatefulProgram()
             result = None
-            for invocation in requirement["invocations"]:
+            owner = requirement.get("sourceContract") or {}
+            native_invocations = owner.get("invocations", [])
+            for index, invocation in enumerate(requirement["invocations"]):
                 operation = stateful_program.get(invocation["callableId"])
                 self.assertTrue(callable(operation), "stateful owner operation was not emitted")
-                result = operation(*invocation["arguments"])
-            self.assertEqual(result, requirement["expectedResult"], "stateful owner requirement was not satisfied")
+                binding = native_invocations[index] if index < len(native_invocations) else {}
+                result = operation(*_native_python_arguments(invocation["arguments"], binding))
+            expected = _native_python_value(requirement["expectedResult"], owner.get("nativeExpected"))
+            self.assertEqual(result, expected, "stateful owner requirement was not satisfied")
 
 if __name__ == "__main__":
     unittest.main()

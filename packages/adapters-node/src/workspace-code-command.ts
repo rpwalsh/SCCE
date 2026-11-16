@@ -8,6 +8,7 @@ import { codeMouthVerificationReceipt, runCodeMouth, type CodeMouthResult } from
 import { createLearnedCodeProposer } from "./learned-code-proposer.js";
 import { createWorkspaceCodeMouthPorts, verifyWorkspaceApplication, type WorkspaceApplicationVerification, type WorkspaceCodeMouthOptions } from "./workspace-code-mouth-ports.js";
 import { validateStructuredPatchValidationPolicy } from "./structured-patch-validation.js";
+import { workspaceTestSubjects, testSubjectsAtDiagnostic, type WorkspaceTestSubject } from "./workspace-test-subject-localization.js";
 export interface WorkspaceCodeCommandInput {
     storage: ScceStorage;
     workspaceRoot: string;
@@ -31,6 +32,7 @@ export interface PreparedWorkspaceCodeCommand {
         policyHash: string;
         maxAttempts: number;
         writablePaths: string[];
+        testSubjectHash?: string;
     };
     files?: Array<{
         path: string;
@@ -39,13 +41,15 @@ export interface PreparedWorkspaceCodeCommand {
         bytes: Uint8Array;
     }>;
     graph?: RepoSnapshot;
+    testSubjects?: readonly WorkspaceTestSubject[];
 }
 export interface WorkspaceCodeLocalization {
     schema: "scce.workspace.code-localization.v1";
     mode: PreparedWorkspaceCodeCommand["mode"];
     status: "selected" | "unresolved" | "already_valid";
     reasonId: string;
-    selectionBasis?: "observed_diagnostic_and_canonical_file_graph" | "owner_explicit_path";
+    selectionBasis?: "observed_diagnostic_and_canonical_file_graph" | "owner_explicit_path" | "observed_assertion_and_owned_callable";
+    subjectBindings?: readonly { readonly diagnosticId: string; readonly subject: WorkspaceTestSubject }[];
     targetPath?: string;
     scope?: PreparedWorkspaceCodeCommand["scope"];
     candidates: Array<{
@@ -155,21 +159,24 @@ export async function prepareWorkspaceCodeCommand(input: WorkspaceCodeCommandInp
     })));
     const ownedPaths = new Set(files.filter(file => file.sourceVersionId && ownedSourceVersions.has(file.sourceVersionId)).map(file => pathKey(file.path)));
     const writablePaths = graph.files.filter(file => ownedPaths.has(pathKey(file.sourcePath)) && codeLanguageForPath(file.sourcePath) !== undefined && !file.roles.includes("source.role.test") && !testCommandPaths.has(pathKey(file.sourcePath))).map(file => file.sourcePath).sort();
+    const testSubjects = workspaceTestSubjects({ files, contracts: owned.contracts });
     const manifestHash = hasher.digestHex(canonicalStringify(files.map(({ bytes, ...file }) => file))), provider = input.projectValidation.provider;
     const scope: NonNullable<PreparedWorkspaceCodeCommand["scope"]> = {
         schema: "scce.workspace.code-scope.v1", workspaceId: workspace.id, expectedWorkspaceUpdatedAt: workspace.updatedAt, manifestHash, graphHash: graph.rootHash, maxAttempts: input.maxAttempts, policyHash: hasher.digestHex(canonicalStringify({
             policy, provider: provider ? {
                 id: provider.id, boundary: provider.boundary, approvalBinding: provider.approvalBinding
             } : null
-        })), writablePaths
+        })), writablePaths, testSubjectHash: hasher.digestHex(canonicalStringify(testSubjects))
     };
     return {
-        mode: "project", workspaceRoot: root, scope, files, graph
+        mode: "project", workspaceRoot: root, scope, files, graph, testSubjects
     };
 }
-/** Only directly located, canonical source files are candidates. Imports do not establish fault ownership. */
+/** Direct source locations and exact source-owned assertion subjects establish candidates; imports alone do not. */
 export function localizeWorkspaceDiagnostics(prepared: PreparedWorkspaceCodeCommand, diagnostics: readonly ProgramDiagnostic[]): WorkspaceCodeLocalization {
     const candidates = new Map<string, WorkspaceCodeLocalization["candidates"][number]>(), unmappedDiagnosticIds: string[] = [];
+    const subjectBindings: Array<{ diagnosticId: string; subject: WorkspaceTestSubject }> = [], subjectIds = new Set<string>();
+    const unmatchedProtected: string[] = [];
     const byPath = new Map((prepared.files ?? []).map(file => [
         pathKey(file.path), file
     ])), writable = new Set(prepared.scope?.writablePaths.map(pathKey));
@@ -191,21 +198,34 @@ export function localizeWorkspaceDiagnostics(prepared: PreparedWorkspaceCodeComm
             unmappedDiagnosticIds.push(diagnostic.id);
             continue;
         }
-        if (!writable.has(pathKey(name)))
+        if (!writable.has(pathKey(name))) {
+            const subjects = testSubjectsAtDiagnostic({ file, diagnostic, subjects: prepared.testSubjects ?? [] });
+            const before = subjectBindings.length;
+            for (const subject of subjects) {
+                const target = byPath.get(pathKey(subject.targetPath));
+                if (!target || !writable.has(pathKey(target.path)) || target.contentHash !== subject.targetHash || target.sourceVersionId !== subject.targetSourceVersionId) continue;
+                subjectBindings.push({ diagnosticId: diagnostic.id, subject });
+                subjectIds.add(canonicalStringify([subject.targetPath, subject.targetSourceVersionId, subject.targetSymbolId]));
+                const candidate = candidates.get(target.path) ?? { path: target.path, contentHash: target.contentHash, diagnosticIds: [] };
+                candidate.diagnosticIds.push(diagnostic.id); candidates.set(target.path, candidate);
+            }
+            if (subjectBindings.length === before) unmatchedProtected.push(diagnostic.id);
             continue;
+        }
         const prior = candidates.get(file.path) ?? {
             path: file.path, contentHash: file.contentHash, diagnosticIds: []
         };
         prior.diagnosticIds.push(diagnostic.id);
         candidates.set(file.path, prior);
     }
+    if (subjectBindings.length) unmappedDiagnosticIds.push(...unmatchedProtected);
     const rows = [
         ...candidates.values()
-    ].sort((a, b) => a.path.localeCompare(b.path)), selected = rows.length === 1 && unmappedDiagnosticIds.length === 0;
+    ].sort((a, b) => a.path.localeCompare(b.path)), selected = rows.length === 1 && subjectIds.size <= 1 && unmappedDiagnosticIds.length === 0;
     return {
-        schema: "scce.workspace.code-localization.v1", mode: prepared.mode, status: selected ? "selected" : "unresolved", reasonId: selected ? "workspace.code.observed_unique_source" : rows.length > 1 ? "workspace.code.ambiguous_sources" : unmappedDiagnosticIds.length ? "workspace.code.unmapped_observation" : "workspace.code.source_target_unavailable", ...(selected ? {
-            targetPath: rows[0]!.path, selectionBasis: "observed_diagnostic_and_canonical_file_graph" as const
-        } : {}), scope: prepared.scope, candidates: rows, unmappedDiagnosticIds
+        schema: "scce.workspace.code-localization.v1", mode: prepared.mode, status: selected ? "selected" : "unresolved", reasonId: selected ? "workspace.code.observed_unique_source" : rows.length > 1 ? "workspace.code.ambiguous_sources" : subjectIds.size > 1 ? "workspace.code.ambiguous_subjects" : unmappedDiagnosticIds.length ? "workspace.code.unmapped_observation" : "workspace.code.source_target_unavailable", ...(selected ? {
+            targetPath: rows[0]!.path, selectionBasis: subjectBindings.length ? "observed_assertion_and_owned_callable" as const : "observed_diagnostic_and_canonical_file_graph" as const
+        } : {}), scope: prepared.scope, candidates: rows, unmappedDiagnosticIds, ...(subjectBindings.length ? { subjectBindings } : {})
     };
 }
 /** Both caller-selected and observed targets use the same initial observation and guarded repair loop. */
