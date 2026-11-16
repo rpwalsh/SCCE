@@ -113,6 +113,8 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     maxConflictRetries: 5
   });
   const capabilities = createRuntimeCapabilities({ executive, blobs: storage.blobs,
+    requestSignal: () => connectors.requestSignal(),
+    withDispatchedEffect: operation => connectors.withRequestCancellationMasked(operation),
     operations: [...createConnectorCapabilityOperations({ connectors, blobs: storage.blobs, buildTest,
       capabilities: [...createCapabilityRegistry({ process: true,
         network: config.connectors.web?.enabled === true,

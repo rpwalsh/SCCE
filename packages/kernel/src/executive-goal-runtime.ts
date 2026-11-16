@@ -24,6 +24,8 @@ export interface ExecutiveResolvedTaskInput {
 export interface ExecutiveGoalRunInput {
   tasks: ExecutiveGoalTaskInput[];
   maxDispatches: number;
+  /** In-process admission control; never included in the durable goal/task identity. */
+  signal?: AbortSignal;
 }
 
 /** Execute an explicit goal DAG through the existing scheduler and durable dispatcher. */
@@ -104,8 +106,9 @@ export async function runExecutiveGoal(deps: CapabilityDispatcherDeps & {
     await declare(taskId, task);
     if (state.tasks[taskId]!.status === "succeeded") continue;
     if (["rollback_ready", "rollback_blocked", "rollback_failed", "rolled_back"].includes(state.tasks[taskId]!.status)) return reportRun("failed", state, results);
+    if (input.signal?.aborted) return reportRun("cancelled", state, results);
     if (dispatched >= input.maxDispatches) return reportRun("budget_exhausted", state, results);
-    const result = await dispatchCapabilityTask(deps, task);
+    const result = await dispatchCapabilityTask(deps, task, input.signal);
     state = result.state;
     dispatched++;
     results.push({ taskId, disposition: result.disposition });

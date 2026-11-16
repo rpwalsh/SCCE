@@ -16,7 +16,7 @@ const pattern = (id: string, patternJson: LanguagePatternRecord["patternJson"]):
   patternKind: "semantic_role", patternJson, support: 1, entropy: 0, evidenceIds: [], updatedAt: 1, informationLabel: label });
 const frame = (id: string, frameJson: SemanticFrameRecord["frameJson"]): SemanticFrameRecord => ({ id, frameJson, embedding: Array.from({ length: 64 }, (_, index) => index + 1), evidenceIds: [], alpha: 1, createdAt: 1, informationLabel: label });
 
-function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRecord[] = []) {
+function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRecord[] = [], candidateOwners: Array<{ profile_id: string; source_system: string | null }> = []) {
   const adapter = new PostgresStorageAdapter({ url: "postgres://offline.invalid/none", schema: "seed_projection", informationAccess: {
     tenantId: "tenant.owned", principalId: "principal.owned", compartments: [], maximumExportClass: "restricted"
   } });
@@ -25,7 +25,8 @@ function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRe
   // Execute the bounded projection/quota contract locally; SQL structure is asserted independently below.
   adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
     calls.push({ sql, params });
-    if (sql.includes("AS model_metadata") || sql.startsWith("SELECT DISTINCT pattern.profile_id")) return [];
+    if (sql.startsWith("SELECT DISTINCT pattern.profile_id")) return candidateOwners as T[];
+    if (sql.includes("AS model_metadata")) return [];
     if (sql.includes("FROM \"seed_projection\".\"semantic_frames\"")) {
       let rows = frames;
       const surfaceParameter = /frame\.normalized_surface_hash=\$(\d+)/u.exec(sql)?.[1];
@@ -110,7 +111,7 @@ it("applies explicit schema exclusion before bounds and projection proofs withou
 
 it.each(["request_seed", "prediction_scoring", "full"] as const)("binds only consumed parameters in a scoped %s read without active projections", async view => {
   for (const receipt of [false, true]) {
-    const { adapter, calls } = fixture();
+    const { adapter, calls } = fixture([], [], [{ profile_id: "profile.owned", source_system: "dialogue" }]);
     await adapter.languageMemory.listLanguagePatterns({ ...(view === "full" ? {} : { view }),
       patternIds: ["pattern.owned"], profileIds: ["profile.owned"], sourceSystem: "dialogue",
       patternSchemas: [receipt ? "scce.source_induction_coverage.v1" : "scce.long_form_discourse_pattern.v1"],

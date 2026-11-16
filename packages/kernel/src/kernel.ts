@@ -17,7 +17,7 @@ import { createCcrEngine } from "./ccr.js";
 import { createConnectorGovernance } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS, createCorpusRegistry } from "./corpus-registry.js";
-import { invalidateCorpusIdentityMeasurements } from "./corpus-identity-runtime.js";
+import { invalidateCorpusIdentityMeasurements, prepareCorpusIdentityMetadata } from "./corpus-identity-runtime.js";
 import { createCorrectionMemory } from "./correction-memory.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
@@ -326,6 +326,36 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const tasks: Array<Promise<void>> = [];
       const fullLanguageWarmup = input.language ?? true;
       const requestLanguageWarmup = input.requestLanguage ?? false;
+      let preparedRequestGeneration: number | undefined;
+      // These input-independent readers are part of readiness even when large language hydration is disabled.
+      const prepareRequestMetadata = async (): Promise<void> => {
+        for (;;) {
+          await surfaceLanguageRuntime.synchronizeWithStorage();
+          const generation = surfaceLanguageRuntime.revisionGeneration();
+          const corpusStarted = clock.now(), classifierStarted = clock.now();
+          await Promise.all([
+            prepareCorpusIdentityMetadata(deps.storage.evidence).then(metadata => {
+              result.corpusIdentity = { loaded: true, ...metadata, durationMs: Math.max(0, clock.now() - corpusStarted) };
+            }).catch(error => {
+              failures.push(`corpus identity metadata warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+              result.corpusIdentity = { loaded: false, sourceTitles: null, concentration: 0, durationMs: Math.max(0, clock.now() - corpusStarted) };
+            }),
+            productionTurnRuntime.prepareRequestCommunicativeAct().then(classifier => {
+              result.requestClassifier = { ...classifier, durationMs: Math.max(0, clock.now() - classifierStarted) };
+            }).catch(error => {
+              failures.push(`request classifier warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+              result.requestClassifier = { loaded: false, features: 0, disabled: false, durationMs: Math.max(0, clock.now() - classifierStarted) };
+            })
+          ]);
+          await surfaceLanguageRuntime.synchronizeWithStorage();
+          if (generation !== surfaceLanguageRuntime.revisionGeneration()) continue;
+          preparedRequestGeneration = generation;
+          return;
+        }
+      };
+      tasks.push(prepareRequestMetadata().catch(error => {
+        failures.push(`request preparation revision failed: ${error instanceof Error ? error.message : String(error)}`);
+      }));
       const identityWarmup = fullLanguageWarmup || requestLanguageWarmup
         ? await languageIdentityRuntime.ensure().catch(error => {
           failures.push(`language identity warmup failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -509,6 +539,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       }
 
       await Promise.all(tasks);
+      try {
+        await surfaceLanguageRuntime.synchronizeWithStorage();
+        if (preparedRequestGeneration !== surfaceLanguageRuntime.revisionGeneration()) await prepareRequestMetadata();
+      } catch (error) {
+        failures.push(`request preparation revision failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
       if (input.language ?? true) {
         const sourceLanguageStarted = clock.now();
         try {

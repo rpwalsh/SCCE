@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import http from "node:http";
+import { bindHttpTurnCancellation, httpResponseClosed } from "./http-turn-cancellation.js";
 import { encodeProgramArtifactWire, programTaskArtifactsBound, restoreFetchedCapabilityResult, sourceSpanCompletionRequestFromMetadata, SourceLearningApplication as SharedSourceLearningApplication } from "@scce/kernel";
 import { connectorOperationIdentity, executeConnectorOperation } from "@scce/adapters-node";
 import {pendingProgramValidationApproval} from "./program-validation-approval.js";
@@ -211,6 +212,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
   const requestId = req.headers["x-request-id"]?.toString() ?? randomUUID();
   const started = Date.now();
   const requestTiming: RequestTiming = { startedMonotonicMs: performance.now() };
+  let clientCancellation: ReturnType<typeof bindHttpTurnCancellation> | undefined;
   const trace = (globalThis as any).__sccTrace;
   if (trace) traceEvent(trace, { stage: 'api.request', label: req.method + ' ' + (req.url ?? '/') });
   try {
@@ -280,11 +282,23 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       await streamGithubOssIngestResponse({ req, res, context, requestId, started });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/turn") {
+      clientCancellation = bindHttpTurnCancellation(req, res);
+      requestTiming.turnExecution = { signal: clientCancellation.signal };
+    }
     const response = await dispatch(req, url, context, requestTiming);
     if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
+    if (clientCancellation?.signal.aborted || httpResponseClosed(res)) {
+      if (trace) traceEvent(trace, { stage: "api.request.cancelled", label: req.method + " " + (req.url ?? "/"), durationMs: Date.now() - started });
+      return;
+    }
     send(res, response.status, response.body, response.contentType, { requestId, started });
     if (trace) traceEvent(trace, { stage: 'api.response', label: `${response.status} ${req.method} ${req.url}`, durationMs: Date.now() - started });
   } catch (error) {
+    if (clientCancellation?.signal.aborted || httpResponseClosed(res)) {
+      if (trace) traceEvent(trace, { stage: "api.request.cancelled", label: req.method + " " + (req.url ?? "/"), durationMs: Date.now() - started, warnings: [String(error)] });
+      return;
+    }
     error = domainHttpError(error);
     const status = error instanceof HttpError ? error.status : 500;
     const body = {
@@ -296,7 +310,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     };
     send(res, status, JSON.stringify(body, null, 2), "application/json; charset=utf-8", { requestId, started });
     if (trace) traceEvent(trace, { stage: 'runtime.error', label: `${status} ${req.method} ${req.url}`, durationMs: Date.now() - started, warnings: [String(error)] });
-  }
+  } finally { clientCancellation?.dispose(); }
 }
 
 const localGraphqlHandlers = new WeakMap<object, Promise<LocalGraphqlHandler>>();
@@ -1668,6 +1682,7 @@ export async function executeApplicationTurn(
     const trace = (globalThis as any).__sccTrace;
     const turnStarted = Date.now();
     try {
+      requestTiming.turnExecution?.signal?.throwIfAborted();
       const turn = validateTurn(body);
       const originalMetadata = isRecord(turn.metadata) ? turn.metadata as Record<string, JsonValue> : {};
       const originalRuntime = isRecord(originalMetadata.runtime) ? originalMetadata.runtime as Record<string, JsonValue> : {};
@@ -1690,6 +1705,7 @@ export async function executeApplicationTurn(
       // hydrates prior state; otherwise an immediate follow-up can race the
       // write and lose the owner's newly learned referent correction.
       await awaitDialoguePersistence(conversationId);
+      requestTiming.turnExecution?.signal?.throwIfAborted();
       const readinessStarted = Date.now();
       const [
         recentTurns,
@@ -1735,6 +1751,7 @@ export async function executeApplicationTurn(
             .catch(() => [])
           : Promise.resolve([])
       ]);
+      requestTiming.turnExecution?.signal?.throwIfAborted();
       traceEvent(trace, {
         stage: "turn.runtime.readiness",
         label: "api.turn",
@@ -1748,6 +1765,7 @@ export async function executeApplicationTurn(
       // orthography. Asked here because the primed signal a discourse object would otherwise read is the previous
       // request's, which is how a lowercase request naming its own subject inherited the last turn's evidence.
       const requestSubject = await measureRequestCorpusSubject({ requestText: turn.text, evidence: context.runtime.storage.evidence });
+      requestTiming.turnExecution?.signal?.throwIfAborted();
       const requestNamesOwnSubject = requestSubject.measured
         ? requestSubject.identities.length > 0
         : requestSubject.contentRuns.length > 0;
@@ -1876,14 +1894,14 @@ export async function executeApplicationTurn(
       const turnProgramCodingInput = workspaceCodingPlanningInput
         ? workspaceCodingInputForProgramGraph(workspaceCodingPlanningInput, result.constructGraph.program)
         : undefined;
-      const completedWorkspaceCoding = turnProgramCodingInput
+      const completedWorkspaceCoding = turnProgramCodingInput && !requestTiming.turnExecution?.signal?.aborted
         ? await planWorkspaceCodingPatchApiRequest(context, {
           schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
           input: turnProgramCodingInput
         })
         : workspaceCoding;
       const workspaceExecution = workspaceCodingInput?.execution === "apply" && completedWorkspaceCoding
-        ? await executeWorkspaceCodingTurnPlan(context, workspaceCodingPlanningInput!, completedWorkspaceCoding)
+        ? await executeWorkspaceCodingTurnPlan(context, workspaceCodingPlanningInput!, completedWorkspaceCoding, requestTiming.turnExecution?.signal)
         : undefined;
       const calibrationStarted = Date.now();
       const calibrationCache = calibrationModelsCache(context);
@@ -3057,11 +3075,14 @@ type WorkspaceCodingTurnExecution =
  * exact plan hash and the complete validation binding remain the approval
  * identity, and a retry of the same turn resumes here after that approval.
  */
-async function executeWorkspaceCodingTurnPlan(
+export async function executeWorkspaceCodingTurnPlan(
   context: ApiContext,
   input: WorkspaceCodingPatchPlanningInput,
-  result: WorkspaceCodingPatchPlanningResult
+  result: WorkspaceCodingPatchPlanningResult,
+  signal?: AbortSignal
 ): Promise<WorkspaceCodingTurnExecution> {
+  const cancelled = (): WorkspaceCodingTurnExecution => ({ state: "not_executable", reason: "workspace.request.cancelled_before_dispatch" });
+  if (signal?.aborted) return cancelled();
   if (context.config.policy.allowMutation !== true) {
     throw new HttpError(403, "workspace engineering execution is disabled by config.policy.allowMutation");
   }
@@ -3071,6 +3092,7 @@ async function executeWorkspaceCodingTurnPlan(
   }
   const plan = plans[0];
   const workspace = await context.runtime.storage.workspace.latestWorkspace();
+  if (signal?.aborted) return cancelled();
   if (!workspace || workspace.id !== input.workspaceId) {
     throw new HttpError(409, "workspace engineering requires the same latest workspace revision used by planning");
   }
@@ -3096,23 +3118,30 @@ async function executeWorkspaceCodingTurnPlan(
       session: context.runtime.approvals.snapshot()
     };
   }
-  const applied = await executeWorkspacePatchApiRequest({
-    request: {
-      schemaVersion: WORKSPACE_PATCH_REQUEST_SCHEMA,
-      workspaceId: input.workspaceId,
-      plan,
-      validationPolicyId: policy.id
-    },
-    workspace,
-    allowedRoots: context.config.runtime.allowedRoots,
-    policy,
-    provider,
-    executive: context.runtime.executive,
-    ownerId: context.config.security?.informationAccess?.principalId,
-    events: context.runtime.storage.events,
-    refreshWorkspace: () => createWorkspaceRuntime(context).ingest(workspace.rootPath)
-  });
-  return { state: "applied", ...applied };
+  if (signal?.aborted) return cancelled();
+  try {
+    const applied = await executeWorkspacePatchApiRequest({
+      request: {
+        schemaVersion: WORKSPACE_PATCH_REQUEST_SCHEMA,
+        workspaceId: input.workspaceId,
+        plan,
+        validationPolicyId: policy.id
+      },
+      workspace,
+      allowedRoots: context.config.runtime.allowedRoots,
+      policy,
+      provider,
+      signal,
+      executive: context.runtime.executive,
+      ownerId: context.config.security?.informationAccess?.principalId,
+      events: context.runtime.storage.events,
+      refreshWorkspace: () => createWorkspaceRuntime(context).ingest(workspace.rootPath)
+    });
+    return { state: "applied", ...applied };
+  } catch (error) {
+    if (error instanceof WorkspacePatchCancelledBeforeDispatch) return cancelled();
+    throw error;
+  }
 }
 
 function parseWorkspaceValidationPlan(value: unknown, options: WorkspaceValidationPolicySelection): WorkspaceCodingPatchPlanningInput["validationPlan"] {
@@ -3925,6 +3954,10 @@ export async function dispatchTelephoneCallThroughExecutive(input: {
  */
 const WORKSPACE_PATCH_CAPABILITY_ID = "workspace.patch.apply";
 
+class WorkspacePatchCancelledBeforeDispatch extends Error {
+  constructor() { super("workspace.request.cancelled_before_dispatch"); this.name = "WorkspacePatchCancelledBeforeDispatch"; }
+}
+
 /**
  * Routes real workspace-patch execution through the durable executive
  * dispatcher (plan item 45) -- the same prepare/dispatch/receipt pattern
@@ -3975,7 +4008,8 @@ async function executeWorkspacePatchTransactionThroughExecutive(input: {
           status: "failed",
           outputRefs: [],
           evidenceRefs: [],
-          attestationRef: `workspace.patch.failed.${input.planHash}`
+          attestationRef: error instanceof WorkspacePatchCancelledBeforeDispatch
+            ? `workspace.patch.cancelled_before_dispatch.${input.planHash}` : `workspace.patch.failed.${input.planHash}`
         };
       }
     }
@@ -4037,6 +4071,8 @@ export async function executeWorkspacePatchApiRequest(input: {
   readonly allowedRoots: readonly string[];
   readonly policy: StructuredPatchValidationPolicy;
   readonly provider?: StructuredPatchValidationProvider;
+  /** Admission control ends when the transaction is invoked; committed work keeps its receipt. */
+  readonly signal?: AbortSignal;
   /** When present, routes execution through the durable executive dispatcher (plan item 45); when absent, the pre-existing direct path is unchanged. */
   readonly executive?: DurableExecutiveEpisode;
   readonly ownerId?: string;
@@ -4055,26 +4091,30 @@ export async function executeWorkspacePatchApiRequest(input: {
   if (input.workspace.id !== input.request.workspaceId) throw new HttpError(409, "workspaceId does not identify the selected workspace");
   if (input.policy.id !== input.request.validationPolicyId) throw new HttpError(400, "validationPolicyId is not registered for this request");
   const workspaceRoot = await canonicalAllowedWorkspaceRoot(input.workspace.rootPath, input.allowedRoots);
-  const runTransaction = () => executeWorkspacePatchTransaction({
-    workspaceRoot,
-    plan: input.request.plan,
-    validate: async view => {
-      try {
-        return await runStructuredPatchValidation({ workspaceRoot, validationView: view, policy: input.policy, provider: input.provider });
-      } catch (error) {
-        return {
-          ok: false,
-          validatorId: input.policy.id,
-          evidence: {
-            schemaVersion: "scce.patch-validation-error.v1",
-            policyId: input.policy.id,
-            planHash: input.request.plan.planHash,
-            error: error instanceof Error ? error.message : String(error)
-          }
-        };
+  if (input.signal?.aborted) throw new WorkspacePatchCancelledBeforeDispatch();
+  const runTransaction = () => {
+    if (input.signal?.aborted) throw new WorkspacePatchCancelledBeforeDispatch();
+    return executeWorkspacePatchTransaction({
+      workspaceRoot,
+      plan: input.request.plan,
+      validate: async view => {
+        try {
+          return await runStructuredPatchValidation({ workspaceRoot, validationView: view, policy: input.policy, provider: input.provider });
+        } catch (error) {
+          return {
+            ok: false,
+            validatorId: input.policy.id,
+            evidence: {
+              schemaVersion: "scce.patch-validation-error.v1",
+              policyId: input.policy.id,
+              planHash: input.request.plan.planHash,
+              error: error instanceof Error ? error.message : String(error)
+            }
+          };
+        }
       }
-    }
-  });
+    });
+  };
   try {
     const receipt = input.executive
       ? await executeWorkspacePatchTransactionThroughExecutive({

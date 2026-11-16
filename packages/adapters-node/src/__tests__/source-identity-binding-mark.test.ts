@@ -7,9 +7,14 @@
 // already folds that mark (corpusIdentityMatchSurface); the adapter that produces its candidate titles did not,
 // so the folded match could never be reached.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { clearSourceTitleCache, createPostgresStorageAdapter } from "../postgres.js";
+import { clearSourceTitleCache, createPostgresStorageAdapter as createAdapter } from "../postgres.js";
 import { anchorFeatureSet } from "@scce/kernel";
 import { corpusIdentitySurface } from "../../../kernel/src/corpus-identity.js";
+
+// These orthography fixtures hold one committed corpus; revision races are exercised separately.
+const createPostgresStorageAdapter = (...args: Parameters<typeof createAdapter>) => {
+  const adapter = createAdapter(...args); adapter.languageMemory.readRevision = async () => "fixture-stable"; return adapter;
+};
 
 const CORPUS_TITLES = ["moby dick", "ship", "anglo-saxon", "star trek deep space nine"];
 

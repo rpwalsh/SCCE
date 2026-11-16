@@ -28,10 +28,8 @@ describe("event ledger immutability trigger (plan item 64)", () => {
       adapters.push(adapter);
       await adapter.migrate();
       const id = `event.immutability.${randomUUID()}`;
-      await adapter.query(
-        `INSERT INTO ${adapter.table("events")}(id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)`,
-        [id, "episode.immutability", "ImmutabilityTest", 1, "{}", [], `hash_${id}`, `ledger_${id}`]
-      );
+      await adapter.events.append({ id, episodeId: "episode.immutability", typeId: "ImmutabilityTest", t: 1,
+        payload: {}, parents: [], hash: `hash_${id}` } as never);
       // Issued directly via adapter.query -- no application-layer guard
       // in between, only the database's own trigger can stop this.
       await expect(adapter.query(`UPDATE ${adapter.table("events")} SET t = 2 WHERE id = $1`, [id]))

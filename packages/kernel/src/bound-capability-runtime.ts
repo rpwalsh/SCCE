@@ -8,6 +8,7 @@ import { createActionPlanner } from "./safety.js";
 import { validateProgramGraphHydration } from "./program-runtime.js";
 import type { ApprovalPort, CapabilityAuditStore } from "./storage.js";
 import type { CapabilityApprovalScope, CapabilityPlan, EpisodeId, Hasher, PolicyProfile } from "./types.js";
+import { throwIfRuntimeAborted } from "./runtime-cancellation.js";
 
 export async function executeBoundCapability(input: {
   binding: VerifiedCapabilityBinding;
@@ -17,6 +18,7 @@ export async function executeBoundCapability(input: {
   workspaceContext?: import("./types.js").JsonValue;
   maxCalls?: number;
   operationId?: string;
+  signal?: AbortSignal;
   episodeId: EpisodeId;
   ownerId: string;
   policyVersionId: string;
@@ -28,6 +30,7 @@ export async function executeBoundCapability(input: {
   hasher: Hasher;
   now(): number;
 }) {
+  throwIfRuntimeAborted(input.signal, "capability.binding.start");
   if (!capabilityBindingVerified(input.binding, input.requestText)) throw new Error("capability construction binding is not verified");
   const steps: RuntimeCapabilityPlanStep[] = structuredClone(input.binding.steps ?? [{ id: "action", capabilityId: input.binding.capabilityId,
     payload: input.binding.payload, dependencyStepIds: [] }]);
@@ -64,7 +67,7 @@ export async function executeBoundCapability(input: {
   const accounted = new Set<string>();
   const run = () => invokeRuntimeCapabilityPlan({ capabilities: input.capabilities, episodeId: executiveEpisodeId, goalId,
     ownerId, policyVersionId, steps, approvals,
-    maxDispatches: remaining, requirementIds });
+    maxDispatches: remaining, requirementIds, ...(input.signal ? { signal: input.signal } : {}) });
   let report = await run();
   const planFor = (task: { taskId: string; capabilityId: string; inputRef: string; payload: import("./types.js").JsonValue }) => {
     const capability = input.capabilities.catalog().find(row => row.id === task.capabilityId);
@@ -86,7 +89,7 @@ export async function executeBoundCapability(input: {
     }
   };
   account();
-  while (report.pendingTask && remaining > 0) {
+  while (report.pendingTask && remaining > 0 && !input.signal?.aborted) {
     const task = report.pendingTask;
     const plan = planFor(task);
     plans.set(task.taskId, plan);

@@ -7,6 +7,7 @@ import { runExecutiveGoal, type ExecutiveGoalRunInput, type ExecutiveResultBindi
 import { canonicalStringify, createHasher, redactSecrets, toJsonValue } from "./primitives.js";
 import type { BlobStore, DialogueMemoryStore } from "./storage.js";
 import type { Capability, ContentHash, Hasher, JsonValue } from "./types.js";
+import { throwIfRuntimeAborted } from "./runtime-cancellation.js";
 
 export interface CapabilityOperation {
   capability: Capability;
@@ -28,6 +29,7 @@ export interface CapabilityObservation {
   inputRef: string;
   result?: JsonValue;
   error?: string;
+  cancelledBeforeExecution?: true;
 }
 
 export interface RuntimeCapabilityResult extends CapabilityDispatchResult {
@@ -42,7 +44,7 @@ export interface RuntimeCapabilities {
   catalog(): readonly Capability[];
   operations(): readonly (Pick<CapabilityOperation, "capability" | "phase" | "inputSchema"> & { compensationCapabilityId?: string })[];
   executors: CapabilityExecutorRegistry;
-  dispatch(input: CapabilityDispatchInput): Promise<RuntimeCapabilityResult>;
+  dispatch(input: CapabilityDispatchInput, control?: { signal?: AbortSignal }): Promise<RuntimeCapabilityResult>;
   runGoal(input: ExecutiveGoalRunInput): Promise<RuntimeCapabilityGoalResult>;
   rollback(input: { episodeId: string; taskId: string }): ReturnType<typeof dispatchRollbackAttempt>;
 }
@@ -56,6 +58,8 @@ export function createRuntimeCapabilities(input: {
   hasher?: Hasher;
   now?: () => number;
   dialogueMemory?: Pick<DialogueMemoryStore, "putCalibrationObservation">;
+  requestSignal?(): AbortSignal | undefined;
+  withDispatchedEffect?<T>(operation: () => Promise<T>): Promise<T>;
 }): RuntimeCapabilities {
   const hasher = input.hasher ?? createHasher();
   const now = input.now ?? (() => Date.now());
@@ -81,14 +85,22 @@ export function createRuntimeCapabilities(input: {
       inputRef: request.invocation.inputRef };
     let status: "succeeded" | "failed" | "indeterminate";
     let outputRefs: string[] = [];
+    const signal = request.signal ?? input.requestSignal?.();
+    let cancelledBeforeExecution = false;
     try {
-      observation.result = await operation.execute(request.payload, { attemptKind: request.invocation.attemptKind });
+      const executeOperation = () => {
+        if (signal?.aborted) { cancelledBeforeExecution = true; throwIfRuntimeAborted(signal, "capability.execute"); }
+        return operation.execute(request.payload, { attemptKind: request.invocation.attemptKind });
+      };
+      observation.result = await (operation.phase !== "read" && input.withDispatchedEffect
+        ? input.withDispatchedEffect(executeOperation) : executeOperation());
       status = operation.succeeded?.(observation.result) === false ? "failed" : "succeeded";
       outputRefs = operation.outputRefs?.(observation.result) ?? [];
     } catch (error) {
       observation.error = redactSecrets(error instanceof Error ? error.message : String(error));
-      observation.result = operation.partialResult?.(error);
-      status = observation.result === undefined ? "indeterminate" : "failed";
+      if (cancelledBeforeExecution) observation.cancelledBeforeExecution = true;
+      else observation.result = operation.partialResult?.(error);
+      status = cancelledBeforeExecution || observation.result !== undefined ? "failed" : "indeterminate";
       if (observation.result !== undefined) outputRefs = operation.outputRefs?.(observation.result) ?? [];
     }
     const hash = await input.blobs.put(new TextEncoder().encode(canonicalStringify(observation)), "application/json");
@@ -140,7 +152,8 @@ export function createRuntimeCapabilities(input: {
         if (!operation?.capability.configured) throw new Error(`capability unavailable: ${task.task.capabilityId}`);
         if (!task.resultBindings?.length) operation.validate(task.payload);
       }
-      const result = await runExecutiveGoal(deps, request);
+      const signal = request.signal ?? input.requestSignal?.();
+      const result = await runExecutiveGoal(deps, signal ? { ...request, signal } : request);
       const observations: RuntimeCapabilityGoalResult["observations"] = [];
       for (const original of request.tasks) {
         const task = result.state.tasks[original.task.id];
@@ -154,7 +167,7 @@ export function createRuntimeCapabilities(input: {
       }
       return { ...result, observations };
     },
-    async dispatch(request) {
+    async dispatch(request, control) {
       const operation = operations.get(request.task.capabilityId);
       if (!operation?.capability.configured) throw new Error(`capability unavailable: ${request.task.capabilityId}`);
       operation.validate(request.payload);
@@ -167,7 +180,7 @@ export function createRuntimeCapabilities(input: {
         const attempt = Object.values(existing.attempts).find(row => row.taskId === task.id && row.kind === "execution");
         if (attempt?.payloadHash && attempt.payloadHash !== hasher.digestHex(canonicalStringify(request.payload))) throw new Error("capability task payload changed");
       }
-      const dispatched = await dispatchCapabilityTask(deps, request);
+      const dispatched = await dispatchCapabilityTask(deps, request, control?.signal ?? input.requestSignal?.());
       const observation = dispatched.receipt ? await readObservation(dispatched.receipt.outputRefs) : undefined;
       if (observation && (observation.capabilityId !== request.task.capabilityId || observation.inputRef !== request.task.inputRef)) throw new Error("capability observation identity differs");
       return { ...dispatched, ...(observation ? { observation } : {}) };
@@ -200,6 +213,7 @@ export async function invokeRuntimeCapabilityPlan(input: {
   approvals?: readonly { taskId: string; inputRef: string }[];
   maxDispatches: number;
   requirementIds?: string[];
+  signal?: AbortSignal;
 }) {
   const hasher = createHasher();
   const stepIds = new Set(input.steps.map(step => step.id));
@@ -209,7 +223,7 @@ export async function invokeRuntimeCapabilityPlan(input: {
   const objectiveRef = hasher.digestHex(canonicalStringify(input.steps));
   const goal = { id: input.goalId, goalClassId: "goal.class.capability", objectiveRef,
     requirementIds: input.requirementIds ?? [], ownerId: input.ownerId };
-  return input.capabilities.runGoal({ maxDispatches: input.maxDispatches, tasks: input.steps.map(step => {
+  return input.capabilities.runGoal({ maxDispatches: input.maxDispatches, ...(input.signal ? { signal: input.signal } : {}), tasks: input.steps.map(step => {
     const operation = input.capabilities.operations().find(row => row.capability.id === step.capabilityId);
     if (!operation) throw new Error(`capability unavailable: ${step.capabilityId}`);
     const inputRef = hasher.digestHex(canonicalStringify(step.payload));
@@ -249,6 +263,7 @@ export async function invokeRuntimeCapability(input: {
   capabilityId: string;
   payload: JsonValue;
   approved: boolean;
+  signal?: AbortSignal;
   requirementIds?: string[];
   dependencyTaskIds?: string[];
   operatorOutcome?: CapabilityDispatchInput["operatorOutcome"];
@@ -274,5 +289,5 @@ export async function invokeRuntimeCapability(input: {
     ...(input.approved ? { approvalDecision: { decisionId: `approval_${input.taskId}`, decision: "approved" as const,
       policyId: approvalPolicyId, decidedBy: input.ownerId, evidenceRefs: [inputRef] } } : {}),
     payload: input.payload, outcomeEvidenceRefs: [], operatorOutcome: input.operatorOutcome
-  });
+  }, input.signal ? { signal: input.signal } : undefined);
 }

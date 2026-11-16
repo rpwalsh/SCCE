@@ -86,6 +86,7 @@ function sharedStateFor(config: ScceRuntimeConfig): SharedConnectorPolicyState {
 
 export class ConnectorPolicyGate {
   private readonly requestBudget = new AsyncLocalStorage<{ used: number; signal?: AbortSignal }>();
+  private readonly requestCancellationMasked = new AsyncLocalStorage<{ active: boolean }>();
   /**
    * When each connector last ran, keyed by connector -- the rate limit it feeds is defined per connector.
    *
@@ -114,7 +115,16 @@ export class ConnectorPolicyGate {
 
   private requestsUsed(): number { return this.requestBudget.getStore()?.used ?? this.shared.admittedRequests; }
 
-  requestSignal(): AbortSignal | undefined { return this.requestBudget.getStore()?.signal; }
+  requestSignal(): AbortSignal | undefined { return this.requestCancellationMasked.getStore()?.active ? undefined : this.requestBudget.getStore()?.signal; }
+
+  /** Only one dispatched effect loses the request-abort signal; its existing budget object is shared. */
+  withRequestCancellationMasked<T>(operation: () => Promise<T>): Promise<T> {
+    const scope = { active: true };
+    return this.requestCancellationMasked.run(scope, async () => {
+      try { return await operation(); }
+      finally { scope.active = false; }
+    });
+  }
 
   private rateKey(connector: ConnectorRequestRecord["connector"], operation: string): string {
     // Search and fetch share one provider budget even when the operator leaves
@@ -128,7 +138,7 @@ export class ConnectorPolicyGate {
     const key = this.rateKey(input.connector, input.operation);
     const previous = this.shared.waitingOperations.get(key) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
-      const signal = this.requestBudget.getStore()?.signal;
+      const signal = this.requestSignal();
       signal?.throwIfAborted();
       const policy = this.effectivePolicy();
       const rate = input.connector === "web" ? this.config.connectors.web?.requestsPerMinute ?? DEFAULT_WEB_REQUESTS_PER_MINUTE : policy.maxNetworkRequests;

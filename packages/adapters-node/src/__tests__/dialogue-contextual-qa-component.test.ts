@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { createScceKernel, createClock, createHasher, createIdFactory, contextualQaRequestMatches, verifyContextualQaConstruction, toJsonValue, canonicalStringify,
   CONTEXTUAL_QA_CONSTRUCTION_RECIPE, LANGUAGE_IDENTITY_DISCOVERY_RECIPE, LANGUAGE_IDENTITY_SCHEMA,
   type EvidenceSpan, type IngestionCheckpoint, type LanguageIdentityRecord, type LanguagePatternRecord, type TranscriptTurn,
+  type SourceVersion,
   type ContextualQaRequestForm } from "@scce/kernel";
 import { trainDialogueCorpus } from "../dialogue-corpus.js";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
@@ -73,6 +74,9 @@ async function fixture(source = corpus()) {
   storage.userModelClaims = { putClaim: async () => undefined, listClaims: async () => [] };
   storage.taskResumption = { putSnapshot: async () => undefined, getLatestSnapshot: async () => null };
   const checkpoints = new Map<string, IngestionCheckpoint>();
+  const versions = new Map<string, SourceVersion>();
+  storage.evidence.putSourceVersion = async row => { versions.set(String(row.sourceVersionId), structuredClone(row)); };
+  storage.evidence.sourceVersionById = async id => structuredClone(versions.get(String(id)) ?? null);
   storage.ingestion = { get: async id => checkpoints.get(id) ?? null, put: async row => { checkpoints.set(row.id, structuredClone(row)); },
     list: async () => [...checkpoints.values()] } as typeof storage.ingestion;
   storage.evidence.putEvidenceSpan = async span => { const old = evidence.findIndex(row => row.id === span.id); if (old >= 0) evidence[old] = span; else evidence.push(span); };
@@ -250,7 +254,7 @@ it("learns a genuine human extractive form across original articles and answers 
   expect(await contextualQaForRequest({ storage: f.storage, hasher, requestText, evidence: f.evidence, generation: 0, authorityContext })).toBeUndefined();
 });
 
-it("does not freeze an unqualified contextual input as a complete publication", async () => {
+it("records a verified empty contextual publication without claiming an acquired family and replays its exact rejection reasons", async () => {
   const f = await fixture(), raw = corpus();
   for (const turn of raw.turns) turn.sourceFamilyId = "same.original.context";
   await writeFile(path.join(f.root, "human.json"), JSON.stringify(raw));
@@ -259,12 +263,22 @@ it("does not freeze an unqualified contextual input as a complete publication", 
   expect(first.contextualQaConstructions?.rejected.some(row => row.reason === "independent_role_contrast_missing")).toBe(true);
   const receipt = [...f.checkpoints.values()].filter(row => jsonRecord(row.metadata).schema === "scce.dialogue_contextual_qa_compilation.v1");
   expect(receipt).toHaveLength(1);
-  expect(receipt[0]).toMatchObject({ phase: "extracting", status: "running" });
+  expect(receipt[0]).toMatchObject({ phase: "stored", status: "complete" });
   expect(jsonRecord(receipt[0]!.metadata)).toMatchObject({ compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
-    projections: [], preparation: "running" });
+    projections: [{ patternIds: [] }], emptyResult: { schema: "scce.dialogue_source_component_empty_result.v1",
+      report: { pairs: 4, qualifiedFamilies: 0, patternsPersisted: 0, unchanged: false, rejected: first.contextualQaConstructions!.rejected } } });
+  const immutableSourceState = async () => structuredClone({ evidence: f.evidence, models: await f.storage.languageMemory.listNgramModels(),
+    profiles: await f.storage.model.listLanguageProfiles(), sources: await Promise.all([...new Set(f.evidence.map(span => span.sourceVersionId))]
+      .map(id => f.storage.evidence.sourceVersionById!(id))) });
+  const beforeReplay = await immutableSourceState();
   const put = vi.spyOn(f.storage.ingestion, "put"), search = vi.spyOn(f.storage.evidence, "searchEvidence");
-  expect((await f.train()).contextualQaConstructions).toMatchObject({ qualifiedFamilies: 0, patternsPersisted: 0, unchanged: false });
-  expect(put).toHaveBeenCalledTimes(1); expect(search).toHaveBeenCalled();
+  const acquire = vi.spyOn(kernelModule, "acquireContextualQaConstructions");
+  expect((await f.train()).contextualQaConstructions).toMatchObject({ pairs: 4, qualifiedFamilies: 0, patternsPersisted: 0, unchanged: true,
+    rejected: first.contextualQaConstructions!.rejected });
+  expect(put).not.toHaveBeenCalled(); expect(acquire).not.toHaveBeenCalled();
+  expect(await immutableSourceState()).toEqual(beforeReplay);
+  // The independent request-edit component still establishes its current retained owner.
+  expect(search.mock.calls).toEqual([[{ sourceVersionId: f.evidence[0]!.sourceVersionId, status: "promoted", limit: [...raw.text].length + 1 }]]);
 });
 
 it.each([CONTEXTUAL_QA_CONSTRUCTION_RECIPE, "kernel.dialogue_contextual_qa.compiler.v2", "kernel.dialogue_contextual_qa.compiler.v3",

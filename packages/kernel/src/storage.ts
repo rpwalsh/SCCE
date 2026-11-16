@@ -796,6 +796,11 @@ export interface EvidenceStore {
    * Optional: stores without source identity simply carry no names.
    */
   sourceIdentityArbitration?(input: { text: string; runs: readonly string[] }): Promise<CorpusIdentityArbitration>;
+  /** Opaque committed corpus/access revision; transaction-local read scopes never reuse a completed transaction's identity. */
+  readSourceIdentityRevision?(): Promise<string>;
+  /** Prepare the same complete accessible title metadata used by arbitration, without a request surface. Read-only. */
+  prepareSourceIdentityMetadata?(): Promise<{ revision: string; sourceTitles: number }>;
+
   /**
    * The corpus's own distribution of how many sources carry a unit, used to derive where concentration begins
    * rather than declaring it. Sampled from the identity vocabulary, so it is a property of this corpus.
@@ -1473,8 +1478,8 @@ export interface KernelRuntimePorts {
   capabilities?: import("./capability-runtime.js").RuntimeCapabilities;
 }
 
-// Includes bounded lexical pages and source-owned construction decision pages.
-export const POSTGRES_SCHEMA_VERSION = 41;
+// Includes bounded lexical pages, source-owned construction decision pages, and durable event append positions.
+export const POSTGRES_SCHEMA_VERSION = 42;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",

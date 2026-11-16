@@ -13,7 +13,8 @@ function offlineAdapter(rows: (sql: string) => unknown[] = () => []): { adapter:
   const client = {
     async query(sql: string, params: readonly unknown[] = []) {
       statements.push({ sql, params });
-      return { rows: rows(sql) };
+      const result = rows(sql);
+      return { rows: sql.includes("event_ledger_position_snapshot") && !result.length ? [{ head: null, present: false, unpositioned: false, tail_position: null }] : result };
     },
     release() { /* offline */ }
   };
@@ -48,7 +49,7 @@ function mutableLedgerAdapter() {
   const client = {
     async query(sql: string, params: readonly unknown[] = []) {
       statements.push({ sql, params });
-      if (sql.startsWith("SELECT value_json")) return { rows: head ? [{ value_json: head }] : [] };
+      if (sql.includes("event_ledger_position_snapshot")) return { rows: [{ head: head ?? null, present: stored.size > 0, unpositioned: [...stored.values()].some(row => row.ledger_position == null), tail_position: String(stored.size || 0) }] };
       if (sql.startsWith("WITH RECURSIVE ledger_type_ids")) {
         const tail = [...stored.values()].sort((a, b) => Number(b.t) - Number(a.t) || String(b.id).localeCompare(String(a.id)))[0];
         return { rows: tail ? [{ ledger_hash: tail.ledger_hash }] : [] };
@@ -59,9 +60,9 @@ function mutableLedgerAdapter() {
           failNextEventInsert = false;
           throw new Error("injected event insert failure");
         }
-        for (let index = 0; index < params.length; index += 8) {
-          const [id, episode_id, type_id, t, payload, parents, hash, ledger_hash] = params.slice(index, index + 8);
-          if (!stored.has(String(id))) stored.set(String(id), { id, episode_id, type_id, t, payload_json: JSON.parse(String(payload)), parents, hash, ledger_hash });
+        for (let index = 0; index < params.length; index += 9) {
+          const [id, episode_id, type_id, t, payload, parents, hash, ledger_hash, ledger_position] = params.slice(index, index + 9);
+          if (!stored.has(String(id))) stored.set(String(id), { id, episode_id, type_id, t, payload_json: JSON.parse(String(payload)), parents, hash, ledger_hash, ledger_position });
         }
       } else if (sql.includes("INSERT INTO") && sql.includes("storage_meta")) head = JSON.parse(String(params[1]));
       return { rows: [] };
@@ -101,7 +102,7 @@ describe("postgres event ledger batch append", () => {
       expect(stored.get(String(source.id))?.ledger_hash).toBe(previous);
     }
     const lock = statements.findIndex(row => row.sql.includes("pg_advisory_xact_lock"));
-    const firstRead = statements.findIndex(row => row.sql.startsWith("SELECT value_json"));
+    const firstRead = statements.findIndex(row => row.sql.includes("event_ledger_position_snapshot"));
     expect(lock).toBeGreaterThan(-1);
     expect(lock).toBeLessThan(firstRead);
   });
@@ -154,7 +155,7 @@ describe("postgres event ledger batch append", () => {
 
     const written = inserts(statements);
     expect(written).toHaveLength(1);
-    expect(written[0]!.params).toHaveLength(37 * 8);
+    expect(written[0]!.params).toHaveLength(37 * 9);
     expect(written[0]!.sql).toContain("ON CONFLICT(id) DO NOTHING");
     expect(statements.map(statement => statement.sql)).toContain("BEGIN");
     expect(statements.map(statement => statement.sql)).toContain("COMMIT");
@@ -167,8 +168,9 @@ describe("postgres event ledger batch append", () => {
 
     const tail = statements.find(statement => statement.sql.includes("ledger_hash") && !statement.sql.includes("INSERT INTO"));
     expect(tail).toBeDefined();
-    // Without an index on (t, id) the unqualified ordering is a full-table sort; the tail must be scoped by type_id.
-    expect(tail!.sql).toContain("type_id");
+    // The durable position index supplies append order; wall-clock or identifier order has no ledger authority.
+    expect(tail!.sql).toContain("ledger_position");
+    expect(tail!.sql).not.toContain("ORDER BY t");
   });
 
   it("chains ledger hashes in the same order the events were given", async () => {
@@ -181,8 +183,8 @@ describe("postgres event ledger batch append", () => {
     let previous = "";
     for (const [index, source] of events.entries()) {
       const expected = createHash("sha256").update(`${previous}${UNIT_SEPARATOR}${source.hash}`).digest("hex");
-      expect(params[index * 8 + 7]).toBe(expected);
-      expect(params[index * 8]).toBe(source.id);
+      expect(params[index * 9 + 7]).toBe(expected);
+      expect(params[index * 9]).toBe(source.id);
       previous = expected;
     }
   });
@@ -196,9 +198,23 @@ describe("postgres event ledger batch append", () => {
     const written = inserts(statements);
     expect(written.length).toBeGreaterThan(1);
     for (const statement of written) expect(statement.params.length).toBeLessThanOrEqual(65_535);
-    expect(written.reduce((total, statement) => total + statement.params.length, 0)).toBe(9_000 * 8);
+    expect(written.reduce((total, statement) => total + statement.params.length, 0)).toBe(9_000 * 9);
   });
 
+  it("allocates append positions in caller order for backdated events and same-millisecond ID ties", async () => {
+    const { adapter, stored } = mutableLedgerAdapter();
+    const events = [{...event(0),id:"z",t:20},{...event(1),id:"a",t:1},{...event(2),id:"m",t:21},{...event(3),id:"b",t:21}] as unknown as ScceEvent[];
+    await adapter.events.appendBatch(events.slice(0,2)); await adapter.events.appendBatch(events.slice(2));
+    expect([...stored.values()].map(row=>[row.id,row.t,row.ledger_position])).toEqual([["z",20,"1"],["a",1,"2"],["m",21,"3"],["b",21,"4"]]);
+    let previous=""; for(const source of events){previous=createHash("sha256").update(previous+UNIT_SEPARATOR+source.hash).digest("hex");expect(stored.get(String(source.id))?.ledger_hash).toBe(previous);}
+  });
+
+  it("advances positioned heads above Number precision without rounding", async () => {
+    const head={eventId:"anchor",eventHash:"anchor_hash",ledgerHash:"anchor_ledger",ledgerPosition:"9007199254740993"};
+    const {adapter,statements}=offlineAdapter(sql=>sql.includes("event_ledger_position_snapshot")?[{head,present:true,unpositioned:false,tail_position:head.ledgerPosition}]
+      :sql.startsWith("SELECT id, hash")?[{id:head.eventId,hash:head.eventHash,ledger_hash:head.ledgerHash,ledger_position:head.ledgerPosition}]:[]);
+    await adapter.events.append(event(0));expect(inserts(statements)[0]!.params[8]).toBe("9007199254740994");
+  });
   it("writes nothing for an empty batch", async () => {
     const { adapter, statements } = offlineAdapter();
 

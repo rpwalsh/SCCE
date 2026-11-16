@@ -93,6 +93,10 @@ async function main(): Promise<void> {
       `graph=${warmup.graph?.nodes ?? 0}/${warmup.graph?.edges ?? 0}`,
       `language=${warmup.language?.models ?? 0}/${warmup.language?.units ?? 0}`,
       `requestLanguage=${warmup.requestLanguage?.languageId ?? "none"}/${warmup.requestLanguage?.units ?? 0}`,
+      `corpusTitles=${warmup.corpusIdentity?.sourceTitles ?? "unavailable"}`,
+      `corpusPreparationMs=${Math.round(warmup.corpusIdentity?.durationMs ?? 0)}`,
+      `requestClassifier=${warmup.requestClassifier?.disabled ? "disabled" : warmup.requestClassifier?.loaded ? "loaded" : "absent"}/${warmup.requestClassifier?.features ?? 0}`,
+      `classifierPreparationMs=${Math.round(warmup.requestClassifier?.durationMs ?? 0)}`,
       // Attribution for the repeated post-warmup OOMs: heapUsed is what the
       // --max-old-space-size limit actually governs, and external/arrayBuffers
       // is memory a heap bound does not cover at all. Reported every start so

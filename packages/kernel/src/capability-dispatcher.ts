@@ -41,6 +41,8 @@ export interface CapabilityExecutorDescriptor {
 }
 
 export interface CapabilityExecutionRequest {
+  /** In-process admission only; not part of the durable invocation identity. */
+  signal?: AbortSignal;
   invocation: CapabilityInvocationEnvelope;
   payload: JsonValue;
 }
@@ -193,7 +195,8 @@ export interface CapabilityDispatcherDeps {
  */
 export async function dispatchCapabilityTask(
   deps: CapabilityDispatcherDeps,
-  input: CapabilityDispatchInput
+  input: CapabilityDispatchInput,
+  signal?: AbortSignal
 ): Promise<CapabilityDispatchResult> {
   const executor = deps.executors.get(input.task.capabilityId);
   if (!executor) {
@@ -347,7 +350,7 @@ export async function dispatchCapabilityTask(
   let result: CapabilityExecutionResult;
   const startedAt = deps.now();
   try {
-    result = await executor.execute({ invocation: attempt.invocation, payload: input.payload });
+    result = await executor.execute({ invocation: attempt.invocation, payload: input.payload, ...(signal ? { signal } : {}) });
   } catch (error) {
     result = {
       status: "indeterminate",

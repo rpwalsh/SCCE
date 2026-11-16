@@ -258,10 +258,12 @@ function tableContracts(vectorDimensions: number, capacity: CorpusCapacityEstima
       col("parents", "TEXT[]", false, "parent event ids"),
       col("hash", "TEXT", false, "event hash", { unique: true }),
       col("ledger_hash", "TEXT", false, "hash-chain ledger head"),
+      col("ledger_position", "BIGINT", false, "durable cryptographically qualified append order", { unique: true }),
       col("created_at", "TIMESTAMPTZ", false, "created timestamp")
     ], [
       idx("events_episode_t_idx", "events", ["episode_id", "t"], "btree", "episode replay"),
-      idx("events_type_t_idx", "events", ["type_id", "t"], "btree", "event inspection")
+      idx("events_type_t_idx", "events", ["type_id", "t"], "btree", "event inspection"),
+      idx("events_ledger_position_idx", "events", ["ledger_position"], "btree", "bounded append-order tail and checkpoint suffix")
     ], capacity.eventRows, 900, 0.2, { by: "RANGE", column: "t", cadence: "monthly" }),
     table("source_versions", "versioned durable source identity", [
       col("source_version_id", "TEXT", false, "source version id", { primary: true }),

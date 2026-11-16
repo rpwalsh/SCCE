@@ -31,7 +31,8 @@ export async function persistDialogueContextualQaComponent(input: {
   preserveExisting?: boolean;
   signal?: AbortSignal;
 }): Promise<DialogueContextualQaReport> {
-  const unchanged = (): DialogueContextualQaReport => ({ schema: "scce.dialogue_contextual_qa_report.v1", pairs: 0,
+  const unchanged = (completedEmptyReport?: DialogueContextualQaReport): DialogueContextualQaReport => completedEmptyReport
+    ? { ...completedEmptyReport, unchanged: true } : ({ schema: "scce.dialogue_contextual_qa_report.v1", pairs: 0,
     compilerFingerprint: CONTEXTUAL_QA_COMPILER_FINGERPRINT,
     patternsPersisted: 0, qualifiedFamilies: 0, familyApplicability: [], rejected: [], unchanged: true });
   const hasher = createHasher();
@@ -140,7 +141,6 @@ export async function persistDialogueContextualQaComponent(input: {
           }
           patterns = [...new Map([...retained, ...patterns].map(pattern => [pattern.id, { ...pattern, informationLabel: input.informationLabel }])).values()];
         }
-        if (!patterns.length && !previous) continue;
         const dependencies = new Map<string, NonNullable<LanguagePatternProjection["sourceDependencies"]>[number]>();
         for (const dependency of families.flatMap(family => family.sourceDependencies)) {
           const prior = dependencies.get(String(dependency.sourceVersionId));

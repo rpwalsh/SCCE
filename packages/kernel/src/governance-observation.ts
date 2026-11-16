@@ -11,7 +11,8 @@ export interface GovernanceControlObservation {
 }
 
 export interface EventLedgerGovernanceObservation extends GovernanceControlObservation {
-  events: number;
+  /** Decimal strings retain exact counts beyond JavaScript's safe integer range. */
+  events: number | string;
   latestLedgerHash?: string;
 }
 

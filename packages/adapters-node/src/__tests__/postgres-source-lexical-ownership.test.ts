@@ -81,14 +81,16 @@ it.each(schemas)("filters %s by active ownership and complete membership before 
     requireComplete: true, limit: 10, maxTotalJsonBytes: 8192 });
   const query = calls.at(-1)!;
   expect(query.params).toContain(recipe);
-  for (const fragment of ["dependency_version.content_hash IS DISTINCT FROM", "dependency_evidence.status='promoted'",
+  for (const fragment of ["dependency_version.content_hash IS DISTINCT FROM", "selected_evidence.status='promoted'",
     "computation_member.id=member.pattern_id", "computation_member.profile_id=member.profile_id",
     "computation_member.source_system=member.source_system", "computation_member.pattern_schema=member.pattern_schema",
     "computation_member.component_recipe=member.projection_recipe", "computation_member.owned_source_version_id=member.source_version_id",
     "computation_member.pattern_kind='semantic_role'", "COALESCE(array_length(computation_member.evidence_ids,1),0)>0",
-    "active_projection.information_label", "pattern.information_label", "active_projection.key AS projection_key",
+    "active_projection.information_label", "pattern.information_label", "row_number() OVER () AS projection_key",
     "FULL JOIN active_projection_ids_0_dependencies allowed",
     "allowed.projection_key=requested.projection_key AND allowed.evidence_id=requested.evidence_id",
+    "declared.projection_key=membership.projection_key AND declared.dependency_ordinal=membership.dependency_ordinal",
+    "declared.source_id=membership.evidence_source_id AND declared.source_version_id=membership.evidence_source_version_id",
     "GROUP BY projection_key,profile_id,source_system,pattern_schema,projection_recipe,source_version_id,pattern_id",
     "HAVING bool_and(allowed_id IS NOT NULL)",
     "active_projection.value_json->>'sourceSystem'='workspace'", "complete_stats", "expected_pattern_count=complete_stats.complete_pattern_count"]) {

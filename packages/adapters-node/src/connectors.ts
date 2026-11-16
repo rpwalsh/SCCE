@@ -60,6 +60,9 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
     return this.gate.withRequestBudget(operation, signal);
   }
 
+  requestSignal(): AbortSignal | undefined { return this.gate.requestSignal(); }
+  withRequestCancellationMasked<T>(operation: () => Promise<T>): Promise<T> { return this.gate.withRequestCancellationMasked(operation); }
+
   async fetch(uri: string): Promise<FetchedSource> {
     const url = new URL(uri);
     if (url.protocol === "https:" || url.protocol === "http:") return this.fetchWeb(url);

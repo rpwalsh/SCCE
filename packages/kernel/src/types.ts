@@ -1501,6 +1501,10 @@ export interface RuntimeWarmupInput {
 export interface RuntimeWarmupResult {
   schema: "scce.runtime_warmup.v1";
   totalMs: number;
+  /** Input-independent corpus title index and unchanged promoted-source spread threshold, completed before readiness. */
+  corpusIdentity?: { loaded: boolean; sourceTitles: number | null; concentration: number; durationMs: number };
+  /** The same admitted classifier instance used by ordinary turns. */
+  requestClassifier?: { loaded: boolean; features: number; disabled: boolean; durationMs: number };
   languageIdentities?: { readiness: import("./language-identity-runtime.js").LanguageIdentityReadiness; identities: number; assigned: number | null };
   graph?: {
     loaded: boolean;

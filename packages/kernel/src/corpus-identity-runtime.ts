@@ -11,7 +11,10 @@ import type { EvidenceStore } from "./storage.js";
  * this affordable inside a turn.
  */
 
+type IdentityEvidence = Pick<EvidenceStore, "sourceIdentityArbitration" | "sourceSpreadDistribution" | "readSourceIdentityRevision" | "prepareSourceIdentityMetadata">;
+
 interface CorpusIdentityMeasurements {
+  readonly revision: string | undefined;
   readonly identitiesByText: Map<string, Set<string>>;
   readonly answeredSpreadRuns: Set<string>;
   readonly spreadAnswers: Map<string, number>;
@@ -21,10 +24,14 @@ interface CorpusIdentityMeasurements {
 
 let measurementsByEvidence = new WeakMap<object, CorpusIdentityMeasurements>();
 let measurementGeneration = 0;
+let revisionReads = new WeakMap<object, Promise<string>>();
+let measurementEpochs = new WeakMap<object, object>();
 
 /** A source publication or activation invalidates only its evidence store's measurements. */
 export function invalidateCorpusIdentityMeasurements(evidence: object): void {
   measurementsByEvidence.delete(evidence);
+  revisionReads.delete(evidence);
+  measurementEpochs.set(evidence, {});
 }
 
 /** Sampling breadth for the spread distribution: wide enough for a stable Otsu split, paid once per store after success. */
@@ -33,7 +40,7 @@ const DISTRIBUTION_SAMPLE = 400;
 export async function primeCorpusIdentityForTurn(input: {
   requestText: string;
   closedClass: ReadonlySet<string>;
-  evidence: Pick<EvidenceStore, "sourceIdentityArbitration" | "sourceSpreadDistribution">;
+  evidence: IdentityEvidence;
   onTrace?: (record: {
     runs: number;
     measured: number;
@@ -48,14 +55,14 @@ export async function primeCorpusIdentityForTurn(input: {
 }): Promise<void> {
   const totalStarted = performance.now();
   const generation = measurementGeneration;
-  const measurements = measurementsFor(input.evidence);
+  const measurements = input.evidence.readSourceIdentityRevision ? await currentMeasurements(input.evidence) : measurementsFor(input.evidence);
   const runsStarted = performance.now();
   const runs = contentRuns(input.requestText, input.closedClass);
   const runsDurationMs = performance.now() - runsStarted;
   const thresholdStarted = performance.now();
   await ensureThreshold(measurements, input.evidence, generation);
   const thresholdDurationMs = performance.now() - thresholdStarted;
-  if (!measurementsAreCurrent(input.evidence, measurements, generation)) return;
+  if (!await measurementsAreCurrentRevision(input.evidence, measurements, generation)) return;
   let preparationStarted = performance.now();
   let preparationDurationMs = 0;
   // The identity question is asked of the whole request, so it is cached per request rather than per run.
@@ -68,7 +75,7 @@ export async function primeCorpusIdentityForTurn(input: {
     const arbitrationStarted = performance.now();
     const arbitration = await input.evidence.sourceIdentityArbitration({ text: input.requestText, runs: unmeasured });
     arbitrationDurationMs = performance.now() - arbitrationStarted;
-    if (!measurementsAreCurrent(input.evidence, measurements, generation)) return;
+    if (!await measurementsAreCurrentRevision(input.evidence, measurements, generation)) return;
     preparationStarted = performance.now();
     identities = new Set(arbitration.identities);
     if (measurements.identitiesByText.size >= 512) measurements.identitiesByText.clear();
@@ -123,7 +130,7 @@ export interface RequestCorpusSubject {
  */
 export async function measureRequestCorpusSubject(input: {
   requestText: string;
-  evidence?: Pick<EvidenceStore, "sourceIdentityArbitration">;
+  evidence?: Pick<EvidenceStore, "sourceIdentityArbitration" | "readSourceIdentityRevision">;
 }): Promise<RequestCorpusSubject> {
   const primed = corpusIdentitySignals();
   const closedClass = primed?.closedClass ?? new Set<string>();
@@ -131,11 +138,11 @@ export async function measureRequestCorpusSubject(input: {
   const arbitrate = input.evidence?.sourceIdentityArbitration;
   if (!input.evidence || !arbitrate) return { identities: [], measured: false, contentRuns: runs };
   const generation = measurementGeneration;
-  const measurements = measurementsFor(input.evidence);
+  const measurements = input.evidence.readSourceIdentityRevision ? await currentMeasurements(input.evidence) : measurementsFor(input.evidence);
   let identities = measurements.identitiesByText.get(input.requestText);
   if (identities === undefined) {
     const arbitration = await arbitrate({ text: input.requestText, runs: [] });
-    if (!measurementsAreCurrent(input.evidence, measurements, generation)) return { identities: [], measured: false, contentRuns: runs };
+    if (!await measurementsAreCurrentRevision(input.evidence, measurements, generation)) return { identities: [], measured: false, contentRuns: runs };
     identities = new Set(arbitration.identities);
     if (measurements.identitiesByText.size >= 512) measurements.identitiesByText.clear();
     measurements.identitiesByText.set(input.requestText, identities);
@@ -149,21 +156,67 @@ export async function measureRequestCorpusSubject(input: {
   return { identities: named, measured: true, contentRuns: runs };
 }
 
+/** Prepare corpus-wide metadata without priming any request's identities or learned field. */
+export async function prepareCorpusIdentityMetadata(evidence: IdentityEvidence): Promise<{ sourceTitles: number | null; concentration: number }> {
+  for (;;) {
+    const generation = measurementGeneration, measurements = evidence.readSourceIdentityRevision ? await currentMeasurements(evidence) : measurementsFor(evidence);
+    if (!measurementsAreCurrent(evidence, measurements, generation)) continue;
+    const [metadata] = await Promise.all([
+      evidence.prepareSourceIdentityMetadata?.(),
+      ensureThreshold(measurements, evidence, generation)
+    ]);
+    if (!await measurementsAreCurrentRevision(evidence, measurements, generation)) continue;
+    if (evidence.readSourceIdentityRevision && metadata && metadata.revision !== measurements.revision) continue;
+    if (measurements.threshold === undefined) throw new Error("corpus identity spread distribution preparation failed");
+    return { sourceTitles: metadata?.sourceTitles ?? null, concentration: measurements.threshold };
+  }
+}
+
+async function currentRevision(evidence: Pick<EvidenceStore, "readSourceIdentityRevision">): Promise<string | undefined> {
+  if (!evidence.readSourceIdentityRevision) return undefined;
+  let pending = revisionReads.get(evidence);
+  if (!pending) {
+    pending = evidence.readSourceIdentityRevision();
+    revisionReads.set(evidence, pending);
+  }
+  try {
+    const revision = await pending;
+    if (typeof revision !== "string" || !revision) throw new Error("source identity revision must be a nonempty opaque string");
+    return revision;
+  } finally { if (revisionReads.get(evidence) === pending) revisionReads.delete(evidence); }
+}
+
+async function currentMeasurements(evidence: Pick<EvidenceStore, "readSourceIdentityRevision">): Promise<CorpusIdentityMeasurements> {
+  let epoch = measurementEpochs.get(evidence);
+  if (!epoch) { epoch = {}; measurementEpochs.set(evidence, epoch); }
+  return measurementsFor(evidence, await currentRevision(evidence), epoch);
+}
+
+async function measurementsAreCurrentRevision(evidence: Pick<EvidenceStore, "readSourceIdentityRevision">, measurements: CorpusIdentityMeasurements, generation: number): Promise<boolean> {
+  if (!measurementsAreCurrent(evidence, measurements, generation)) return false;
+  const revision = await currentRevision(evidence);
+  if (!measurementsAreCurrent(evidence, measurements, generation)) return false;
+  if (revision !== measurements.revision) { measurementsByEvidence.delete(evidence); return false; }
+  return true;
+}
+
 function measurementsAreCurrent(evidence: object, measurements: CorpusIdentityMeasurements, generation: number): boolean {
   return generation === measurementGeneration && measurementsByEvidence.get(evidence) === measurements;
 }
 
-function measurementsFor(evidence: object): CorpusIdentityMeasurements {
+function measurementsFor(evidence: object, revision?: string, epoch?: object): CorpusIdentityMeasurements {
   const cached = measurementsByEvidence.get(evidence);
-  if (cached) return cached;
+  const currentEpoch = !epoch || measurementEpochs.get(evidence) === epoch;
+  if (currentEpoch && cached && cached.revision === revision) return cached;
   const created: CorpusIdentityMeasurements = {
+    revision,
     identitiesByText: new Map(),
     answeredSpreadRuns: new Set(),
     spreadAnswers: new Map(),
     threshold: undefined,
     thresholdInFlight: undefined
   };
-  measurementsByEvidence.set(evidence, created);
+  if (currentEpoch) measurementsByEvidence.set(evidence, created);
   return created;
 }
 
@@ -194,5 +247,7 @@ async function ensureThreshold(
 /** Test seam: forget every measurement, so a test starts from an unmeasured corpus. */
 export function resetCorpusIdentityMeasurements(): void {
   measurementsByEvidence = new WeakMap();
+  revisionReads = new WeakMap();
+  measurementEpochs = new WeakMap();
   measurementGeneration += 1;
 }

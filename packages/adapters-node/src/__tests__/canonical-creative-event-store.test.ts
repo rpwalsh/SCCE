@@ -97,9 +97,10 @@ function fixture(evidenceOverride = evidence, ownerOverride = owner) {
     } else if (sql.includes("INSERT INTO") && sql.includes('"induced_language_models"')) {
       if (!rows.models.some(row => row.id === params[0])) rows.models.push({ id: params[0], training_plan_id: params[1], model_json: JSON.parse(String(params[2])), information_label: JSON.parse(String(params[5])), created_at: new Date(Number(params[6])) });
     } else if (sql.includes("INSERT INTO") && sql.includes("(id, episode_id")) {
-      const [id, episode_id, type_id, t, payload, parents, hash, ledger_hash] = params;
-      rows.events.push({ id, episode_id, type_id, t, payload_json: JSON.parse(String(payload)), parents, hash, ledger_hash });
+      const [id, episode_id, type_id, t, payload, parents, hash, ledger_hash, ledger_position] = params;
+      rows.events.push({ id, episode_id, type_id, t, payload_json: JSON.parse(String(payload)), parents, hash, ledger_hash, ledger_position });
     } else if (sql.includes("INSERT INTO") && sql.includes("storage_meta")) state.head = JSON.parse(String(params[1]));
+    if (sql.includes("event_ledger_position_snapshot")) return { rows: [{head:state.head??null,present:rows.events.length>0,unpositioned:rows.events.some(row=>row.ledger_position==null),tail_position:rows.events.length?String(rows.events.length):null}] };
     if (sql.startsWith("SELECT value_json")) return { rows: state.head ? [{ value_json: state.head }] : [] };
     if (sql.startsWith("SELECT id, hash")) return { rows: rows.events.filter(row => (params[0] as string[]).includes(String(row.id))) };
     if (sql.startsWith("SELECT id, information_label")) return { rows: [] };

@@ -17,6 +17,7 @@ import {
   type LanguageProfile
 } from "../index.js";
 import type { EventRangeQuery } from "../storage.js";
+import { REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM, REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA } from "../request-communicative-act.js";
 import type { EpisodeId } from "../types.js";
 import type { LanguageIdentityRecord } from "../language-identity.js";
 import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
@@ -78,7 +79,7 @@ describe("corpus registry", () => {
       && query.limit === 2048)).toBe(true);
   });
 
-  it("skips the language capability entirely when startup asks for a lightweight warmup", async () => {
+  it("skips corpus language hydration while preparing the canonical classifier during lightweight warmup", async () => {
     const queried: LanguageMemoryQuery[] = [];
     const kernel = createScceKernel({
       storage: corpusQueryStorage(queried),
@@ -90,7 +91,7 @@ describe("corpus registry", () => {
     const result = await kernel.warmup({ language: false, graph: false, brain: false, profile: false, corrections: false });
 
     expect(result.language).toBeUndefined();
-    expect(queried).toEqual([]);
+    expect(queried).toEqual([{sourceSystem:REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,profileIds:[],patternSchemas:[REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA],limit:2048}]);
   });
 
   it("warms one canonical request seed by typed natural-language role and reuses it", async () => {
@@ -121,11 +122,13 @@ describe("corpus registry", () => {
     expect(result.requestLanguage).toMatchObject({ loaded: true, languageId: natural.id });
     expect(queried.some(query => query.sourceSystem === "oss_code")).toBe(false);
     expect(queried.length).toBeGreaterThan(0);
-    const queriesAfterWarmup = queried.length;
+    const queriesAfterWarmup = queried.filter(query => query.sourceSystem !== REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM).length;
 
     await kernel.warmup({ language: false, requestLanguage: true, graph: false, brain: false, profile: false, corrections: false });
 
-    expect(queried).toHaveLength(queriesAfterWarmup);
+    expect(queried.filter(query => query.sourceSystem !== REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM)).toHaveLength(queriesAfterWarmup);
+    // No trained classifier exists in this fixture, so its existing absent-model retry policy remains in force.
+    expect(queried.filter(query => query.sourceSystem === REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM)).toHaveLength(2);
   });
 
   it("warms general request language instead of a larger software-document identity", async () => {
@@ -167,7 +170,7 @@ describe("corpus registry", () => {
     const result = await kernel.warmup({ language: false, requestLanguage: true, graph: false, brain: false, profile: false, corrections: false });
 
     expect(result.requestLanguage).toMatchObject({ loaded: false });
-    expect(queried).toEqual([]);
+    expect(queried).toEqual([{sourceSystem:REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,profileIds:[],patternSchemas:[REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA],limit:2048}]);
   });
 
   it("defers source-owned language hydration until a source is selected", async () => {

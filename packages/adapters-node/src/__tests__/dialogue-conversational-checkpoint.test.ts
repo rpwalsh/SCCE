@@ -119,7 +119,9 @@ describe("cached-source conversational component replay", () => {
       expect(compiler).not.toHaveBeenCalled(); expect(induce).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled();
       const savedAuxiliary = structuredClone(auxiliary);
       await trainDialogueCorpus({ ...options, maxFilesPerRun: 1 });
-      expect(publish).not.toHaveBeenCalled();
+      // A newly scoped request-edit pool may publish its own empty result;
+      // this test protects the already-owned conversational publication.
+      expect(publish.mock.calls.filter(([input]) => input.projection.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID)).toHaveLength(0);
       expect([...f.projections.values()].filter(row => row.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID)).toEqual(savedAuxiliary);
       induce.mockClear();
       // A recipe receipt cannot conceal a missing or superseded active publication.

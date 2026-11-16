@@ -32,7 +32,7 @@ async function getterQuery(schema: string = LEXICAL_SENSE_SCHEMA, recipe: string
 const listingParams = new Map<string,unknown[]>();
 async function listingQuery(schema: string) {
   const adapter = fixture(), calls: string[] = [];
-  adapter.query = async <T>(sql: string,params:unknown[]=[]): Promise<T[]> => { calls.push(sql);listingParams.set(sql,params);return []; };
+  adapter.query = async <T>(sql: string,params:unknown[]=[]): Promise<T[]> => { calls.push(sql);listingParams.set(sql,params);return sql.startsWith("SELECT DISTINCT pattern.profile_id,pattern.source_system") ? [{ profile_id: "profile", source_system: schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA ? "dialogue" : "workspace" }] as T[] : []; };
   await adapter.languageMemory.listLanguagePatterns({ patternSchemas: [schema], profileId: "profile", sourceSystem: schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA ? "dialogue" : "workspace", limit: 512 });
   return calls.find(sql => sql.includes("candidate_pool AS MATERIALIZED"))!;
 }

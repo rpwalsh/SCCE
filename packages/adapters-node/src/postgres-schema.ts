@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_SOURCE_SYSTEM,
-  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LEXICAL_SENSE_SCHEMA, LEXICAL_GRAMMAR_SCHEMA, SOURCE_QUESTION_FRAME_SCHEMA, REQUEST_REQUIREMENT_PATTERN_SCHEMA, SOURCE_REQUEST_EDIT_SCHEMA, SOURCE_REQUEST_EDIT_RECIPE, type InformationAccessContext } from "@scce/kernel";
+  POSTGRES_REQUIRED_TABLES, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LEXICAL_SENSE_SCHEMA, LEXICAL_GRAMMAR_SCHEMA, SOURCE_QUESTION_FRAME_SCHEMA, REQUEST_REQUIREMENT_PATTERN_SCHEMA, SOURCE_REQUEST_EDIT_SCHEMA, SOURCE_REQUEST_EDIT_RECIPE, type InformationAccessContext } from "@scce/kernel";
+import type { PoolClient } from "pg";
 import { evidenceTextReferenceSchemaStatements } from "./evidence-text-reference-schema.js";
 import { canonicalBlobSchemaStatements } from "./canonical-evidence-text.js";
 import { LANGUAGE_PATTERN_SELECTION_HEADERS, languagePatternSelectionHeaderStatement } from "./postgres-language-pattern-headers.js";
@@ -360,7 +361,11 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
     `CREATE SCHEMA IF NOT EXISTS ${q}`,
     `CREATE TABLE IF NOT EXISTS ${q}.storage_meta (key TEXT PRIMARY KEY, value_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
-    `CREATE TABLE IF NOT EXISTS ${q}.events (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, type_id TEXT NOT NULL, t BIGINT NOT NULL, payload_json JSONB NOT NULL, parents TEXT[] NOT NULL, hash TEXT NOT NULL UNIQUE, ledger_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+    `CREATE TABLE IF NOT EXISTS ${q}.events (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, type_id TEXT NOT NULL, t BIGINT NOT NULL, payload_json JSONB NOT NULL, parents TEXT[] NOT NULL, hash TEXT NOT NULL UNIQUE, ledger_hash TEXT NOT NULL, ledger_position BIGINT NOT NULL CHECK (ledger_position > 0), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+    // Retained rows acquire their positions only through explicit cryptographically qualified maintenance.
+    `ALTER TABLE ${q}.events ADD COLUMN IF NOT EXISTS ledger_position BIGINT CHECK (ledger_position > 0)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_${clean(q)}_event_ledger_position ON ${q}.events(ledger_position)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_event_unpositioned ON ${q}.events(id) WHERE ledger_position IS NULL`,
     // Plan item 63: the event ledger's append-only guarantee must not
     // depend on application discipline alone. This trigger rejects
     // UPDATE/DELETE unconditionally, regardless of which role executes
@@ -802,7 +807,7 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     segmentation_consolidation_runs: ["run_id", "scope_id", "state", "run_json", "snapshot_json", "inference_json", "information_label", "created_at"],
     segmentation_consolidation_rows: ["run_id", "collection", "order_key", "row_json"],
     segmentation_consolidation_active: ["scope_id", "run_id", "header_json", "activated_at"],
-    events: ["id", "episode_id", "type_id", "payload_json", "ledger_hash"],
+    events: ["id", "episode_id", "type_id", "payload_json", "ledger_hash", "ledger_position"],
     conversation_turns: ["id", "session_id", "episode_id", "turn_index", "role_id", "text", "evidence_ids", "metadata_json"],
     blobs: ["content_hash", "media_type", "byte_length", "content", "range_parent_hash", "range_start", "range_end", "archive_reference"],
     sources: ["id", "namespace", "canonical_uri"],
@@ -859,6 +864,33 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     target_profile_patterns: ["id", "target_profile_id", "pattern_family_id", "pattern_json", "evidence_ids", "alpha"],
     calibration_observations: ["id", "calibration_id", "subsystem_id", "task_class", "raw_score", "outcome", "final_outcome", "metadata_json"]
   };
+}
+
+export async function requiredSchemaErrors(client: Pick<PoolClient, "query">, schema: string, options: { allowAbsentLedgerPosition?: boolean } = {}): Promise<string[]> {
+  const tables = await client.query<{ table_name: string }>(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema=$1`,
+    [schema]
+  );
+  const tableSet = new Set(tables.rows.map(row => row.table_name));
+  const errors = POSTGRES_REQUIRED_TABLES.filter(table => !tableSet.has(table)).map(table => `missing table: ${table}`);
+  const columns = await client.query<{ table_name: string; column_name: string }>(
+    `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=$1`,
+    [schema]
+  );
+  const columnMap = new Map<string, Set<string>>();
+  for (const row of columns.rows) {
+    let set = columnMap.get(row.table_name);
+    if (!set) {
+      set = new Set();
+      columnMap.set(row.table_name, set);
+    }
+    set.add(row.column_name);
+  }
+  for (const [table, requiredColumns] of Object.entries(requiredHydrationColumns())) {
+    const existing = columnMap.get(table) ?? new Set<string>();
+    for (const column of requiredColumns) if (!(options.allowAbsentLedgerPosition === true && table === "events" && column === "ledger_position") && !existing.has(column)) errors.push(`missing column: ${table}.${column}`);
+  }
+  return errors;
 }
 
 /** A concurrent migration created the same database-wide extension first; both wanted it present, and it is. */

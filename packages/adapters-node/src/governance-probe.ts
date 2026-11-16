@@ -1,17 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { createPositionedEventLedgerObserver, fullyVerifyPositionedEventLedger, verifyPositionedEventLedgerRows, type PositionedGovernanceEventRow } from "./positioned-event-ledger-governance.js";
 import { createHash, verify as verifyCryptographicSignature } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   canonicalStringify,
-  createAuditEngine,
-  createHasher,
   governanceObservation,
-  hashEvent,
   toJsonValue,
   type EventLedgerGovernanceObservation,
-  type EventChainVerification,
   type GovernanceControlObservation,
   type GovernanceObservation,
   type GovernanceProbe,
@@ -23,7 +20,6 @@ import {
   type PolicyIntegrityGovernanceObservation,
   type PolicyProfile,
   type RollbackGovernanceObservation,
-  type ScceEvent
 } from "@scce/kernel";
 import type { ApprovalSession } from "./approval-session.js";
 import type { PostgresStorageAdapter } from "./postgres.js";
@@ -45,43 +41,7 @@ export interface NodePostgresGovernanceProbeOptions {
   environment?: GovernanceEnvironment;
 }
 
-/**
- * Durable-across-restart position is intentionally not required here: this
- * checkpoint lives only in the probe's own closure, for the lifetime of one
- * running process. A restart naturally does one full scan to
- * re-establish it (see `observeEventLedger` below) -- correct and safe,
- * just not free. What this fixes is the real, confirmed cost problem: every
- * `.observe()` call within a long-running process previously re-read and
- * re-verified the *entire* event table from scratch (see
- * `packages/kernel/src/production-turn-runtime.ts`'s governance checkpoint
- * calling this every turn). A durably-persisted checkpoint (surviving
- * restarts too) is a further optimization, not required to fix the
- * confirmed O(total events)-per-call cost.
- */
-interface EventLedgerCheckpointState {
-  anchorEventId: string;
-  anchorT: number;
-  anchorHash: string;
-  anchorLedgerHash: string;
-  /** Total verified events at this checkpoint -- preserves the `events` field's original "total ledger size" meaning under incremental verification. */
-  totalEvents: number;
-}
-
-export interface PostgresGovernanceEventRow {
-  id: string;
-  episode_id: string;
-  type_id: string;
-  t: string | number;
-  payload_json: JsonValue;
-  parents: string[];
-  hash: string;
-  ledger_hash: string;
-}
-
-type PostgresGovernanceEventHeader = Omit<PostgresGovernanceEventRow, "payload_json"> & { payload_stored_bytes?: string | number };
-const GOVERNANCE_PAYLOAD_PAGE_STORED_BYTES = 2 * 1024 * 1024;
-const GOVERNANCE_PAYLOAD_PAGE_ROWS = 64;
-const yieldEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
+export type PostgresGovernanceEventRow = PositionedGovernanceEventRow;
 
 interface ManifestRead {
   configuredPath?: string;
@@ -96,18 +56,15 @@ export function createNodePostgresGovernanceProbe(
     ...(options.environment ?? process.env)
   });
   const workspaceRoot = path.resolve(options.workspaceRoot);
-  // Opt back into the historical whole-ledger scan at process start, for an
-  // operator who wants it inline rather than from the scheduled audit.
-  const fullScanOnStart = ["1", "true", "on", "yes"].includes(String(environment.SCCE_GOVERNANCE_FULL_LEDGER_SCAN_ON_START ?? "").trim().toLowerCase());
   const boundedFirstScanEvents = (() => {
     const parsed = Number.parseInt(String(environment.SCCE_GOVERNANCE_LEDGER_WINDOW_EVENTS ?? ""), 10);
     return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 100_000) : 4096;
   })();
-  let ledgerCheckpoint: EventLedgerCheckpointState | undefined;
+  const observePositionedLedger = createPositionedEventLedgerObserver(options.storage, boundedFirstScanEvents);
   let eventLedgerObservation: Promise<EventLedgerGovernanceObservation> | undefined;
   const observeEventLedgerOnce = (): Promise<EventLedgerGovernanceObservation> => {
     if (!eventLedgerObservation) {
-      eventLedgerObservation = observeEventLedgerIncremental().finally(() => { eventLedgerObservation = undefined; });
+      eventLedgerObservation = observePositionedLedger().finally(() => { eventLedgerObservation = undefined; });
     }
     return eventLedgerObservation;
   };
@@ -132,275 +89,6 @@ export function createNodePostgresGovernanceProbe(
     }
   };
 
-  /**
-   * Bounded live verification (layer 1 of the three-layer design): on the
-   * first call, or after any failure/tamper detection forces a reset, does
-   * one full scan (same cost as before, but now a one-time cost per
-   * process lifetime rather than per call). Every subsequent call verifies
-   * only that the checkpoint anchor row is byte-for-byte unchanged, then
-   * verifies just the suffix appended since -- the checkpoint's ledger
-   * hash chain is a real cryptographic continuation, so an unchanged
-   * anchor plus a verified suffix is exactly as strong a guarantee as a
-   * full rescan would give, at O(new events) instead of O(all events)
-   * cost. A mismatch at the anchor (mutation or deletion of ledger
-   * history) or a broken suffix chain both fail closed and force a full
-   * rescan on the next call.
-   */
-  async function observeEventLedgerIncremental(): Promise<EventLedgerGovernanceObservation> {
-    try {
-      if (!ledgerCheckpoint) return await establishLedgerCheckpoint();
-
-      const anchorRows = await options.storage.query<{ id: string; t: string | number; hash: string; ledger_hash: string }>(
-        `SELECT id, t, hash, ledger_hash FROM ${options.storage.table("events")} WHERE id = $1`,
-        [ledgerCheckpoint.anchorEventId]
-      );
-      const anchor = anchorRows[0];
-      if (!anchor || anchor.hash !== ledgerCheckpoint.anchorHash || anchor.ledger_hash !== ledgerCheckpoint.anchorLedgerHash) {
-        const expectedAnchorEventId = ledgerCheckpoint.anchorEventId;
-        ledgerCheckpoint = undefined;
-        return {
-          available: true,
-          passed: false,
-          reason: "checkpoint_anchor_mutated_or_missing",
-          events: 0,
-          evidence: toJsonValue({
-            mode: "incremental_suffix",
-            expectedAnchorEventId,
-            observedAnchor: anchor ?? null
-          })
-        };
-      }
-
-      const suffixRows = await options.storage.query<PostgresGovernanceEventHeader>(
-        `SELECT id, episode_id, type_id, t, parents, hash, ledger_hash, pg_column_size(payload_json) AS payload_stored_bytes
-           FROM ${options.storage.table("events")}
-          WHERE (t, id) > ($2, $1)
-          ORDER BY t ASC, id ASC`,
-        [ledgerCheckpoint.anchorEventId, Number(anchor.t)]
-      );
-
-      const eventChain = await verifyPayloadPages(suffixRows);
-      const brokenLedgerHashes: Array<{ eventId: string; expected: string; observed: string }> = [];
-      let runningLedgerHash = ledgerCheckpoint.anchorLedgerHash;
-      for (const row of suffixRows) {
-        const expected = sha256(`${runningLedgerHash}${row.hash}`);
-        if (row.ledger_hash !== expected) brokenLedgerHashes.push({ eventId: row.id, expected, observed: row.ledger_hash });
-        runningLedgerHash = row.ledger_hash;
-      }
-      const passed = eventChain.ok && brokenLedgerHashes.length === 0;
-      const totalEventsBefore = ledgerCheckpoint.totalEvents;
-      if (passed) {
-        if (suffixRows.length > 0) {
-          const last = suffixRows[suffixRows.length - 1]!;
-          ledgerCheckpoint = {
-            anchorEventId: last.id,
-            anchorT: Number(last.t),
-            anchorHash: last.hash,
-            anchorLedgerHash: last.ledger_hash,
-            totalEvents: totalEventsBefore + suffixRows.length
-          };
-        }
-      } else {
-        ledgerCheckpoint = undefined;
-      }
-      return {
-        available: true,
-        passed,
-        reason: passed
-          ? "verified_incremental"
-          : !eventChain.ok
-            ? "event_hash_chain_invalid"
-            : "postgres_ledger_hash_chain_invalid",
-        events: totalEventsBefore + suffixRows.length,
-        latestLedgerHash: suffixRows.at(-1)?.ledger_hash ?? anchor.ledger_hash,
-        evidence: toJsonValue({
-          mode: "incremental_suffix",
-          anchorEventId: anchor.id,
-          suffixEvents: suffixRows.length,
-          eventChain,
-          brokenLedgerHashes: brokenLedgerHashes.slice(0, 32)
-        })
-      };
-    } catch (error) {
-      ledgerCheckpoint = undefined;
-      return {
-        ...unavailableControl("event_ledger_probe_failed", error),
-        events: 0
-      };
-    }
-  }
-
-  /**
-   * First call of a process: establish the checkpoint against a BOUNDED
-   * window instead of reading the whole ledger.
-   *
-   * The full scan this replaces read every column of every row -- including
-   * payload_json, which is the bulk of the table -- so a 173k-event ledger
-   * pulled hundreds of megabytes into memory and hashed it, profiled at 16%
-   * of a turn's wall clock and rising with the ledger forever. The CLI pays
-   * it per turn, because there it is one process per turn.
-   *
-   * It bought less than its cost suggests. `scce db audit` (CLI, plan items
-   * 66/68) already exists as the periodic full audit, and its own comment
-   * states the point exactly: the bounded path "cannot see a tamper before
-   * its checkpoint anchor; this command is the only thing that can". A full
-   * scan at process start only moves that blind spot to the process's start
-   * time -- a tamper a second later is equally invisible to it. Whole-
-   * history assurance is the scheduled audit's job, and paying for a weaker
-   * version of it on the answer path bought latency, not safety.
-   *
-   * What this path is actually responsible for -- detecting tampering with
-   * events appended during this process's lifetime -- is unchanged: the
-   * anchor plus verified suffix chain still covers all of it. The bounded
-   * window verifies recent history too, so an obviously-corrupt tail still
-   * fails closed here rather than waiting for the audit.
-   *
-   * The observation reports mode "bounded_first_scan" and names the audit
-   * command, so a reader of the trace sees the limitation instead of
-   * inferring whole-ledger verification from a bare "verified".
-   */
-  async function establishLedgerCheckpoint(): Promise<EventLedgerGovernanceObservation> {
-    if (fullScanOnStart) return await fullyVerifyEventLedgerAndCheckpoint();
-
-    const windowSize = boundedFirstScanEvents;
-    const tailRows = await options.storage.query<PostgresGovernanceEventHeader>(
-      `SELECT id, episode_id, type_id, t, parents, hash, ledger_hash, pg_column_size(payload_json) AS payload_stored_bytes
-         FROM ${options.storage.table("events")}
-        ORDER BY t DESC, id DESC
-        LIMIT ${windowSize}`
-    );
-    // Sorted here rather than trusting the query's ORDER BY to survive the
-    // driver: the chain check is order-dependent, the window is bounded, and
-    // this matches the full scan's `ORDER BY t ASC, id ASC` exactly.
-    const rows = [...tailRows].sort((left, right) => Number(left.t) - Number(right.t) || left.id.localeCompare(right.id));
-    if (rows.length === 0) {
-      return { available: true, passed: false, reason: "event_ledger_empty", events: 0, evidence: toJsonValue({ mode: "bounded_first_scan", windowEvents: 0 }) };
-    }
-
-    const totalRows = await options.storage.query<{ count: string | number }>(
-      `SELECT count(*) AS count FROM ${options.storage.table("events")}`
-    );
-    const totalEvents = Number(totalRows[0]?.count ?? rows.length);
-
-    // The window's own hash chain must hold. Its first row's ledger hash
-    // cannot be checked without its predecessor, so continuity is verified
-    // from the second row on; the event hashes are all checkable.
-    const eventChain = await verifyPayloadPages(rows);
-    const brokenLedgerHashes: Array<{ eventId: string; expected: string; observed: string }> = [];
-    for (let index = 1; index < rows.length; index++) {
-      const previous = rows[index - 1]!;
-      const row = rows[index]!;
-      const expected = sha256(`${previous.ledger_hash}\u001f${row.hash}`);
-      if (row.ledger_hash !== expected) brokenLedgerHashes.push({ eventId: row.id, expected, observed: row.ledger_hash });
-    }
-    const passed = eventChain.ok && brokenLedgerHashes.length === 0;
-    if (passed) {
-      const last = rows[rows.length - 1]!;
-      ledgerCheckpoint = {
-        anchorEventId: last.id,
-        anchorT: Number(last.t),
-        anchorHash: last.hash,
-        anchorLedgerHash: last.ledger_hash,
-        totalEvents
-      };
-    }
-    return {
-      available: true,
-      passed,
-      reason: passed
-        ? "verified_bounded_window"
-        : !eventChain.ok
-          ? "event_hash_chain_invalid"
-          : "postgres_ledger_hash_chain_invalid",
-      events: totalEvents,
-      latestLedgerHash: rows[rows.length - 1]!.ledger_hash,
-      evidence: toJsonValue({
-        mode: "bounded_first_scan",
-        windowEvents: rows.length,
-        totalEvents,
-        unverifiedOlderEvents: Math.max(0, totalEvents - rows.length),
-        eventChain,
-        brokenLedgerHashes: brokenLedgerHashes.slice(0, 32),
-        wholeHistoryAssurance: "scce db audit"
-      })
-    };
-  }
-
-  /**
-   * Verify the entire selected window without buffering its payloads together.
-   * Headers retain the complete parent/hash set before any page is read, so a
-   * parent on another page has the same meaning as in the original full read.
-   * The byte target only chooses transport pages: even an oversized event is
-   * read and checked. Nothing is sampled or omitted from the proof window.
-   */
-  async function verifyPayloadPages(headers: readonly PostgresGovernanceEventHeader[]): Promise<EventChainVerification> {
-    const byId = new Map(headers.map(row => [row.id, row]));
-    if (byId.size !== headers.length) throw new Error("duplicate event header in governance window");
-    const verification: EventChainVerification = {
-      ok: true, events: headers.length, firstEventId: headers[0]?.id as never, lastEventId: headers.at(-1)?.id as never,
-      brokenHashes: [], missingParents: [], timeViolations: [], typeHistogram: {}
-    };
-    let previousT = -Infinity;
-    for (const header of headers) {
-      verification.typeHistogram[header.type_id] = (verification.typeHistogram[header.type_id] ?? 0) + 1;
-      for (const parentId of header.parents) if (!byId.has(parentId)) verification.missingParents.push({ eventId: header.id as never, parentId: parentId as never });
-      const currentT = Number(header.t);
-      if (currentT < previousT) verification.timeViolations.push({ eventId: header.id as never, previousT, currentT });
-      previousT = Math.max(previousT, currentT);
-    }
-    const hasher = createHasher();
-    for (let offset = 0; offset < headers.length;) {
-      let end = offset, storedBytes = 0;
-      while (end < headers.length && end - offset < GOVERNANCE_PAYLOAD_PAGE_ROWS) {
-        const bytes = Math.max(0, Number(headers[end]!.payload_stored_bytes ?? 0));
-        if (end > offset && storedBytes + bytes > GOVERNANCE_PAYLOAD_PAGE_STORED_BYTES) break;
-        storedBytes += bytes; end++;
-      }
-      const page = headers.slice(offset, end), requestedIds = page.map(row => row.id);
-      const bodies = await options.storage.query<PostgresGovernanceEventRow>(
-        `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
-           FROM ${options.storage.table("events")} WHERE id=ANY($1::text[])`, [requestedIds]
-      );
-      const bodyById = new Map(bodies.map(row => [row.id, row]));
-      if (bodyById.size !== page.length || bodies.length !== page.length) throw new Error("governance payload page is missing or contains unexpected events");
-      for (const header of page) {
-        const row = bodyById.get(header.id);
-        if (!row || row.episode_id !== header.episode_id || row.type_id !== header.type_id || Number(row.t) !== Number(header.t)
-          || row.hash !== header.hash || row.ledger_hash !== header.ledger_hash || canonicalStringify(row.parents) !== canonicalStringify(header.parents)) {
-          throw new Error("governance event changed between its header and payload read");
-        }
-        const event = rowToEvent(row), parentHashes = header.parents.map(parentId => byId.get(parentId)?.hash ?? "");
-        const expected = hashEvent(event, parentHashes, hasher);
-        if (row.hash !== expected) verification.brokenHashes.push({ eventId: event.id, expected, observed: row.hash });
-        // A deferred audit still shares the server event loop. Yield after each
-        // complete hash rather than synchronously canonicalizing the window.
-        await yieldEventLoop();
-      }
-      offset = end;
-    }
-    verification.ok = verification.brokenHashes.length === 0 && verification.missingParents.length === 0 && verification.timeViolations.length === 0;
-    return verification;
-  }
-
-  async function fullyVerifyEventLedgerAndCheckpoint(): Promise<EventLedgerGovernanceObservation> {
-    const rows = await options.storage.query<PostgresGovernanceEventRow>(
-      `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
-         FROM ${options.storage.table("events")}
-        ORDER BY t ASC, id ASC`
-    );
-    const observation = verifyPostgresEventLedgerRows(rows);
-    if (observation.passed && rows.length > 0) {
-      const last = rows[rows.length - 1]!;
-      ledgerCheckpoint = {
-        anchorEventId: last.id,
-        anchorT: Number(last.t),
-        anchorHash: last.hash,
-        anchorLedgerHash: last.ledger_hash,
-        totalEvents: rows.length
-      };
-    }
-    return { ...observation, evidence: toJsonValue({ mode: "full_scan", ...(observation.evidence as Record<string, JsonValue>) }) };
-  }
 }
 
 /**
@@ -414,25 +102,7 @@ export function createNodePostgresGovernanceProbe(
 export async function fullyVerifyEventLedger(
   storage: Pick<PostgresStorageAdapter, "query" | "table">
 ): Promise<EventLedgerGovernanceObservation> {
-  const rows = await storage.query<PostgresGovernanceEventRow>(
-    `SELECT id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash
-       FROM ${storage.table("events")}
-      ORDER BY t ASC, id ASC`
-  );
-  const observation = verifyPostgresEventLedgerRows(rows);
-  return { ...observation, evidence: toJsonValue({ mode: "full_scan", ...(observation.evidence as Record<string, JsonValue>) }) };
-}
-
-function rowToEvent(row: PostgresGovernanceEventRow): ScceEvent {
-  return {
-    id: row.id,
-    episodeId: row.episode_id,
-    typeId: row.type_id,
-    t: Number(row.t),
-    payload: row.payload_json,
-    parents: row.parents,
-    hash: row.hash
-  } as unknown as ScceEvent;
+  return fullyVerifyPositionedEventLedger(storage);
 }
 
 /**
@@ -492,45 +162,7 @@ async function observeImmutabilityControls(
 export function verifyPostgresEventLedgerRows(
   rows: readonly PostgresGovernanceEventRow[]
 ): EventLedgerGovernanceObservation {
-  const events = rows.map(row => ({
-    id: row.id,
-    episodeId: row.episode_id,
-    typeId: row.type_id,
-    t: Number(row.t),
-    payload: row.payload_json,
-    parents: row.parents,
-    hash: row.hash
-  })) as unknown as ScceEvent[];
-  const eventChain = createAuditEngine().verifyEventChain(events);
-  const brokenLedgerHashes: Array<{ eventId: string; expected: string; observed: string }> = [];
-  let previousLedgerHash = "";
-  for (const row of rows) {
-    const expected = sha256(`${previousLedgerHash}\u001f${row.hash}`);
-    if (row.ledger_hash !== expected) {
-      brokenLedgerHashes.push({ eventId: row.id, expected, observed: row.ledger_hash });
-    }
-    previousLedgerHash = row.ledger_hash;
-  }
-  const passed = rows.length > 0 && eventChain.ok && brokenLedgerHashes.length === 0;
-  return {
-    available: true,
-    passed,
-    reason: rows.length === 0
-      ? "event_ledger_empty"
-      : !eventChain.ok
-        ? "event_hash_chain_invalid"
-        : brokenLedgerHashes.length > 0
-          ? "postgres_ledger_hash_chain_invalid"
-          : "verified",
-    events: rows.length,
-    latestLedgerHash: rows.at(-1)?.ledger_hash,
-    evidence: toJsonValue({
-      events: rows.length,
-      eventChain,
-      brokenLedgerHashes: brokenLedgerHashes.slice(0, 32),
-      ordering: "t_ascending_id_ascending"
-    })
-  };
+  return verifyPositionedEventLedgerRows(rows);
 }
 
 async function observeRollback(

@@ -28,7 +28,12 @@ describe("node postgres governance probe", () => {
       const rows = ledgerRows();
       const storage = {
         table: () => '"events"',
-        query: async <T>(): Promise<T[]> => rows as T[]
+        query: async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+          const last=rows.at(-1)!;
+          if(sql.includes("event_ledger_position_snapshot"))return [{head:{eventId:last.id,eventHash:last.hash,ledgerHash:last.ledger_hash,ledgerPosition:String(last.ledger_position)},present:true,unpositioned:false,tail_position:last.ledger_position}] as T[];
+          if(sql.includes("WHERE id=ANY"))return rows.filter(row=>(params[0] as string[]).includes(row.id)) as T[];
+          return rows as T[];
+        }
       };
       const approvals = createApprovalSession();
       const absent = await createNodePostgresGovernanceProbe({
@@ -126,7 +131,7 @@ function ledgerRows(): PostgresGovernanceEventRow[] {
   const first = events.create({ episodeId, typeId: "EpisodeOpened", payload: { test: 1 } });
   const second = events.create({ episodeId, typeId: "SelfModelProjected", payload: { test: 2 }, parents: [first] });
   let ledgerHash = "";
-  return [first, second].map(event => {
+  return [first, second].map((event, index) => {
     ledgerHash = sha256(`${ledgerHash}\u001f${event.hash}`);
     return {
       id: String(event.id),
@@ -136,7 +141,7 @@ function ledgerRows(): PostgresGovernanceEventRow[] {
       payload_json: event.payload,
       parents: event.parents.map(String),
       hash: event.hash,
-      ledger_hash: ledgerHash
+      ledger_hash: ledgerHash, ledger_position: String(index + 1)
     };
   });
 }

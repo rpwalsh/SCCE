@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {prepareProgramSourcePlanningContext} from "./source-program-provider.js";
+import { throwIfRuntimeAborted } from "./runtime-cancellation.js";
 import {sourceComputationForRequest} from "./source-computation-runtime.js";
 import { contextualQaForRequest, contextualQaConstructionsForRequest, contextualQaBindingVerified } from "./contextual-qa-runtime.js";
 import { createTypedIngestProjector, type TypedIngestProjection } from "./typed-ingest.js";
@@ -751,21 +752,33 @@ export function createProductionTurnRuntime(options: {
   }
 
   let requestCommunicativeActHydration: { model: RequestCommunicativeActModel | undefined; generation: number } | undefined;
-  /** The request act classifier follows admitted source revisions; failed reads retry. */
+  let requestCommunicativeActLoad: { generation: number; pending: Promise<{ model: RequestCommunicativeActModel | undefined; failed: boolean }> } | undefined;
+  /** The one request act classifier follows admitted source revisions; failed/absent reads retry. */
   async function requestCommunicativeActModelCached(): Promise<{ model: RequestCommunicativeActModel | undefined; failed: boolean }> {
     const generation = surfaceLanguageRuntime.revisionGeneration();
     if (requestCommunicativeActHydration?.generation === generation) return { ...requestCommunicativeActHydration, failed: false };
-    try {
-      const patterns = await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
-        patternSchemas: [REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA], limit: 2048 });
-      const model = requestCommunicativeActModelFromPatterns(patterns);
-      // An absent model is a not-yet-trained artifact, not a hydrated one: caching it would outlive the training.
-      if (!model) return { model: undefined, failed: false };
-      if (generation === surfaceLanguageRuntime.revisionGeneration()) requestCommunicativeActHydration = { model, generation };
-      return { model: generation === surfaceLanguageRuntime.revisionGeneration() ? model : undefined, failed: false };
-    } catch {
-      return { model: undefined, failed: true };
-    }
+    if (requestCommunicativeActLoad?.generation === generation) return requestCommunicativeActLoad.pending;
+    const pending = (async () => {
+      try {
+        const patterns = await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
+          patternSchemas: [REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA], limit: 2048 });
+        const model = requestCommunicativeActModelFromPatterns(patterns);
+        if (!model) return { model: undefined, failed: false };
+        if (generation === surfaceLanguageRuntime.revisionGeneration()) requestCommunicativeActHydration = { model, generation };
+        return { model: generation === surfaceLanguageRuntime.revisionGeneration() ? model : undefined, failed: false };
+      } catch { return { model: undefined, failed: true }; }
+    })();
+    requestCommunicativeActLoad = { generation, pending };
+    try { return await pending; }
+    finally { if (requestCommunicativeActLoad?.pending === pending) requestCommunicativeActLoad = undefined; }
+  }
+
+  async function prepareRequestCommunicativeAct(): Promise<{ loaded: boolean; features: number; disabled: boolean }> {
+    const disabled = deps.evaluationCondition?.flags.disableLanguageMemory === true;
+    if (disabled) return { loaded: false, features: 0, disabled };
+    const hydration = await requestCommunicativeActModelCached();
+    if (hydration.failed) throw new Error("request communicative act classifier preparation failed");
+    return { loaded: Boolean(hydration.model), features: hydration.model?.features.size ?? 0, disabled };
   }
 
   async function turnRequirementModelCached(): Promise<TurnRequirementCoefficientModel> {
@@ -917,8 +930,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
   async function turn(input: OwnerInput, acquisitionContinuation?: RuntimeReplanMotion): Promise<TurnResult> {
 
       return withRequestLanguageFormScope(() => withBufferedEventWrites(async () => {
+      const requestSignal = input.runtimeControl?.signal;
+      throwIfRuntimeAborted(requestSignal, "kernel.turn.start");
       const turnStarted = Date.now();
       await surfaceLanguageRuntime.synchronizeWithStorage();
+      throwIfRuntimeAborted(requestSignal, "kernel.turn.revision.complete");
       // A recovery motion that ran but did not justify a replan still has to
       // be reported: result.runtimeMotion previously came only from
       // inheritedRuntimeMotion, which exists solely on a second pass, so
@@ -1044,12 +1060,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           phase,
           observedAtMonotonicMs: performance.now()
         });
-        if (input.runtimeControl?.signal?.aborted) {
-          const reason = input.runtimeControl.signal.reason;
-          throw reason instanceof Error
-            ? reason
-            : new Error(`runtime turn aborted at ${phase}`);
-        }
+        throwIfRuntimeAborted(requestSignal, phase);
         const measuredDecision = runtimeDeadline?.checkpoint(phase, requiredMs);
         const initialResponseDeadline = runtimeDeadline?.purpose === "initial_response";
         const decision = measuredDecision && initialResponseDeadline
@@ -1093,6 +1104,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const observedSourceSpeech = sourceSelectionProjection && (!sourceSelectionProjection.contributionPresent
         || !sourceSelectionProjection.authorityDistinguishable || sourceSelectionProjection.requestedAuthority === "creative")
         ? await surfaceLanguageRuntime.creativeSourceMemoryForRequest(input.text) : undefined;
+      throwIfRuntimeAborted(requestSignal, "runtime.seed.source_selection.complete");
       const observedSourceRequestFrame = observedSourceSpeech ? compileCreativeRequestFrameFromCompatibilityModels({
         requestText: input.text, models: observedSourceSpeech.state.creativeEventCompatibilityModels, hasher
       }) : undefined;
@@ -1395,6 +1407,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const lexicalPatterns = requestLanguage && lexicalUnits.length && !deps.evaluationCondition?.flags.disableLanguageMemory
         ? await deps.storage.languageMemory.listLanguagePatterns({ patternSchemas: [LEXICAL_SENSE_SCHEMA, LEXICAL_GRAMMAR_SCHEMA, SOURCE_QUESTION_FRAME_SCHEMA],
           languageId: requestLanguage.identity.id, lexicalUnits, limit: lexicalReadLimit, maxTotalJsonBytes: lexicalReadBytes, requireComplete: true }) : [];
+      throwIfRuntimeAborted(requestSignal, "runtime.seed.lexical.read.complete");
       if (lexicalPatterns.length && !deps.informationAccess) throw new Error("source-owned lexical reads require an explicit information access context");
       if (lexicalPatterns.length && !deps.storage.evidence.sourceVersionById) throw new Error("source-owned lexical reads require the canonical source owner reader");
       const lexicalEvidenceIds = [...new Set(lexicalPatterns.flatMap(pattern => pattern.evidenceIds))];
@@ -1407,6 +1420,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         deps.storage.evidence.sourceVersionsForEvidence(lexicalEvidenceIds),
         Promise.all(lexicalSourceIds.map(id => deps.storage.evidence.sourceVersionById!(id)))
       ]) : [[], [], []];
+      throwIfRuntimeAborted(requestSignal, "runtime.seed.lexical.owners.complete");
       const lexicalSourceById = new Map(lexicalSources.flatMap(source => source ? [[String(source.sourceVersionId), source] as const] : []));
       const lexicalEvidenceById = new Map<string, EvidenceSpan[]>();
       for (const span of lexicalEvidence) {
@@ -1447,6 +1461,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const turnRequestControlPatterns = deps.evaluationCondition?.flags.disableLanguageMemory
         ? []
         : await requestControlPatternsForRequest(input.text);
+      throwIfRuntimeAborted(requestSignal, "runtime.seed.request_controls.complete");
       const requestRequirementLanguageState = cloneLanguageMemoryRuntimeState(authorityLanguage.state, {
         importedPatterns: uniqueRecordsById([
           ...turnRequestControlPatterns,
@@ -1467,6 +1482,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && !deps.evaluationCondition?.flags.disableLanguageMemory && !deps.evaluationCondition?.flags.disableLearnedSemantics
         && !deps.evaluationCondition?.flags.disableGraph
         ? await contextualQaConstructionsForRequest({ storage: deps.storage, hasher, requestText: input.text, generation: contextualQaGeneration }) : undefined;
+      throwIfRuntimeAborted(requestSignal, "runtime.seed.contextual_qa.read.complete");
       const contextualQaRetrieval = contextualQaConstructions ? await graphForText(input.text, {
         allowSemanticFrameEvidence: true, evidenceFirst: true, sourceAnchoringRequired: true,
         evidenceAccess: { sourceCodeEvidenceAllowed: false }, residentOnly: fastRuntimeBudget,
@@ -3362,6 +3378,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           return undefined;
         })
         : undefined;
+      throwIfRuntimeAborted(requestSignal, "runtime.candidates.language_role.complete");
       // The role corpus speaks when it has learned this language; an empty role falls back to what the evidence owns.
       const roleLanguageSpeaks = Boolean(roleOutputLanguage && roleOutputLanguage.state.models.length > 0);
       kernelTrace({
@@ -4033,7 +4050,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             || step.resultBindings?.some(binding => binding.path[0] === "workspaceContext");
         }) ? "program.effects.unscoped_capability" : undefined;
       if (boundCapability && deps.capabilities && (requestedAuthority === "action" || programTaskBinding && !programTaskRefusal)) {
+        throwIfRuntimeAborted(requestSignal, "runtime.action.dispatch");
         boundCapabilityExecution = await executeBoundCapability({ binding: boundCapability, requestText: input.text,
+          ...(requestSignal ? { signal: requestSignal } : {}),
           ...(programTaskBinding ? { program: candidateConstructSeed.program } : {}),
           ...(workspaceActionScope.context ? { workspaceContext: workspaceActionScope.context } : {}),
           ...(typeof workspaceActionScope.maxCalls === "number" ? { maxCalls: workspaceActionScope.maxCalls } : {}),
@@ -4046,6 +4065,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             planId: plan.id, capabilityId: plan.capabilityId,
             executiveEpisodeId: boundCapabilityExecution.executiveEpisodeId, result: plan.result }) })));
         }
+        throwIfRuntimeAborted(requestSignal, "runtime.action.complete");
       }
       const candidateActionPlans = toolCognition.plan({
           episodeId,
@@ -4840,7 +4860,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             const executeValidatedProgram = async (run: { episodeId: EpisodeId; construct: ConstructGraph }): Promise<BuildTestResult> => {
               executiveDispatch = await dispatchBuildTestThroughExecutive({ deps, ...run, capabilityId: capability.id,
                 planId: String(plan.id), conversationId: dialogueConversationId, operatorIds: activeOperatorIds,
-                hasher, clock, faultInjection: buildFaultInjection });
+                hasher, clock, faultInjection: buildFaultInjection, signal: requestSignal });
               return executiveDispatch.buildTest;
             };
             let proceduralSkillExecution: JsonValue | undefined;
@@ -4853,6 +4873,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             } else {
               buildTest = await executeValidatedProgram({ episodeId, construct });
             }
+            throwIfRuntimeAborted(requestSignal, "runtime.program.validation.complete");
             // An owner behavior test is an observed constraint, not merely a failed
             // task node. Rebuild from the selected transformation and execute that
             // new ProgramGraph once; held-out obligations remain in the generated
@@ -4904,7 +4925,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               if (!retryPermission.allowed || retryPermission.dryRun) return undefined;
               events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityInvoked", payload: { capabilityId: retryCapability.id, planId: String(retryPlan.id) } })));
               return (await dispatchBuildTestThroughExecutive({ deps, episodeId, construct: candidate, capabilityId: retryCapability.id,
-                planId: String(retryPlan.id), conversationId: dialogueConversationId, operatorIds: activeOperatorIds, hasher, clock })).buildTest;
+                planId: String(retryPlan.id), conversationId: dialogueConversationId, operatorIds: activeOperatorIds, hasher, clock, signal: requestSignal })).buildTest;
             };
             if (ownerProgramFailedToBuild) {
               const priorResult = buildTest;
@@ -6416,7 +6437,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
 
   }
 
-  return { turn };
+  return { turn, prepareRequestCommunicativeAct };
 }
 
 // Build, repair, and connector operators share the same durable dispatcher and result store.
@@ -6424,8 +6445,10 @@ async function dispatchBuildTestThroughExecutive(input: {
   deps: ScceKernelDeps; episodeId: EpisodeId; construct: ConstructGraph; capabilityId: string; planId: string;
   conversationId: string; operatorIds: readonly CognitiveOperatorId[]; hasher: ReturnType<typeof createHasher>;
   clock: ReturnType<typeof createClock>; faultInjection?: string;
+  signal?: AbortSignal;
 }): Promise<{ disposition: string; attemptId?: string; receipt?: { status: string }; buildTest: BuildTestResult }> {
   if (!input.deps.capabilities) throw new Error("runtime capability service is unavailable");
+  throwIfRuntimeAborted(input.signal, "capability.build_test.dispatch");
   const operatorIds = input.operatorIds.filter(id => id === COGNITIVE_OPERATOR_IDS.programPlanning
     || id === COGNITIVE_OPERATOR_IDS.workspaceRepair || id === COGNITIVE_OPERATOR_IDS.actionPlanning);
   const result = await invokeRuntimeCapability({
@@ -6433,6 +6456,7 @@ async function dispatchBuildTestThroughExecutive(input: {
     ownerId: input.deps.informationAccess?.principalId ?? "scce-runtime",
     policyVersionId: `policy_${input.hasher.digestHex(JSON.stringify(input.deps.policy ?? {}))}`,
     capabilityId: input.capabilityId, approved: true,
+    ...(input.signal ? { signal: input.signal } : {}),
     payload: toJsonValue({ episodeId: input.episodeId, construct: input.construct,
       ...(input.faultInjection ? { faultInjection: input.faultInjection } : {}) }),
     ...(operatorIds.length ? { operatorOutcome: {

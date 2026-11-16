@@ -256,6 +256,7 @@ import {
   canonicalTranslationTargetKey,
   resolveEvidenceSourceIdentity
 } from "@scce/kernel";
+import { EVENT_LEDGER_HEAD_KEY, ledgerPosition, readPositionedLedgerHead } from "./event-ledger-position.js";
 import { createHash } from "node:crypto";
 import {
   DEFERRED_INDEX_META_KEY,
@@ -266,6 +267,7 @@ import {
   isDuplicateExtensionError,
   freshSchemaIndexStatements,
   requiredHydrationColumns,
+  requiredSchemaErrors,
   NGRAM_MODEL_CONTINUATION_RELATION,
   type InformationLabeledTable
 } from "./postgres-schema.js";
@@ -371,6 +373,8 @@ export class PostgresStorageAdapter implements ScceStorage {
   };
   readonly languageIdentities: LanguageIdentityStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
+  private readonly sourceIdentityTransactionScopes = new WeakMap<PoolClient, string>();
+  private sourceIdentityTransactionSequence = 0;
   private readonly languageRevisionDirty = new WeakSet<PoolClient>();
   private readonly languagePatternWrites = new WeakMap<PoolClient, ExactTransactionWriteCache<LanguagePatternRecord>>();
 
@@ -537,6 +541,10 @@ export class PostgresStorageAdapter implements ScceStorage {
       const version = await storedSchemaVersion(this).catch(() => undefined);
       if (version === undefined) errors.push("missing schema version");
       else if (version !== POSTGRES_SCHEMA_VERSION) errors.push(`schema version mismatch: expected ${POSTGRES_SCHEMA_VERSION}, found ${version}`);
+    }
+    if (tables.includes("storage_meta") && tables.includes("events") && (columnMap.get("events")?.has("ledger_position"))) {
+      try { await readPositionedLedgerHead(<T>(sql: string, params: unknown[] = []) => this.query<T>(sql, params), this.table("events"), this.table("storage_meta")); }
+      catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
     }
     if (tables.includes("storage_meta") && tables.includes("language_patterns")) {
       const archive = await this.query<{ marker: boolean }>(
@@ -735,7 +743,20 @@ export class PostgresStorageAdapter implements ScceStorage {
     if (!client) return operation();
     const active = this.transactionContext.getStore();
     if (active && active !== client) throw new Error("codec query client differs from its active transaction");
-    return this.transactionContext.run(client, operation);
+    if (active === client) return operation();
+    return this.transactionContext.run(client, async () => {
+      try { return await operation(); }
+      finally { this.sourceIdentityTransactionScopes.delete(client); }
+    });
+  }
+
+  /** Transaction-local corpus metadata is read directly and carries a scope that expires with its owner. */
+  sourceIdentityTransactionScope(): string | undefined {
+    const client = this.transactionContext.getStore();
+    if (!client) return undefined;
+    let scope = this.sourceIdentityTransactionScopes.get(client);
+    if (!scope) { scope = String(++this.sourceIdentityTransactionSequence); this.sourceIdentityTransactionScopes.set(client, scope); }
+    return scope;
   }
 
   requireActiveTransaction(operation: string): void {
@@ -762,6 +783,7 @@ export class PostgresStorageAdapter implements ScceStorage {
         if (this.languageRevisionDirty.has(client)) await client.query(languageMemoryRevisionIncrementSql(this));
         return result;
       } finally {
+        this.sourceIdentityTransactionScopes.delete(client);
         this.languageRevisionDirty.delete(client);
         this.languagePatternWrites.delete(client);
       }
@@ -795,6 +817,7 @@ export class PostgresStorageAdapter implements ScceStorage {
       await client.query("ROLLBACK").catch(() => undefined);
       throw error;
     } finally {
+      this.sourceIdentityTransactionScopes.delete(client);
       client.release();
     }
   }
@@ -932,32 +955,6 @@ function informationExportClassesThrough(maximum: InformationAccessContext["maxi
   return ordered.slice(0, ordered.indexOf(maximum) + 1);
 }
 
-async function requiredSchemaErrors(client: Pick<PoolClient, "query">, schema: string): Promise<string[]> {
-  const tables = await client.query<{ table_name: string }>(
-    `SELECT table_name FROM information_schema.tables WHERE table_schema=$1`,
-    [schema]
-  );
-  const tableSet = new Set(tables.rows.map(row => row.table_name));
-  const errors = POSTGRES_REQUIRED_TABLES.filter(table => !tableSet.has(table)).map(table => `missing table: ${table}`);
-  const columns = await client.query<{ table_name: string; column_name: string }>(
-    `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=$1`,
-    [schema]
-  );
-  const columnMap = new Map<string, Set<string>>();
-  for (const row of columns.rows) {
-    let set = columnMap.get(row.table_name);
-    if (!set) {
-      set = new Set();
-      columnMap.set(row.table_name, set);
-    }
-    set.add(row.column_name);
-  }
-  for (const [table, requiredColumns] of Object.entries(requiredHydrationColumns())) {
-    const existing = columnMap.get(table) ?? new Set<string>();
-    for (const column of requiredColumns) if (!existing.has(column)) errors.push(`missing column: ${table}.${column}`);
-  }
-  return errors;
-}
 
 const GRAPH_EVIDENCE_MIGRATION_PAGE_SIZE = 4096;
 const GRAPH_EVIDENCE_MIGRATION_SCHEMA = "scce.graph_evidence_association_generation.v2";
@@ -1113,24 +1110,13 @@ function isLocalDatabaseUrl(value: string): boolean {
   }
 }
 
-const EVENT_INSERT_COLUMN_TYPES = ["text", "text", "text", "bigint", "jsonb", "text[]", "text", "text"] as const;
+const EVENT_INSERT_COLUMN_TYPES = ["text", "text", "text", "bigint", "jsonb", "text[]", "text", "text", "bigint"] as const;
 // The extended query protocol counts bind parameters in an unsigned 16-bit field, so the wire format -- not a
 // tuning choice -- is what splits one batch into more than one statement.
 const POSTGRES_BIND_PARAMETER_LIMIT = 65535;
 const EVENT_INSERT_MAX_ROWS_PER_STATEMENT = Math.floor(POSTGRES_BIND_PARAMETER_LIMIT / EVENT_INSERT_COLUMN_TYPES.length);
-const EVENT_LEDGER_HEAD_KEY = "events.ledger_head.v1";
-
-interface EventLedgerHead { eventId: string; eventHash: string; ledgerHash: string }
-
 function eventIdentityConflict(id: string): Error & { code: "SCCE_EVENT_IDENTITY_CONFLICT" } {
   return Object.assign(new Error(`event identity has different immutable content: ${id}`), { code: "SCCE_EVENT_IDENTITY_CONFLICT" as const });
-}
-
-async function readEventLedgerHead(query: (sql: string, params: readonly unknown[]) => Promise<Array<{ value_json: EventLedgerHead }>>, metadataTable: string): Promise<EventLedgerHead | undefined> {
-  const rows = await query(`SELECT value_json FROM ${metadataTable} WHERE key=$1`, [EVENT_LEDGER_HEAD_KEY]);
-  const head = rows[0]?.value_json;
-  if (rows.length && (!head || [head.eventId, head.eventHash, head.ledgerHash].some(value => typeof value !== "string" || !value))) throw new Error("invalid canonical event ledger head");
-  return head;
 }
 
 function canonicalCodecHost(storage: PostgresStorageAdapter, client?: PoolClient): CreativeEventStorageHost {
@@ -1499,6 +1485,7 @@ async function mergedSourceArtifactValues(storage: PostgresStorageAdapter, table
 }
 
 function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
+  const thisQuery = <T>(sql: string, params: unknown[] = []) => storage.query<T>(sql, params);
   const appendQueues = new WeakMap<PoolClient, Promise<void>>();
   return {
     append: event => storage.events.appendBatch([event]),
@@ -1515,14 +1502,16 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
           const table = storage.table("events");
           const metadataTable = storage.table("storage_meta");
           await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`${table}:ledger_append`]);
-          const head = await readEventLedgerHead((sql, params) => client.query<{ value_json: EventLedgerHead }>(sql, [...params]).then(result => result.rows), metadataTable);
-          let prev = head?.ledgerHash ?? await latestLedgerHash(client, table);
-          const existing = await client.query<{ id: string; hash: string; ledger_hash: string }>(
-            `SELECT id, hash, ledger_hash FROM ${table} WHERE id=ANY($1)`,
+          const query = async <T>(sql: string, params: unknown[] = []) => (await client.query(sql, params)).rows as T[];
+          const head = await readPositionedLedgerHead(query, table, metadataTable);
+          let prev = head?.ledgerHash ?? "";
+          let position = head ? ledgerPosition(head.ledgerPosition) : 0n;
+          const existing = await client.query<{ id: string; hash: string; ledger_hash: string; ledger_position: string }>(
+            `SELECT id, hash, ledger_hash, ledger_position FROM ${table} WHERE id=ANY($1)`,
             [[...unique.keys(), ...(head ? [head.eventId] : [])]]
           );
           const existingById = new Map(existing.rows.map(row => [row.id, row]));
-          if (head && (existingById.get(head.eventId)?.hash !== head.eventHash || existingById.get(head.eventId)?.ledger_hash !== head.ledgerHash)) {
+          if (head && (existingById.get(head.eventId)?.hash !== head.eventHash || existingById.get(head.eventId)?.ledger_hash !== head.ledgerHash || ledgerPosition(existingById.get(head.eventId)?.ledger_position) !== position)) {
             throw new Error("canonical event ledger head does not match its immutable event");
           }
           const repeated = [...unique.values()].filter(event => existingById.has(String(event.id)));
@@ -1541,7 +1530,8 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
           for (const [index, event] of fresh.entries()) {
             const ledgerHash = sha256(`${prev}\u001f${event.hash}`);
             prev = ledgerHash;
-            rows.push([event.id, event.episodeId, event.typeId, event.t, JSON.stringify(payloads[index]), event.parents, event.hash, ledgerHash]);
+            position = ledgerPosition(position + 1n);
+            rows.push([event.id, event.episodeId, event.typeId, event.t, JSON.stringify(payloads[index]), event.parents, event.hash, ledgerHash, position.toString()]);
           }
           for (let start = 0; start < rows.length; start += EVENT_INSERT_MAX_ROWS_PER_STATEMENT) {
             const params: unknown[] = [];
@@ -1550,7 +1540,7 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
               return `$${params.length}::${EVENT_INSERT_COLUMN_TYPES[column]}`;
             }).join(",")})`);
             await client.query(
-              `INSERT INTO ${table}(id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash)
+              `INSERT INTO ${table}(id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash, ledger_position)
                VALUES${tuples.join(",")}
                ON CONFLICT(id) DO NOTHING`,
               params
@@ -1560,7 +1550,7 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
           await client.query(
             `INSERT INTO ${metadataTable}(key,value_json,updated_at) VALUES($1,$2::jsonb,NOW())
              ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=NOW()`,
-            [EVENT_LEDGER_HEAD_KEY, JSON.stringify({ eventId: String(last.id), eventHash: last.hash, ledgerHash: prev })]
+            [EVENT_LEDGER_HEAD_KEY, JSON.stringify({ eventId: String(last.id), eventHash: last.hash, ledgerHash: prev, ledgerPosition: position.toString() })]
           );
         });
       });
@@ -1594,10 +1584,8 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
       return rows.map((row, index) => rowToEvent({ ...row, payload_json: payloads[index] as JsonValue }));
     },
     async latestLedgerHash() {
-      const head = await readEventLedgerHead((sql, params) => storage.query<{ value_json: EventLedgerHead }>(sql, [...params]), storage.table("storage_meta"));
-      if (head) return head.ledgerHash;
-      const rows = await storage.query<{ ledger_hash: string }>(latestLedgerHashSql(storage.table("events")));
-      return rows[0]?.ledger_hash ?? "";
+      const head = await readPositionedLedgerHead(thisQuery, storage.table("events"), storage.table("storage_meta"));
+      return head?.ledgerHash ?? "";
     }
   };
 }
@@ -2070,6 +2058,11 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       );
       return (await hydrateEvidenceRows(storage, rows)).map(value => value.span);
     },
+    async readSourceIdentityRevision() { return sourceIdentityRevision(storage); },
+    async prepareSourceIdentityMetadata() {
+      const metadata = await sourceTitlesCached(storage);
+      return { revision: metadata.revision, sourceTitles: metadata.titles.length };
+    },
     async sourceIdentityArbitration(input) {
       // Which of the corpus's own titles appear in this request. Asked in this direction it is one query whatever
       // the request's length, and it needs no segmentation: a title matches inside unspaced text the same way it
@@ -2084,7 +2077,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       // Matching is a substring test over ~22k short strings, which is microseconds, and the corpus only changes
       // when something is ingested.
       // Its own predicate: the title query carries no leading parameters, so the access placeholders start at $1.
-      const titles = normalized ? await sourceTitlesCached(storage, storage.informationAccessPredicate("evidence", 1)) : [];
+      const titles = normalized ? (await sourceTitlesCached(storage)).titles : [];
       // Binding marks are orthography, not identity: the corpus writes "moby dick" and a request writes "Moby-Dick".
       const foldedSurface = " " + corpusIdentityMatchSurface(normalized) + " ";
       const named = new Set(
@@ -3484,45 +3477,49 @@ async function queryIndexedEvidence<T>(storage: PostgresStorageAdapter, sql: str
 const IDENTITY_UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'â€™-]+/gu;
 /** Cost bound on the reversed identity scan; titles come back longest first, so the specific ones survive it. */
 const IDENTITY_MATCH_LIMIT = 24;
-/**
- * Every source title the corpus holds, loaded once per process.
- *
- * There is no index on the generated title column, so the DISTINCT that used to run per request was a full scan
- * of every span: measured at 19.5 seconds against 81,005 spans. It was cached by request text, which hid it on
- * repeats and charged it in full for every question the process had not seen before. The corpus changes only when
- * something is ingested, so this is refreshed on an interval rather than asked per turn, and a refresh that fails
- * keeps serving the titles it already has rather than making a turn wait on it.
- */
-const SOURCE_TITLE_REFRESH_MS = 10 * 60 * 1000;
-let sourceTitleCache: { titles: string[]; loadedAt: number } | undefined;
-let sourceTitleInFlight: Promise<string[]> | undefined;
+/** Complete title metadata is isolated by adapter, effective access and durable corpus revision. */
+interface SourceTitleMetadata { revision: string; titles: string[] }
+interface SourceTitleState { revision: string; value?: SourceTitleMetadata; inFlight?: Promise<SourceTitleMetadata | undefined> }
+let sourceTitleCaches = new WeakMap<PostgresStorageAdapter, Map<string, SourceTitleState>>();
 
-/** Test seam: forget the loaded title list, so a test starts from a corpus this process has not read. */
-export function clearSourceTitleCache(): void {
-  sourceTitleCache = undefined;
-  sourceTitleInFlight = undefined;
+/** Test seam: in-flight loads from the previous generation cannot publish into the new maps. */
+export function clearSourceTitleCache(): void { sourceTitleCaches = new WeakMap(); }
+
+async function sourceIdentityRevision(storage: PostgresStorageAdapter): Promise<string> {
+  const revision = await storage.languageMemory.readRevision!();
+  if (typeof revision !== "string" || !revision) throw new Error("source identity revision must be a nonempty opaque string");
+  return canonicalStringify({ revision, access: storage.informationAccessPredicate("evidence", 1),
+    transaction: storage.sourceIdentityTransactionScope() ?? null });
 }
 
-async function sourceTitlesCached(
-  storage: { query: <T>(sql: string, params?: unknown[]) => Promise<T[]>; table: (name: string) => string },
-  access: { sql: string; params: unknown[] }
-): Promise<string[]> {
-  const now = Date.now();
-  if (sourceTitleCache && now - sourceTitleCache.loadedAt < SOURCE_TITLE_REFRESH_MS) return sourceTitleCache.titles;
-  // A stale list still answers; only the first caller of a cold process waits.
-  if (sourceTitleCache) {
-    if (!sourceTitleInFlight) {
-      sourceTitleInFlight = loadSourceTitles(storage, access)
-        .then(titles => { sourceTitleCache = { titles, loadedAt: Date.now() }; return titles; })
-        .catch(() => sourceTitleCache?.titles ?? [])
-        .finally(() => { sourceTitleInFlight = undefined; });
+async function sourceTitlesCached(storage: PostgresStorageAdapter): Promise<SourceTitleMetadata> {
+  for (;;) {
+    const revision = await sourceIdentityRevision(storage), access = storage.informationAccessPredicate("evidence", 1);
+    // A transaction may see its uncommitted writes. The same loader answers it, but no shared title cache observes them.
+    if (storage.sourceIdentityTransactionScope() !== undefined) {
+      const titles = await loadSourceTitles(storage, access);
+      if (revision === await sourceIdentityRevision(storage)) return { revision, titles };
+      continue;
     }
-    return sourceTitleCache.titles;
+    const accessKey = canonicalStringify(access);
+    let scopes = sourceTitleCaches.get(storage);
+    if (!scopes) { scopes = new Map(); sourceTitleCaches.set(storage, scopes); }
+    let state = scopes.get(accessKey);
+    if (!state || state.revision !== revision) { state = { revision }; scopes.set(accessKey, state); }
+    if (state.value) return state.value;
+    if (!state.inFlight) {
+      const selected = state, owners = scopes;
+      const pending = (async () => {
+        const titles = await loadSourceTitles(storage, access);
+        if (revision !== await sourceIdentityRevision(storage) || sourceTitleCaches.get(storage) !== owners || owners.get(accessKey) !== selected) return undefined;
+        const value = { revision, titles }; selected.value = value; return value;
+      })();
+      selected.inFlight = pending;
+      void pending.finally(() => { if (selected.inFlight === pending) selected.inFlight = undefined; }).catch(() => undefined);
+    }
+    const value = await state.inFlight;
+    if (value) return value;
   }
-  sourceTitleInFlight ??= loadSourceTitles(storage, access)
-    .then(titles => { sourceTitleCache = { titles, loadedAt: Date.now() }; return titles; })
-    .finally(() => { sourceTitleInFlight = undefined; });
-  return await sourceTitleInFlight;
 }
 
 async function loadSourceTitles(
@@ -6492,12 +6489,14 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       appendInformationAccess(storage, "pattern", params, scopeWhere);
       let requestedOwners: LanguagePatternOwner[] | undefined;
       let requestedOwnerProjectionBound = false;
-      if (query.patternIds || query.sourceComputationBindingId !== undefined || query.contextualQaRequestFeatures !== undefined || query.lexicalUnits !== undefined) {
+      // Resolve complete ACL-filtered owners before reading compiler/projection metadata for an explicit typed scope.
+      const typedOwnerScope = query.patternSchemas !== undefined || query.sourceEditRequestFeatures !== undefined || query.requestRequirementFeatures !== undefined;
+      if (query.patternIds || query.sourceComputationBindingId !== undefined || query.contextualQaRequestFeatures !== undefined || query.lexicalUnits !== undefined || typedOwnerScope) {
         const owners = await storage.query<{ profile_id: string; source_system: string | null }>(
           `SELECT DISTINCT pattern.profile_id,pattern.source_system FROM ${storage.table("language_patterns")} pattern
            WHERE ${scopeWhere.join(" AND ")} ORDER BY pattern.profile_id,pattern.source_system`, [...params]);
         requestedOwners = owners.map(row => ({ profileId: row.profile_id, sourceSystem: row.source_system }));
-        if ((query.sourceComputationBindingId !== undefined || query.contextualQaRequestFeatures !== undefined || query.lexicalUnits !== undefined) && !requestedOwners.length) return [];
+        if ((query.sourceComputationBindingId !== undefined || query.contextualQaRequestFeatures !== undefined || query.lexicalUnits !== undefined || typedOwnerScope) && !requestedOwners.length) return [];
       }
       if (query.patternKind !== "source_compilation") {
         params.push(canonicalStringify(await currentLanguagePatternCompilations(storage, query, requestedOwners)));
@@ -8406,43 +8405,6 @@ function vectorLiteral(values: number[], dimensions: number): string {
   const bounded = values.slice(0, dimensions).map(value => Number.isFinite(value) ? value : 0);
   while (bounded.length < dimensions) bounded.push(0);
   return `[${bounded.map(value => Number(value).toPrecision(12)).join(",")}]`;
-}
-
-/**
- * The ledger tail by plain `ORDER BY t DESC, id DESC LIMIT 1` has no index to
- * serve it and plans as a parallel sequential scan plus sort of the whole
- * events table (measured live on 841,671 rows / 697MB heap: 840-1250ms, paid
- * once per appendBatch, i.e. once per turn). The existing
- * `(type_id, t DESC)` index already answers it exactly: the maximum by
- * (t, id) over the table is the maximum of the per-type maxima, so a
- * recursive loose index scan walks the 64 distinct type ids by index descent
- * and takes one indexed tail per type. Measured live: p50 2.48ms for an
- * identical ledger_hash, and it needs no new index on a table this size.
- */
-function latestLedgerHashSql(eventsTable: string): string {
-  return `WITH RECURSIVE ledger_type_ids AS (
-      (SELECT type_id FROM ${eventsTable} ORDER BY type_id LIMIT 1)
-      UNION ALL
-      SELECT (SELECT next.type_id FROM ${eventsTable} next WHERE next.type_id > ledger_type_ids.type_id ORDER BY next.type_id LIMIT 1)
-      FROM ledger_type_ids WHERE ledger_type_ids.type_id IS NOT NULL
-    )
-    SELECT tail.ledger_hash
-    FROM ledger_type_ids
-    CROSS JOIN LATERAL (
-      SELECT tail.ledger_hash, tail.t, tail.id
-      FROM ${eventsTable} tail
-      WHERE tail.type_id = ledger_type_ids.type_id
-      ORDER BY tail.t DESC, tail.id DESC
-      LIMIT 1
-    ) tail
-    WHERE ledger_type_ids.type_id IS NOT NULL
-    ORDER BY tail.t DESC, tail.id DESC
-    LIMIT 1`;
-}
-
-async function latestLedgerHash(client: PoolClient, eventsTable: string): Promise<string> {
-  const result = await client.query<{ ledger_hash: string }>(latestLedgerHashSql(eventsTable));
-  return result.rows[0]?.ledger_hash ?? "";
 }
 
 function sha256(input: string | Uint8Array): string {

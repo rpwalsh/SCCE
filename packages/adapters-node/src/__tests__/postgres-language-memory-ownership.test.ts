@@ -150,7 +150,7 @@ describe("Postgres language-memory ownership queries", () => {
     expect(patterns).toHaveLength(8);
   });
   it("filters exact compiler-owned receipt IDs before ranking or limiting historical rows", async () => {
-    const { adapter, calls } = fixture();
+    const { adapter, calls } = fixture([{ profile_id: "profile.owned", source_system: "gutenberg" }]);
     await adapter.languageMemory.listLanguagePatterns({ patternIds: ["receipt.current"], profileIds: ["profile.owned"],
       sourceSystem: "gutenberg", patternKind: "source_compilation", patternSchemas: ["scce.source_language_compilation_receipt.v1"], limit: 1 });
     const query = calls.at(-1)!;
@@ -412,7 +412,7 @@ describe("Postgres language-memory ownership queries", () => {
   });
 
   it("filters requested pattern schemas in the candidate pool before any row limit is applied", async () => {
-    const { adapter, calls } = fixture();
+    const { adapter, calls } = fixture([{ profile_id: "profile.owned", source_system: "source.dialogue" }]);
     await adapter.languageMemory.listLanguagePatterns({
       sourceSystem: "source.dialogue",
       patternSchemas: ["scce.request_requirement_pattern.v1", "scce.creative_event_compatibility_model.v1"],
@@ -886,7 +886,7 @@ function compilationHeaderFixture(compilerRecipe: string = LANGUAGE_TRAINING_BAT
     compilation_receipt: { ...receipt, ...header, compilationId } };
 }
 
-function fixture(): {
+function fixture(candidateOwners: Array<{ profile_id: string; source_system: string | null }> = []): {
   adapter: PostgresStorageAdapter;
   calls: Array<{ sql: string; params: unknown[] }>;
 } {
@@ -904,7 +904,7 @@ function fixture(): {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
     calls.push({ sql, params });
-    return [];
+    return sql.startsWith("SELECT DISTINCT pattern.profile_id,pattern.source_system") ? candidateOwners as T[] : [];
   };
   return { adapter, calls };
 }

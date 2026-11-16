@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_POLICY,
   createAuditEngine,
+  hashEvent,
   createClock,
   createEventFactory,
   createHasher,
@@ -47,7 +48,7 @@ function buildLedger(count: number, startAt = 1_000, options: { linked?: boolean
       ...(options.linked && created.length ? { parents: [created.at(-1)!] } : {}) }));
   }
   let ledgerHash = "";
-  return created.map(event => {
+  return created.map((event, index) => {
     ledgerHash = sha256(`${ledgerHash}${event.hash}`);
     return {
       id: String(event.id),
@@ -57,7 +58,7 @@ function buildLedger(count: number, startAt = 1_000, options: { linked?: boolean
       payload_json: event.payload,
       parents: event.parents.map(String),
       hash: event.hash,
-      ledger_hash: ledgerHash
+      ledger_hash: ledgerHash, ledger_position: String(index + 1)
     };
   });
 }
@@ -70,6 +71,7 @@ interface FakeGovernanceStorage {
   setPrivileges: (updateAllowed: boolean, deleteAllowed: boolean) => void;
   setTriggerCount: (n: number) => void;
   payloadPages: () => string[][];
+  setAfterHeadRead: (hook: () => void) => void;
   setPayloadRead: (read: (rows: PostgresGovernanceEventRow[]) => PostgresGovernanceEventRow[]) => void;
 }
 
@@ -81,16 +83,23 @@ function fakeGovernanceStorage(initialRows: PostgresGovernanceEventRow[]): FakeG
   let fullScans = 0;
   let windowScans = 0;
   const payloadPages: string[][] = [];
+  let afterHeadRead = () => {};
   let payloadRead = (rows: PostgresGovernanceEventRow[]) => rows;
   const headers = (selected: PostgresGovernanceEventRow[]) => selected.map(({ payload_json, ...header }) => ({
     ...header, payload_stored_bytes: Buffer.byteLength(JSON.stringify(payload_json))
   }));
-  const sorted = () => [...rows].sort((a, b) => Number(a.t) - Number(b.t) || a.id.localeCompare(b.id));
+  const sorted = () => [...rows].sort((a, b) => BigInt(a.ledger_position!) < BigInt(b.ledger_position!) ? -1 : BigInt(a.ledger_position!) > BigInt(b.ledger_position!) ? 1 : 0);
   return {
     storage: {
       schema: "test_schema",
       table: () => '"events"',
       query: async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+        if (sql.includes("event_ledger_position_snapshot")) {
+          const last = sorted().at(-1);
+          const snapshot = [{ head: last ? { eventId:last.id,eventHash:last.hash,ledgerHash:last.ledger_hash,ledgerPosition:String(last.ledger_position) } : null,
+            present:rows.length>0,unpositioned:rows.some(row=>row.ledger_position==null),tail_position:last?.ledger_position??null }];
+          const hook=afterHeadRead;afterHeadRead=()=>{};hook();return snapshot as T[];
+        }
         if (sql.includes("has_table_privilege")) {
           return [{ update_allowed: updateAllowed, delete_allowed: deleteAllowed }] as T[];
         }
@@ -98,6 +107,7 @@ function fakeGovernanceStorage(initialRows: PostgresGovernanceEventRow[]): FakeG
           return [{ count: String(triggerCount) }] as T[];
         }
         if (sql.includes("WHERE id=ANY($1::text[])")) {
+          if (!sql.includes("payload_json")) return sorted().filter(row => (params[0] as string[]).includes(row.id)).map(row=>({id:row.id,hash:row.hash,ledger_position:row.ledger_position})) as T[];
           const ids = params[0] as string[];
           payloadPages.push([...ids]);
           return payloadRead(sorted().filter(row => ids.includes(row.id))) as T[];
@@ -105,22 +115,21 @@ function fakeGovernanceStorage(initialRows: PostgresGovernanceEventRow[]): FakeG
         if (sql.includes("WHERE id = $1")) {
           const [id] = params as [string];
           const row = rows.find(r => r.id === id);
-          return (row ? [{ id: row.id, t: row.t, hash: row.hash, ledger_hash: row.ledger_hash }] : []) as T[];
+          return (row ? [{ id: row.id, t: row.t, hash: row.hash, ledger_hash: row.ledger_hash, ledger_position: row.ledger_position }] : []) as T[];
         }
-        if (sql.includes("(t, id) >")) {
-          const [anchorId, anchorT] = params as [string, number];
-          return headers(sorted().filter(row => Number(row.t) > anchorT || (Number(row.t) === anchorT && row.id > anchorId))) as unknown as T[];
+        if (sql.includes("ledger_position > $1::bigint")) {
+          return headers(sorted().filter(row=>BigInt(row.ledger_position!)>BigInt(params[0] as string)&&BigInt(row.ledger_position!)<=BigInt(params[1] as string))) as unknown as T[];
         }
         if (/count\(\*\)/i.test(sql)) {
           return [{ count: String(rows.length) }] as T[];
         }
-        if (sql.includes("ORDER BY t DESC")) {
+        if (sql.includes("ORDER BY ledger_position DESC")) {
           windowScans += 1;
           const limit = Number(/LIMIT (\d+)/.exec(sql)?.[1] ?? rows.length);
-          return headers(sorted().slice(-limit).reverse()) as unknown as T[];
+          return headers(sorted().filter(row=>BigInt(row.ledger_position!)<=BigInt(params[0] as string)).slice(-limit).reverse()) as unknown as T[];
         }
         fullScans += 1;
-        return sorted() as unknown as T[];
+        return headers(sorted().filter(row=>!params.length||BigInt(row.ledger_position!)<=BigInt(params[0] as string))) as unknown as T[];
       }
     },
     fullScanCount: () => fullScans,
@@ -129,11 +138,46 @@ function fakeGovernanceStorage(initialRows: PostgresGovernanceEventRow[]): FakeG
     setPrivileges: (u, d) => { updateAllowed = u; deleteAllowed = d; },
     setTriggerCount: n => { triggerCount = n; },
     payloadPages: () => payloadPages,
+    setAfterHeadRead: hook => { afterHeadRead=hook; },
     setPayloadRead: read => { payloadRead = read; }
   };
 }
 
 describe("incremental governance ledger verification", () => {
+  it("verifies append order20,1,21 and same-ms ties, including backdated suffixes", async () => {
+    const ledger=buildLedger(4);let previous="";
+    ledger.forEach((row,i)=>{row.t=[20,1,21,21][i]!;row.id=["z","a","m","b"][i]!;
+      row.hash=hashEvent({id:row.id,episodeId:row.episode_id,typeId:row.type_id,t:Number(row.t),payload:row.payload_json,parents:[]} as never,[],createHasher());
+      row.ledger_hash=previous=sha256(previous+"\u001f"+row.hash);});
+    const fake=fakeGovernanceStorage(ledger.slice(0,1)),root=await tempRoot(),probe=createNodePostgresGovernanceProbe({storage:fake.storage as never,approvals:createApprovalSession(),workspaceRoot:root,environment:{}});
+    expect((await probe.observe({policy:DEFAULT_POLICY,now:1})).eventLedger.passed).toBe(true);
+    fake.setRows(ledger);expect((await probe.observe({policy:DEFAULT_POLICY,now:2})).eventLedger).toMatchObject({passed:true,events:4,reason:"verified_incremental"});
+    expect((await fullyVerifyEventLedger(fake.storage as never)).passed).toBe(true);
+  });
+  it("captures one canonical head while concurrent append is deferred to the next suffix", async () => {
+    const ledger=buildLedger(4),fake=fakeGovernanceStorage(ledger.slice(0,3)),root=await tempRoot();
+    const probe=createNodePostgresGovernanceProbe({storage:fake.storage as never,approvals:createApprovalSession(),workspaceRoot:root,environment:{}});
+    fake.setAfterHeadRead(()=>fake.setRows(ledger));
+    expect((await probe.observe({policy:DEFAULT_POLICY,now:1})).eventLedger).toMatchObject({passed:true,events:3});
+    expect((await probe.observe({policy:DEFAULT_POLICY,now:2})).eventLedger).toMatchObject({passed:true,events:4,reason:"verified_incremental"});
+  });
+  it("keeps tail and suffix positions exact above Number precision", async () => {
+    const ledger=buildLedger(3);ledger.forEach((row,i)=>row.ledger_position=(9007199254740992n+BigInt(i)).toString());
+    const fake=fakeGovernanceStorage(ledger.slice(0,2)),root=await tempRoot(),probe=createNodePostgresGovernanceProbe({storage:fake.storage as never,approvals:createApprovalSession(),workspaceRoot:root,environment:{SCCE_GOVERNANCE_LEDGER_WINDOW_EVENTS:"1"}});
+    expect((await probe.observe({policy:DEFAULT_POLICY,now:1})).eventLedger).toMatchObject({passed:true,events:"9007199254740993"});
+    fake.setRows(ledger);expect((await probe.observe({policy:DEFAULT_POLICY,now:2})).eventLedger).toMatchObject({passed:true,events:"9007199254740994"});
+  });
+  it("checks parents outside a bounded payload window through exact narrow headers", async () => {
+    const ledger=buildLedger(5,1000,{linked:true}),fake=fakeGovernanceStorage(ledger),root=await tempRoot();
+    const observed=await createNodePostgresGovernanceProbe({storage:fake.storage as never,approvals:createApprovalSession(),workspaceRoot:root,environment:{SCCE_GOVERNANCE_LEDGER_WINDOW_EVENTS:"2"}}).observe({policy:DEFAULT_POLICY,now:1});
+    expect(observed.eventLedger.passed).toBe(true);expect(fake.payloadPages().flat()).toEqual(ledger.slice(-2).map(row=>row.id));
+  });
+  it("rejects a missing ordinal in an otherwise plausible appended suffix", async () => {
+    const ledger=buildLedger(4),fake=fakeGovernanceStorage(ledger.slice(0,2)),root=await tempRoot();
+    const probe=createNodePostgresGovernanceProbe({storage:fake.storage as never,approvals:createApprovalSession(),workspaceRoot:root,environment:{}});
+    await probe.observe({policy:DEFAULT_POLICY,now:1});fake.setRows([ledger[0]!,ledger[1]!,ledger[3]!]);
+    expect((await probe.observe({policy:DEFAULT_POLICY,now:2})).eventLedger).toMatchObject({passed:false,reason:"event_append_position_invalid"});
+  });
   it("verifies all4096 selected events and cross-page parents while allowing the event loop to progress", async () => {
     const ledger = buildLedger(4096, 1_000, { linked: true });
     const fake = fakeGovernanceStorage(ledger), root = await tempRoot();
@@ -194,8 +238,9 @@ describe("incremental governance ledger verification", () => {
     expect(fake.payloadPages()).toHaveLength(3);
   });
 
-  it("retains fail-closed outside-window parent checks rather than trusting an unverified parent", async () => {
+  it("fails closed when an exact outside-window parent header is genuinely missing", async () => {
     const ledger = buildLedger(4, 1_000, { linked: true }), fake = fakeGovernanceStorage(ledger), root = await tempRoot();
+    ledger[2]!.parents = ["event.missing.parent"];
     const observed = await createNodePostgresGovernanceProbe({ storage: fake.storage as never, approvals: createApprovalSession(), workspaceRoot: root,
       environment: { SCCE_GOVERNANCE_LEDGER_WINDOW_EVENTS: "2" } }).observe({ policy: DEFAULT_POLICY, now: 10_000 });
     expect(observed.eventLedger).toMatchObject({ passed: false, events: 4, reason: "event_hash_chain_invalid" });

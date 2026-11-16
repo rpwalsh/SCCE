@@ -17,9 +17,12 @@ it("reads construction evidence on the event append client with a one-client poo
   const evidenceHash = `sha256_${createHash("sha256").update(evidenceBytes).digest("hex")}`;
   const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
   let active = false, escapedQueries = 0;
+  let ledgerHead: unknown;
   const client = {
     async query(sql: string, params: readonly unknown[] = []): Promise<{ rows: unknown[] }> {
       calls.push({ sql, params });
+      if (sql.includes("event_ledger_position_snapshot")) return {rows:[{head:ledgerHead??null,present:events.length>0,unpositioned:false,tail_position:events.length?String(events.length):null}]};
+      if (sql.includes("INSERT INTO") && sql.includes("storage_meta") && params[0]==="events.ledger_head.v1") ledgerHead=JSON.parse(String(params[1]));
       if (sql === "BEGIN") { expect(active).toBe(false); active = true; }
       if (sql === "COMMIT" || sql === "ROLLBACK") active = false;
       if (sql.includes('"evidence_spans"')) {
@@ -49,8 +52,8 @@ it("reads construction evidence on the event append client with a one-client poo
           : cold(row)) };
       }
       if (sql.includes("INSERT INTO") && sql.includes("(id, episode_id")) {
-        const [id, episode_id, type_id, t, payload, parents, hash, ledger_hash] = params;
-        events.push({ id, episode_id, type_id, t, payload_json: JSON.parse(String(payload)), parents, hash, ledger_hash });
+        const [id, episode_id, type_id, t, payload, parents, hash, ledger_hash, ledger_position] = params;
+        events.push({ id, episode_id, type_id, t, payload_json: JSON.parse(String(payload)), parents, hash, ledger_hash, ledger_position });
       }
       if (sql.startsWith("SELECT *") && sql.includes('"events"')) return { rows: cold(events) };
       return { rows: [] };

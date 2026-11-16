@@ -9,15 +9,22 @@ const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });
 
 describe("ordinary capability discovery through the canonical PostgreSQL read contract", () => {
-  it("returns no action for an empty owned capability schema with a complete bounded read", async () => {
+  it.each([false, true])("returns no action when capability owner presence is %s with a complete bounded read", async hasOwner => {
     const adapter = new PostgresStorageAdapter({ url: "postgres://offline.invalid/none", schema: "capability_read", informationAccess: {
       tenantId: "tenant.owned", principalId: "principal.owned", compartments: [], maximumExportClass: "restricted"
     } });
     adapters.push(adapter);
     const calls: Array<{ sql: string; params: unknown[] }> = [];
-    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params }); return []; };
+    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params }); return hasOwner && sql.startsWith("SELECT DISTINCT pattern.profile_id,pattern.source_system") ? [{ profile_id: "profile.owned", source_system: "dialogue" }] as T[] : []; };
     const storage = { languageMemory: adapter.languageMemory } as ScceStorage;
     await expect(capabilityBindingForRequest({ storage, requestText: "Who composed Swan Lake?" })).resolves.toBeUndefined();
+    const probe = calls[0]!;
+    expect(probe.sql).toMatch(/^SELECT DISTINCT pattern\.profile_id,pattern\.source_system/u);
+    expect(probe.params).toContainEqual([CAPABILITY_CONSTRUCTION_SCHEMA]);
+    expect(probe.sql).toContain("pattern.information_label->>'tenantId'");
+    expect(probe.sql).not.toContain("LIMIT");
+    await expect(adapter.languageMemory.listLanguagePatterns({ patternSchemas: [CAPABILITY_CONSTRUCTION_SCHEMA], requireComplete: true })).rejects.toThrow(/positive finite row and decoded byte bounds/);
+    if (!hasOwner) { expect(calls).toHaveLength(1); return; }
     const selected = calls.find(call => call.sql.includes("pattern_headers AS MATERIALIZED"))!;
     expect(selected).toBeDefined();
     expect(selected.params).toContainEqual([CAPABILITY_CONSTRUCTION_SCHEMA]);

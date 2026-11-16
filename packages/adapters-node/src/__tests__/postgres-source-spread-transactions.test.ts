@@ -13,6 +13,7 @@ function fixture(method: Method, initial: PlannerSetting, failure?: { phase: "me
   const adapter = createPostgresStorageAdapter({ url: "postgres://offline.invalid/no_database", schema: "spread_tx_test",
     informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" } });
   adapters.push(adapter);
+  adapter.languageMemory.readRevision = async () => "fixture-stable";
   const statements: Statement[] = [];
   const measurements: Array<{ active: boolean; setting: PlannerSetting }> = [];
   let active = false;
