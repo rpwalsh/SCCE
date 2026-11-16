@@ -2,9 +2,10 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, expect, it } from "vitest";
 import { CONTEXTUAL_QA_CONSTRUCTION_RECIPE as recipe, CONTEXTUAL_QA_SOURCE_SYSTEM as sourceSystem,
-  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA as schema, POSTGRES_SCHEMA_VERSION, requestSeedLanguagePattern,
+  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA as schema, POSTGRES_SCHEMA_VERSION, POSTGRES_REQUIRED_TABLES, requestSeedLanguagePattern,
   type LanguagePatternProjection, type LanguagePatternRecord } from "@scce/kernel";
 import { PostgresStorageAdapter, schemaStatements } from "../postgres.js";
+import { requiredHydrationColumns } from "../postgres-schema.js";
 
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });
@@ -113,7 +114,14 @@ it("reads only a complete current contextual QA receipt and exact owned row inve
   expect(await adapter.languageMemory.getLanguagePatternProjection!(projection)).toEqual(projection);
   expect(calls[0]!.sql).toContain("active_projection.information_label");
   expect(calls[0]!.sql).toContain("newer_dependency_evidence.status='promoted'");
-  expect(calls[1]!.sql).toContain("pattern.evidence_ids <@ $7::text[]");
+  const membership = calls[1]!.sql;
+  for (const gate of ["pattern.id=ANY($1::text[])", "pattern.profile_id=$2", "pattern.owned_source_version_id=$3",
+    "pattern.source_system=$4", "pattern.pattern_schema=$5", "pattern.component_recipe=$6", "pattern.pattern_kind='semantic_role'",
+    "COALESCE(array_length(pattern.evidence_ids,1),0)>0", "pattern.information_label",
+    "allowed_evidence AS MATERIALIZED (SELECT DISTINCT evidence_id FROM unnest($7::text[])",
+    "requested_evidence AS MATERIALIZED", "FULL JOIN allowed_evidence allowed ON allowed.evidence_id=requested.evidence_id",
+    "WHERE id IS NOT NULL GROUP BY id HAVING bool_and(allowed_id IS NOT NULL)"]) expect(membership).toContain(gate);
+  expect(calls[1]!.params[6]).toEqual(projection.sourceDependencies![0]!.evidenceIds);
   calls.length = 0;
   expect(await adapter.languageMemory.getLanguagePatternProjection!({ ...projection, sourceSystem: "foreign" })).toBeUndefined();
   expect(await adapter.languageMemory.getLanguagePatternProjection!({ ...projection, patternSchema: "foreign" })).toBeUndefined();
@@ -131,8 +139,27 @@ it("keeps contextual QA interpretation metadata without source programs or super
 });
 
 it("declares one idempotent partial request-feature index without rewriting source programs", () => {
-  expect(POSTGRES_SCHEMA_VERSION).toBe(36);
+  // The integrated schema advanced 36 -> 41; versions are not a count of migration statements.
+  expect(POSTGRES_SCHEMA_VERSION).toBe(41);
   const statements = schemaStatements('"fixture"');
+  const columns = requiredHydrationColumns();
+  const currentTables = {
+    graph_evidence_associations: ["association_order", "entity_kind", "entity_id", "evidence_id"],
+    ngram_model_continuations: ["model_id", "profile_id", "continuation_counts", "model_updated_at", "information_label"],
+    source_text_replay_binding_sets: ["id", "model_id", "profile_id", "manifest_pattern_id", "manifest_digest", "binding_json", "binding_digest", "information_label", "created_at"],
+    creative_event_lexical_pages: ["id", "kind", "member_ids", "value_json"],
+    construction_source_decision_pages: ["id", "owner_key", "kind", "value_json", "information_label"]
+  };
+  for (const [table, fields] of Object.entries(currentTables)) {
+    expect(POSTGRES_REQUIRED_TABLES).toContain(table);
+    expect(columns[table]).toEqual(fields);
+    expect(statements.some(sql => sql.startsWith(`CREATE TABLE IF NOT EXISTS "fixture".${table} (`))).toBe(true);
+  }
+  expect(statements.some(sql => sql.startsWith("DO $scce_graph_evidence_membership_index$"))).toBe(true);
+  for (const header of ["pattern_schema", "component_recipe", "source_compilation_id", "owned_source_version_id", "decoded_artifact_jsonb_bytes"]) {
+    expect(columns.language_patterns).toContain(header);
+    expect(statements.some(sql => sql.includes(`ADD COLUMN IF NOT EXISTS ${header} `) && sql.includes("GENERATED ALWAYS AS"))).toBe(true);
+  }
   const indexes = statements.filter(sql => sql.includes("_contextual_qa_request_lookup"));
   expect(indexes).toEqual([`CREATE INDEX IF NOT EXISTS idx_fixture_contextual_qa_request_lookup ON "fixture".language_patterns USING GIN ((pattern_json->'contextualQaRequestFeatures')) WHERE pattern_kind='semantic_role' AND pattern_json->>'schema'='${schema}' AND pattern_json->>'componentRecipe'='${recipe}' AND source_system='${sourceSystem}'`]);
   expect(statements.some(sql => /UPDATE\s+\S*language_patterns\s+SET\s+pattern_json/iu.test(sql))).toBe(false);

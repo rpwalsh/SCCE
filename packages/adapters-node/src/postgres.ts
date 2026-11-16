@@ -5410,11 +5410,15 @@ async function currentLanguagePatternCompilations(storage: PostgresStorageAdapte
          receipt.id,receipt.profile_id,receipt.source_system,version.source_id,version.id AS source_version_id,version.content_hash,
          receipt.pattern_json->'compilation' AS compilation
        FROM ${artifactReceipts}
-       JOIN ${storage.table("language_profiles")} profile ON profile.id=receipt.profile_id
-       JOIN ${storage.table("source_versions")} version ON version.id=profile.source_version_id
-         AND version.id=receipt.pattern_json->'compilation'->>'sourceVersionId'
-         AND version.source_id=receipt.pattern_json->'compilation'->>'sourceId'
-         AND version.content_hash=receipt.pattern_json->'compilation'->>'contentHash'
+       -- Resolve the receipt's owner before comparing its large JSON compilation header. Otherwise a low
+       -- version estimate can rescan and detoast that receipt for every source version in the database.
+       CROSS JOIN LATERAL (SELECT profile.* FROM ${storage.table("language_profiles")} profile
+         WHERE profile.id=receipt.profile_id OFFSET 0) profile
+       CROSS JOIN LATERAL (SELECT version.* FROM ${storage.table("source_versions")} version
+         WHERE version.id=profile.source_version_id
+           AND version.id=receipt.pattern_json->'compilation'->>'sourceVersionId'
+           AND version.source_id=receipt.pattern_json->'compilation'->>'sourceId'
+           AND version.content_hash=receipt.pattern_json->'compilation'->>'contentHash' OFFSET 0) version
        WHERE ${artifactWhere.join(" AND ")}
        ORDER BY receipt.profile_id,receipt.source_system,version.id,receipt.updated_at DESC,receipt.id DESC) artifact`, params);
   const hasher = createHasher();
@@ -6708,7 +6712,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            WHERE sized.running_stored_bytes <= ${byteAllowance}${requestedPatternIds ? "" : " OR sized.category_relevance_rank = 1"}`
         : `SELECT ${narrow} FROM candidates`;
       const finalSelect = byteBudget
-        ? `SELECT ranked.id,ranked.profile_id,ranked.pattern_kind,ranked.support,ranked.entropy,ranked.pattern_json,ranked.evidence_ids,ranked.updated_at,ranked.information_label
+        ? `SELECT ranked.id,ranked.profile_id,ranked.pattern_kind,ranked.support,ranked.entropy,ranked.pattern_json,ranked.evidence_ids,ranked.updated_at,ranked.information_label,ranked.decoded_jsonb_bytes
            FROM (
              SELECT eligible.*,
                SUM(COALESCE(eligible.decoded_jsonb_bytes, octet_length(eligible.pattern_json::text))) OVER (${partition("eligible")}ORDER BY ${order("eligible")} ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
@@ -6718,13 +6722,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            WHERE ranked.running_json_bytes <= ${byteAllowance}${categoryMinimum}
            ORDER BY ${order("ranked")} LIMIT $${limitParam}`
         : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
+      // The selected row already carries its byte measurement. Joining the materialized JSON rows back
+      // by ID made the complete-read check quadratic under the same low cardinality estimates.
       const resultSelect = query.lexicalUnits !== undefined
         ? `, complete_read AS MATERIALIZED (${finalSelect}),
            complete_stats AS (
              SELECT (SELECT COUNT(*) FROM candidate_pool) AS expected_pattern_count,
                (SELECT COUNT(*) FROM complete_read) AS complete_pattern_count,
-               (SELECT COALESCE(SUM(COALESCE(eligible.decoded_jsonb_bytes, octet_length(eligible.pattern_json::text))),0)
-                 FROM eligible_patterns eligible JOIN complete_read selected ON selected.id=eligible.id) AS decoded_complete_bytes
+               (SELECT COALESCE(SUM(COALESCE(selected.decoded_jsonb_bytes, octet_length(selected.pattern_json::text))),0)
+                 FROM complete_read selected) AS decoded_complete_bytes
            )
            SELECT complete_read.*,complete_stats.* FROM complete_stats LEFT JOIN complete_read
              ON complete_stats.expected_pattern_count=complete_stats.complete_pattern_count
@@ -6734,8 +6740,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ? `, complete_read AS MATERIALIZED (${finalSelect})
            SELECT * FROM complete_read
            WHERE (SELECT COUNT(*) FROM candidate_pool)=(SELECT COUNT(*) FROM complete_read)
-             AND (SELECT COALESCE(SUM(COALESCE(eligible.decoded_jsonb_bytes, octet_length(eligible.pattern_json::text))),0)
-               FROM eligible_patterns eligible JOIN complete_read selected ON selected.id=eligible.id) <= $${params.length}
+             AND (SELECT COALESCE(SUM(COALESCE(selected.decoded_jsonb_bytes, octet_length(selected.pattern_json::text))),0)
+               FROM complete_read selected) <= $${params.length}
            ORDER BY ${order("complete_read")}`
         : finalSelect;
       // Carry checked scalar headers through admission instead of rescanning their materialized population.
@@ -7782,11 +7788,13 @@ function conversationalProjectionEligibilitySql(storage: PostgresStorageAdapter,
   const profileAccess = access("auxiliary_profile"), ownerAccess = access("auxiliary_owner");
   const versionAccess = access("dependency_version"), evidenceAccess = access("dependency_evidence");
   const newerVersionAccess = access("newer_dependency_version"), newerEvidenceAccess = access("newer_dependency_evidence");
+  // Keep this an exact correlated owner lookup. Flattening the EXISTS into a semi join can repeatedly
+  // extract the toasted projection header for every unrelated profile/version before finding its owner.
   return `EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} auxiliary_profile
     JOIN ${storage.table("source_versions")} auxiliary_owner ON auxiliary_owner.id=auxiliary_profile.source_version_id
     WHERE auxiliary_profile.id=active_projection.value_json->>'profileId'
       AND auxiliary_owner.id=active_projection.value_json->>'sourceVersionId'
-      AND auxiliary_owner.source_id=active_projection.value_json->>'sourceId' AND ${profileAccess} AND ${ownerAccess})
+      AND auxiliary_owner.source_id=active_projection.value_json->>'sourceId' AND ${profileAccess} AND ${ownerAccess} OFFSET 0)
     AND (jsonb_array_length(CASE WHEN jsonb_typeof(active_projection.value_json->'patternIds')='array'
       THEN active_projection.value_json->'patternIds' ELSE '[]'::jsonb END)=0 OR (
       jsonb_typeof(active_projection.value_json->'sourceDependencies')='array'

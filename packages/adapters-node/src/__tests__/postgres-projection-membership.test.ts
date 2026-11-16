@@ -99,6 +99,7 @@ it.each([LEXICAL_SENSE_SCHEMA, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA])("retains p
   expect(sql).toContain("_members AS MATERIALIZED");
   expect(sql).toContain("WHERE computation_member.id=member.pattern_id");
   expect(sql).toContain("OFFSET 0");
+  expect(sql).toMatch(/auxiliary_owner\.source_id=active_projection\.value_json->>'sourceId'[\s\S]*?OFFSET 0\)/u);
   expect(sql.indexOf("_eligible AS MATERIALIZED")).toBeLessThan(sql.indexOf("candidate_pool AS MATERIALIZED"));
   if (schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA) expect(sql).toContain("qa_header.pattern_id=pattern.id");
 });
