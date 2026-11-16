@@ -106,7 +106,7 @@ import { counterfactualTracesFromCapabilityPreview } from "./functional-cognitio
 import { runFunctionalCognitionOffProcess } from "./functional-cognition-offload.js";
 import { POLICY_OBJECTIVE_SCHEMA_ID, policyGenomeFromDurable } from "./policy-evolution.js";
 import { unavailableGovernanceObservation } from "./governance-observation.js";
-import { runtimeFlag } from "./runtime-graph-cache.js";
+import { runtimeFlag, type RuntimeGraphSliceValue } from "./runtime-graph-cache.js";
 import { createIdFactory } from "./ids.js";
 import { planInventions } from "./invention-planner.js";
 import { createJudge } from "./judge.js";
@@ -156,7 +156,6 @@ import {
   isUnparsedMarkupText,
   learnedRequestScaffoldingUnits,
   spanContainsRequestNearDuplicateSentence,
-  sourceBodyAnswersRequest,
   temporalCounterexampleExpected,
   temporalConceptTitledEvidence
 } from "./local-evidence-runtime.js";
@@ -237,7 +236,7 @@ import { assessClaimSupport } from "./support-assessment.js";
 import { proofPathSemiring } from "./equation-operators.js";
 import { normalizeRawGraphEdgeToCognitiveEdge } from "./question-cognitive-edge.js";
 import { evidenceForceFromProofForceClass, type EvidenceForceClass } from "./truth-contract.js";
-import { evidenceProofBoundary } from "./proof-boundary.js";
+import { evidenceProofBoundary, isSourceContentEvidence } from "./proof-boundary.js";
 import { subjectTemporalComparison } from "./temporal-subject-comparison.js";
 import type { EvidenceId, GraphEdge, GraphNode, NodeId, RequestedAuthority } from "./types.js";
 import { createRuntimeGraphRetrieval, discourseEvidenceAdmissionForRequest, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
@@ -279,7 +278,7 @@ import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import { buildCognitiveCapabilityManifest, type CognitiveCapability } from "./cognitive-capability-manifest.js";
 import { primeCorpusIdentityForTurn } from "./corpus-identity-runtime.js";
 import { corpusNamedIdentities } from "./corpus-identity.js";
-import { createTurnSignals } from "./turn-signals.js";
+import { createTurnSignals, type TurnSignals } from "./turn-signals.js";
 import { createAutonomousToolCognition } from "./tool-cognition.js";
 import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import { canonicalTranslationTargetKey, createTranslationEngine, type TranslationPlan } from "./translation.js";
@@ -1406,7 +1405,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         || !Number.isSafeInteger(lexicalReadBytes) || lexicalReadBytes <= 0)) throw new Error("lexical source reads require configured finite hydration bounds");
       const lexicalPatterns = requestLanguage && lexicalUnits.length && !deps.evaluationCondition?.flags.disableLanguageMemory
         ? await deps.storage.languageMemory.listLanguagePatterns({ patternSchemas: [LEXICAL_SENSE_SCHEMA, LEXICAL_GRAMMAR_SCHEMA, SOURCE_QUESTION_FRAME_SCHEMA],
-          languageId: requestLanguage.identity.id, lexicalUnits, limit: lexicalReadLimit, maxTotalJsonBytes: lexicalReadBytes, requireComplete: true }) : [];
+          languageId: requestLanguage.identity.id, lexicalUnits, lexicalSurfaces: requestContentEvidenceUnits(input.text), limit: lexicalReadLimit, maxTotalJsonBytes: lexicalReadBytes, requireComplete: true }) : [];
       throwIfRuntimeAborted(requestSignal, "runtime.seed.lexical.read.complete");
       if (lexicalPatterns.length && !deps.informationAccess) throw new Error("source-owned lexical reads require an explicit information access context");
       if (lexicalPatterns.length && !deps.storage.evidence.sourceVersionById) throw new Error("source-owned lexical reads require the canonical source owner reader");
@@ -1563,7 +1562,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           sourceDependence: requirementField.sourceDependence,
           externalTruthAuthority: requirementField.externalTruthAuthority,
           responseFormId: requirementField.responseForm?.id ?? null,
-          creativeSkipsRetrieval: authorityProjection.requestedAuthority === "creative" && requirementField.sourceDependence <= requirementField.noveltyDemand / 4,
+          creativeSourceIndependentField: authorityProjection.requestedAuthority === "creative" && requirementField.sourceDependence <= requirementField.noveltyDemand / 4,
           scores: authorityProjection.scores
         }
       });
@@ -1663,6 +1662,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         evidence: deps.storage.evidence,
         onTrace: record => kernelTrace({ stage: "turn.corpus_identity", ...record })
       });
+      // Keep this request's measured references before subsequent async work can prime another turn's corpus state.
+      const requestSourceSignals = { text: input.text, namedSubjects: [...turnSignals.namedSubjects],
+        sentenceSequences: turnSignals.sentenceSequences.map(sequence => [...sequence]) };
       let creativeRequestFrame: CreativeRequestFrame | undefined = observedSourceRequestFrame;
       // Routing fitted from this instance's own episodes, off the same 120s model cache the judge weights use.
       const operatorModel = operatorRoutingActivationModel({ modelSet: await calibrationModelsCached() });
@@ -1845,31 +1847,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const allowSemanticFrameEvidence = deps.evaluationCondition?.flags.disableLanguageMemory !== true
         && deps.evaluationCondition?.flags.disableLearnedSemantics !== true;
       const typedIngestProjector = createTypedIngestProjector({ idFactory, hasher });
-      // Learned, not guessed: authority creative with no source dependence.
-      // A request that quotes a sentence is recall even when it projects creative, and recall needs its source: the
-      // skip must not remove the evidence the quotation-recall override depends on.
-      const creativeRequestNeedsNoRetrieval = turnSignals.sentenceSequences.length === 0
-        && turnSignals.namedSubjects.length === 0
-        && requestedAuthority === "creative"
-        && requirementField.sourceDependence <= requirementField.noveltyDemand / 4
-        && !discourseEvidenceBound
-        && metadataEvidenceIds.size === 0
-        && explicitContextEvidenceIds.size === 0;
-      // Owner-originated general chat with no source dependence has the same
-      // retrieval contract as source-free creative work. Letting the generic
-      // reasoned authority force source anchoring here turns a conversational
-      // response into a corpus-wide graph query even though no subject or
-      // quoted evidence can make a factual proof obligation. Context-bound
-      // and named requests remain on the normal evidence path.
-      const ownerChatNeedsNoRetrieval = turnSignals.sentenceSequences.length === 0
-        && turnSignals.namedSubjects.length === 0
-        && requestedAuthority === "reasoned"
-        && (requirementField.sourceDependence <= requirementField.noveltyDemand / 4
-          || sourceIndependentDialogueRequirements(requirementField))
-        && !discourseEvidenceBound
-        && metadataEvidenceIds.size === 0
-        && explicitContextEvidenceIds.size === 0;
-      const authoredRequestNeedsNoRetrieval = declaredEvidenceScope === undefined && (creativeRequestNeedsNoRetrieval || ownerChatNeedsNoRetrieval);
+      const retrievalDemand = requestRetrievalDemand({ requestText: input.text, sourceSignals: requestSourceSignals,
+        authority: requestedAuthority, projection: authorityProjection, requirements: requirementField,
+        sourceIndependentDialogue: sourceIndependentDialogueRequirements(requirementField), discourseEvidenceBound,
+        metadataEvidenceCount: metadataEvidenceIds.size, explicitContextEvidenceCount: explicitContextEvidenceIds.size,
+        declaredEvidenceScope: declaredEvidenceScope !== undefined });
+      const authoredRequestNeedsNoRetrieval = retrievalDemand.authoredRequestNeedsNoRetrieval;
+      kernelTrace({ stage: "turn.retrieval_demand", label: "kernel.turn",
+        counts: { namedSubjects: retrievalDemand.namedSubjects, quotationSequences: retrievalDemand.quotationSequences,
+          metadataEvidence: metadataEvidenceIds.size, explicitContextEvidence: explicitContextEvidenceIds.size },
+        support: { schema: "scce.request_retrieval_demand.v1", requestedAuthority, sourceDemand: retrievalDemand.sourceDemand,
+          authoredRequestNeedsNoRetrieval, sourceAnchoringRequired: retrievalDemand.sourceAnchoringRequired,
+          durableEscalationAllowed: retrievalDemand.durableEscalationAllowed, discourseEvidenceBound,
+          requestDigest: hasher.digestHex(input.text), references: requestSourceSignals.namedSubjects } });
       let requestedEvidenceScope = declaredEvidenceScope !== undefined
         ? [...declaredEvidenceScope]
         : discourseEvidenceBound ? [...metadataEvidenceIds] : undefined;
@@ -1899,27 +1889,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               requestScaffolding: requestClosedClassWords(),
               languageModels: authorityLanguage.state.models ?? [],
               continuationPopulation: authorityLanguage.state.continuationPopulation,
-              // Reverted to conditional (was unconditionally true): this
-              // flag doesn't just tighten anchoring, it switches
-              // runtime-graph-retrieval.ts's graphForText onto an entirely
-              // different, far more expensive retrieval strategy --
-              // semantic-frame Postgres lookups and potential full uncached
-              // traversal -- instead of the fast in-memory hot-neighborhood
-              // path taken when this is false (see graphForText's
-              // `!requireDurableGraphLookup && !sourceAnchoringRequired`
-              // branch). Forcing it on for every creative turn against a
-              // real corpus (millions of graph edges) is what produced a
-              // 20-30 minute hang and repeated OOM crash on a live
-              // rehearsal. The compositional force fix does not actually
-              // need this: the pre-existing "keeps a source-inspired
-              // request creative..." test already proves the cheap
-              // hot-neighborhood path supplies real, usable evidence for a
-              // creative candidate's embedded factual premise -- it passed
-              // on main with this exact conditional before any of this
-              // session's changes.
-              // An undecided projection still retrieves anchored, so memory can decide the authority (see memoryDecidesAuthority).
-              sourceAnchoringRequired: !authoredRequestNeedsNoRetrieval
-                && creativeRetrievalNeedsSourceAnchoring(requestedAuthority, authorityProjection),
+              // The same current source-demand decision governs initial anchoring and durable escalation.
+              sourceAnchoringRequired: retrievalDemand.sourceAnchoringRequired,
               residentOnly: fastRuntimeBudget,
               // So a slice served from cache records which condition owns the entry, which is what the sealed
               // verifier's cache-owner check reads.
@@ -2030,10 +2001,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // 5s here and 6.5s in the semantic retrieval it leads to, reached its build step 19.5s into a 10s budget with
       // the deadline long gone, and answered with prose about the request instead of a built program. What the
       // request depends on is projected, not assumed -- a program request measures a source dependence of ~1e-7.
-      const authoredAnswerNeedsNoSources = requestedAuthority === "creative"
-        || requestedAuthority === "program"
-        || ownerChatNeedsNoRetrieval;
-      if (!declaredEvidenceIds && fastRuntimeBudget && !discourseEvidenceBound && !residentSliceAnswersSubject && !authoredAnswerNeedsNoSources) {
+      if (!declaredEvidenceIds && fastRuntimeBudget && !discourseEvidenceBound && !residentSliceAnswersSubject && retrievalDemand.durableEscalationAllowed) {
         const escalationStarted = Date.now();
         const allowed = deadlineCheckpoint("kernel.turn.durable_retrieval_escalation", DURABLE_RETRIEVAL_ESCALATION_MS)?.allowed !== false;
         if (allowed) {
@@ -2044,26 +2012,30 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             requestScaffolding: requestClosedClassWords(),
             languageModels: authorityLanguage.state.models ?? [],
             continuationPopulation: authorityLanguage.state.continuationPopulation,
-            sourceAnchoringRequired: creativeRetrievalNeedsSourceAnchoring(requestedAuthority, authorityProjection),
+            sourceAnchoringRequired: retrievalDemand.sourceAnchoringRequired,
             residentOnly: false
           }).catch(() => undefined);
-          // A book can answer about an internal subject that is absent from its document title.
-          const durableBodyAnswersRequest = durableSlice?.evidence.some(span => sourceBodyAnswersRequest(span, input.text, requestClosedClassWords())) ?? false;
-          if (durableSlice && durableSliceEvidence(durableSlice) > 0
-            && (identityBoundResident(durableSlice) > 0 || durableBodyAnswersRequest || durableSliceEvidence(graphSlice) === 0)) graphSlice = durableSlice;
+          const adoption = adoptAdmittedDurableGraphSlice({ resident: graphSlice, durable: durableSlice,
+            requestText: input.text, closedClassWords: requestClosedClassWords(), evidenceAccessPolicy,
+            sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist });
+          graphSlice = adoption.slice;
           kernelTrace({
             stage: "graph.resolve.durable_escalation",
             label: "kernel.turn.graph_slice",
             durationMs: Date.now() - escalationStarted,
-            counts: { evidence: durableSlice ? durableSlice.evidence.length : 0, durable: durableSlice ? durableSliceEvidence(durableSlice) : 0 },
-            support: { escalated: Boolean(durableSlice && durableSliceEvidence(durableSlice) > 0), deadlineAllowed: allowed }
+            counts: { evidence: graphSlice.evidence.length, resident: adoption.residentCount, residentAdmitted: adoption.residentAdmitted,
+              durable: adoption.durableCount, durableAdmitted: adoption.durableAdmitted },
+            support: { lookupPerformed: true, adopted: adoption.adopted, escalated: adoption.adopted, deadlineAllowed: allowed }
           });
         } else {
+          const retained = adoptAdmittedDurableGraphSlice({ resident: graphSlice, requestText: input.text,
+            closedClassWords: requestClosedClassWords(), evidenceAccessPolicy,
+            sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist });
           kernelTrace({
             stage: "graph.resolve.durable_escalation",
             label: "kernel.turn.graph_slice",
-            counts: { evidence: 0, durable: 0 },
-            support: { escalated: false, deadlineAllowed: false }
+            counts: { evidence: graphSlice.evidence.length, resident: retained.residentCount, residentAdmitted: retained.residentAdmitted, durable: 0, durableAdmitted: 0 },
+            support: { lookupPerformed: false, adopted: false, escalated: false, deadlineAllowed: false }
           });
         }
       }
@@ -6563,15 +6535,33 @@ function compositionDemandTarget(requestText: string): number {
   return Math.min(0.92, 0.58 + (distinct.length - 2) * 0.09);
 }
 
-/**
- * Whether retrieval for this turn must anchor on sources.
- *
- * Anything but a creative turn does. A creative turn takes the exception only where the projector separated the
- * authorities at all: an undecided projection is not a licence to skip the corpus. Both retrieval call sites read
- * this one function, and it reads the projection's own named separation rather than a cut on the score margin --
- * 79f6136 rescaled that margin from the absolute requirement level to deviation from each dimension's neutral, so
- * a gap chosen against the old distribution is measuring a distribution that no longer exists.
- */
+/** Source demand decides lookup applicability, independently of a request's selected response authority. */
+export function requestRetrievalDemand(input: {
+  requestText: string;
+  sourceSignals: Pick<TurnSignals, "text" | "namedSubjects" | "sentenceSequences">;
+  authority: RequestedAuthority;
+  projection: Pick<RequestAuthorityProjection, "authorityDistinguishable">;
+  requirements: Pick<TurnRequirementField, "sourceDependence" | "noveltyDemand">;
+  sourceIndependentDialogue: boolean;
+  discourseEvidenceBound: boolean;
+  metadataEvidenceCount: number;
+  explicitContextEvidenceCount: number;
+  declaredEvidenceScope: boolean;
+}): { sourceDemand: boolean; namedSubjects: number; quotationSequences: number; authoredRequestNeedsNoRetrieval: boolean;
+  sourceAnchoringRequired: boolean; durableEscalationAllowed: boolean } {
+  if (input.sourceSignals.text !== input.requestText) throw Error("retrieval demand requires signals from the current request");
+  const namedSubjects = input.sourceSignals.namedSubjects.length, quotationSequences = input.sourceSignals.sentenceSequences.length;
+  const sourceDemand = namedSubjects > 0 || quotationSequences > 0 || input.discourseEvidenceBound
+    || input.metadataEvidenceCount > 0 || input.explicitContextEvidenceCount > 0 || input.declaredEvidenceScope;
+  const learnedSourceIndependent = input.requirements.sourceDependence <= input.requirements.noveltyDemand / 4;
+  const authoredRequestNeedsNoRetrieval = !sourceDemand && (input.authority === "creative" && learnedSourceIndependent
+    || input.authority === "reasoned" && (learnedSourceIndependent || input.sourceIndependentDialogue));
+  return { sourceDemand, namedSubjects, quotationSequences, authoredRequestNeedsNoRetrieval,
+    sourceAnchoringRequired: sourceDemand || !authoredRequestNeedsNoRetrieval && creativeRetrievalNeedsSourceAnchoring(input.authority, input.projection),
+    durableEscalationAllowed: !authoredRequestNeedsNoRetrieval && (input.authority !== "program" || sourceDemand) };
+}
+
+/** The authority-only default used when this request has no measured source demand. */
 export function creativeRetrievalNeedsSourceAnchoring(
   authority: RequestedAuthority,
   projection: Pick<RequestAuthorityProjection, "authorityDistinguishable">
@@ -6750,6 +6740,33 @@ const TURN_REQUIREMENT_FLUSH_STEPS = 16;
 const DURABLE_RETRIEVAL_ESCALATION_MS = 1_200;
 /** How long a creative turn may keep realizing sections after the initial-response budget is spent. Bounded. */
 const CREATIVE_GENERATION_ALLOWANCE_MS = 12_000;
+
+/** A completed durable lookup changes the turn only through the existing source-admission authority. */
+export function adoptAdmittedDurableGraphSlice(input: {
+  resident: RuntimeGraphSliceValue;
+  durable?: RuntimeGraphSliceValue;
+  requestText: string;
+  closedClassWords: ReadonlySet<string>;
+  evidenceAccessPolicy: import("./turn-request-control.js").EvidenceAccessPolicy;
+  sourceVersionAllowlist?: readonly string[];
+}): { slice: RuntimeGraphSliceValue; adopted: boolean; residentCount: number; residentAdmitted: number; durableCount: number; durableAdmitted: number } {
+  const admitted = (slice: RuntimeGraphSliceValue): EvidenceSpan[] => {
+    const scoped = evidenceAdmissibleUnderAccessPolicy(slice.evidence.filter(span =>
+      isSourceContentEvidence(span) && !isControlCorpusSpan(span)
+      && (!input.sourceVersionAllowlist || input.sourceVersionAllowlist.includes(String(span.sourceVersionId)))
+      && (!input.evidenceAccessPolicy.sourceCodeEvidenceRequired || isCodeEvidenceSpan(span))), input.evidenceAccessPolicy, input.requestText);
+    return sourceIdentityAdmissibleEvidenceForRequest(input.requestText, scoped,
+      new Set(slice.semanticFrameBoundEvidenceIds ?? []), input.closedClassWords).evidence;
+  };
+  const residentAdmitted = admitted(input.resident), durableAdmitted = input.durable ? admitted(input.durable) : [];
+  const counts = { residentCount: input.resident.evidence.length, residentAdmitted: residentAdmitted.length,
+    durableCount: input.durable?.evidence.length ?? 0, durableAdmitted: durableAdmitted.length };
+  if (!input.durable || !durableAdmitted.length) return { ...counts, slice: input.resident, adopted: false };
+  const admittedIds = new Set(durableAdmitted.map(span => String(span.id)));
+  return { ...counts, adopted: true, slice: { ...input.durable, evidence: durableAdmitted,
+    graph: graphFilteredToEvidence(input.durable.graph, durableAdmitted),
+    semanticFrameBoundEvidenceIds: input.durable.semanticFrameBoundEvidenceIds?.filter(id => admittedIds.has(id)) } };
+}
 
 function evidenceAdmissibleUnderAccessPolicy(
   pool: readonly EvidenceSpan[],

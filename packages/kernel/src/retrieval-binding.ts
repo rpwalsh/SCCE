@@ -28,6 +28,8 @@ export type RetrievalBindingMechanism =
   | "source_identity"
   /** The source declares an identifier the request names -- a code file whose identity is its path. */
   | "source_declaration"
+  /** The admitted documentation names an exact, independently authorized canonical source projection. */
+  | "source_projection"
   /** Measured against the request's constituents, and nothing bound. */
   | "unbound"
   /** The request named no constituent to bind against. Not a failure to bind: no binding was measured. */
@@ -102,7 +104,7 @@ export interface RetrievalBindingContext {
   readonly deprioritizedSourceKinds?: readonly string[];
 }
 
-const MECHANISM_BY_IDENTITY_BINDING = { title: "source_identity", declaration: "source_declaration", none: "unbound" } as const;
+const MECHANISM_BY_IDENTITY_BINDING = { title: "source_identity", declaration: "source_declaration", projection: "source_projection", none: "unbound" } as const;
 
 /** The one producer. Pure: it reads the span, the request and the primed corpus measurement, and nothing else. */
 export function retrievalBinding(span: EvidenceSpan, context: RetrievalBindingContext): RetrievalBinding {
@@ -143,7 +145,7 @@ function bindingAdmissibility(
   sourceCodeEvidenceAllowed: boolean
 ): RetrievalAdmissibility {
   if (sourceCodeEvidenceAllowed || !sourceKind.sourceCode) return "admissible";
-  if (mechanism === "source_identity" || mechanism === "source_declaration") return "admissible";
+  if (mechanism === "source_identity" || mechanism === "source_declaration" || mechanism === "source_projection") return "admissible";
   return mechanism === "unmeasured" ? "undetermined" : "inadmissible_unbound";
 }
 
@@ -196,7 +198,7 @@ export function retrievalBindingRank(binding: RetrievalBinding): number {
   const tier = binding.sourceKind.deprioritized ? RETRIEVAL_BINDING_TIER : 0;
   if (binding.mechanism === "source_identity") return tier;
   if (!binding.sourceKind.sourceCode) return tier + 1;
-  if (binding.mechanism === "source_declaration") return tier + 2;
+  if (binding.mechanism === "source_declaration" || binding.mechanism === "source_projection") return tier + 2;
   return tier + 3;
 }
 

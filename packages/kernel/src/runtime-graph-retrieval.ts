@@ -15,6 +15,7 @@ import { sourceObservedDiscourseReference } from "./source-lexical-grammar.js";
 import { genericQuestionSignal, jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentSurface, splitPriorUnits, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
 import { RETRIEVAL_DEPRIORITIZED_SOURCE_KINDS, retrievalBinding, retrievalBindingCarries, retrievalBindingRank } from "./retrieval-binding.js";
+import { resolveCanonicalSourceProjectionEvidence } from "./source-projection-evidence.js";
 import {
   admissionTierDiagnostics,
   evidenceForRequest,
@@ -174,7 +175,7 @@ const HOT_QUERY_EDGE_BRANCH_LIMIT = 4;
 const HOT_QUERY_HYPEREDGE_BRANCH_LIMIT = 4;
 
 export function createRuntimeGraphRetrieval(options: {
-  deps: Pick<ScceKernelDeps, "storage" | "sparseRankingModels" | "visualQueryEmbedder" | "evaluationCondition">;
+  deps: Pick<ScceKernelDeps, "storage" | "sparseRankingModels" | "visualQueryEmbedder" | "evaluationCondition" | "informationAccess">;
   clock: ReturnType<typeof createClock>;
   hasher: ReturnType<typeof createHasher>;
   candidates: ReturnType<typeof createCandidateEngine>;
@@ -2695,6 +2696,22 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     return uniqueKernelStrings([...phrases, ...focuses]).slice(0, 16);
   }
 
+  async function canonicalSourceFacts(value: RuntimeGraphSliceValue, includeGraph: boolean): Promise<RuntimeGraphSliceValue> {
+    const resolved = await resolveCanonicalSourceProjectionEvidence({ store: deps.storage.evidence,
+      evidence: value.evidence, informationAccess: deps.informationAccess });
+    if (resolved.refusals.length || resolved.bindings.length) kernelTrace({
+      stage: "graph.resolve.source_projection_binding", label: "kernel.canonical_source_facts",
+      counts: { canonicalSources: resolved.bindings.length, refused: resolved.refusals.length },
+      support: { bindings: resolved.bindings, refusals: resolved.refusals }
+    });
+    if (!resolved.bindings.length) return value;
+    const graph = includeGraph && !deps.evaluationCondition?.flags.disableGraph
+      ? (await graphForEvidenceIds(uniqueKernelStrings([...resolved.evidence.map(span => String(span.id)), ...resolved.contextEvidenceIds]), { adaptiveWidening: true })).graph
+      : value.graph;
+    return { ...value, graph, evidence: resolved.evidence,
+      sourceProjectionBindings: [...(value.sourceProjectionBindings ?? []), ...resolved.bindings] };
+  }
+
   return {
     sourceAnchorEvidenceCacheMaxEntries,
     cacheOccupancy() {
@@ -2702,11 +2719,11 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     },
     hotNeighborhoodCached,
     sourceAnchorEvidenceBatchCached,
-    graphForText,
+    graphForText: async (...args: Parameters<typeof graphForText>) => canonicalSourceFacts(await graphForText(...args), true),
     graphForEvidenceIds,
     graphForEvidenceIdsUnrouted,
-    graphForTextUncached,
-    evidenceOnlyForText,
+    graphForTextUncached: async (...args: Parameters<typeof graphForTextUncached>) => canonicalSourceFacts(await graphForTextUncached(...args), true),
+    evidenceOnlyForText: async (...args: Parameters<typeof evidenceOnlyForText>) => canonicalSourceFacts(await evidenceOnlyForText(...args), false),
     evidenceOnlyForIds,
     retrievalTextForTurn,
     evidenceFromTurnMetadata,

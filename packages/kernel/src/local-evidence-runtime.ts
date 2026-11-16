@@ -5,6 +5,7 @@ import { learnedAnswerUnitFormVerdict, learnedAnswerUnitFormsGeneration, learned
 import { sourceLexicalGrammarGeneration, sourceLexicalLemmaWitnesses } from "./source-lexical-grammar.js";
 import { sourceCollectionForRequest } from "./source-collection-answer.js";
 import { evidenceSourceIdentity, isCodeEvidenceSpan } from "./evidence-source-identity.js";
+import { sourceProjectionDocumentation } from "./source-projection-evidence.js";
 import { SEMANTIC_CONSTRAINT, SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
@@ -427,7 +428,7 @@ export function evidenceWithGraphPreviewWindows(text: string, evidence: readonly
     }
   }
   return evidence.map(span => {
-    if (preserveIds.has(String(span.id))) return span;
+    if (preserveIds.has(String(span.id)) || sourceProjectionDocumentation(span)) return span;
     const previews = previewsByEvidenceId.get(String(span.id)) ?? [];
     if (!previews.length) return span;
     const currentFull = sourceTextSurface(evidenceWindowText(span), 0);
@@ -2257,7 +2258,7 @@ export function evidenceTitledForRequestSubject(text: string, spans: readonly Ev
  * learned scaffolding supplies are not required, and an anchor with nothing left binds nothing.
  */
 /** How a source's own identity binds a request, or that it does not. The two halves, stated once. */
-export type EvidenceIdentityBinding = "none" | "title" | "declaration";
+export type EvidenceIdentityBinding = "none" | "title" | "declaration" | "projection";
 
 /**
  * The one place the identity rule lives: a source binds a request through its title/identity, or -- for a code
@@ -2301,6 +2302,11 @@ export function evidenceIdentityBindingDetail(
   const bindingAnchors = anchors ?? sourceEvidenceAnchorsForRequest(requestText);
   if (!bindingAnchors.length) {
     return { binding: "none", requestConstituents: [], boundRequestConstituents: [], sourceConstituents: [] };
+  }
+  const documentation = sourceProjectionDocumentation(span);
+  if (documentation) {
+    const inherited = evidenceIdentityBindingDetail(documentation, requestText, closedClassWords, bindingAnchors);
+    if (inherited.binding !== "none") return { ...inherited, binding: "projection" };
   }
   const titleMatch = evidenceIdentityBoundAnchor(span, bindingAnchors, closedClassWords);
   if (titleMatch) {
@@ -2394,6 +2400,13 @@ function declarableRequestUnit(unit: string, closedClassWords?: ReadonlySet<stri
   const identity = evidenceIdentity(span);
   const title = evidenceTitle(span);
   if (!identity && !title) return undefined;
+  // A complete source identity binds in its own writing system. Index symbols may be individual graphemes;
+  // their lengths cannot erase an exact identity the source itself declares.
+  const wholeIdentities = new Set([identity, title].filter(Boolean).map(corpusIdentityMatchSurface));
+  for (const anchor of anchors) {
+    const units = corpusIdentityUnits(anchor).filter(unit => !closedClassWords?.has(unit));
+    if (units.length && wholeIdentities.has(corpusIdentityMatchSurface(anchor))) return { anchor, units };
+  }
   const carried = new Set(anchorSymbolUnits(`${identity} ${title}`));
   if (!carried.size) return undefined;
   for (const anchor of anchors) {

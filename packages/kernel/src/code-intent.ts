@@ -6,6 +6,7 @@ import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { nativeLiteralHasPythonTuple, ownedNativeArguments, ownedNativeCallableAbi, ownedNativeLiteral, type ProgramNativeCallableAbi } from "./program-native-abi.js";
 import type { EvidenceSpan, JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
 import {ownedProjectContractClosure,type SourceOwnedProjectContractClosure} from "./source-owned-project-contract.js";
+import { documentedPath, documentedRepositoryFamily, documentedSourceHash } from "./source-document-reference.js";
 
 /**
  * What a request written in a human language has to do with code.
@@ -355,33 +356,6 @@ function validSpan(value: JsonValue | undefined): boolean {
 }
 function validContentHash(value: JsonValue): boolean { return typeof value === "string" && /^(?:sha256:|sha256_)?[0-9a-f]{64}$/iu.test(value); }
 function spanStart(value: JsonValue | undefined): number { return objectRecord(value ?? null).start as number; }
-
-/** The path a documentation surface was trained from, as the corpus lane recorded it. */
-function documentedPath(span: EvidenceSpan): string | undefined {
-  const provenance = span.provenance;
-  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return undefined;
-  const value = (provenance as Record<string, JsonValue>).relativePath ?? objectRecord(objectRecord((provenance as Record<string, JsonValue>).metadata).workspaceFile).path;
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function documentedRepositoryFamily(span: EvidenceSpan): string | undefined {
-  const provenance = span.provenance;
-  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return undefined;
-  const repository = (provenance as Record<string, JsonValue>).repository;
-  if (!repository || typeof repository !== "object" || Array.isArray(repository)) {
-    const workspaceId=objectRecord(objectRecord((provenance as Record<string,JsonValue>).metadata).workspace).id;
-    return typeof workspaceId==="string"&&workspaceId?`scce://workspace/${encodeURIComponent(workspaceId)}`:undefined;
-  }
-  const ownerUri = (repository as Record<string, JsonValue>).ownerUri;
-  return typeof ownerUri === "string" && ownerUri.trim() ? ownerUri : undefined;
-}
-
-function documentedSourceHash(span: EvidenceSpan): string | undefined {
-  const provenance = span.provenance;
-  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return undefined;
-  const value = (provenance as Record<string, JsonValue>).sourceHash ?? objectRecord(objectRecord((provenance as Record<string, JsonValue>).metadata).workspaceFile).contentHash;
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
 
 /** The language most of the matched files are written in, when they agree enough to name one. */
 function dominantLanguage(references: readonly CodeIntentReference[]): string | undefined {

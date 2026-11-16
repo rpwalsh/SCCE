@@ -245,3 +245,31 @@ describe("canonical source artifact metadata", () => {
     expect(untouched).toBe(collision); expect(f.calls).toHaveLength(0);
   });
 });
+
+
+describe("canonical WordNet form selectors",()=>{
+  const entries=[{lemma:"New York",forms:["New York City"]},{lemma:"cat",forms:["cats"]}];
+  it.each(["indexed-v2","named-v1"])("resolves %s externalized entries without claiming a full-record check",async version=>{
+    const f=fixture("lexical",{entries},kernel.LEXICAL_SENSE_SCHEMA);
+    const [stored]=await f.codec.encodeMany([{value:f.originals[1],profileId:f.stamped.patterns[0]!.profileId,informationLabel:label}]);
+    expect(object(stored).entries).toBeUndefined();const ref=object(object(stored)[SOURCE_ARTIFACT_METADATA_KEY]);
+    if(version==="named-v1"){
+      const dictionary=Object.keys(f.metadata).sort();object(stored)[SOURCE_ARTIFACT_METADATA_KEY]={schema:SOURCE_ARTIFACT_METADATA_REF_SCHEMA,receiptId:f.row.id,
+        digest:object(f.row.pattern_json.inheritedMetadata).digest,keys:(ref.fieldIndexes as number[]).map(index=>dictionary[index]),introducedLedger:ref.introducedLedger,recordDigest:ref.recordDigest};
+    }
+    const expected={schema:kernel.LEXICAL_SENSE_SCHEMA,entries};
+    expect(await f.codec.decodeLexicalSelectors([{value:stored,informationLabel:label}])).toEqual([expected]);
+    const changed={...object(stored),unconsumedDamage:true};
+    expect(await f.codec.decodeLexicalSelectors([{value:changed,informationLabel:label}])).toEqual([expected]);
+    await expect(f.codec.decodeMany([{value:changed,informationLabel:label}])).rejects.toThrow("metadata");
+    expect(await f.codec.decodeMany([{value:stored,informationLabel:label}])).toEqual([f.originals[1]]);
+  });
+  it.each(["denied-holder","holder-digest","invalid-index","conflicting-inline"])("denies %s rather than trusting selector hints",async damage=>{
+    const f=fixture("lexical-negative",{entries},kernel.LEXICAL_SENSE_SCHEMA),[stored]=await f.codec.encodeMany([{value:f.originals[1],informationLabel:label}]);
+    if(damage==="denied-holder")f.state.accessible=false;
+    if(damage==="holder-digest")object(f.row.pattern_json.inheritedMetadata).digest="damaged";
+    if(damage==="invalid-index")object(object(stored)[SOURCE_ARTIFACT_METADATA_KEY]).fieldIndexes=[Number.MAX_SAFE_INTEGER];
+    if(damage==="conflicting-inline")object(stored).entries=entries;
+    await expect(f.codec.decodeLexicalSelectors([{value:stored,informationLabel:label}])).rejects.toThrow("metadata");
+  });
+});

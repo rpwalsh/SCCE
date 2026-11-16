@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import type { SourceProjectionEvidenceBinding } from "./source-projection-evidence.js";
 import type {
   EvidenceSpan,
   GraphSlice,
@@ -14,6 +15,8 @@ export type RuntimeGraphSliceValue = {
   graph: GraphSlice;
   evidence: EvidenceSpan[];
   semanticFrameBoundEvidenceIds?: string[];
+  /** Exact source/documentation ownership relations, separate from semantic-frame proof support. */
+  sourceProjectionBindings?: readonly SourceProjectionEvidenceBinding[];
 };
 
 

@@ -9,6 +9,7 @@ export const SOURCE_ARTIFACT_METADATA_KEY = "_scceSourceArtifactMetadata";
 export const SOURCE_ARTIFACT_METADATA_SCHEMA = "scce.source_artifact_metadata.v1";
 export const SOURCE_ARTIFACT_METADATA_REF_SCHEMA = "scce.source_artifact_metadata_ref.v1";
 export const SOURCE_ARTIFACT_METADATA_INDEX_REF_SCHEMA = "scce.source_artifact_metadata_ref.v2";
+export const LEXICAL_SELECTOR_PATTERN_JSON_FIELDS = ["schema", "entries"] as const;
 const hasher = createHasher();
 const record = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const fail = (): never => { throw new Error("canonical source artifact metadata is missing, inaccessible or changed"); };
@@ -93,9 +94,8 @@ export function createSourceArtifactMetadataCodec(host: Omit<CreativeEventStorag
       || expectedDigest !== undefined && expectedDigest !== shared.digest) return fail();
     return shared;
   }
-  return {
-    /** Resolves logical selector fields; the selected full model must still pass its complete record digest. */
-    async decodeCreativeSelectors(inputs: readonly Input[]): Promise<unknown[]> {
+  /** Selector fields license only a later full admitted read, which still verifies the complete record digest. */
+  async function decodeSelectors(inputs: readonly Input[], fields: readonly string[]): Promise<unknown[]> {
       const owners = await holders(inputs, false), validated = new Map<Holder, ValidatedHolder | undefined>();
       return inputs.map(input => {
         const root = record(input.value); if (!root) return input.value;
@@ -118,7 +118,7 @@ export function createSourceArtifactMetadataCodec(host: Omit<CreativeEventStorag
           keys = selected as string[];
         }
         const projected: Record<string, unknown> = {};
-        for (const key of CREATIVE_SELECTOR_PATTERN_JSON_FIELDS) {
+        for (const key of fields) {
           if (keys.includes(key)) {
             if (!shared || !Object.hasOwn(shared.metadata, key) || Object.hasOwn(root, key)) return fail();
             projected[key] = structuredClone(shared.metadata[key]);
@@ -126,7 +126,10 @@ export function createSourceArtifactMetadataCodec(host: Omit<CreativeEventStorag
         }
         return projected;
       });
-    },
+  }
+  return {
+    async decodeCreativeSelectors(inputs: readonly Input[]): Promise<unknown[]> { return decodeSelectors(inputs, CREATIVE_SELECTOR_PATTERN_JSON_FIELDS); },
+    async decodeLexicalSelectors(inputs: readonly Input[]): Promise<unknown[]> { return decodeSelectors(inputs, LEXICAL_SELECTOR_PATTERN_JSON_FIELDS); },
     async encodeMany(inputs: readonly Input[]): Promise<unknown[]> {
       const owners = await holders(inputs, true), validated = new Map<Holder, ValidatedHolder | undefined>();
       return inputs.map(input => {

@@ -23,6 +23,7 @@ import {
   LANGUAGE_UNIT_VALUES_RELATION
 } from "./canonical-language-unit-store.js";
 import { createSourceArtifactMetadataCodec } from "./source-artifact-metadata.js";
+import { readWholeFormLexicalRows, lexicalSelectorFields, lexicalAdmissionBindingSql, fetchSelectedLexicalRows } from "./lexical-pattern-selector-read.js";
 import { LEGACY_SEMANTIC_PROJECTION_STORAGE_SCHEMA, SEMANTIC_PROJECTION_STORAGE_KEY,
   SEMANTIC_PROJECTION_STORAGE_SCHEMA, decodeSemanticProjectionStorageV2ForMigration } from "./semantic-projection-storage.js";
 import { decodeNgramModelTrainingReplay, encodeNgramModelTrainingReplay,
@@ -71,6 +72,7 @@ import {
   LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
   LEXICAL_SENSE_SCHEMA,
+  normalizedLexicalSurface,
   LEXICAL_GRAMMAR_SCHEMA,
   LEXICAL_SENSE_RECIPE,
   LEXICAL_GRAMMAR_RECIPE,
@@ -6356,6 +6358,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       return rows.map((row, index) => rowToLanguageUnit({ ...row, metadata_json: decoded[index] as JsonValue }));
     },
     async listLanguagePatterns(query = {}) {
+      if (query.lexicalSurfaces !== undefined && (!Array.isArray(query.lexicalSurfaces)
+        || query.lexicalSurfaces.some(surface => typeof surface !== "string" || !normalizedLexicalSurface(surface))
+        || query.lexicalUnits === undefined || query.view !== undefined)) {
+        throw new Error("lexical surfaces require nonempty normalized lookup keys and a complete full lexical-units read");
+      }
       if (query.lexicalUnits !== undefined && (!query.requireComplete || !Number.isSafeInteger(query.limit) || query.limit! <= 0
         || !Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) {
         throw new Error("lexical pattern reads require complete finite row and decoded byte bounds");
@@ -6366,6 +6373,21 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         && (!Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes! <= 0)) {
         throw new Error("prediction-scoring pattern reads require a positive finite decoded byte bound");
       }
+      const lookupSurfaces = query.lexicalSurfaces === undefined ? undefined : new Set(query.lexicalSurfaces.map(normalizedLexicalSurface));
+      const selectorRevision = lookupSurfaces ? await storage.languageMemory.readRevision!() : undefined;
+      try {
+      const selectedEntries = new Map<string, string>();
+      const finishLexicalRead = async (patterns: LanguagePatternRecord[]): Promise<LanguagePatternRecord[]> => {
+        if (!lookupSurfaces) return patterns;
+        if (selectorRevision !== await storage.languageMemory.readRevision!()) return storage.languageMemory.listLanguagePatterns(query);
+        for (const pattern of patterns) {
+          const root = pattern.patternJson as Record<string, unknown>;
+          if (root.schema === LEXICAL_SENSE_SCHEMA && selectedEntries.get(pattern.id) !== canonicalStringify(root.entries)) {
+            throw new Error("canonical lexical selector fields changed before full-record verification");
+          }
+        }
+        return patterns;
+      };
       const requestedPatternIds = query.patternIds ? [...new Set(query.patternIds)] : undefined;
       if (query.sourceSystem !== undefined && query.sourceSystems !== undefined) {
         throw new Error("language-pattern read accepts sourceSystem or sourceSystems, not both");
@@ -6755,7 +6777,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ELSE 'other'
       END`;
       const narrow = "decoded_jsonb_bytes,id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label,pattern_schema,pattern_language,source_system";
-      const decodedJsonbBytes = query.lexicalUnits !== undefined
+      const decodedJsonbBytes = lookupSurfaces ? "NULL::numeric" : query.lexicalUnits !== undefined
         ? "COALESCE(pattern.decoded_artifact_jsonb_bytes,octet_length(pattern.pattern_json::text)) + octet_length(array_to_json(pattern.evidence_ids)::text)"
         : query.view === "request_seed"
         ? "CASE WHEN pattern.pattern_schema='scce.request_requirement_pattern.v1' THEN pattern.decoded_artifact_jsonb_bytes ELSE NULL::numeric END"
@@ -6787,7 +6809,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
       // The selected row already carries its byte measurement. Joining the materialized JSON rows back
       // by ID made the complete-read check quadratic under the same low cardinality estimates.
-      const resultSelect = query.lexicalUnits !== undefined
+      const resultSelect = lookupSurfaces
+        ? `SELECT pattern.id,pattern.profile_id,pattern.pattern_schema,
+             CASE WHEN pattern.pattern_schema='${LEXICAL_SENSE_SCHEMA}' THEN ${jsonbFieldsSql("pattern.pattern_json", lexicalSelectorFields)} ELSE '{}'::jsonb END AS pattern_json,
+             pattern.information_label,${lexicalAdmissionBindingSql("pattern")} AS selector_binding,
+             octet_length(array_to_json(pattern.evidence_ids)::text) AS evidence_json_bytes
+           FROM candidate_pool admitted
+           CROSS JOIN LATERAL (SELECT pattern.* FROM ${storage.table("language_patterns")} pattern WHERE pattern.id=admitted.id OFFSET 0) pattern
+           ORDER BY admitted.support DESC,admitted.updated_at DESC,admitted.id ASC`
+        : query.lexicalUnits !== undefined
         ? `, complete_read AS MATERIALIZED (${finalSelect}),
            complete_stats AS (
              SELECT (SELECT COUNT(*) FROM candidate_pool) AS expected_pattern_count,
@@ -6808,9 +6838,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            ORDER BY ${order("complete_read")}`
         : finalSelect;
       // Carry checked scalar headers through admission instead of rescanning their materialized population.
-      const rows = await storage.query<LanguagePatternRow & {
+      type ReadRow = LanguagePatternRow & { selector_binding?: unknown;
         expected_pattern_count?: string | number; complete_pattern_count?: string | number; decoded_complete_bytes?: string | number;
-      }>(
+      };
+      const patternSql =
         `WITH pattern_headers AS MATERIALIZED (
            SELECT pattern.id, pattern.profile_id, pattern.pattern_kind, pattern.support, pattern.entropy,
              pattern.evidence_ids, pattern.updated_at, pattern.information_label, pattern.source_system,
@@ -6907,9 +6938,18 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            FROM ranked_request_patterns
            WHERE source_version_rank=1
          )
-         ${resultSelect}`,
-        params
-      );
+         ${resultSelect}`;
+      let rows: ReadRow[];
+      if (!lookupSurfaces) rows = await storage.query<ReadRow>(patternSql, params);
+      else {
+        const host = canonicalCodecHost(storage);
+        const selected = await readWholeFormLexicalRows<ReadRow>({host,sql:patternSql,params,
+          surfaces:lookupSurfaces,limit:query.limit!,maxBytes:query.maxTotalJsonBytes!,
+          readFullRows: identities => fetchSelectedLexicalRows<ReadRow>(host,identities,query.maxTotalJsonBytes!)});
+        rows=selected.rows;
+        for (const [id,entries] of selected.entries) selectedEntries.set(id,entries);
+        if (selectorRevision !== await storage.languageMemory.readRevision!()) return storage.languageMemory.listLanguagePatterns(query);
+      }
       if (query.lexicalUnits !== undefined && rows[0]?.expected_pattern_count !== undefined) {
         const stats = rows[0];
         if (Number(stats.expected_pattern_count) !== Number(stats.complete_pattern_count)
@@ -6920,8 +6960,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       if (requestedPatternIds) {
         const returnedPatternIds = new Set(rows.map(row => row.id));
-        if (rows.length !== requestedPatternIds.length || requestedPatternIds.some(id => !returnedPatternIds.has(id))) return [];
+        if (rows.length !== requestedPatternIds.length || requestedPatternIds.some(id => !returnedPatternIds.has(id))) return finishLexicalRead([]);
       }
+
       if (query.view === "prediction_scoring") {
         return rows.map(row => predictionScoringLanguagePattern(rowToLanguagePattern(row)));
       }
@@ -6946,7 +6987,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         else if (!selectorIndices.includes(index)) missingIndices.push(index);
         else result[index] = creativeSelectorLanguagePattern(rowToLanguagePattern(rows[index]!));
       }
-      if (!missingIndices.length) return result;
+      if (!missingIndices.length) return finishLexicalRead(result);
       const missingRows = missingIndices.map(index => rows[index]!);
       const metadata = await sourceArtifactMetadataCodec(storage).decodeMany(missingRows.map(row => ({ value: row.pattern_json, profileId: row.profile_id, informationLabel: row.information_label })));
       const archives = await decodeSegmentationWitnessArchives(
@@ -6965,7 +7006,16 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         const key = cacheKeys[resultIndex];
         if (key) cacheRequestSeedSemanticPattern(storage, key, value);
       });
-      return result;
+      return finishLexicalRead(result);
+      } catch (error) {
+        // A publication may invalidate an in-flight selector/holder read. Stable malformed records still fail.
+        if (lookupSurfaces) {
+          let currentRevision: string | undefined;
+          try { currentRevision = await storage.languageMemory.readRevision!(); } catch { /* Preserve the original failure, including an aborted caller-owned transaction. */ }
+          if (currentRevision !== undefined && currentRevision !== selectorRevision) return storage.languageMemory.listLanguagePatterns(query);
+        }
+        throw error;
+      }
     },
     async listSemanticFrames(query = {}) {
       if (query.view === "prediction_scoring"
