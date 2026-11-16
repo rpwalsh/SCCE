@@ -332,6 +332,48 @@ describe("canonical creative-event domain normalization", () => {
     expect(() => normalizeCreativeEventPage({ bundle: invalid, owners })).toThrow("unsupported");
   });
 
+  it("reuses immutable owner codepoints and domain hashes only within one synchronous page reconstruction", () => {
+    const bundle = object(object(patterns[0]!.patternJson).bundle);
+    const owners = new Map([[creativeEventStorageJson([owner.profileId, owner.evidenceId]), owner]]);
+    const plan = normalizeCreativeEventPage({ bundle, owners });
+    expect((bundle.events as unknown[]).length).toBeGreaterThan(4);
+    let textReads = 0;
+    const observedOwner = { ...owner };
+    Object.defineProperty(observedOwner, "evidenceText", { get: () => { textReads++; return owner.evidenceText; }, enumerable: true });
+    const observedOwners = new Map([[creativeEventStorageJson([owner.profileId, owner.evidenceId]), observedOwner]]);
+    const records = new Map<string, CreativeEventDomainRecord>(), verifications = new Map<string, number>();
+    for (const rows of Object.values(plan.records)) for (const input of rows) {
+      const row = cold(input), id = row.id;
+      Object.defineProperty(row, "id", { get: () => { verifications.set(id, (verifications.get(id) ?? 0) + 1); return id; }, enumerable: true });
+      records.set(id, row);
+    }
+    const restored = reconstructCreativeEventPage({ reference: plan.reference, records, owners: observedOwners });
+    expect(creativeEventStorageJson(restored)).toBe(creativeEventStorageJson(bundle.events));
+    expect(textReads).toBe(2); // typeof and spread, once for the entire source owner rather than once per event.
+    expect([...verifications.values()].every(count => count === 1)).toBe(true);
+    expect(verifications.size).toBe(records.size);
+    reconstructCreativeEventPage({ reference: plan.reference, records, owners: observedOwners });
+    expect(textReads).toBe(4);
+    expect([...verifications.values()].every(count => count === 2)).toBe(true);
+  });
+
+  it("rechecks changed domain values and same-object owner text on every separate reconstruction", () => {
+    const bundle = object(object(patterns[0]!.patternJson).bundle), mutableOwner = { ...owner };
+    const owners = new Map([[creativeEventStorageJson([owner.profileId, owner.evidenceId]), mutableOwner]]);
+    const plan = normalizeCreativeEventPage({ bundle, owners });
+    const records = new Map<string, CreativeEventDomainRecord>();
+    for (const rows of Object.values(plan.records)) for (const row of rows) records.set(row.id, cold(row));
+    const read = () => reconstructCreativeEventPage({ reference: plan.reference, records, owners });
+    expect(creativeEventStorageJson(read())).toBe(creativeEventStorageJson(bundle.events));
+    mutableOwner.evidenceText = "x";
+    expect(read).toThrow("invalid canonical");
+    mutableOwner.evidenceText = owner.evidenceText;
+    expect(creativeEventStorageJson(read())).toBe(creativeEventStorageJson(bundle.events));
+    const template = records.get(plan.records.creative_event_templates[0]!.id)!;
+    template.value.tenseId = "scce.tense.future";
+    expect(read).toThrow("invalid canonical");
+  });
+
   it("retains four logical domain tables and adds indexed lexical pages while keeping contextual labels", () => {
     const ddl = canonicalCreativeEventSchemaStatements('"test"');
     expect(ddl).toHaveLength(6);

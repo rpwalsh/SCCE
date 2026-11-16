@@ -233,11 +233,14 @@ export function normalizeCreativeEventPage(input: {
 export function reconstructCreativeEventPage(input: {
   reference: Record<string, unknown>; records: ReadonlyMap<string, CreativeEventDomainRecord>; owners?: ReadonlyMap<string, CreativeEventOwner>;
 }): Record<string, unknown>[] {
+  // This reconstruction is synchronous and reads immutable snapshots. Reuse only pure work within this call.
+  const verified = new Set<CreativeEventDomainRecord>();
+  const pointsByOwner = new Map<CreativeEventOwner, string[] | undefined>();
   if (input.reference.schema !== CREATIVE_EVENT_OCCURRENCE_REFERENCE_SCHEMA || Object.keys(input.reference).length !== 3) return fail();
   const get = (id: unknown, kind: string): Record<string, unknown> => {
     const record = input.records.get(text(id));
     if (!record || record.kind !== kind) return fail();
-    verifyCreativeEventDomainRecord(record);
+    if (!verified.has(record)) { verifyCreativeEventDomainRecord(record); verified.add(record); }
     return record.value;
   };
   const page = get(input.reference.pageId, "occurrence_page");
@@ -259,7 +262,8 @@ export function reconstructCreativeEventPage(input: {
       || creativeEventStorageJson(normalizeInformationLabel(scope.informationLabel as InformationLabel))
         !== creativeEventStorageJson(input.records.get(text(at(witnesses, witnessIndex)))!.informationLabel)) return fail();
     const owner = sourceDerived ? input.owners?.get(creativeEventStorageJson([text(scope.profileId), text(witness.evidenceId)])) : undefined;
-    const points = owner ? sourcePoints(owner) : undefined;
+    if (owner && !pointsByOwner.has(owner)) pointsByOwner.set(owner, sourcePoints(owner));
+    const points = owner ? pointsByOwner.get(owner) : undefined;
     if (sourceDerived && (!owner || !points || owner.sourceVersionId !== witness.sourceVersionId || owner.evidenceId !== witness.evidenceId
       || owner.evidenceContentHash !== witness.evidenceContentHash || owner.evidenceCharStart !== witness.evidenceCharStart
       || owner.evidenceCharEnd !== witness.evidenceCharEnd)) return fail();
