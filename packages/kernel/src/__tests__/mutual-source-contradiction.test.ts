@@ -43,7 +43,7 @@ describe("two admitted sources that refute each other", () => {
       languageHints: {},
       scriptHints: {},
       trustVector: { trust: 1 },
-      provenance: toJsonValue({ uri }),
+      provenance: toJsonValue({ uri, sourceVersionId, byteRange: [0, byteEnd], charRange: [0, [...text].length] }),
       features: [],
       status: "promoted",
       alpha: 0.9,

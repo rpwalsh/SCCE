@@ -57,11 +57,20 @@ export interface ProofCalculusResult {
   evidenceIds: EvidenceId[];
 }
 
+/** Current owner witnesses supplied by the shared semantic proof, never inferred from document punctuation. */
+export interface ScopedPolarityContradiction {
+  evidenceIds: readonly EvidenceId[];
+  contradiction: number;
+}
+
 export function createProofCalculus(options: { hasher: Hasher }) {
   return {
-    evaluate(input: { claim: Claim; evidence: EvidenceSpan[]; nodes: GraphNode[]; field: FieldState }): ProofCalculusResult {
+    evaluate(input: { claim: Claim; evidence: EvidenceSpan[]; nodes: GraphNode[]; field: FieldState;
+      polarityWitnesses?: readonly ScopedPolarityContradiction[] }): ProofCalculusResult {
       const nodeMass = new Map(input.field.ppf.map(item => [String(item.nodeId), item.mass]));
-      const witnesses = input.evidence.map(span => witness(input.claim, span, input.nodes, nodeMass, options.hasher)).sort((a, b) => b.support - a.support).slice(0, 16);
+      const witnesses = input.evidence.map(span => witness(input.claim, span, input.nodes, nodeMass, options.hasher,
+        Math.max(0, ...(input.polarityWitnesses ?? []).filter(item => item.evidenceIds.includes(span.id)).map(item => item.contradiction))))
+        .sort((a, b) => b.support - a.support).slice(0, 16);
       const supportCandidates = witnesses.filter(item => item.support > calibrated("calculus.witness_support_floor"));
       const contradictionCandidates = witnesses.filter(item => item.contradiction > calibrated("calculus.witness_contradiction_floor"));
       const supporting = supportCandidates.filter(item => item.provenance > 0);
@@ -89,14 +98,16 @@ export function createProofCalculus(options: { hasher: Hasher }) {
         projectedSupport: support,
         sinTheta: input.field.alphaTrace.surfaces.drift
       });
-      const force = forceFrom(
+      const measuredForce = forceFrom(
         supportAssessment.stabilityAdjustedSupport,
         contradiction,
         Math.max(faithfulnessLcb, supportAssessment.sampledSupportLcb),
         semiring.evidenceMass.independentGroupCount,
         input.field.alphaTrace.bondedLeakage
       );
+      const force = input.polarityWitnesses === undefined ? "unknown" : measuredForce;
       const boundaries = [
+        ...(input.polarityWitnesses === undefined ? ["proof.polarity.unmeasured"] : []),
         ...boundaryReasons({
           force,
           support,
@@ -198,14 +209,14 @@ function operatorBoundaryReasons(input: ReturnType<typeof proofOperatorSummary>)
   return reasons;
 }
 
-function witness(claim: Claim, span: EvidenceSpan, nodes: GraphNode[], nodeMass: Map<string, number>, hasher: Hasher): EvidenceWitness {
-  const transforms = transformations(claim, span);
+function witness(claim: Claim, span: EvidenceSpan, nodes: GraphNode[], nodeMass: Map<string, number>, hasher: Hasher, polarityContradiction: number): EvidenceWitness {
+  const transforms = transformations(claim, span, polarityContradiction);
   const coverage = directionalCoverage(claim.features, span.features);
   const vector = Math.max(0, stableDot(claim.features, span.features, hasher));
   const supportNodes = nodes.filter(node => node.evidenceIds.includes(span.id));
   const field = mean(supportNodes.map(node => nodeMass.get(String(node.id)) ?? 0));
   const faithfulness = faithfulnessWindows(claim, span);
-  const contradiction = contradictionScore(claim, span);
+  const contradiction = clamp01(polarityContradiction);
   const provenance = provenanceScore(span);
   const transformScore = mean(transforms.map(transform => transform.confidence));
   const support = clamp01(calibrated("calculus.witness_coverage_weight") * coverage + calibrated("calculus.witness_vector_weight") * vector + calibrated("calculus.witness_field_mass_weight") * field + calibrated("calculus.witness_faithfulness_weight") * faithfulness + calibrated("calculus.witness_provenance_weight") * provenance + calibrated("calculus.witness_transform_weight") * transformScore - calibrated("calculus.witness_contradiction_penalty") * contradiction);
@@ -317,7 +328,7 @@ function firstFiniteNumber(...values: readonly (JsonValue | undefined)[]): numbe
   return undefined;
 }
 
-function transformations(claim: Claim, span: EvidenceSpan): ProofTransform[] {
+function transformations(claim: Claim, span: EvidenceSpan, polarityContradiction: number): ProofTransform[] {
   const claimSymbols = symbolizeData(claim.normalized);
   const spanSymbols = symbolizeData(span.text);
   const transforms: ProofTransform[] = [
@@ -325,7 +336,7 @@ function transformations(claim: Claim, span: EvidenceSpan): ProofTransform[] {
     { id: "evidence-window", label: "Best evidence window", input: span.textPreview, output: bestWindow(claim, span), confidence: faithfulnessWindows(claim, span) },
     { id: "directional-coverage", label: "Directional coverage", input: claimSymbols.join(" "), output: spanSymbols.filter(symbol => claimSymbols.includes(symbol)).join(" "), confidence: directionalCoverage(claim.features, span.features) }
   ];
-  if (claim.polarity !== polarityOf(span.text)) transforms.push({ id: "polarity-conflict", label: "Polarity conflict", input: claim.text, output: span.textPreview, confidence: contradictionScore(claim, span) });
+  if (polarityContradiction > 0) transforms.push({ id: "polarity-conflict", label: "Scoped polarity conflict", input: claim.text, output: span.textPreview, confidence: polarityContradiction });
   return transforms;
 }
 
@@ -398,19 +409,6 @@ function bestWindow(claim: Claim, span: EvidenceSpan): string {
 
 function provenanceScore(span: EvidenceSpan): number {
   return assessEvidenceSourceVector(span).sourceWeight;
-}
-
-function contradictionScore(claim: Claim, span: EvidenceSpan): number {
-  const overlap = directionalCoverage(claim.features, span.features);
-  const polarity = polarityOf(span.text);
-  return claim.polarity !== polarity && overlap > 0.12 ? clamp01(overlap) : 0;
-}
-
-function polarityOf(text: string): number {
-  const symbols = symbolizeData(text);
-  const explicitSymbolNegation = symbols.some(symbol => /^(?:[¬!]|[-−—])+$|^[¬!]/u.test(symbol));
-  const operatorNegation = /(?:!=|≠|∉|⊄|⊅|¬|⊬|⊭)/u.test(text);
-  return explicitSymbolNegation || operatorNegation ? -1 : 1;
 }
 
 function forceFrom(support: number, contradiction: number, lcb: number, independentGroupCount: number, leakage: number): EpistemicForce {

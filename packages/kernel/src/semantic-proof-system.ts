@@ -11,12 +11,12 @@ import type {
   SemanticRoleBinding,
   SemanticTemporalScope
 } from "./semantic-proof-types.js";
-import { clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
+import { canonicalStringify, clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { corpusTreatsUnitsAsOneForm } from "./free-form-lexicon.js";
 import { isNumericSeparatorSymbol, isNumericSymbol, numericRunShape, residentNumericTokenStatistics, selfEvidentSeparatorRoles, type NumericTokenStatistics } from "./numeric-token-statistics.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 import { evaluateSemanticTransforms, semanticTransformRules } from "./semantic-transform-registry.js";
-import { evidenceDependencyComponents, evidenceLineageSummary, evidenceProofBoundary, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
+import { evidenceDependencyComponents, evidenceLineageSummary, evidenceProofBoundary, graphNodePriorClass, isLearnedPriorClass, isSourceContentEvidence } from "./proof-boundary.js";
 import {
   compileRelationHypothesisModel,
   inferRelationHypotheses
@@ -207,7 +207,8 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
       // one source version by construction, and keying on that made two separate statements look like one source
       // and hid exactly the disagreement worth reporting.
       const independenceByEvidence = sourceDependenceIdentityByEvidence(input.evidence);
-      const search = searchProof({ claimAtoms, supportAtoms: allSupportAtoms, hasher, independenceByEvidence });
+      const sourceContentEvidenceIds = new Set(input.evidence.filter(isSourceContentEvidence).map(span => String(span.id)));
+      const search = searchProof({ claimAtoms, supportAtoms: allSupportAtoms, hasher, independenceByEvidence, sourceContentEvidenceIds });
       const graph = proofGraphFrom(search, claimAtoms, evidenceAtoms, graphAtoms);
       const replay = toJsonValue({
         claimHash: hasher.digestHex(input.claimText),
@@ -434,13 +435,13 @@ interface ProofSearchIntermediate {
   unifications: SemanticUnification[];
 }
 
-function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: SemanticAtom[]; hasher: Hasher; independenceByEvidence?: ReadonlyMap<string, string> }): ProofSearchIntermediate {
+function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: SemanticAtom[]; hasher: Hasher; independenceByEvidence?: ReadonlyMap<string, string>; sourceContentEvidenceIds: ReadonlySet<string> }): ProofSearchIntermediate {
   const unifications: SemanticUnification[] = [];
   const obligations: ProofObligation[] = [];
   const counterexamples: ProofCounterexample[] = [];
   const steps: SemanticProofStep[] = [];
   const bestPerClaim = new Map<string, SemanticUnification>();
-  const refutingAtomIds = new Set(input.supportAtoms.filter(atom => hasPredicateSubstance(atom.predicate)).map(atom => atom.id));
+  const refutingAtoms = new Map(input.supportAtoms.filter(atom => hasPredicateSubstance(atom.predicate)).map(atom => [atom.id, atom]));
   for (const claim of input.claimAtoms) {
     // Support and refutation are chosen over the same candidates, and they used to be chosen independently: the
     // best supporting atom by support, the strongest counterexample by contradiction, with nothing requiring the
@@ -463,7 +464,9 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
     // what makes the two classes separable, and the threshold below is read off that separation.
     if (hasPredicateSubstance(claim.predicate)) {
       for (const unified of claimUnifications) {
-        if (!refutingAtomIds.has(unified.rightAtomId)) continue;
+        // Filter current factual admission before selection so an ineligible stronger atom cannot hide a real witness.
+        const candidate = refutingAtoms.get(unified.rightAtomId);
+        if (!unified.factualProofEligible || !candidate || !admitsPolarityCounterevidence(claim, candidate)) continue;
         if (unified.contradiction > (strongestCounterexample?.contradiction ?? 0)) strongestCounterexample = unified;
       }
     }
@@ -538,12 +541,17 @@ function searchProof(input: { claimAtoms: SemanticAtom[]; supportAtoms: Semantic
   // 0.569 maximum became the claim's, which blocked a source excerpt that nothing in the corpus contradicted. The
   // mutual finding keeps its own channel (mutualSourceContradiction) and its own answer plan; it is reported, never
   // charged to the claim.
+  const selectedCounterevidence = selected.filter(unified => {
+    const claim = input.claimAtoms.find(atom => atom.id === unified.leftAtomId);
+    const candidate = refutingAtoms.get(unified.rightAtomId);
+    return unified.factualProofEligible && claim && candidate && admitsPolarityCounterevidence(claim, candidate);
+  });
   const contradiction = counterexamples.length
     ? Math.max(...counterexamples.map(item => item.contradiction))
-    : selected.length
-      ? Math.max(...selected.map(item => item.contradiction))
+    : selectedCounterevidence.length
+      ? Math.max(...selectedCounterevidence.map(item => item.contradiction))
       : 0;
-  const mutualSourceContradiction = collectMutuallyContradictorySupport(input.supportAtoms, input.hasher, counterexamples, steps, unifications, input.independenceByEvidence);
+  const mutualSourceContradiction = collectMutuallyContradictorySupport(input.supportAtoms, input.hasher, counterexamples, steps, unifications, input.independenceByEvidence, input.sourceContentEvidenceIds);
   const certified = selected.filter(certifyingUnification);
   const coverage = input.claimAtoms.length ? certified.length / input.claimAtoms.length : 0;
   const supportVariance = selected.length ? selected.reduce((sum, item) => sum + (item.support - support) ** 2, 0) / selected.length : 0;
@@ -983,12 +991,15 @@ function collectMutuallyContradictorySupport(
   counterexamples: ProofCounterexample[],
   steps: SemanticProofStep[],
   unifications: SemanticUnification[],
-  independenceByEvidence?: ReadonlyMap<string, string>
+  independenceByEvidence: ReadonlyMap<string, string> | undefined,
+  sourceContentEvidenceIds: ReadonlySet<string>
 ): boolean {
   let found = false;
   const seenSourcePairs = new Set<string>();
   const byPredicate = new Map<string, SemanticAtom[]>();
   for (const atom of supportAtoms) {
+    // Source disagreement requires current exact source owners, including admitted assertions without world-fact certification.
+    if (!atom.evidenceIds.length || !atom.evidenceIds.every(id => sourceContentEvidenceIds.has(String(id)))) continue;
     if (!atom.predicate) continue;
     // A predicate carrying no letter or number is not a relation, it is punctuation that survived ingestion. Measured
     // on the live corpus: unscrubbed wikitext table rows atomize with predicate "|", every such atom lands in that one
@@ -1026,6 +1037,7 @@ function collectMutuallyContradictorySupport(
         // Two sources disagree only if they are speaking about the same proposition. Without this a source could
         // be reported as refuting another that it merely fails to resemble.
         if (unified.correspondence <= 0) continue;
+        if (!admitsPolarityCounterevidence(first, second)) continue;
         if (!(unified.contradiction > PROOF_CONTRADICTION_THRESHOLD)) continue;
         const evidenceIds = [...new Set([...first.evidenceIds, ...second.evidenceIds])];
         found = true;
@@ -1074,6 +1086,22 @@ function fromDifferentSources(
   }
   const seen = new Set(left.evidenceIds.map(String));
   return !right.evidenceIds.some(id => seen.has(String(id)));
+}
+
+/** The same proposition fields already carried by atom IDs and persisted round trips, independent of source ownership. */
+function polarityPropositionIdentity(atom: SemanticAtom): string {
+  return canonicalStringify({
+    predicate: atom.predicate,
+    roles: atom.roles.map(role => canonicalStringify([role.name, role.type, role.normalized])).sort(),
+    constraints: atom.constraints.map(constraint => canonicalStringify([
+      constraint.kind, constraint.subject, constraint.operator, constraint.value
+    ])).sort()
+  });
+}
+
+function admitsPolarityCounterevidence(left: SemanticAtom, right: SemanticAtom): boolean {
+  // Opposite polarity refutes only the same bound proposition; fuzzy similarity remains support or an obligation.
+  return left.polarity === right.polarity || polarityPropositionIdentity(left) === polarityPropositionIdentity(right);
 }
 
 function contradictionReason(unification: SemanticUnification): string {
@@ -1235,10 +1263,10 @@ function buildPredicateFeatures(predicate: string, symbols: readonly string[], i
  * What remains are the inequality operators, which deny in any notation, and "!" where it prefixes what it
  * negates rather than closing a sentence.
  */
-function polarityFromSurface(sentence: string, symbols: readonly string[]): SemanticAtomPolarity {
+export function polarityFromSurface(sentence: string, symbols: readonly string[]): SemanticAtomPolarity {
   void symbols;
-  if (/(?:!=|<>|\/=)/u.test(sentence)) return -1;
-  if (/![\p{Letter}\p{Number}_(]/u.test(sentence)) return -1;
+  if (/(?:!=|<>|\/=|≠|∉|⊄|⊅|⊬|⊭)/u.test(sentence)) return -1;
+  if (/[!¬][\p{Letter}\p{Number}_(]/u.test(sentence)) return -1;
   return 1;
 }
 

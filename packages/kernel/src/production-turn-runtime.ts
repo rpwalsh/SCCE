@@ -2782,6 +2782,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               text: proofClaimText,
               evidence: proofCandidateEvidence,
               nodes: proofCheckNodes,
+              semanticNodes: proofNodes,
               field,
               createdAt: clock.now(),
               sourceExcerpts: proofSourceExcerpts,
@@ -2800,16 +2801,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               },
               support: { typedProof: typedProofTrace(typedScope, jsonRecord(entailmentResult.proof.scores).semanticProofEngine) }
             });
-            const semanticProofStarted = Date.now();
-            const semanticProof = semanticProofSystem.prove({ claimText: proofClaimText, evidence: proofCandidateEvidence, nodes: proofNodes, field });
+            const sharedSemanticProof = entailment.semanticProofFor(entailmentResult);
+            const semanticProof = sharedSemanticProof.result;
             kernelTrace({
               stage: "proof.semantic",
               label: "kernel.turn",
-              durationMs: Date.now() - semanticProofStarted,
+              durationMs: sharedSemanticProof.durationMs,
               counts: {
                 obligations: semanticProof.obligations.length,
                 counterexamples: semanticProof.counterexamples.length
-              }
+              },
+              support: { source: "entailment.shared_semantic_proof", includedInEntailmentDuration: true }
             });
             const ccrStarted = Date.now();
             const ccrResult = ccr.run({ text: proofClaimText, evidence: proofCandidateEvidence, nodes: proofNodes, edges: proofEdges, field, entailment: entailmentResult });

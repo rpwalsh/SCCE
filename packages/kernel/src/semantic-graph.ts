@@ -90,7 +90,7 @@ export function createSemanticGraphEntailment(options: { idFactory: IdFactory; h
       const causalMass = mean(mappings.map(mapping => mapping.graphMass));
       const faithfulness = mappings.map(mapping => mapping.score).concat(proofPaths.map(path => path.support));
       const faithfulnessLCB = hoeffdingLcb(faithfulness, 0.05);
-      const contradiction = clamp01(mean(proofPaths.map(path => path.contradiction)) + contradictionFromPolarity(claimGraph, evidenceGraphs));
+      const contradiction = clamp01(mean(proofPaths.map(path => path.contradiction)));
       const dk = davisKahanSinTheta({ base: input.field.alphaTrace.normalizedLaplacian.values, perturbed: input.field.alphaTrace.laplacian.values, priorGap: Math.max(1e-6, input.field.alphaTrace.surfaces.bond) });
       const supportAssessment = assessStabilityAdjustedSupport({ supportSamples: faithfulness, projectedSupport: causalMass, sinTheta: dk.sinTheta });
       const stability = clamp01(1 - dk.sinTheta);
@@ -118,7 +118,9 @@ export function createSemanticGraphEntailment(options: { idFactory: IdFactory; h
           mappings: mappings.slice(0, 64),
           proofPaths: proofPaths.slice(0, 64),
           missingEdges,
-          supportAssessment: supportAssessment.details
+          supportAssessment: supportAssessment.details,
+          polarity: { measurement: "unmeasured_structural_shape", claimShapeMarkers: claimGraph.nodes.filter(node => node.role === "negation").length,
+            evidenceShapeMarkers: evidenceGraphs.map(graph => ({ graphId: graph.id, markers: graph.nodes.filter(node => node.role === "negation").length })) }
         })
       };
     }
@@ -156,7 +158,8 @@ function propositionGraphFromText(input: { text: string; source: "claim" | "evid
       relationId,
       target: target.id,
       support: input.evidence?.alpha ?? 1,
-      contradiction: source.role === "negation" || target.role === "negation" ? 0.35 : 0,
+      // Symbol shapes are not proposition-scoped polarity witnesses. The semantic/typed proof supplies those.
+      contradiction: 0,
       evidenceIds: input.evidence ? [input.evidence.id] : [],
       metadata: toJsonValue({ sourceRole: source.role, targetRole: target.role })
     });
@@ -276,12 +279,6 @@ function relationCompatible(left: string, right: string): boolean {
 function graphMassForEvidence(evidenceId: EvidenceId | undefined, nodes: GraphNode[], fieldMass: Map<string, number>): number {
   if (!evidenceId) return 0;
   return mean(nodes.filter(node => node.evidenceIds.includes(evidenceId)).map(node => fieldMass.get(String(node.id)) ?? node.alpha * 0.2));
-}
-
-function contradictionFromPolarity(claimGraph: PropositionGraph, evidenceGraphs: PropositionGraph[]): number {
-  const claimNeg = claimGraph.nodes.some(node => node.role === "negation");
-  const evidenceNeg = evidenceGraphs.some(graph => graph.nodes.some(node => node.role === "negation"));
-  return claimNeg === evidenceNeg ? 0 : 0.28;
 }
 
 function verdictFrom(input: { structuralCoverage: number; causalMass: number; faithfulnessLCB: number; contradiction: number; stability: number; missingEdges: number }): StructuralEntailmentVerdict {

@@ -11,17 +11,29 @@ import { constructToProofClaims, evidenceToProofRecords, typedRelationsToProofRe
 import { typedRelationTraces } from "./typed-relation-trace.js";
 import { proveClaim, type ProofClaim, type ProofEvidenceRecord, type ProofForceClass, type SemanticProofResult } from "./semantic-proof-engine.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
+import { createSemanticProofSystem, polarityFromSurface, type SemanticProofResult as ScopedSemanticProofResult } from "./semantic-proof-system.js";
+import { PROOF_COUNTEREXAMPLE_REASON } from "./semantic-codes.js";
 
-const VALIDATOR_VERSION = "scce3-obligation-structural-alpha-causal-entailment-v4";
+const VALIDATOR_VERSION = "scce3-obligation-structural-alpha-causal-entailment-v5";
 
-export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; hasher: Hasher }) {
+export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; hasher: Hasher;
+  semanticProofSystem?: ReturnType<typeof createSemanticProofSystem> }) {
   const calculus = createProofCalculus({ hasher: options.hasher });
   const structural = createSemanticGraphEntailment(options);
+  const semanticProofSystem = options.semanticProofSystem ?? createSemanticProofSystem({ hasher: options.hasher });
+  const scopedProofs = new WeakMap<SemanticEntailmentResult, { result: ScopedSemanticProofResult; durationMs: number }>();
   return {
+    semanticProofFor(result: SemanticEntailmentResult): { result: ScopedSemanticProofResult; durationMs: number } {
+      const proof = scopedProofs.get(result);
+      if (!proof) throw Error("semantic proof requires a result owned by this entailment engine");
+      return proof;
+    },
     check(input: {
       text: string;
       evidence: EvidenceSpan[];
       nodes: GraphNode[];
+      /** Preserve the semantic proof's existing node scope when structural source-span projections add nodes. */
+      semanticNodes?: GraphNode[];
       field: FieldState;
       createdAt: number;
       construct?: ConstructGraph;
@@ -59,7 +71,22 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
         hasher: options.hasher
       });
       const textIdentityGate = excerptGate ?? exactTextProofGate({ claim, evidence: input.evidence, hasher: options.hasher });
-      const result = calculus.evaluate({ claim, evidence: certifyingEvidence, nodes: input.nodes, field: input.field });
+      const semanticStarted = Date.now();
+      const scopedProof = semanticProofSystem.prove({ claimText: input.text, evidence: input.evidence,
+        nodes: input.semanticNodes ?? input.nodes, field: input.field });
+      const semanticDurationMs = Date.now() - semanticStarted;
+      const claimAtomIds = new Set(scopedProof.claimAtoms.map(atom => atom.id));
+      const evidenceAtoms = new Map([...scopedProof.evidenceAtoms, ...scopedProof.graphAtoms].map(atom => [atom.id, atom]));
+      const polarityWitnesses = scopedProof.counterexamples.filter(item => {
+        const atom = evidenceAtoms.get(item.evidenceAtomId);
+        const owners = new Set(atom?.evidenceIds.map(String) ?? []);
+        return item.reason === PROOF_COUNTEREXAMPLE_REASON.POLARITY && claimAtomIds.has(item.claimAtomId)
+          && atom?.certifiesFactualProof === true && owners.size > 0
+          && [...owners].every(id => certifyingEvidenceIds.has(id))
+          && item.evidenceIds.length > 0 && item.evidenceIds.length === owners.size
+          && item.evidenceIds.every(id => owners.has(String(id)));
+      });
+      const result = calculus.evaluate({ claim, evidence: certifyingEvidence, nodes: input.nodes, field: input.field, polarityWitnesses });
       const structuralResult = structural.check({ claim, evidence: certifyingEvidence, nodes: input.nodes, field: input.field });
       const obligations = evaluateSemanticObligations({ claim, evidence: input.evidence, nodes: input.nodes, field: input.field, hasher: options.hasher });
       const proofGate = structuredProofGate({
@@ -74,7 +101,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
         sourceExcerptsProvided: Boolean(input.sourceExcerpts?.length),
         hasher: options.hasher
       });
-      const semanticVerdict = verdictWithProofGate(obligations.verdict, proofGate);
+      const semanticVerdict = polarityWitnesses.length > 0 ? "contradicted" : verdictWithProofGate(obligations.verdict, proofGate);
       // Evidence is a citation, not a gate: a genuinely entailed/contradicted
       // obligation-based verdict is real signal even without the separate,
       // stricter structured proof gate -- it must not be crushed to a
@@ -83,10 +110,13 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
       // through to "insufficient_evidence", and even then that label is
       // informational (surfaced as an honest caveat), never a reason to
       // withhold the answer.
-      const truthState = proofGate ? proofGate.truthState : truthStateFromSemanticVerdict(semanticVerdict);
+      const truthState = polarityWitnesses.length > 0 ? truthStateFromSemanticVerdict(semanticVerdict)
+        : proofGate ? proofGate.truthState : truthStateFromSemanticVerdict(semanticVerdict);
       const structuralSupport = structuralResult.structuralCoverage * 0.34 + structuralResult.causalMass * 0.27 + structuralResult.faithfulnessLCB * 0.21 + structuralResult.stability * 0.18;
-      const rawSupport = proofGateSupport(proofGate, proofSupportFromObligations(semanticVerdict, obligations.support, structuralSupport, result.support));
-      const rawContradiction = Math.max(result.contradiction, structuralResult.contradiction, obligations.contradiction, proofGate?.verdict === "contradicted" ? 0.72 : 0);
+      const obligationSupport = proofSupportFromObligations(semanticVerdict, obligations.support, structuralSupport, result.support);
+      const rawSupport = polarityWitnesses.length > 0 ? obligationSupport : proofGateSupport(proofGate, obligationSupport);
+      const rawContradiction = Math.max(result.contradiction, structuralResult.contradiction, obligations.contradiction,
+        ...polarityWitnesses.map(item => item.contradiction), proofGate?.verdict === "contradicted" ? 0.72 : 0);
       const supportCalibration = calibrateRuntimeScore({
         raw: rawSupport,
         calibrationId: CALIBRATION_IDS.proofSupport,
@@ -132,7 +162,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
         satisfiedObligations: obligations.obligations.filter(item => item.required && item.status === "satisfied").length,
         requiredObligations: obligations.obligations.filter(item => item.required).length
       } satisfies SemanticEntailmentResult["confidence"];
-      return {
+      const output: SemanticEntailmentResult = {
         claim,
         verdict: semanticVerdict,
         semanticVerdict,
@@ -193,6 +223,8 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
             } }
           : {})
       };
+      scopedProofs.set(output, { result: scopedProof, durationMs: semanticDurationMs });
+      return output;
     }
   };
 }
@@ -666,13 +698,6 @@ function textIdentity(text: string, hasher: Hasher): string {
 function claimFrom(text: string, idFactory: IdFactory): Claim {
   const normalized = symbolizeData(text).join(" ");
   const features = featureSet(text, 512);
-  const polarity = polarityOf(text);
+  const polarity = polarityFromSurface(text, symbolizeData(text));
   return { id: idFactory.claimId({ normalized, polarity, features: features.slice(0, 96) }), text, normalized, features, polarity };
-}
-
-function polarityOf(text: string): number {
-  const symbols = symbolizeData(text);
-  const explicitsymbolNegation = symbols.some(symbol => /^(?:[¬!]|[-−—])+$|^[¬!]/u.test(symbol));
-  const operatorNegation = /(?:!=|≠|∉|⊄|⊅|¬|⊬|⊭)/u.test(text);
-  return explicitsymbolNegation || operatorNegation ? -1 : 1;
 }

@@ -71,8 +71,56 @@ describe("semantic proof engine vertical slice", () => {
       candidateEvidence: [evidence({ subject: { id: "entity:beta", surface: "alpha", kindId: "kind.test.system" } })],
       policy: basePolicy
     });
+    expect(result.verdict).toBe("insufficient_evidence");
+    expect(result.certifiedEvidenceIds).toEqual([]);
+    expect(result.contradictions).toEqual([]);
+    expect(result.obligations).toContainEqual({ kind: "entity_identity", passed: false, reason: "atom_id_mismatch" });
+  });
+
+  it.each([
+    { name: "another subject", change: { subject: { id: "entity:beta", surface: "beta", kindId: "kind.test.system" } } },
+    { name: "another subject role", change: { subject: { id: "entity:alpha", surface: "alpha", kindId: "kind.test.system", roleId: "role.other" } } },
+    { name: "another subject kind", change: { subject: { id: "entity:alpha", surface: "alpha", kindId: "kind.other" } } },
+    { name: "another predicate", change: { relationId: "relation.test.has_owner" } }
+  ])("does not let conflicting values, dates or polarity for $name refute the claim", ({ change }) => {
+    const result = proveClaim({
+      claim: claim({ subject: { id: "entity:alpha", surface: "alpha", kindId: "kind.test.system", roleId: "role.subject" },
+        quantity: { value: 42, unitId: "unit.count" }, dateTime: { value: "2026-06-26", precisionId: "precision.day" } }),
+      candidateEvidence: [evidence({ ...change, object: { id: "status:red", surface: "red", kindId: "kind.test.status" },
+        quantity: { value: 43, unitId: "unit.other" }, dateTime: { value: "2026-06-27", precisionId: "precision.day" },
+        polarityId: "polarity.negative" })],
+      policy: basePolicy
+    });
+    expect(result.verdict).toBe("insufficient_evidence");
+    expect(result.certifiedEvidenceIds).toEqual([]);
+    expect(result.contradictions).toEqual([]);
+    expect(result.obligations.some(obligation => !obligation.passed)).toBe(true);
+  });
+
+  it("keeps supporting evidence certified when an unrelated negative proposition carries another date and quantity", () => {
+    const result = proveClaim({ claim: claim({ quantity: { value: 42, unitId: "unit.count" }, dateTime: { value: "2026-06-26" } }),
+      candidateEvidence: [evidence({ quantity: { value: 42, unitId: "unit.count" }, dateTime: { value: "2026-06-26" } }),
+        evidence({ id: "evidence:unrelated", subject: { id: "entity:beta", surface: "beta", kindId: "kind.test.system" },
+          quantity: { value: 43, unitId: "unit.count" }, dateTime: { value: "2026-06-27" }, polarityId: "polarity.negative" })],
+      policy: basePolicy });
+    expect(result.verdict).toBe("certified");
+    expect(result.certifiedEvidenceIds).toEqual(["evidence:1"]);
+    expect(result.contradictions).toEqual([]);
+  });
+
+  it("retains different object values as counterevidence for the same typed subject and compatible relation", () => {
+    const result = proveClaim({ claim: claim(), candidateEvidence: [evidence({
+      object: { id: "status:red", surface: "red", kindId: "kind.test.status" }
+    })], policy: basePolicy });
     expect(result.verdict).toBe("contradicted");
-    expect(result.contradictions.some(item => item.kind === "entity_identity")).toBe(true);
+    expect(result.contradictions).toContainEqual({ evidenceId: "evidence:1", kind: "entity_identity", reason: "atom_id_mismatch" });
+  });
+
+  it("retains incompatible units as counterevidence for the same subject and relation", () => {
+    const result = proveClaim({ claim: claim({ quantity: { value: 42, unitId: "unit.count" } }),
+      candidateEvidence: [evidence({ quantity: { value: 42, unitId: "unit.other" } })], policy: basePolicy });
+    expect(result.verdict).toBe("contradicted");
+    expect(result.contradictions).toContainEqual({ evidenceId: "evidence:1", kind: "unit", reason: "unit_conflict" });
   });
 
   it("treats wrong quantities as contradictions for admissible direct evidence", () => {

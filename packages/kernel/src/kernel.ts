@@ -129,7 +129,8 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const featureSketchLearner = createWeightedFeatureSketchLearner({ hasher });
   const learning = createLearningController();
   const fieldEngine = createAlphaFieldEngine({ clock, relationPotentialModel: deps.relationPotentialModel, fieldOperatorRouting: deps.fieldOperatorRouting });
-  const entailment = createSemanticEntailmentEngine({ idFactory, hasher });
+  const semanticProofSystem = createSemanticProofSystem({ hasher });
+  const entailment = createSemanticEntailmentEngine({ idFactory, hasher, semanticProofSystem });
   const ccr = createCcrEngine();
   const pca = createProofCarryingAnswer();
   const candidates = createCandidateEngine();
@@ -151,7 +152,6 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const connectorGovernance = createConnectorGovernance({ hasher, now: () => clock.now() });
   const safetyRails = createSafetyRailEngine({ hasher });
   const semanticMemory = createSemanticMemoryIndex({ hasher });
-  const semanticProofSystem = createSemanticProofSystem({ hasher });
   const toolCognition = createAutonomousToolCognition({ hasher, now: () => clock.now() });
   const trainingOrchestrator = createTrainingOrchestrator({ hasher, now: () => clock.now() });
   const runtimeOrchestrator = createRuntimeOrchestrator({ hasher });

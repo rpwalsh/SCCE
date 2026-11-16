@@ -327,20 +327,21 @@ function evaluateCandidate(claim: ProofClaim, evidence: ProofEvidenceRecord, pol
   if (!relation.passed && reversedRoles) {
     contradictions.push({ evidenceId: evidence.id, kind: "relation", reason: relation.reason });
   }
-  if (!subject.passed && relation.passed) contradictions.push({ evidenceId: evidence.id, kind: "entity_identity", reason: subject.reason });
-  if (!object.passed && relation.passed) contradictions.push({ evidenceId: evidence.id, kind: "entity_identity", reason: object.reason });
+  // Counterevidence must match the typed subject and relation.
+  const sameSubjectRelation = subject.passed && relation.passed;
+  if (!object.passed && sameSubjectRelation) contradictions.push({ evidenceId: evidence.id, kind: "entity_identity", reason: object.reason });
 
   const quantity = evaluateQuantity(claim.quantity, evidence.quantity);
   obligations.push(...quantity.obligations);
-  if (quantity.contradiction) contradictions.push({ evidenceId: evidence.id, kind: quantity.contradiction.kind, reason: quantity.contradiction.reason });
+  if (sameSubjectRelation && quantity.contradiction) contradictions.push({ evidenceId: evidence.id, kind: quantity.contradiction.kind, reason: quantity.contradiction.reason });
 
   const dateTime = evaluateDateTime(claim.dateTime, evidence.dateTime);
   obligations.push(...dateTime.obligations);
-  if (dateTime.contradiction) contradictions.push({ evidenceId: evidence.id, kind: dateTime.contradiction.kind, reason: dateTime.contradiction.reason });
+  if (sameSubjectRelation && dateTime.contradiction) contradictions.push({ evidenceId: evidence.id, kind: dateTime.contradiction.kind, reason: dateTime.contradiction.reason });
 
   const polarity = evaluatePolarity(claim.polarityId ?? policy.defaultPolarityId, evidence.polarityId ?? policy.defaultPolarityId, policy);
   obligations.push({ kind: "polarity", passed: polarity.passed, reason: polarity.reason });
-  if (polarity.contradiction) contradictions.push({ evidenceId: evidence.id, kind: "polarity", reason: polarity.reason });
+  if (sameSubjectRelation && polarity.contradiction) contradictions.push({ evidenceId: evidence.id, kind: "polarity", reason: polarity.reason });
 
   const modality = evaluateModality(claim.modalityId ?? policy.defaultModalityId, evidence.modalityId ?? policy.defaultModalityId, policy);
   obligations.push({ kind: "modality", passed: modality.passed, reason: modality.reason });
