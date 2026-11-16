@@ -10,10 +10,16 @@ import { PAIRED_ANTI_UNIFIED_PATTERN_SCHEMA } from "./paired-anti-unification.js
 import { REVERSIBLE_CONSTRUCTION_PATTERN_SCHEMA } from "./reversible-construction.js";
 import { REQUEST_REQUIREMENT_PATTERN_SCHEMA } from "./request-requirement-learning.js";
 import { INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA } from "./language-induction-memory.js";
+import { LEXICAL_SENSE_SCHEMA } from "./lexical-semantic-memory.js";
+import { LEXICAL_GRAMMAR_SCHEMA } from "./source-lexical-grammar.js";
+import { SOURCE_QUESTION_FRAME_SCHEMA } from "./source-question-frames.js";
 import type { LanguagePatternRecord, LanguageUnitRecord, SemanticFrameRecord } from "./storage.js";
 import type { JsonValue } from "./types.js";
 
 export const SOURCE_CONSTRUCTION_READ_BUDGET = Object.freeze({ limit: 512, maxTotalJsonBytes: 8 * 1024 * 1024 });
+
+/** These source programs are read by the later exact lexical consumer, not request-field hydration. */
+export const REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS = [LEXICAL_SENSE_SCHEMA, LEXICAL_GRAMMAR_SCHEMA, SOURCE_QUESTION_FRAME_SCHEMA] as const;
 
 export const CREATIVE_SELECTOR_PATTERN_JSON_FIELDS = ["schema", "id", "version", "requestCompilerId", "eventCompilerId",
   "reliability", "sourceUtterancePrerequisites", "requestFrameAnchors"] as const;

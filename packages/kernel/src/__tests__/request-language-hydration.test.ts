@@ -3,7 +3,7 @@
 import { expect, it } from "vitest";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
 import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
-import { requestSeedLanguagePattern } from "../request-language-hydration.js";
+import { requestSeedLanguagePattern, REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS } from "../request-language-hydration.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import { compileLanguageConstructionPattern, SOURCE_EXAMPLE_CONSTRUCTION_STORAGE, type SourceBoundConstructionObservation, type SourceConstructionGraphBinding } from "../language-construction-memory.js";
@@ -19,6 +19,7 @@ import { conversationalActBindingId } from "../conversational-act-binding.js";
 import { requestCommunicativeActIdForSignature } from "../request-communicative-act.js";
 import { DIALOGUE_ACT_IDS } from "../dialogue-pragmatics.js";
 import { INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_SEGMENTATION_WITNESS_REFERENCE_SCHEMA } from "../language-induction-memory.js";
+import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
 
 const hasher = createHasher();
 const clock = createClock({ fixedTime: 1 });
@@ -28,7 +29,7 @@ const profile: LanguageProfile = { id: "profile.seed", sourceVersionId: "version
 const cluster = { id: "cluster.seed", members: [profile], profileIds: [profile.id], sourceVersionIds: [profile.sourceVersionId],
   discoveredNames: [], scripts: profile.scripts, symbolShapes: [], charNgrams: [], direction: "unknown" as const, artifactSupport: 1 };
 
-function fixture(patterns: LanguagePatternRecord[], evidence: EvidenceSpan[] = []) {
+function fixture(patterns: LanguagePatternRecord[], evidence: EvidenceSpan[] = [], defaultCorpusRegistry = false) {
   const calls = { frames: [] as unknown[], patterns: [] as NonNullable<Parameters<ScceKernelDeps["storage"]["languageMemory"]["listLanguagePatterns"]>[0]>[], evidence: 0 };
   let frameRows: SemanticFrameRecord[] = [];
   const storage = { brainImports: { active: async () => ({ activeImportRunIds: [] }) },
@@ -39,17 +40,56 @@ function fixture(patterns: LanguagePatternRecord[], evidence: EvidenceSpan[] = [
         calls.patterns.push(query);
         return patterns.filter(pattern => (!query.patternIds || query.patternIds.includes(pattern.id))
           && (!query.patternSchemas || query.patternSchemas.includes(String((pattern.patternJson as Record<string, unknown>).schema)))
+          && !(typeof (pattern.patternJson as Record<string, unknown>).schema === "string" && query.excludePatternSchemas?.includes(String((pattern.patternJson as Record<string, unknown>).schema)))
           && (!query.profileIds || query.profileIds.includes(pattern.profileId)));
       },
       listSemanticFrames: async (query: unknown) => { calls.frames.push(query); return frameRows; } }
   } as unknown as ScceKernelDeps["storage"];
-  const runtime = createSurfaceLanguageRuntime({ deps: { storage, corpusRegistry: [] }, languageMemoryRuntime: createLanguageMemoryRuntime({ hasher }),
+  const runtime = createSurfaceLanguageRuntime({ deps: { storage, ...(defaultCorpusRegistry ? {} : { corpusRegistry: [] }) }, languageMemoryRuntime: createLanguageMemoryRuntime({ hasher }),
     clock, hasher, cacheMs: 100_000, profileLimit: 32 });
   return { runtime, calls, setFrames: (rows: SemanticFrameRecord[]) => { frameRows = rows; } };
 }
 
 const pattern = (id: string, patternJson: LanguagePatternRecord["patternJson"], patternKind: LanguagePatternRecord["patternKind"] = "semantic_role"): LanguagePatternRecord =>
   ({ id, profileId: profile.id, patternKind, patternJson, evidenceIds: [], support: 1, entropy: 0, updatedAt: 1 });
+
+it("defers only exact lexical operation schemas before request hydration while retaining generic and unversioned request fields", async () => {
+  const lexical = REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS.map((schema, i) => pattern(`lexical.${i}`, { schema, lexicalUnits: ["opaque"], definition: "owned lexical output" }));
+  const controls = [pattern("unknown", { schema: "opaque.request.extension", surface: "ψ", requirementCoefficients: { noveltyDemand: 2 } }),
+    pattern("null-schema", { schema: null, surface: "ψ", requirementCoefficients: { noveltyDemand: 1 } }),
+    pattern("schema-missing", { surface: "ψ", requirementCoefficients: { noveltyDemand: 1 } })];
+  const f = fixture([...lexical, ...controls]);
+  const seed = await f.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "seed", undefined, "", { purpose: "request_seed" });
+  expect(f.calls.patterns.filter(query => query.view === "request_seed")).toEqual([expect.objectContaining({
+    excludePatternSchemas: REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS, profileIds: [profile.id], limit: 96
+  })]);
+  expect(seed.patterns.map(row => row.id)).toEqual(controls.map(row => row.id));
+  const originalProjected = createLanguageMemoryRuntime({ hasher }).hydrate({ models: [], patterns: [...lexical, ...controls].map(requestSeedLanguagePattern) });
+  expect(deriveTurnRequirementField({ requestText: "ψ", languageMemoryState: seed.state }))
+    .toEqual(deriveTurnRequirementField({ requestText: "ψ", languageMemoryState: originalProjected }));
+  expect(deriveTurnRequirementField({ requestText: "ψ", languageMemoryState: seed.state }).activatedPatternIds.sort())
+    .toEqual(controls.map(row => row.id).sort());
+  const full = await f.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "full");
+  expect(f.calls.patterns.at(-1)).not.toHaveProperty("excludePatternSchemas");
+  expect(full.patterns).toEqual([...lexical, ...controls]);
+  const aggregate = fixture([...lexical, ...controls], [], true);
+  const seeded = await aggregate.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "seed", undefined, "", { purpose: "request_seed", languageId: "identity.opaque" });
+  expect(aggregate.calls.patterns.filter(query => query.view === "request_seed")).toEqual([expect.objectContaining({
+    excludePatternSchemas: REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS, sourceSystems: expect.any(Array), limit: 768
+  })]);
+  expect(seeded.patterns.map(row => row.id)).toEqual(controls.map(row => row.id));
+});
+
+it("keeps the in-memory store's exclusion before row bounds and leaves its ordinary inventory complete", async () => {
+  const f = storageFixtureForEvaluation({ evidence: [], clockNow: () => 1 });
+  const deferred = REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS.map((schema, i) => pattern(`lexical.${i}`, { schema }));
+  const controls = [pattern("unknown", { schema: "opaque.request.extension" }), pattern("null", { schema: null }), pattern("schema-missing", {})];
+  for (const row of [...deferred, ...controls]) await f.storage.languageMemory.putLanguagePattern(row);
+  expect((await f.storage.languageMemory.listLanguagePatterns({ excludePatternSchemas: REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS, limit: 3 })).map(row => row.id))
+    .toEqual(controls.map(row => row.id));
+  expect(await f.storage.languageMemory.listLanguagePatterns({ limit: 6 })).toEqual([...deferred, ...controls]);
+  expect(await f.storage.languageMemory.listLanguagePatterns({ excludePatternSchemas: [], limit: 6 })).toEqual([...deferred, ...controls]);
+});
 
 it("loads a source-owned closed proposition through request headers without inventing an omitted role", async () => {
   const text = "α «Luma» ω «Bora»?\nα «Vela» ω «Cedar»?";

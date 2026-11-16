@@ -7,6 +7,7 @@ import { normalizePriorKey } from "../../../kernel/src/kernel-answer-primitives.
 import { PostgresStorageAdapter } from "../postgres.js";
 import { DECODED_JSON_BYTE_LEDGER_KEY, DECODED_JSON_BYTE_LEDGER_SCHEMA, decodedJsonByteLengths, encodeDurableArtifact } from "../durable-artifact-storage.js";
 import { SEMANTIC_PROJECTION_STORAGE_KEY } from "../semantic-projection-storage.js";
+import { REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS } from "../../../kernel/src/request-language-hydration.js";
 
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adapter.close())); });
@@ -55,6 +56,12 @@ function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRe
         [SEMANTIC_PROJECTION_STORAGE_KEY]: physical[SEMANTIC_PROJECTION_STORAGE_KEY]
       } as LanguagePatternRecord["patternJson"] };
     }) : patterns;
+    const exclusion = /pattern\.pattern_schema IS NULL OR NOT \(pattern\.pattern_schema=ANY\(\$(\d+)::text\[\]\)\)\)/u.exec(sql);
+    if (exclusion) {
+      const excluded = params[Number(exclusion[1]) - 1] as string[];
+      rows = rows.filter(row => typeof (row.patternJson as Record<string, unknown>).schema !== "string"
+        || !excluded.includes(String((row.patternJson as Record<string, unknown>).schema)));
+    }
     const ids = sql.includes("pattern.id=ANY(") ? params.find(Array.isArray) as string[] | undefined : undefined;
     if (ids) rows = rows.filter(row => ids.includes(row.id));
     const numbers = params.filter((value): value is number => typeof value === "number");
@@ -74,6 +81,32 @@ function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRe
   };
   return { adapter, calls };
 }
+
+it("applies explicit schema exclusion before bounds and projection proofs without narrowing unknown or null schemas", async () => {
+  const deferred = REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS.map((schema, i) => pattern(`lexical.${i}`, { schema, lexicalUnits: ["opaque"] }));
+  const retained = [pattern("unknown", { schema: "opaque.request.extension", surface: "ψ", requirementCoefficients: { noveltyDemand: 2 } }),
+    pattern("null", { schema: null, surface: "ψ", requirementCoefficients: { noveltyDemand: 1 } }), pattern("schema-missing", { surface: "ψ" })];
+  const { adapter, calls } = fixture([...deferred, ...retained]);
+  const query = { view: "request_seed" as const, limit: 3 };
+  await adapter.languageMemory.listLanguagePatterns(query);
+  const ordinary = calls.filter(call => call.sql.includes("pattern_headers AS MATERIALIZED")).at(-1)!;
+  await adapter.languageMemory.listLanguagePatterns({ ...query, excludePatternSchemas: [] });
+  expect(calls.filter(call => call.sql.includes("pattern_headers AS MATERIALIZED")).at(-1)).toEqual(ordinary);
+  const rows = await adapter.languageMemory.listLanguagePatterns({ ...query, excludePatternSchemas: REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS });
+  expect(rows.map(row => row.id)).toEqual(retained.map(row => row.id));
+  const scoped = calls.filter(call => call.sql.includes("pattern_headers AS MATERIALIZED")).at(-1)!;
+  expect(scoped.sql).toContain("(pattern.pattern_schema IS NULL OR NOT (pattern.pattern_schema=ANY($1::text[])))");
+  expect(scoped.params[0]).toEqual(REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS);
+  const headers = (sql: string) => [...sql.matchAll(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)].length;
+  expect(headers(scoped.sql)).toBe(headers(ordinary.sql) - 3);
+  const used = [...new Set([...scoped.sql.matchAll(/\$(\d+)/gu)].map(match => Number(match[1])))].sort((a, b) => a - b);
+  expect(used).toEqual(scoped.params.map((_, i) => i + 1));
+  expect(scoped.sql.indexOf("pattern.pattern_schema IS NULL OR NOT")).toBeLessThan(scoped.sql.indexOf("candidate_pool AS MATERIALIZED"));
+  expect(await adapter.languageMemory.listLanguagePatterns({ limit: 6 })).toEqual([...deferred, ...retained]);
+  for (const excludePatternSchemas of [[null], [""]] as unknown as string[][]) {
+    await expect(adapter.languageMemory.listLanguagePatterns({ excludePatternSchemas })).rejects.toThrow("excluded pattern schemas");
+  }
+});
 
 it.each(["request_seed", "prediction_scoring", "full"] as const)("binds only consumed parameters in a scoped %s read without active projections", async view => {
   for (const receipt of [false, true]) {

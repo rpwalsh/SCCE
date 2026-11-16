@@ -2372,9 +2372,19 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     async sourceVersionsForEvidence(ids) {
       if (ids.length === 0) return [];
       const evidenceAccess = storage.informationAccessPredicate("e", 2);
-      const versionAccess = storage.informationAccessPredicate("sv", 6);
+      const versionAccess = storage.informationAccessPredicate("sv", 2 + evidenceAccess.params.length);
       const rows = await storage.query<SourceVersionRow>(
-        `SELECT DISTINCT sv.*, s.namespace, s.canonical_uri FROM ${storage.table("source_versions")} sv JOIN ${storage.table("sources")} s ON s.id=sv.source_id JOIN ${storage.table("evidence_spans")} e ON e.source_version_id=sv.id WHERE e.id=ANY($1) AND ${evidenceAccess.sql} AND ${versionAccess.sql}`,
+        `WITH evidence_owners AS MATERIALIZED (
+           SELECT DISTINCT e.source_id,e.source_version_id FROM ${storage.table("evidence_spans")} e
+           WHERE e.id=ANY($1::text[]) AND ${evidenceAccess.sql}
+         )
+         SELECT sv.*,s.namespace,s.canonical_uri FROM evidence_owners owner
+         CROSS JOIN LATERAL (
+           SELECT sv.* FROM ${storage.table("source_versions")} sv
+           WHERE sv.id=owner.source_version_id AND sv.source_id=owner.source_id AND ${versionAccess.sql}
+           -- Resolve each distinct authorized owner once, before its potentially wide metadata is read.
+           OFFSET 0
+         ) sv JOIN ${storage.table("sources")} s ON s.id=sv.source_id`,
         [ids, ...evidenceAccess.params, ...versionAccess.params]
       );
       return rows.map(rowToSourceVersion);
@@ -6361,6 +6371,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const projectionScope: string[] = [];
       const scopeWhere: string[] = query.patternKind ? [] : ["pattern.pattern_kind<>'source_compilation'"];
       const where: string[] = [];
+      if (query.excludePatternSchemas !== undefined) {
+        if (!Array.isArray(query.excludePatternSchemas) || query.excludePatternSchemas.some(schema => typeof schema !== "string" || !schema)) {
+          throw new Error("excluded pattern schemas must be nonempty strings");
+        }
+        if (query.excludePatternSchemas.length) {
+          params.push([...new Set(query.excludePatternSchemas)]);
+          scopeWhere.push(`(pattern.pattern_schema IS NULL OR NOT (pattern.pattern_schema=ANY($${params.length}::text[])))`);
+        }
+      }
       if (query.lexicalUnits !== undefined) {
         if (query.lexicalUnits.some(unit => typeof unit !== "string" || !unit)) throw new Error("lexical units must be nonempty strings");
         if (!query.lexicalUnits.length) return [];
@@ -6512,6 +6531,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ...INDUCED_LANGUAGE_MEMORY_PATTERN_SCHEMAS.map(schema => [schema, INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID] as const)
       ] as const) {
         if (query.patternSchemas && !query.patternSchemas.includes(patternSchema)) continue;
+        if (query.excludePatternSchemas?.includes(patternSchema)) continue;
         if (patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA && query.sourceSystem && query.sourceSystem !== SOURCE_COMPUTATION_SOURCE_SYSTEM) {
           params.push(patternSchema);
           where.push(`pattern.pattern_schema IS DISTINCT FROM $${params.length}`);

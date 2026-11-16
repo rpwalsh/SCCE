@@ -9,7 +9,7 @@ import {
   sourceConstructionCandidate, SOURCE_CONSTRUCTION_READ_BUDGET, creativeSelectorLanguagePattern, creativeCompatibilityCanOwnEvidence,
   PREDICTION_SCORING_DECODED_BYTE_BUDGETS, PREDICTION_SCORING_MAX_DECODED_BYTES,
   predictionScoringLanguagePattern, predictionScoringLanguageUnit, predictionScoringPatternIsHydratable,
-  predictionScoringSemanticFrame
+  predictionScoringSemanticFrame, REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS
 } from "./request-language-hydration.js";
 import { conversationalActBindingId } from "./conversational-act-binding.js";
 import { DIALOGUE_ACT_IDS, type DialogueActId } from "./dialogue-pragmatics.js";
@@ -690,6 +690,7 @@ export function createSurfaceLanguageRuntime(options: {
       && grammarQueries.every(item => item.sourceSystem !== undefined && item.profileIds === undefined)
       ? deps.storage.languageMemory.listLanguagePatterns({
           ...(purpose ? { view: purpose } : {}),
+          ...(purpose === "request_seed" ? { excludePatternSchemas: REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS } : {}),
           sourceSystems: [...new Set(grammarQueries.map(item => item.sourceSystem!))],
           languageId,
           limit: hydrationLimits.languagePatterns,
@@ -697,6 +698,7 @@ export function createSurfaceLanguageRuntime(options: {
         }).then(rows => [rows])
       : Promise.all(grammarQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({
           ...(purpose ? { view: purpose } : {}),
+          ...(purpose === "request_seed" ? { excludePatternSchemas: REQUEST_SEED_DEFERRED_PATTERN_SCHEMAS } : {}),
           profileIds: item.profileIds,
           sourceSystem: item.sourceSystem,
           languageId: item.profileIds ? undefined : languageId,
