@@ -2736,8 +2736,17 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
         const groups: string[][] = [];
         for (let index = 0; index < evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) groups.push(evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP));
         const edgeRowsByGroup = await queryEvidenceGroups(groups, group => storage.query<GraphEdgeRow>(
-            `SELECT ${graphEdgeColumns(storage, "edge_row")} FROM ${storage.table("graph_edges")} AS edge_row
-             WHERE ${graphEvidenceMatchSql(storage, "edge", "edge_row", 1)} AND ${access.sql}
+            // Resolve the admitted evidence membership before probing parent rows. The lateral fence keeps an
+            // underestimated access predicate from scanning every edge and testing each owner's associations.
+            `WITH requested_edges AS MATERIALIZED (
+               SELECT DISTINCT association.entity_id FROM ${storage.table("graph_evidence_associations")} association
+               WHERE association.entity_kind='edge' AND association.evidence_id=ANY($1::text[])
+             )
+             SELECT ${graphEdgeColumns(storage, "edge_row")} FROM requested_edges requested
+             CROSS JOIN LATERAL (
+               SELECT * FROM ${storage.table("graph_edges")} WHERE id=requested.entity_id OFFSET 0
+             ) AS edge_row
+             WHERE ${access.sql}
              ORDER BY alpha DESC, updated_at DESC, id LIMIT $2`,
             [group, edgeLimit, ...access.params]
           ));

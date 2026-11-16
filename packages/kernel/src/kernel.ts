@@ -332,7 +332,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         for (;;) {
           await surfaceLanguageRuntime.synchronizeWithStorage();
           const generation = surfaceLanguageRuntime.revisionGeneration();
-          const corpusStarted = clock.now(), classifierStarted = clock.now();
+          const corpusStarted = clock.now(), classifierStarted = clock.now(), sourceAnchorsStarted = clock.now();
           await Promise.all([
             prepareCorpusIdentityMetadata(deps.storage.evidence).then(metadata => {
               result.corpusIdentity = { loaded: true, ...metadata, durationMs: Math.max(0, clock.now() - corpusStarted) };
@@ -345,6 +345,13 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             }).catch(error => {
               failures.push(`request classifier warmup failed: ${error instanceof Error ? error.message : String(error)}`);
               result.requestClassifier = { loaded: false, features: 0, disabled: false, durationMs: Math.max(0, clock.now() - classifierStarted) };
+            }),
+            sourceAnchorSemanticFramesCached().then(frames => {
+              result.sourceAnchors = { loaded: true, frames: frames.length, durationMs: Math.max(0, clock.now() - sourceAnchorsStarted) };
+            }).catch(error => {
+              const failure = error instanceof Error ? error.message : String(error);
+              failures.push(`source anchor warmup failed: ${failure}`);
+              result.sourceAnchors = { loaded: false, frames: 0, durationMs: Math.max(0, clock.now() - sourceAnchorsStarted), failure };
             })
           ]);
           await surfaceLanguageRuntime.synchronizeWithStorage();

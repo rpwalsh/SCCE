@@ -25,6 +25,66 @@ import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js"
 type LanguageMemoryQuery = { sourceSystem?: string; profileIds?: readonly string[]; patternSchemas?: readonly string[]; limit?: number };
 
 describe("corpus registry", () => {
+  it.each([false, true])("prepares source anchors during language=%s warmup and shares cold/concurrent/warm reads", async language => {
+    const storage = corpusQueryStorage([]), original = storage.languageMemory.listSemanticFrames;
+    let globalReads = 0, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    storage.languageMemory.listSemanticFrames = async query => {
+      if (!query?.sourceSystem && !query?.profileIds?.length && query?.limit === 2048) { globalReads++; await gate; }
+      return original(query);
+    };
+    const kernel = createScceKernel({ storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async () => { throw Error("warmup cannot execute a request"); } } });
+    const options = { language, graph: false, brain: false, profile: false, corrections: false };
+    const first = kernel.warmup(options), concurrent = kernel.warmup(options);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(globalReads).toBe(1);
+    release();
+    const results = await Promise.all([first, concurrent]);
+    for (const result of results) {
+      expect(result.sourceAnchors).toMatchObject({ loaded: true, frames: 1 });
+      expect(result.sourceAnchors!.durationMs).toBeGreaterThanOrEqual(0);
+    }
+    expect((await kernel.warmup(options)).sourceAnchors).toMatchObject({ loaded: true, frames: 1 });
+    expect(globalReads).toBe(1);
+  });
+
+  it("reports source-anchor preparation failure as failed readiness and retries without a resident substitute", async () => {
+    const storage = corpusQueryStorage([]), original = storage.languageMemory.listSemanticFrames;
+    let reads = 0;
+    storage.languageMemory.listSemanticFrames = async query => { if (++reads === 1) throw Error("source frame hydration failed"); return original(query); };
+    const kernel = createScceKernel({ storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async () => { throw Error("warmup cannot execute a request"); } } });
+    const options = { language: false, graph: false, brain: false, profile: false, corrections: false };
+    const failed = await kernel.warmup(options);
+    expect(failed.sourceAnchors).toMatchObject({ loaded: false, frames: 0, failure: "source frame hydration failed" });
+    expect(failed.failures).toContain("source anchor warmup failed: source frame hydration failed");
+    const recovered = await kernel.warmup(options);
+    expect(recovered.sourceAnchors).toMatchObject({ loaded: true, frames: 1 });
+    expect(recovered.failures).not.toContain("source anchor warmup failed: source frame hydration failed");
+    expect(reads).toBe(2);
+  });
+
+  it("reprepares source anchors before readiness when the durable generation changes during warmup", async () => {
+    const storage = corpusQueryStorage([]), original = storage.languageMemory.listSemanticFrames;
+    let revision = "1", reads = 0, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    storage.languageMemory.readRevision = async () => revision;
+    storage.languageMemory.listSemanticFrames = async query => {
+      if (++reads === 1) { await gate; return []; }
+      return original(query);
+    };
+    const kernel = createScceKernel({ storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async () => { throw Error("warmup cannot execute a request"); } } });
+    const options = { language: false, graph: false, brain: false, profile: false, corrections: false };
+    const pending = kernel.warmup(options);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(reads).toBe(1); revision = "2"; release();
+    expect((await pending).sourceAnchors).toMatchObject({ loaded: true, frames: 1 });
+    expect(reads).toBe(2);
+    await kernel.warmup(options); expect(reads).toBe(2);
+  });
+
   it("selects enabled language-memory corpora with bounded hydration limits", () => {
     const registry = createCorpusRegistry([
       { sourceSystem: "gutenberg", enabled: true, hydration: { priority: 120, limits: { ngramModels: 7 } } },
@@ -91,7 +151,12 @@ describe("corpus registry", () => {
     const result = await kernel.warmup({ language: false, graph: false, brain: false, profile: false, corrections: false });
 
     expect(result.language).toBeUndefined();
-    expect(queried).toEqual([{sourceSystem:REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,profileIds:[],patternSchemas:[REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA],limit:2048}]);
+    expect(result.sourceAnchors).toMatchObject({ loaded: true, frames: 1 });
+    expect(queried).toEqual(expect.arrayContaining([
+      {sourceSystem:REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,profileIds:[],patternSchemas:[REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA],limit:2048},
+      {sourceSystem:undefined,profileIds:[],patternSchemas:undefined,limit:2048}
+    ]));
+    expect(queried).toHaveLength(2);
   });
 
   it("warms one canonical request seed by typed natural-language role and reuses it", async () => {
@@ -170,7 +235,12 @@ describe("corpus registry", () => {
     const result = await kernel.warmup({ language: false, requestLanguage: true, graph: false, brain: false, profile: false, corrections: false });
 
     expect(result.requestLanguage).toMatchObject({ loaded: false });
-    expect(queried).toEqual([{sourceSystem:REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,profileIds:[],patternSchemas:[REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA],limit:2048}]);
+    expect(result.sourceAnchors).toMatchObject({ loaded: true, frames: 1 });
+    expect(queried).toEqual(expect.arrayContaining([
+      {sourceSystem:REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,profileIds:[],patternSchemas:[REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA],limit:2048},
+      {sourceSystem:undefined,profileIds:[],patternSchemas:undefined,limit:2048}
+    ]));
+    expect(queried).toHaveLength(2);
   });
 
   it("defers source-owned language hydration until a source is selected", async () => {

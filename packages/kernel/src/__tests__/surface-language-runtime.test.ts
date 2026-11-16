@@ -17,6 +17,60 @@ import { pooledProfileOwnerFixture } from "./fixtures/pooled-profile-owner.js";
 import { sourceOwnedSemanticSurfacePatterns } from "./fixtures/source-owned-semantic-surface.js";
 
 describe("surface language resident-only cache", () => {
+  it("shares one global source-frame load and starts its unchanged TTL when hydration completes", async () => {
+    let now = 0, reads = 0, release!: (frames: SemanticFrameRecord[]) => void;
+    const fixture = runtimeFixture({ cacheMs: 10, clock: { now: () => now } });
+    fixture.storage.languageMemory.listSemanticFrames = async query => {
+      expect(query).toEqual({ limit: 2048 });
+      reads++;
+      return reads === 1 ? new Promise(resolve => { release = resolve; }) : [fixture.frame];
+    };
+    const first = fixture.runtime.sourceAnchorSemanticFramesCached(), concurrent = fixture.runtime.sourceAnchorSemanticFramesCached();
+    expect(reads).toBe(1);
+    await expect(fixture.runtime.sourceAnchorSemanticFramesCached({ residentOnly: true })).rejects.toThrow(/was not warmed/u);
+    now = 1000;
+    release([fixture.frame]);
+    const [loaded, shared] = await Promise.all([first, concurrent]);
+    expect(shared).toBe(loaded);
+    now = 1009;
+    expect(await fixture.runtime.sourceAnchorSemanticFramesCached()).toBe(loaded);
+    expect(reads).toBe(1);
+    now = 1011;
+    await fixture.runtime.sourceAnchorSemanticFramesCached();
+    expect(reads).toBe(2);
+  });
+
+  it("fences invalidated in-flight source frames and shares the replacement generation", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100000 });
+    const releases: Array<(frames: SemanticFrameRecord[]) => void> = [];
+    fixture.storage.languageMemory.listSemanticFrames = async () => new Promise(resolve => { releases.push(resolve); });
+    const stale = fixture.runtime.sourceAnchorSemanticFramesCached();
+    fixture.runtime.invalidate();
+    const current = fixture.runtime.sourceAnchorSemanticFramesCached();
+    expect(releases).toHaveLength(2);
+    releases[0]!([fixture.frame]);
+    await new Promise(resolve => setImmediate(resolve));
+    await expect(fixture.runtime.sourceAnchorSemanticFramesCached({ residentOnly: true })).rejects.toThrow(/was not warmed/u);
+    const concurrent = fixture.runtime.sourceAnchorSemanticFramesCached();
+    expect(releases).toHaveLength(2);
+    const replacement = { ...fixture.frame, id: "frame.replacement" };
+    releases[1]!([replacement]);
+    const [first, second, third] = await Promise.all([stale, current, concurrent]);
+    expect(first).toBe(second); expect(third).toBe(second);
+    expect(first.map(row => row.frame.id)).toEqual([replacement.id]);
+    expect(await fixture.runtime.sourceAnchorSemanticFramesCached({ residentOnly: true })).toBe(second);
+  });
+
+  it("does not cache a failed source-frame load and permits a fresh retry", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100000 });
+    let reads = 0;
+    fixture.storage.languageMemory.listSemanticFrames = async () => { if (++reads === 1) throw Error("source frames unavailable"); return [fixture.frame]; };
+    const results = await Promise.allSettled([fixture.runtime.sourceAnchorSemanticFramesCached(), fixture.runtime.sourceAnchorSemanticFramesCached()]);
+    expect(results.every(result => result.status === "rejected")).toBe(true); expect(reads).toBe(1);
+    await expect(fixture.runtime.sourceAnchorSemanticFramesCached({ residentOnly: true })).rejects.toThrow(/was not warmed/u);
+    expect(await fixture.runtime.sourceAnchorSemanticFramesCached()).toHaveLength(1); expect(reads).toBe(2);
+  });
+
   it("keeps verified owner request seeds distinct from broad-language and other-owner resident/in-flight seeds", async () => {
     const fixture = runtimeFixture({ cacheMs: 100000, languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
     const other = { ...fixture.profile, id: "profile.other", sourceVersionId: "source.other" as LanguageProfile["sourceVersionId"] };
@@ -744,7 +798,7 @@ describe("surface language resident-only cache", () => {
   });
 });
 
-function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemoryCacheMaxEntries?: number; surfaceCandidateProfileCacheMaxEntries?: number; surfaceLanguageMemoryCacheMaxEstimatedBytes?: number; languageResolver?: Parameters<typeof createSurfaceLanguageRuntime>[0]["languageResolver"] } = {}) {
+function runtimeFixture(cacheOverrides: { clock?: ReturnType<typeof createClock>; cacheMs?: number; surfaceLanguageMemoryCacheMaxEntries?: number; surfaceCandidateProfileCacheMaxEntries?: number; surfaceLanguageMemoryCacheMaxEstimatedBytes?: number; languageResolver?: Parameters<typeof createSurfaceLanguageRuntime>[0]["languageResolver"] } = {}) {
   const calls = {
     active: 0,
     evidence: 0,
@@ -871,7 +925,7 @@ function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemor
       }
     }
   } as unknown as ScceKernelDeps["storage"];
-  const clock = createClock({ fixedTime: 0, stepMs: 100 });
+  const clock = cacheOverrides.clock ?? createClock({ fixedTime: 0, stepMs: 100 });
   const hasher = createHasher();
   const runtime = createSurfaceLanguageRuntime({
     deps: { storage, corpusRegistry: [] },

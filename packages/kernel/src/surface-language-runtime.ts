@@ -501,6 +501,10 @@ export function createSurfaceLanguageRuntime(options: {
     loadedAt: number;
     value: Array<{ frame: SemanticFrameRecord; surface: string; surfaceUnits: string[] }>;
   }>();
+  let sourceAnchorSemanticFramesInFlight: {
+    generation: number;
+    promise: Promise<Array<{ frame: SemanticFrameRecord; surface: string; surfaceUnits: string[] }>>;
+  } | undefined;
   const targetProfilePatternCache = new Map<string, { loadedAt: number; value: TargetProfilePatternRecord[] }>();
   const targetProfilePatternInFlight = new Map<string, Promise<TargetProfilePatternRecord[]>>();
 
@@ -1859,25 +1863,38 @@ export function createSurfaceLanguageRuntime(options: {
       return cached.value;
     }
     if (cacheOptions.residentOnly) return residentRuntimeNotWarm("semantic-frames");
-    const frames = await deps.storage.languageMemory.listSemanticFrames({ limit: 2048 });
-    // Splitting every frame's surface into units cost seconds on a corpus of thousands of frames, and a request
-    // only ever looks at the handful its anchors could match. The surface is kept; the units are derived on the
-    // first read and remembered, so the same value is served either way.
-    const value = frames.map(frame => {
-      const record = jsonRecord(frame.frameJson);
-      const surface = sourceTextSurface(kernelString(record.preview) ?? kernelString(record.text) ?? "", 6000);
-      let units: string[] | undefined;
-      return {
-        frame,
-        surface,
-        get surfaceUnits(): string[] {
-          units ??= surface ? splitPriorUnits(normalizePriorKey(surface)).filter(Boolean) : [];
-          return units;
-        }
-      };
-    });
-    if (generation === languageMemoryGeneration) boundedCacheSet(sourceAnchorSemanticFrameCache, "", { loadedAt: now, value }, surfaceCandidateProfileCacheMaxEntries);
-    return value;
+    if (sourceAnchorSemanticFramesInFlight?.generation === generation) return sourceAnchorSemanticFramesInFlight.promise;
+    const pending = (async () => {
+      try {
+        const frames = await deps.storage.languageMemory.listSemanticFrames({ limit: 2048 });
+        // Splitting every frame's surface into units cost seconds on a corpus of thousands of frames, and a request
+        // only ever looks at the handful its anchors could match. The surface is kept; the units are derived on the
+        // first read and remembered, so the same value is served either way.
+        const value = frames.map(frame => {
+          const record = jsonRecord(frame.frameJson);
+          const surface = sourceTextSurface(kernelString(record.preview) ?? kernelString(record.text) ?? "", 6000);
+          let units: string[] | undefined;
+          return {
+            frame,
+            surface,
+            get surfaceUnits(): string[] {
+              units ??= surface ? splitPriorUnits(normalizePriorKey(surface)).filter(Boolean) : [];
+              return units;
+            }
+          };
+        });
+        if (generation !== languageMemoryGeneration) return sourceAnchorSemanticFramesCached(cacheOptions);
+        boundedCacheSet(sourceAnchorSemanticFrameCache, "", { loadedAt: clock.now(), value }, surfaceCandidateProfileCacheMaxEntries);
+        return value;
+      } catch (error) {
+        if (generation !== languageMemoryGeneration) return sourceAnchorSemanticFramesCached(cacheOptions);
+        throw error;
+      }
+    })();
+    const flight = { generation, promise: pending };
+    sourceAnchorSemanticFramesInFlight = flight;
+    try { return await pending; }
+    finally { if (sourceAnchorSemanticFramesInFlight === flight) sourceAnchorSemanticFramesInFlight = undefined; }
   }
 
   function invalidateLanguageMemory() {
@@ -1901,6 +1918,7 @@ export function createSurfaceLanguageRuntime(options: {
     surfaceProfileCache = undefined;
     surfaceProfileInFlight = undefined;
     sourceAnchorSemanticFrameCache.clear();
+    sourceAnchorSemanticFramesInFlight = undefined;
     targetProfilePatternCache.clear();
     targetProfilePatternInFlight.clear();
     deferredLanguageWarmups.clear();

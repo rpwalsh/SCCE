@@ -1505,6 +1505,8 @@ export interface RuntimeWarmupResult {
   corpusIdentity?: { loaded: boolean; sourceTitles: number | null; concentration: number; durationMs: number };
   /** The same admitted classifier instance used by ordinary turns. */
   requestClassifier?: { loaded: boolean; features: number; disabled: boolean; durationMs: number };
+  /** The existing global source-frame cache used by ordinary evidence anchoring, prepared without a request. */
+  sourceAnchors?: { loaded: boolean; frames: number; durationMs: number; failure?: string };
   languageIdentities?: { readiness: import("./language-identity-runtime.js").LanguageIdentityReadiness; identities: number; assigned: number | null };
   graph?: {
     loaded: boolean;
