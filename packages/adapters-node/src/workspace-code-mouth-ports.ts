@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { canonicalStringify, codeLanguageForPath, createPatchTransactionPlan, hashPatchContent, type ProgramDiagnostic, type RepairOperation } from "@scce/kernel";
+import { canonicalStringify, codeLanguageForPath, createPatchTransactionPlan, hashPatchContent, verifyExactTypeScriptCodeActionTransformation, type ProgramDiagnostic, type RepairOperation } from "@scce/kernel";
 import { createClangCodeMouthPorts } from "./clang-code-mouth-ports.js";
 import { createTypeScriptCodeMouthPorts, parseTscDiagnostics, type CodeMouthPorts, type CodeMouthVerification } from "./code-mouth.js";
 import type { LearnedCodeProposer, LearnedCodeCorpusAvailability } from "./learned-code-proposer.js";
@@ -125,6 +125,12 @@ async function applyWorkspaceRepairOperations(workspaceRoot: string, operations:
     const absolute = path.resolve(workspaceRoot, relative);
     const original = await readFile(absolute, "utf8");
     before.set(relative, original);
+    if(edits.some(edit=>edit.textChanges!==undefined)){
+      const edit=edits[0]!;
+      if(edits.length!==1||!edit.textChanges||!verifyExactTypeScriptCodeActionTransformation({before:original,after:edit.content!,textChanges:edit.textChanges}))throw new Error("exact repair text changes do not bind the original file");
+      after.set(relative,edit.content!);
+      continue;
+    }
     const starts = [0];
     for (let index = 0; index < original.length; index++) if (original[index] === "\n") starts.push(index + 1);
     let next = original;

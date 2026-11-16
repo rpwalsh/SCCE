@@ -110,18 +110,13 @@ it.each([
         expect(execution.initialVerification).toMatchObject({
             buildSucceeded: false, testsRun: false
         });
-        if (family === "syntax") {
-            expect(execution.result.outcome).toBe("stopped");
-            expect(execution.result.finalDiagnostics.length).toBeGreaterThan(0);
-            expect(await readFile(path.join(root, "domain/ledger.ts"), "utf8")).toBe(files["domain/ledger.ts"]);
-            return;
-        }
         expect(execution.result, JSON.stringify(execution.result)).toMatchObject({
             outcome: "resolved", finalDiagnostics: [], proposalSources: [
                 "compiler_owned"
             ]
         });
-        expect(execution.result.planningSelections).toHaveLength(1);
+        if (family !== "syntax") expect(execution.result.planningSelections).toHaveLength(1);
+        else expect(execution.result.proposalAudits?.[0]?.audit).toMatchObject({schema:"scce.compiler.syntax_recovery.v1"});
         expect(execution.projectVerification).toMatchObject({
             buildSucceeded: true, testsRun: true, testsSucceeded: true
         });

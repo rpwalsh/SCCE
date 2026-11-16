@@ -17,6 +17,7 @@ export function ordinaryWorkspaceProgramFixture(root:string,options:{runtimeWork
   storage.evidence.putSourceVersion=async row=>{const index=versions.findIndex(old=>old.sourceVersionId===row.sourceVersionId);if(index<0)versions.push(row);else versions[index]=row;};
   storage.evidence.putEvidenceSpan=async row=>{const index=spans.findIndex(old=>old.id===row.id);if(index<0)spans.push(row);else spans[index]=row;};
   storage.evidence.sourceVersionsForEvidence=async ids=>versions.filter(version=>spans.some(span=>ids.includes(span.id)&&span.sourceVersionId===version.sourceVersionId));
+  storage.evidence.sourceVersionById=async id=>versions.find(version=>version.sourceVersionId===id)??null;
   storage.blobs.put=async bytes=>{const hash=`sha256_${createHash("sha256").update(bytes).digest("hex")}`;blobs.set(hash,new Uint8Array(bytes));return hash as never;};
   storage.blobs.get=async hash=>{const bytes=blobs.get(hash);if(!bytes)throw new Error("canonical source absent");return bytes;};
   const workspaces:WorkspaceRecord[]=[],files:WorkspaceSourceFileRecord[]=[],reports:WorkspaceReportRecord[]=[];

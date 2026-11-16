@@ -446,7 +446,7 @@ describe("Postgres language-memory ownership queries", () => {
     const sql = calls.at(-1)!.sql;
     expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(14);
     expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(14);
-    expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(14);
+    expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(15);
     for (const schema of ["scce.source_request_edit_program.v1", "scce.lexical_sense.v1", "scce.source_lexical_grammar.v1", "scce.source_copular_question_frame.v1"]) {
       expect(calls.at(-1)!.params).toContain(schema);
     }
@@ -473,7 +473,11 @@ describe("Postgres language-memory ownership queries", () => {
     expect(computationHeader).toContain("auxiliary_owner.source_id=active_projection.value_json->>'sourceId'");
     expect(computationHeader).toContain("dependency_evidence.status='promoted'");
     expect(computationHeader).toContain("AS source_version_id");
-    expect(sql).toContain("computation_member.evidence_ids <@ header.dependency_evidence_ids");
+    expect(sql).not.toContain("evidence_ids <@");
+    expect(sql).toContain("SELECT DISTINCT scoped.projection_key,requested.evidence_id");
+    expect(sql).toContain("allowed.projection_key=requested.projection_key AND allowed.evidence_id=requested.evidence_id");
+    expect(sql).toContain("HAVING bool_and(allowed_id IS NOT NULL)");
+    expect(sql).toContain("qa_header.pattern_id=pattern.id");
     expect(sql).toContain("SELECT header.profile_id,header.source_system,header.pattern_schema,header.projection_recipe,member.pattern_id");
     expect(sql).not.toContain("active_projection.value_json->'patternIds' ? pattern.id");
     expect(sql).toContain("pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id");

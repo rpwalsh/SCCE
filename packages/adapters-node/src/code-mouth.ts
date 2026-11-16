@@ -10,6 +10,7 @@ import {
   createHasher,
   planDebugAttempt,
   recordDebugAttempt,
+  verifyExactTypeScriptCodeActionTransformation,
   type BoundedDebugSession,
   type DebugLoopDecision,
   type ProgramDiagnostic,
@@ -429,7 +430,8 @@ export function createTypeScriptCodeMouthPorts(input: {
       if (isCompilerRepairProposal(compilerRepair)) {
         if (compilerRepair.selection) input.log?.(`attempt ${attempt}: kernel plan ${compilerRepair.selection.id} selected ${compilerRepair.selection.selected!.codeFixIdentity}`);
         input.log?.(`attempt ${attempt}: compiler code action ${compilerRepair.fixName} for TS${compilerRepair.diagnosticCode}`);
-        return { operations: compilerRepair.operations, surface: compilerRepair.surface, source: "compiler_owned", selection: compilerRepair.selection };
+        return { operations: compilerRepair.operations, surface: compilerRepair.surface, source: "compiler_owned", selection: compilerRepair.selection,
+          ...(compilerRepair.audit ? { audit: compilerRepair.audit } : {}) };
       }
       if (compilerRepair) {
         input.log?.(`compiler offers ${compilerRepair.candidates.length} fix(es) for this file; name one (for example its TS code) to apply it`);
@@ -452,7 +454,11 @@ export function createTypeScriptCodeMouthPorts(input: {
         const newline = current.includes("\r\n") ? "\r\n" : "\n";
         const lines = current.split(/\r?\n/u);
         let next: string;
-        if (operation.kind === "replace" && operation.startLine) {
+        if(operation.textChanges!==undefined){
+          if(operation.kind!=="replace"||operation.content===undefined||operations.filter(other=>other.path===operation.path).length!==1
+            ||!verifyExactTypeScriptCodeActionTransformation({before:current,after:operation.content,textChanges:operation.textChanges}))throw new Error("exact repair text changes do not bind the original file");
+          next=operation.content;
+        } else if (operation.kind === "replace" && operation.startLine) {
           const start = operation.startLine - 1, end = (operation.endLine ?? operation.startLine) - 1;
           next = [...lines.slice(0, start), ...(operation.content ?? "").split(/\r?\n/u), ...lines.slice(end + 1)].join(newline);
         } else if (operation.kind === "delete" && operation.startLine) {

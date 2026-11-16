@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   answerFromWorkspaceCoreContext,
+  resolveWorkspaceSourceOwnership,
   assertExecutedCompilerWitness,
   canonicalStringify,
   buildWorkspaceTaskConstraintGraph,
@@ -513,6 +514,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
 
       const ingestedBindings = await exactWorkspaceSourceVersionBindings(input.runtime,input.config.runtime.workspaceRoot, pendingIngested.map(item => ({
         ...item.source,
+        ingestionStatus: "ingested" as const,
         sourceVersionId: undefined,
         evidenceIds: item.evidenceIds as never[]
       })));
@@ -1603,36 +1605,12 @@ async function exactWorkspaceSourceVersionBindings(
   sourceUriBase: string,
   records: readonly WorkspaceSourceFileRecord[]
 ): Promise<ReadonlyMap<string, WorkspaceSourceVersionBinding>> {
-  const evidence = runtime.storage.evidence;
-  if (!evidence || typeof evidence.getEvidenceBatch !== "function" || typeof evidence.sourceVersionsForEvidence !== "function") return new Map();
-  const evidenceIds = [...new Set(records.flatMap(record => record.evidenceIds.map(String)))];
-  if (!evidenceIds.length) return new Map();
-  const spans = await evidence.getEvidenceBatch(evidenceIds as never[]);
-  const versions = await evidence.sourceVersionsForEvidence(evidenceIds as never[]);
-  const versionById = new Map(versions.map(version => [String(version.sourceVersionId), version]));
-  const spanById = new Map(spans.map(span => [String(span.id), span]));
-  const bindings = new Map<string, WorkspaceSourceVersionBinding>();
-  for (const record of records) {
-    if (!record.contentHash || !record.evidenceIds.length) continue;
-    const matches = record.evidenceIds
-      .map(id => spanById.get(String(id)))
-      .filter((span): span is NonNullable<typeof span> => Boolean(span))
-      .filter(span => {
-        const version = versionById.get(String(span.sourceVersionId));
-        if (!version || String(version.contentHash) !== String(record.contentHash)) return false;
-        if (record.sourceVersionId && String(version.sourceVersionId) !== String(record.sourceVersionId)) return false;
-        return workspaceSourceVersionPathMatches(record, version.canonicalUri, sourceUriBase);
-      });
-    const sourceVersionIds = [...new Set(matches.map(span => String(span.sourceVersionId)))];
-    // A record with competing durable versions is ambiguous.  Do not choose a
-    // derivative or whichever version happens to be returned first.
-    if (sourceVersionIds.length !== 1) continue;
-    bindings.set(normalizePath(record.path), {
-      sourceVersionId: sourceVersionIds[0]!,
-      sourceVersion:versionById.get(sourceVersionIds[0]!),
-      evidence:matches,
-      evidenceIds: matches.map(span => String(span.id))
-    });
+  const resolved=await resolveWorkspaceSourceOwnership({storage:runtime.storage,records,verifyBytes:false});
+  const bindings=new Map<string,WorkspaceSourceVersionBinding>();
+  for(const record of records){
+    const binding=resolved.get(record.path);
+    if(!binding||!workspaceSourceVersionPathMatches(record,binding.sourceVersion.canonicalUri,sourceUriBase))continue;
+    bindings.set(normalizePath(record.path),{...binding,evidenceIds:[...binding.evidenceIds]});
   }
   return bindings;
 }
@@ -2277,6 +2255,77 @@ function selectCompilerTaskRepair(args: Parameters<typeof buildCompilerTaskConst
   }) };
 }
 
+async function captureObservedCompilerWorkspace(root: string) {
+    const workspace = workspaceRecord(root, Date.now(), {
+        observation: "local_filesystem"
+    });
+    // No ignored files or truncated neighbourhood may establish workspace completeness.
+    const files: Array<{
+        path: string;
+        bytes: Uint8Array;
+        mediaType: string;
+        role: FileArtifact["role"];
+    }> = [];
+    let total = 0;
+    const walk = async (directory: string, depth: number): Promise<void> => {
+        if (depth > 24)
+            throw new Error("compiler planning snapshot exceeds depth bound");
+        for (const entry of await readdir(directory, {
+            withFileTypes: true
+        })) {
+            const absolute = path.join(directory, entry.name);
+            if (entry.isSymbolicLink())
+                throw new Error("compiler planning snapshot contains a symbolic link");
+            if (entry.isDirectory()) {
+                await walk(absolute, depth + 1);
+                continue;
+            }
+            if (!entry.isFile() || files.length >= 400)
+                throw new Error("compiler planning snapshot exceeds file bound");
+            const info = await lstat(absolute);
+            if (!info.isFile() || info.size > 4000000 - total)
+                throw new Error("compiler planning snapshot exceeds byte bound");
+            const bytes = await readFile(absolute);
+            total += bytes.byteLength;
+            if (total > 4000000)
+                throw new Error("compiler planning snapshot exceeds byte bound");
+            const relative = path.relative(root, absolute).replace(/\\/gu, "/");
+            files.push({
+                path: relative, bytes, mediaType: "application/octet-stream",
+                role: /(?:^|\/)(?:__tests__|test|tests)\/|\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(relative) ? "test" : relative.endsWith(".json") ? "config" : "source"
+            });
+        }
+    };
+    await walk(root, 0);
+    const snapshot = createWorkspaceRevisionSnapshot({
+        workspaceId: workspace.id, revisionId: "local_compiler_observation", files
+    });
+    return {
+        workspace, snapshot
+    };
+}
+
+/** Shared immutable workspace/command binding for compiler actions and exact parser recovery. */
+export async function bindObservedTypeScriptCompilerCommand(input: {
+    root: string;
+    targetPath: string;
+    targetText: string;
+    compilerObservations?: readonly ExecutedTypeScriptCompilerObservation[] | null;
+}) {
+    const root = path.resolve(input.root), targetPath = normalizePath(path.relative(root, path.resolve(root, input.targetPath)).replace(/\\/gu, "/"));
+    const { workspace, snapshot } = await captureObservedCompilerWorkspace(root), target = snapshot.files.find(file => file.path === targetPath);
+    if (!target || decodeExactWorkspaceSource(target) !== input.targetText)
+        return undefined;
+    const compilerLane = resolveCompilerCommandBinding(snapshot, [
+        targetPath
+    ], input.compilerObservations).selected;
+    if (!compilerLane)
+        return undefined;
+    return {
+        root, targetPath, workspace, snapshot, compilerLane
+    };
+}
+
 /** Plans against captured local bytes; it neither persists nor authorizes a patch. */
 export async function planObservedTypeScriptFailure(input: {
   root: string;
@@ -2291,36 +2340,9 @@ export async function planObservedTypeScriptFailure(input: {
   const failed = input.diagnostics.filter(row => row.path && path.resolve(root, row.path) === path.resolve(root, targetPath)
     && /^TS\d+$/u.test(row.patternId ?? "") && row.line !== undefined && row.column !== undefined);
   if (!failed.length) return undefined;
-  const workspace = workspaceRecord(root, Date.now(), { observation: "local_filesystem" });
-  // No ignored files or truncated neighbourhood may establish workspace completeness.
-  const capture = async () => {
-    const files: Array<{ path: string; bytes: Uint8Array; mediaType: string; role: FileArtifact["role"] }> = [];
-    let total = 0;
-    const walk = async (directory: string, depth: number): Promise<void> => {
-      if (depth > 24) throw new Error("compiler planning snapshot exceeds depth bound");
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
-        const absolute = path.join(directory, entry.name);
-        if (entry.isSymbolicLink()) throw new Error("compiler planning snapshot contains a symbolic link");
-        if (entry.isDirectory()) { await walk(absolute, depth + 1); continue; }
-        if (!entry.isFile() || files.length >= 400) throw new Error("compiler planning snapshot exceeds file bound");
-        const info = await lstat(absolute);
-        if (!info.isFile() || info.size > 4_000_000 - total) throw new Error("compiler planning snapshot exceeds byte bound");
-        const bytes = await readFile(absolute);
-        total += bytes.byteLength;
-        if (total > 4_000_000) throw new Error("compiler planning snapshot exceeds byte bound");
-        const relative = path.relative(root, absolute).replace(/\\/gu, "/");
-        files.push({ path: relative, bytes, mediaType: "application/octet-stream",
-          role: /(?:^|\/)(?:__tests__|test|tests)\/|\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(relative) ? "test" : relative.endsWith(".json") ? "config" : "source" });
-      }
-    };
-    await walk(root, 0);
-    return createWorkspaceRevisionSnapshot({ workspaceId: workspace.id, revisionId: "local_compiler_observation", files });
-  };
-  const snapshot = await capture();
-  const target = snapshot.files.find(file => file.path === targetPath);
-  if (!target || decodeExactWorkspaceSource(target) !== input.targetText) return undefined;
-  const compilerLane = resolveCompilerCommandBinding(snapshot, [targetPath], input.compilerObservations).selected;
-  if (!compilerLane) return undefined;
+  const binding=await bindObservedTypeScriptCompilerCommand(input);
+  if(!binding)return undefined;
+  const {workspace,snapshot,compilerLane}=binding;
   const semanticPaths = semanticProgramPaths(snapshot, compilerLane.configPath, compilerLane.command.sourcePath);
   const semanticProgram = await buildTypeScriptSemanticProgramIndex({ workspaceRoot: root, tsconfigPath: compilerLane.configPath,
     bounds: { workspacePaths: semanticPaths, observedTestPaths: snapshot.files.filter(file => file.role === "test").map(file => file.path),
@@ -2343,7 +2365,7 @@ export async function planObservedTypeScriptFailure(input: {
     input: { workspaceId: workspace.id, expectedWorkspaceUpdatedAt: workspace.updatedAt,
       requestId: `compiler_failure_${hashParts(snapshot.revisionHash, bound.map(row => row.id))}`,
       requestText: input.requestText, requestedPaths: [targetPath], validationPlan: { validatorId: "typescript", checks: ["compiler"] } } });
-  assertSameWorkspaceRevision(snapshot, await capture());
+  assertSameWorkspaceRevision(snapshot, (await captureObservedCompilerWorkspace(root)).snapshot);
   const transformation=family?.transformations.find(row => row.codeFixIdentity === planned.selection.selected?.codeFixIdentity);
   // A caller's existing formal diagnostic/fix selector is operator authority, distinct from autonomous graph selection.
   const operatorChoice=deriveTypeScriptCodeActionRepair({rootPath:root,requestedPaths:[targetPath],requestText:input.requestText,

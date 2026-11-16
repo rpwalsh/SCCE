@@ -3,9 +3,10 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type { ProgramDiagnostic, RepairOperation, WorkspaceTransformationFamilySelection } from "@scce/kernel";
+import type { JsonValue, ProgramDiagnostic, RepairOperation, WorkspaceTransformationFamilySelection } from "@scce/kernel";
 import { deriveTypeScriptCodeActionRepair, type TypeScriptCodeActionSnapshotFile } from "./typescript-code-actions.js";
 import { planObservedTypeScriptFailure } from "./workspace-runtime.js";
+import { materializeCompilerOwnedSyntaxRecovery } from "./compiler-syntax-recovery.js";
 
 const CONTENT_HASH = (content: string): `sha256:${string}` => `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
 
@@ -15,6 +16,7 @@ export interface CompilerRepairProposal {
   fixName: string;
   diagnosticCode: number;
   selection?: WorkspaceTransformationFamilySelection;
+  audit?: JsonValue;
 }
 
 export interface CompilerRepairCandidates {
@@ -140,6 +142,9 @@ export async function proposeCompilerOwnedRepair(input: {
   tsconfigPath?: string;
   compilerObservations?: readonly import("./typescript-compiler-observation.js").ExecutedTypeScriptCompilerObservation[] | null;
 }): Promise<CompilerRepairProposal | CompilerRepairCandidates | undefined> {
+  const syntax=await materializeCompilerOwnedSyntaxRecovery({root:input.workspaceRoot,targetPath:input.targetPath,targetText:input.targetText,
+    diagnostics:input.diagnostics??[],attempt:input.attempt,compilerObservations:input.compilerObservations}).catch(()=>undefined);
+  if(syntax)return syntax;
   const snapshot = await typeScriptProjectSnapshot(input);
   if (!snapshot) return undefined;
   const { root, relativeTarget, files } = snapshot;
