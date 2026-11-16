@@ -1288,8 +1288,9 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
 
   const auxiliary = await prepareSourceOwnedPatterns({ input, source, originalSource, profile, evidence, informationLabel, ids, hasher, createdAt,
     reuseOriginalEvidence: retainedOriginalSource !== undefined });
-  evidence.push(...auxiliary.evidence);
-  patterns.push(...auxiliary.patterns.map(pattern => ({ ...pattern, informationLabel })));
+  // Corpus inventories exceed the engine's function-argument limit; append every row in source order.
+  for (const span of auxiliary.evidence) evidence.push(span);
+  for (const pattern of auxiliary.patterns) patterns.push({ ...pattern, informationLabel });
 
   if (constructionOnly) patterns = await bindSourceConstructionComponents({ storage: input.storage, patterns,
     source: canonicalSource, profileId: profile.id, evidence: [...evidence, ...constructionPoolEvidence], hasher });
@@ -1542,7 +1543,7 @@ async function prepareSourceOwnedPatterns(input: {
           sourceRanges: annotation.ranges.map(range => { const span = spans.get(rangeKey(range))!; return { ...range, evidenceId: span.id,
             byteStart: span.byteStart, byteEnd: span.byteEnd, charStart: span.charStart, charEnd: span.charEnd, textHash: span.contentHash }; }) }) };
     });
-    patterns.push(...rows);
+    for (const row of rows) patterns.push(row);
     projections.push({ profileId: input.profile.id, sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, sourceSystem: corpusSourceAlias(input.input.sourceSystem),
       patternSchema: declaration.patternSchema, componentRecipe: declaration.componentRecipe, informationLabel: input.informationLabel,
       patternIds: rows.map(row => row.id).sort(), sourceDependencies: dependencies });

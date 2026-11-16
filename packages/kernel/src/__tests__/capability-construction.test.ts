@@ -5,6 +5,7 @@ import { CAPABILITY_DEMONSTRATION_SCHEMA, capabilityBindingForRequest, compileCa
 import { createHasher } from "../primitives.js";
 import type { ScceStorage } from "../storage.js";
 import type { EvidenceSpan } from "../types.js";
+import type { RuntimeCapabilityPlanStep } from "../capability-runtime.js";
 import { capabilityRuntimeFixture } from "./fixtures/capability-runtime.js";
 
 const demonstration = (swapped = false) => ({ request: "α «𝒜» β «한국어»", capabilityId: "outlook.create_draft",
@@ -26,6 +27,19 @@ async function fixture(ambiguous = false) {
 }
 
 describe("source-owned capability constructions", () => {
+  it.each(["scope-path", "unsafe-artifact", "content-overlap", "literal-content", "foreign-operation"])("refuses %s as a program artifact materialization contract", async kind => {
+    const f = await fixture(), step: RuntimeCapabilityPlanStep = { id: "write", capabilityId: "filesystem.write",
+      payload: { workspaceContext: {}, path: "src/program.mjs", content: null, expectedContentHash: null }, dependencyStepIds: [],
+      programArtifactBindings: [{ path: ["content"], artifactPath: "src/program.mjs" }] };
+    if (kind === "scope-path") step.programArtifactBindings = [{ path: ["workspaceContext"] as never, artifactPath: "src/program.mjs" }];
+    if (kind === "unsafe-artifact") step.programArtifactBindings![0]!.artifactPath = "../outside.mjs";
+    if (kind === "literal-content") (step.payload as Record<string, unknown>).content = "caller-authored";
+    if (kind === "foreign-operation") step.capabilityId = "outlook.send_mail";
+    if (kind === "content-overlap") { step.dependencyStepIds = ["prior"]; step.resultBindings = [{ path: ["content"], predecessorTaskId: "prior", resultPath: ["content"], type: "string" }]; }
+    const text = JSON.stringify({ schema: CAPABILITY_DEMONSTRATION_SCHEMA, examples: [{ request: "materialize", steps: [step], bindings: [] }] });
+    expect(() => compileCapabilityDemonstrations({ sourceText: text, owner: { ...f.owner, contentHash: `sha256_${createHasher().digestHex(text)}` as typeof f.contentHash },
+      evidence: f.evidence, hasher: createHasher(), updatedAt: 1 })).toThrow(/program artifact binding/);
+  });
   it("rejects competing parameter meanings for the same learned surface", async () => {
     const f = await fixture(true);
     expect(f.patterns).toHaveLength(1);

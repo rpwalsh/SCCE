@@ -345,6 +345,7 @@ import type {
 } from "./types.js";
 import { invokeRuntimeCapability } from "./capability-runtime.js";
 import { executeBoundCapability } from "./bound-capability-runtime.js";
+import { programTaskArtifactsBound } from "./program-runtime.js";
 import { capabilityBindingForRequest } from "./capability-construction.js";
 import { assembleTurnConstruct } from "./turn-construct-assembly.js";
 import { runExactComputationTurn } from "./turn-exact-computation.js";
@@ -1381,7 +1382,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget)
         ?? (sourceSpanCompletionRequest ? "factual" : undefined);
       const boundCapability = deps.capabilities && !deps.evaluationCondition?.flags.disableLanguageMemory
-        && (!explicitAuthority || explicitAuthority === "action")
+        && (!explicitAuthority || explicitAuthority === "action" || explicitAuthority === "program")
         ? await capabilityBindingForRequest({ storage: deps.storage, requestText: input.text,
           sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
       const lexicalStarted = performance.now();
@@ -4012,9 +4013,28 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       }
       const candidateApprovalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
       let boundCapabilityExecution: Awaited<ReturnType<typeof executeBoundCapability>> | undefined;
-      if (boundCapability && requestedAuthority === "action" && deps.capabilities) {
-        const workspaceActionScope = jsonRecord(jsonRecord(jsonRecord(input.metadata).runtime).workspaceActionScope);
+      const workspaceActionScope = jsonRecord(jsonRecord(jsonRecord(input.metadata).runtime).workspaceActionScope);
+      // Program authority still requires a verified program artifact. Its source-bound prerequisite
+      // effects additionally require the existing registered workspace policy, concrete approvals and
+      // executive receipts; it grants no connector or ambient host authority.
+      const programTaskBinding = boundCapability && requestedAuthority === "program" ? boundCapability : undefined;
+      const programTaskSteps: readonly import("./capability-runtime.js").RuntimeCapabilityPlanStep[] = programTaskBinding?.steps ?? (programTaskBinding ? [{ id: "action", capabilityId: programTaskBinding.capabilityId,
+        payload: programTaskBinding.payload, dependencyStepIds: [] }] : []);
+      const programTaskContext = jsonRecord(workspaceActionScope.context);
+      const programTaskRefusal = !programTaskBinding ? undefined
+        : programTaskContext.schema !== "scce.workspace.action-context.v1" || typeof programTaskContext.workspaceId !== "string"
+          || typeof programTaskContext.policyId !== "string" || !Number.isSafeInteger(programTaskContext.expectedWorkspaceUpdatedAt)
+          || !Number.isSafeInteger(workspaceActionScope.maxCalls) || Number(workspaceActionScope.maxCalls) < 1
+          ? "program.effects.workspace_scope_unavailable"
+        : programTaskSteps.some(step => {
+          const operation = deps.capabilities?.operations().find(row => row.capability.id === step.capabilityId);
+          return !["filesystem.read", "filesystem.write", "workspace.check"].includes(step.capabilityId)
+            || !operation || jsonRecord(operation.inputSchema).workspaceContext !== "object"
+            || step.resultBindings?.some(binding => binding.path[0] === "workspaceContext");
+        }) ? "program.effects.unscoped_capability" : undefined;
+      if (boundCapability && deps.capabilities && (requestedAuthority === "action" || programTaskBinding && !programTaskRefusal)) {
         boundCapabilityExecution = await executeBoundCapability({ binding: boundCapability, requestText: input.text,
+          ...(programTaskBinding ? { program: candidateConstructSeed.program } : {}),
           ...(workspaceActionScope.context ? { workspaceContext: workspaceActionScope.context } : {}),
           ...(typeof workspaceActionScope.maxCalls === "number" ? { maxCalls: workspaceActionScope.maxCalls } : {}),
           operationId: input.operationId, episodeId, ownerId: deps.informationAccess?.principalId ?? "scce-runtime",
@@ -4050,7 +4070,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           executionState: "not_executed"
         })
       }));
-      const boundActionResults = boundCapabilityExecution ? toJsonValue(boundCapabilityExecution.actions) : undefined;
+      const boundActionResults = boundCapabilityExecution ? toJsonValue(boundCapabilityExecution.actions)
+        : programTaskBinding ? toJsonValue(programTaskSteps.map(step => ({ taskId: step.id, capabilityId: step.capabilityId,
+          disposition: "not_ready", reasonId: programTaskRefusal }))) : undefined;
+      const programTaskEffectsComplete = !programTaskBinding || Boolean(boundCapabilityExecution
+        && boundCapabilityExecution.actions.length === programTaskSteps.length
+        && boundCapabilityExecution.actions.every(action => action.disposition === "succeeded"));
       for (const plan of boundCapabilityExecution?.plans ?? []) {
         const action = boundCapabilityExecution!.actions.find(row => row.planId === plan.id)!;
         cognitiveActionPlans.push({ id: String(plan.id), capabilityId: plan.capabilityId,
@@ -4767,7 +4792,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let buildTest: BuildTestResult | undefined;
       let taskReplanning: ReturnType<typeof replan> | undefined;
       let taskCompletion: ReturnType<typeof completeConditionsProvenByBuild> | undefined;
-      if (construct.program) {
+      if (construct.program && programTaskEffectsComplete && (!programTaskBinding || programTaskArtifactsBound(construct.program, boundActionResults))) {
         const registry = createCapabilityRegistry({ process: true, network: Boolean(deps.connectors) });
         const requestRequirementIds = [
           ...programCodeSignal.behaviorRequirements.map(requirement => requirement.id),

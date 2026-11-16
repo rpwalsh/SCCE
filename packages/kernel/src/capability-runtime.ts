@@ -186,6 +186,8 @@ export interface RuntimeCapabilityPlanStep {
   payload: JsonValue;
   dependencyStepIds: string[];
   resultBindings?: ExecutiveResultBinding[];
+  /** Source-declared materialization of an artifact emitted by this same program task. */
+  programArtifactBindings?: Array<{ path: ["content"]; artifactPath: string }>;
 }
 
 export async function invokeRuntimeCapabilityPlan(input: {

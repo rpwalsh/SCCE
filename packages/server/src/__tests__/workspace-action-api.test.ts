@@ -3,7 +3,7 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { it, expect, vi } from "vitest";
@@ -12,19 +12,26 @@ vi.mock("@scce/adapters-node", async (original) => ({
         activeBrainVersion: "brain.workspace-actions", activeImportRunIds: []
     }))
 }));
-import { createScceKernel, createRuntimeCapabilities, createClock, createHasher, createIdFactory, CAPABILITY_DEMONSTRATION_SCHEMA, compileCapabilityDemonstrations, capabilityBindingForRequest, decodeProgramArtifactWire, DEFAULT_POLICY, type RuntimeCapabilityPlanStep } from "@scce/kernel";
+import { createScceKernel, createRuntimeCapabilities, createConnectorCapabilityOperations, createCapabilityRegistry, createProgramLocalValidationCapability, createClock, createHasher, createIdFactory, CAPABILITY_DEMONSTRATION_SCHEMA, compileCapabilityDemonstrations, capabilityBindingForRequest, decodeProgramArtifactWire, DEFAULT_POLICY, type RuntimeCapabilityPlanStep } from "@scce/kernel";
 import { ordinaryWorkspaceProgramFixture } from "../../../adapters-node/src/__tests__/fixtures/ordinary-workspace-program.js";
 import { createWorkspaceCapabilityOperations, type WorkspaceActionPolicy } from "../../../adapters-node/src/workspace-capability-operations.js";
 import { capabilityRuntimeFixture } from "../../../kernel/src/__tests__/fixtures/capability-runtime.js";
 import { handleRequest, type ApiContext } from "../routes.js";
 import type { ScceRuntimeConfig } from "../../../adapters-node/src/config.js";
 import { NodeBuildTestAdapter } from "../../../adapters-node/src/process.js";
-it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/write/read/check request through %s scoped approvals and cold durable replay", async (transport) => {
+it.each([
+    { transport: "rest", authority: "action", materialize: false, checkPasses: true, rebindContext: false }, { transport: "graphql", authority: "action", materialize: false, checkPasses: true, rebindContext: false },
+    { transport: "rest", authority: "program", materialize: true, checkPasses: true, rebindContext: false }, { transport: "graphql", authority: undefined, materialize: true, checkPasses: true, rebindContext: false },
+    { transport: "rest", authority: "program", materialize: false, checkPasses: true, rebindContext: false }, { transport: "rest", authority: "program", materialize: true, checkPasses: false, rebindContext: false },
+    { transport: "rest", authority: "program", materialize: true, checkPasses: true, rebindContext: true }
+] as const)("executes effects through $transport / $authority / materialize=$materialize / check=$checkPasses / rebind=$rebindContext", async ({ transport, authority, materialize, checkPasses, rebindContext }) => {
     const root = await mkdtemp(path.join(tmpdir(), "scce-action-api-"));
     let server: ReturnType<typeof createServer> | undefined;
     let privateRoot: string | undefined;
     try {
-        const request = "copy «alpha.json» to «beta.json» inspect «beta.json»", steps: RuntimeCapabilityPlanStep[] = [
+        const programTask = authority !== "action";
+        const product = programTask ? "; JavaScript identity(31)=31; identity(-9)=-9." : "";
+        const request = "copy «alpha.json» to «beta.json» inspect «beta.json»" + product, steps: RuntimeCapabilityPlanStep[] = [
             {
                 id: "observe", capabilityId: "filesystem.read", payload: {
                     workspaceContext: {}, path: "alpha.json"
@@ -60,6 +67,15 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
                 ]
             }
         ];
+        if (materialize) {
+            steps[1]!.programArtifactBindings = [{ path: ["content"], artifactPath: "src/program.mjs" }];
+            steps[1]!.resultBindings = [{ path: ["expectedContentHash"], predecessorTaskId: "observe", resultPath: ["contentHash"], type: "string" }];
+            await mkdir(path.join(root, "src"));
+            await writeFile(path.join(root, "src/program.mjs"), "export function identity() { throw Error('not materialized'); }\n");
+        }
+        const actualInput = materialize ? "src/program.mjs" : "input.json", actualOutput = materialize ? "src/program.mjs" : "output.json";
+        if (rebindContext) steps[1]!.resultBindings!.push({ path: ["workspaceContext"], predecessorTaskId: "observe", resultPath: ["content"], type: "string" });
+        const taskRequest = `copy «${actualInput}» to «${actualOutput}» inspect «${actualOutput}»` + product;
         const binding = (name: string, at: number, field: string) => ({
             path: [
                 "steps", at, "payload", field
@@ -88,7 +104,9 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
             }
         ]);
         await writeFile(path.join(root, "input.json"), input);
-        await writeFile(path.join(root, "check.mjs"), "import assert from 'node:assert/strict';import{readFile}from'node:fs/promises';assert.deepEqual(JSON.parse(await readFile('output.json','utf8')),JSON.parse(await readFile('input.json','utf8')));\n");
+        await writeFile(path.join(root, "check.mjs"), !checkPasses ? "throw Error('owner native check rejected');\n" : materialize
+            ? "import assert from 'node:assert/strict';import{readFile}from'node:fs/promises';const {identity}=await import('./src/program.mjs');for(const row of JSON.parse(await readFile('input.json','utf8')))assert.deepEqual(identity(row),row);\n"
+            : "import assert from 'node:assert/strict';import{readFile}from'node:fs/promises';assert.deepEqual(JSON.parse(await readFile('output.json','utf8')),JSON.parse(await readFile('input.json','utf8')));\n");
         const f = ordinaryWorkspaceProgramFixture(root), ingested = await f.runtime.ingest(root, {
             maxFiles: 10, maxFileBytes: 200000
         });
@@ -104,7 +122,7 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
         for (const pattern of patterns)
             await f.storage.languageMemory.putLanguagePattern(pattern);
         expect(await capabilityBindingForRequest({
-            storage: f.storage, requestText: "copy «input.json» to «output.json» inspect «output.json»"
+            storage: f.storage, requestText: taskRequest
         })).toBeDefined();
         const config: ScceRuntimeConfig = {
             server: {
@@ -130,8 +148,12 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
                 return operation.execute(...args);
             }
         }));
+        const native = new NodeBuildTestAdapter(config), validateProgram = vi.fn(native.executeProgram.bind(native));
         const capabilities = createRuntimeCapabilities({
-            executive: durable.executive(), blobs: f.storage.blobs, operations
+            executive: durable.executive(), blobs: f.storage.blobs, operations: [...operations, ...createConnectorCapabilityOperations({
+                buildTest: { executeProgram: validateProgram }, blobs: f.storage.blobs,
+                capabilities: [...createCapabilityRegistry({ process: true }).all(), createProgramLocalValidationCapability(true)]
+            })]
         });
         const makeKernel = () => {
             const clock = createClock({
@@ -141,7 +163,7 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
                 storage: f.storage, files: {
                     streamPath: async function* () {
                     }
-                }, buildTest: new NodeBuildTestAdapter(config), capabilities, executive: durable.executive(), approvals: f.approvals, policy: config.policy, informationAccess: config.security!.informationAccess, sourceInformationLabel: config.security!.defaultSourceInformationLabel, clock, idFactory: createIdFactory({
+                }, buildTest: { executeProgram: validateProgram }, capabilities, executive: durable.executive(), approvals: f.approvals, policy: config.policy, informationAccess: config.security!.informationAccess, sourceInformationLabel: config.security!.defaultSourceInformationLabel, clock, idFactory: createIdFactory({
                     clock, hasher, deterministicReplay: true
                 }), deterministicReplay: true
             });
@@ -213,7 +235,7 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
                     expect(task.persistence).toBe("durable");
                     expect(task.latestFrame.phase === "application.turn.awaiting_approval" || ["succeeded", "failed", "interrupted"].includes(task.status)).toBe(true);
                     expect(task.result).not.toBeNull();
-                    receipt = { status: task.result.httpStatus, body: task.result.value };
+                    receipt = { status: task.result.httpStatus, body: task.result.value ?? task.result.detail ?? { error: task.result.error } };
                 }, { timeout: 60_000, interval: 20 });
                 return receipt;
             }
@@ -233,9 +255,9 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
             schema: "scce.workspace.action-policy.v1", capabilityIds: [
                 "filesystem.read", "filesystem.write", "workspace.check"
             ], readablePaths: [
-                ...files, "output.json"
+                ...files, actualOutput
             ], writablePaths: [
-                "output.json"
+                actualOutput
             ], protectedFiles: await Promise.all(files.map(async (name) => ({
                 path: name, sha256: hasher.digestHex(await readFile(path.join(root, name)))
             }))), checks: [
@@ -281,7 +303,7 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
             expect(counts.size).toBe(0);
         }
         const body = {
-            text: "copy «input.json» to «output.json» inspect «output.json»", requestedAuthority: "action", operationId: "operation.fresh-workspace", metadata: {
+            text: taskRequest, requestedAuthority: authority, operationId: "operation.fresh-workspace", metadata: {
                 workspaceActionContext: registered.body.workspaceActionContext, runtime: {
                     workspaceActionScope: {
                         context: {
@@ -291,14 +313,47 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
                 }
             }
         };
+        if (programTask) {
+            // A program product still validates and returns normally without a bound workspace task.
+            const pure = await httpPost("/api/turn", { text: "JavaScript pureIdentity(17)=17; pureIdentity(-11)=-11.", requestedAuthority: "program" });
+            expect(pure.status, JSON.stringify(pure.body)).toBe(200);
+            expect((decodeProgramArtifactWire(pure.body).programArtifacts as unknown[]).length).toBeGreaterThan(0);
+            expect(validateProgram).toHaveBeenCalled();
+            validateProgram.mockClear();
+            expect(counts.size).toBe(0);
+            // Matching a source construction never grants ambient host effects or overrides factual authority.
+            const unscoped = await httpPost("/api/turn", { text: body.text, requestedAuthority: "program" });
+            expect(unscoped.status, JSON.stringify(unscoped.body)).toBe(422);
+            expect(unscoped.body.programArtifacts).toBeUndefined();
+            await httpPost("/api/turn", { text: body.text, requestedAuthority: "factual", metadata: { workspaceActionContext: registered.body.workspaceActionContext } });
+            expect(counts.size).toBe(0);
+            expect(validateProgram).not.toHaveBeenCalled();
+        }
         const first = await post("/api/turn", body);
+        if (rebindContext) {
+            expect(first.status, JSON.stringify(first.body)).toBe(422);
+            expect(first.body.programArtifacts).toBeUndefined();
+            expect(counts.size).toBe(0);
+            expect(validateProgram).not.toHaveBeenCalled();
+            return;
+        }
         expect(first.status, JSON.stringify(first.body)).toBe(202);
         expect(first.body.pendingApproval.capabilityId).toBe("filesystem.write");
-        expect(first.body.pendingApproval.input.content).toBe(input);
+        const approvedContent = first.body.pendingApproval.input.content;
+        if (materialize) {
+            expect(approvedContent).toContain("export function identity");
+            expect(first.body.pendingApproval.input.expectedContentHash).toBe(`sha256_${hasher.digestHex("export function identity() { throw Error('not materialized'); }\n")}`);
+        } else expect(approvedContent).toBe(input);
         expect(first.body.pendingApproval.input.workspaceContext).toEqual(registered.body.workspaceActionContext);
         expect(first.body.pendingApproval.approvalScope).toBeDefined();
         expect(first.body.pendingApproval.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
         expect(counts.get("filesystem.write")).toBeUndefined();
+        if (programTask) {
+            expect(first.body.requestedAuthority).toBe("program");
+            expect(first.body.programReadiness.reasonId).toBe("program.readiness.task_effects_incomplete");
+            expect(first.body.programArtifacts).toBeUndefined();
+            expect(validateProgram).not.toHaveBeenCalled();
+        }
         if (transport === "graphql") {
             const conflict = await graphql("VscodeStartTurnMutation", { input: { operationId: taskId, text: body.text, requestedAuthority: "action",
                 workspaceActionContext: { ...registered.body.workspaceActionContext, policyId: "forged-policy" } } });
@@ -308,11 +363,16 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
         expect((await post("/api/session/approve", {
             planId: first.body.pendingApproval.planId
         })).status).toBe(200);
+        if (programTask) {
+            const changed = await httpPost("/api/turn", { ...body, text: body.text.replaceAll(actualOutput, "different.json") });
+            expect(changed.status, JSON.stringify(changed.body)).toBeGreaterThanOrEqual(400);
+            expect(counts.get("filesystem.write")).toBeUndefined();
+        }
         coldCoordinator();
         const second = await post("/api/turn", body);
         expect(second.status, JSON.stringify(second.body)).toBe(202);
         expect(second.body.pendingApproval.capabilityId).toBe("workspace.check");
-        expect(await readFile(path.join(root, "output.json"), "utf8")).toBe(input);
+        expect(await readFile(path.join(root, actualOutput), "utf8")).toBe(approvedContent);
         expect(counts.get("filesystem.read")).toBe(2);
         expect(counts.get("workspace.check")).toBeUndefined();
         expect((await post("/api/session/approve", {
@@ -320,18 +380,36 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
         })).status).toBe(200);
         coldCoordinator();
         const completed = await post("/api/turn", body);
-        expect(completed.status, JSON.stringify(completed.body)).toBe(200);
-        const result = decodeProgramArtifactWire(completed.body);
-        expect(result.actionResults).toHaveLength(4);
+        expect(completed.status, JSON.stringify(completed.body)).toBe(programTask && (!materialize || !checkPasses) ? 422 : 200);
+        const result = decodeProgramArtifactWire(completed.body) as Record<string, any>;
+        if (programTask && (!materialize || !checkPasses)) {
+            expect(JSON.stringify(result)).toContain(!checkPasses ? "program.readiness.task_effects_failed" : "program.readiness.task_artifacts_unbound");
+            expect(result.programArtifacts).toBeUndefined();
+            expect(validateProgram).not.toHaveBeenCalled();
+        } else expect(result.actionResults).toHaveLength(4);
+        if (materialize && checkPasses) {
+            expect(result.requestedAuthority).toBe("program");
+            const artifact = result.programArtifacts.find((row: any) => row.path === actualOutput);
+            expect(artifact.content).toBe(approvedContent);
+            expect(artifact.contentHash).toBe(`sha256_${hasher.digestHex(approvedContent)}`);
+            expect(result.actionResults.find((row: any) => row.capabilityId === "filesystem.write").observation.result.contentHash).toBe(artifact.contentHash);
+            expect(result.actionResults.find((row: any) => row.taskId === "readback").observation.result.content).toBe(artifact.content);
+            expect(result.actionResults.find((row: any) => row.capabilityId === "workspace.check").observation.result.passed).toBe(true);
+            expect(result.buildTest.passed).toBe(true);
+            expect(validateProgram).toHaveBeenCalled();
+            expect(validateProgram.mock.calls.every(([run]) => run.construct.artifacts.find(row => row.path === actualOutput)!.content === approvedContent)).toBe(true);
+        }
         expect(counts.get("filesystem.write")).toBe(1);
         expect(counts.get("workspace.check")).toBe(1);
         privateRoot = await mkdtemp(path.join(tmpdir(), "scce-private-action-check-"));
         const privateCheck = path.join(privateRoot, "hidden.mjs");
-        await writeFile(privateCheck, "import assert from 'node:assert/strict';import{readFile}from'node:fs/promises';const expected=JSON.parse(await readFile(process.argv[2],'utf8'));const actual=JSON.parse(await readFile(process.argv[3],'utf8'));assert.deepEqual(actual,expected,'PRIVATE_CHECKER_CANARY_921485');assert.equal(actual[0].opaque,'unseen-\\u0394');assert.equal(actual[1].value,-9);\n");
-        const independent = spawnSync(process.execPath, [privateCheck, path.join(root, "input.json"), path.join(root, "output.json")], { cwd: privateRoot, encoding: "utf8", windowsHide: true, env: { SystemRoot: process.env.SystemRoot ?? "", WINDIR: process.env.WINDIR ?? "" } });
+        await writeFile(privateCheck, materialize
+            ? "import assert from 'node:assert/strict';import{pathToFileURL}from'node:url';const {identity}=await import(pathToFileURL(process.argv[3]));for(const value of [73,-41,{unicode:'PRIVATE_CHECKER_CANARY_921485',items:[true,null]}])assert.deepEqual(identity(value),value);\n"
+            : "import assert from 'node:assert/strict';import{readFile}from'node:fs/promises';const expected=JSON.parse(await readFile(process.argv[2],'utf8'));const actual=JSON.parse(await readFile(process.argv[3],'utf8'));assert.deepEqual(actual,expected,'PRIVATE_CHECKER_CANARY_921485');assert.equal(actual[0].opaque,'unseen-\\u0394');assert.equal(actual[1].value,-9);\n");
+        const independent = spawnSync(process.execPath, [privateCheck, path.join(root, "input.json"), path.join(root, actualOutput)], { cwd: privateRoot, encoding: "utf8", windowsHide: true, env: { SystemRoot: process.env.SystemRoot ?? "", WINDIR: process.env.WINDIR ?? "" } });
         expect(independent.status, independent.stderr).toBe(0);
         expect(JSON.stringify(f.spans)).not.toContain("PRIVATE_CHECKER_CANARY_921485");
-        expect(JSON.parse(await readFile(path.join(root, "output.json"), "utf8"))).toEqual([
+        if (!materialize) expect(JSON.parse(await readFile(path.join(root, "output.json"), "utf8"))).toEqual([
             {
                 opaque: "unseen-\u0394", value: 31
             },
@@ -340,7 +418,7 @@ it.each(["rest", "graphql"] as const)("executes an ordinary source-learned read/
             }
         ]);
         coldCoordinator();
-        expect((await post("/api/turn", body)).status).toBe(200);
+        if (!programTask || materialize && checkPasses) expect((await post("/api/turn", body)).status).toBe(200);
         expect([
             ...counts.entries()
         ]).toEqual([

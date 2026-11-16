@@ -127,6 +127,15 @@ function validateDemonstrationSteps(value: unknown[]): asserts value is RuntimeC
     if (!step || typeof step.id !== "string" || !step.id || Object.hasOwn(Object.prototype, step.id) || ids.has(step.id) || typeof step.capabilityId !== "string" || !step.capabilityId
       || !record(step.payload) || !Array.isArray(step.dependencyStepIds) || step.dependencyStepIds.some(id => typeof id !== "string")
       || step.resultBindings !== undefined && !Array.isArray(step.resultBindings)) throw new Error("invalid capability plan step");
+    if (step.programArtifactBindings !== undefined) {
+      if (!Array.isArray(step.programArtifactBindings) || step.programArtifactBindings.length !== 1 || step.capabilityId !== "filesystem.write") throw new Error("invalid program artifact binding");
+      const binding = record(step.programArtifactBindings[0]);
+      if (!binding || Object.keys(binding).some(key => !["path", "artifactPath"].includes(key))
+        || !Array.isArray(binding.path) || binding.path.length !== 1 || binding.path[0] !== "content" || record(step.payload)?.content !== null
+        || typeof binding.artifactPath !== "string" || !binding.artifactPath || /[\\:\u0000]/u.test(binding.artifactPath)
+        || binding.artifactPath.split("/").some(part => !part || part === "." || part === "..")
+        || (step.resultBindings as ExecutiveResultBinding[] | undefined)?.some(row => row.path[0] === "content")) throw new Error("invalid program artifact binding");
+    }
     ids.add(step.id);
     validateExecutiveResultBindings(step.payload as JsonValue, (step.resultBindings ?? []) as ExecutiveResultBinding[], step.dependencyStepIds as string[]);
   }

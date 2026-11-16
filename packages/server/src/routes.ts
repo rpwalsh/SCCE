@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import http from "node:http";
-import { encodeProgramArtifactWire, restoreFetchedCapabilityResult, sourceSpanCompletionRequestFromMetadata, SourceLearningApplication as SharedSourceLearningApplication } from "@scce/kernel";
+import { encodeProgramArtifactWire, programTaskArtifactsBound, restoreFetchedCapabilityResult, sourceSpanCompletionRequestFromMetadata, SourceLearningApplication as SharedSourceLearningApplication } from "@scce/kernel";
 import { connectorOperationIdentity, executeConnectorOperation } from "@scce/adapters-node";
 import {pendingProgramValidationApproval} from "./program-validation-approval.js";
 import path from "node:path";
@@ -1819,13 +1819,23 @@ export async function executeApplicationTurn(
         } : {})
       });
       traceEvent(trace, { stage: "turn.kernel.returned", label: "api.turn", durationMs: Date.now() - turnStarted, counts: { evidence: result.evidence.length } });
-      const programReadiness = (result.requestedAuthority === "program" || turn.requestedAuthority === "program") && !workspaceCodingPlanningInput
-        ? programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest,construct:result.constructGraph })
+      const taskActions = Array.isArray(result.actionResults) ? result.actionResults : [];
+      const actionPlanIds = new Set(taskActions.flatMap(row => isRecord(row) && typeof row.planId === "string" ? [row.planId] : []));
+      const pendingAction = actionPlanIds.size ? context.runtime.approvals.snapshot().pending.find(plan => actionPlanIds.has(plan.planId)) : undefined;
+      const taskEffectsFailed = taskActions.some(row => isRecord(row) && ["failed", "indeterminate", "budget_exhausted"].includes(String(row.disposition)));
+      const taskEffectsIncomplete = taskActions.some(row => !isRecord(row) || row.disposition !== "succeeded");
+      const programReadiness = (result.requestedAuthority === "program" || turn.requestedAuthority === "program") && (!workspaceCodingPlanningInput || taskActions.length > 0)
+        ? taskEffectsIncomplete ? { schema: "scce.program.response_readiness.v1", status: "not_ready" as const,
+            reasonId: taskEffectsFailed ? "program.readiness.task_effects_failed" : "program.readiness.task_effects_incomplete" }
+          : !programTaskArtifactsBound(result.constructGraph.program, result.actionResults)
+            ? { schema: "scce.program.response_readiness.v1", status: "not_ready" as const, reasonId: "program.readiness.task_artifacts_unbound" }
+            : programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest,construct:result.constructGraph })
         : undefined;
       if (programReadiness && programReadiness.status !== "ready") {
         const session=context.runtime.approvals?.snapshot();
-        const pending=session?pendingProgramValidationApproval({events:result.events??[],pending:session.pending}):undefined;
-        if(pending)return json({ok:false,pendingApproval:pending,programReadiness,session},202);
+        const pending = !taskEffectsFailed ? pendingAction ?? (session?pendingProgramValidationApproval({events:result.events??[],pending:session.pending}):undefined) : undefined;
+        if(pending)return json({ok:false,pendingApproval:pending,programReadiness,session,
+          requestedAuthority: result.requestedAuthority, ...(taskActions.length ? { actionResults: result.actionResults } : {})},202);
         traceEvent(trace, {
           stage: "turn.withheld",
           label: "api.turn.program",
@@ -2044,8 +2054,6 @@ export async function executeApplicationTurn(
         ...(completedWorkspaceCoding ? { workspaceCoding: toJsonValue(completedWorkspaceCoding) } : {}),
         ...(workspaceExecution ? { workspaceExecution: toJsonValue(workspaceExecution) } : {})
       };
-      const actionPlanIds = new Set(Array.isArray(result.actionResults) ? result.actionResults.flatMap(row => isRecord(row) && typeof row.planId === "string" ? [row.planId] : []) : []);
-      const pendingAction = actionPlanIds.size ? context.runtime.approvals.snapshot().pending.find(plan => actionPlanIds.has(plan.planId)) : undefined;
       const response = { ...baseResponse, ...(webLearning ? { webLearning } : {}),
         ...(pendingAction ? { pendingApproval: pendingAction, session: context.runtime.approvals.snapshot() } : {}) };
       return json(full?response:encodeProgramArtifactWire(response), pendingAction || workspaceExecution?.state === "awaiting_approval" ? 202 : 200);

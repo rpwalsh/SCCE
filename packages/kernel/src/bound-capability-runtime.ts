@@ -5,12 +5,15 @@ import { invokeRuntimeCapabilityPlan, type RuntimeCapabilities, type RuntimeCapa
 import type { IdFactory } from "./ids.js";
 import { canonicalStringify, toJsonValue } from "./primitives.js";
 import { createActionPlanner } from "./safety.js";
+import { validateProgramGraphHydration } from "./program-runtime.js";
 import type { ApprovalPort, CapabilityAuditStore } from "./storage.js";
 import type { CapabilityApprovalScope, CapabilityPlan, EpisodeId, Hasher, PolicyProfile } from "./types.js";
 
 export async function executeBoundCapability(input: {
   binding: VerifiedCapabilityBinding;
   requestText: string;
+  /** Only the runtime's canonical graph, never a caller-supplied file payload. */
+  program?: import("./types.js").ProgramGraph;
   workspaceContext?: import("./types.js").JsonValue;
   maxCalls?: number;
   operationId?: string;
@@ -28,6 +31,16 @@ export async function executeBoundCapability(input: {
   if (!capabilityBindingVerified(input.binding, input.requestText)) throw new Error("capability construction binding is not verified");
   const steps: RuntimeCapabilityPlanStep[] = structuredClone(input.binding.steps ?? [{ id: "action", capabilityId: input.binding.capabilityId,
     payload: input.binding.payload, dependencyStepIds: [] }]);
+  // Resolve the entire source-owned binding before dispatching any step. The concrete bytes then
+  // participate in the existing executive input identity and exact per-step approval fingerprint.
+  for (const step of steps) for (const binding of step.programArtifactBindings ?? []) {
+    const program = input.program, file = program?.files.find(row => row.path === binding.artifactPath);
+    if (!program || !validateProgramGraphHydration(program).valid || !program.hydration?.ownerRequirementIds?.length || !file
+      || file.contentHash !== `sha256_${input.hasher.digestHex(file.content)}` || step.capabilityId !== "filesystem.write"
+      || !step.payload || typeof step.payload !== "object" || Array.isArray(step.payload) || step.payload.path !== file.path
+      || step.payload.content !== null || binding.path.length !== 1 || binding.path[0] !== "content") throw new Error("source-bound program artifact unavailable");
+    step.payload = { ...step.payload, content: file.content };
+  }
   if (input.workspaceContext) for (const step of steps) {
     const schema = input.capabilities.operations().find(row => row.capability.id === step.capabilityId)?.inputSchema;
     if (schema && typeof schema === "object" && !Array.isArray(schema) && schema.workspaceContext === "object") {

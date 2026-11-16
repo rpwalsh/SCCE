@@ -121,6 +121,24 @@ export function validateProgramGraphHydration(program: ProgramGraph): { valid: b
   return { valid: diagnostics.length === 0, diagnostics: [...new Set(diagnostics)] };
 }
 
+/** A workspace-task receipt cannot release an unrelated generated program. */
+export function programTaskArtifactsBound(program: ProgramGraph | undefined, actions: JsonValue | undefined): boolean {
+  if (!Array.isArray(actions) || !actions.length) return true;
+  const records = actions.map(action => action && typeof action === "object" && !Array.isArray(action) ? action : {});
+  if (!program || records.some(action => action.disposition !== "succeeded")) return false;
+  const writes = records.filter(action => action.capabilityId === "filesystem.write");
+  const files = new Map(program.files.map(file => [file.path, file]));
+  let sourceWritten = false;
+  for (const write of writes) {
+    const observation = write.observation && typeof write.observation === "object" && !Array.isArray(write.observation) ? write.observation : {};
+    const result = observation.result && typeof observation.result === "object" && !Array.isArray(observation.result) ? observation.result : {};
+    const file = typeof result.path === "string" ? files.get(result.path) : undefined;
+    if (!file || !write.receiptId || result.contentHash !== file.contentHash || result.bytes !== new TextEncoder().encode(file.content).byteLength) return false;
+    sourceWritten ||= file.role === "source";
+  }
+  return sourceWritten;
+}
+
 /**
  * Binds the exact artifact bytes returned by a real build/test execution back
  * into a hydrated ProgramGraph. Execution may observe bytes that differ from

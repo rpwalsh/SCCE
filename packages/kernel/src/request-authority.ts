@@ -248,7 +248,9 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
   const computationAuthority=computation&&sourceComputationResultVerified(computation.result,computation.requestText,createHasher())?"reasoned":undefined;
   const qa = input.verifiedContextualQa;
   const contextualQaAuthority = qa && contextualQaBindingVerified({ ...qa, hasher: createHasher() }) ? "factual" : undefined;
-  const capabilityAuthority = input.verifiedCapability && capabilityBindingVerified(input.verifiedCapability.binding, input.verifiedCapability.requestText) ? "action" : undefined;
+  // A verified task effect does not downgrade an independently established program product to action authority.
+  const capabilityAuthority = input.verifiedCapability && !typedProgramBehaviorRequirementIds.length
+    && capabilityBindingVerified(input.verifiedCapability.binding, input.verifiedCapability.requestText) ? "action" : undefined;
   const requestedAuthority = input.explicitAuthority
     ?? (capabilityAuthority ?? computationAuthority ?? (typedProgramBehaviorRequirementIds.length ? "program" : contextualQaAuthority ?? observedAuthority?.authority ?? projectedAuthority));
   const scoreMargin = neutralAuthorityApplied
